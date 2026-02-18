@@ -26,76 +26,32 @@ logger = logging.getLogger(__name__)
 
 
 class UnifiedMessageProcessor:
-    """Process incoming messages from all channels through the FTE agent."""
+    """Process incoming messages from all channels through the FTE agent directly without Kafka."""
 
     def __init__(self):
         # Initialize channel handlers and services
-        self.kafka_client = kafka_client_service
         self.whatsapp_handler = WhatsAppHandler()
         self.running = False
 
     async def start(self):
-        """Start Kafka consumer on fte.tickets.incoming and begin processing loop."""
-        logger.info("Starting Unified Message Processor...")
-
-        # Start the Kafka consumer for the incoming tickets topic
-        self.kafka_client.start_consumer('tickets_incoming', 'fte-message-processor-group')
-
+        """No Kafka consumer to start in direct mode."""
+        logger.info("Starting Unified Message Processor in Direct Mode...")
         self.running = True
         logger.info("Unified Message Processor started successfully")
-
-        # Start the main processing loop
-        await self._processing_loop()
 
     async def stop(self):
         """Stop the message processor."""
         logger.info("Stopping Unified Message Processor...")
         self.running = False
-        self.kafka_client.shutdown()
         logger.info("Unified Message Processor stopped")
-
-    async def _processing_loop(self):
-        """Main processing loop that consumes messages from Kafka."""
-        logger.info("Entering main processing loop...")
-
-        # Listen to topics
-        if self.kafka_client:
-            logger.info("Listening for messages on specified topics...")
-            topics = ['tickets_incoming', 'whatsapp_inbound']
-            # Start consumer for the specified topics
-            self.kafka_client.start_consumer(topics, 'fte-message-processor-group')
-
-            while self.running:
-                try:
-                    # Consume messages from the specified topics
-                    for topic, message_data in self.kafka_client.listen_to_topic(topics):
-                        if not self.running:
-                            break # Exit if processor is stopping
-
-                        logger.info(f"Incoming message from topic: {topic}")
-                        await self.process_message(topic, message_data)
-
-                        # Small delay to prevent busy waiting
-                        await asyncio.sleep(0.1)
-
-                except Exception as e:
-                    logger.error(f"Error in processing loop: {str(e)}")
-                    await asyncio.sleep(5)  # Wait before retrying if an error occurs outside message processing
 
     async def process_message(self, topic: str, message: Dict[str, Any]):
         """
-        Process incoming message with the following steps:
-        1. Extract channel
-        2. Resolve customer (cross-channel identification)
-        3. Get/create conversation
-        4. Store incoming message
-        5. Load conversation history
-        6. Run agent with context
-        7. Store agent response
-        8. Publish metrics
+        Process incoming message directly.
+        Original 'topic' parameter kept for interface compatibility.
         """
         try:
-            logger.info(f"Processing message from topic: {topic}")
+            logger.info(f"Processing direct message. Source reference: {topic}")
 
             # 1. Extract channel and message details
             channel = message.get('channel', 'web_form')
@@ -159,6 +115,7 @@ class UnifiedMessageProcessor:
             conversation_history = await self._load_conversation_history(resolved_conversation_id)
 
             # 6. Run agent with context to generate response
+            # Mistral-based agent call
             agent_response = await customer_success_agent.generate_channel_appropriate_response(
                 content,
                 resolved_customer_id,
@@ -186,8 +143,7 @@ class UnifiedMessageProcessor:
                 logger.info(f"Sent WhatsApp response to {recipient}")
             elif channel == "email":
                 # For email channel, the response is already formatted as an email
-                # In a real implementation, we would send the email using an email service
-                # For now, we'll store it similar to web form
+                # In a direct implementation, we call store_email_response (SMTP)
                 await self.store_email_response({
                     "conversation_id": str(resolved_conversation_id),
                     "content": agent_response,
@@ -203,7 +159,7 @@ class UnifiedMessageProcessor:
                     customer = await get_customer_by_id(db, resolved_customer_id)
                     if customer and customer.email:
                         # Send email notification to customer
-                        email_notification_result = await self.store_email_response({
+                        await self.store_email_response({
                             "conversation_id": str(resolved_conversation_id),
                             "content": agent_response,
                             "customer_id": str(resolved_customer_id),
@@ -283,7 +239,6 @@ class UnifiedMessageProcessor:
             # 8.5 Update conversation status to indicate it's been handled
             try:
                 async with db_session() as db:
-                    from src.services.conversation_service import update_conversation_status
                     # Update conversation status to 'closed' after successful response
                     updated_conversation = await update_conversation_status(
                         db=db,
@@ -295,49 +250,20 @@ class UnifiedMessageProcessor:
                 logger.error(f"Error updating conversation status: {str(e)}")
                 # Continue processing even if conversation update fails
 
-            # 9. Publish metrics
-            message_timestamp = message.get('timestamp')
-            if message_timestamp:
-                # Parse timestamp and ensure it's timezone-aware
-                if isinstance(message_timestamp, str):
-                    msg_time = datetime.fromisoformat(message_timestamp)
-                    if msg_time.tzinfo is None:
-                        msg_time = msg_time.replace(tzinfo=timezone.utc)
-                else:
-                    msg_time = message_timestamp
-                    if msg_time.tzinfo is None:
-                        msg_time = msg_time.replace(tzinfo=timezone.utc)
-                response_time = (datetime.now(timezone.utc) - msg_time).total_seconds()
-            else:
-                response_time = 0
-
-            await self._publish_metrics({
-                'customer_id': str(resolved_customer_id),
-                'conversation_id': str(resolved_conversation_id),
-                'channel': channel,
-                'ticket_id': ticket_id,  # Include ticket_id in metrics
-                'response_time': response_time,
-                'processed_at': datetime.now(timezone.utc).isoformat()
-            })
-
-            logger.info(f"Successfully processed message for customer {resolved_customer_id}")
+            logger.info(f"Successfully processed direct message for customer {resolved_customer_id}")
 
         except Exception as e:
             logger.error(f"Error processing message: {str(e)}")
-            # Log error to DLQ
-            await self._log_error_to_dlq(message, str(e))
-
-            # Try to send error response to customer
+            # Try to send error response to customer if possible
             await self._send_error_response(message, str(e))
 
     async def store_web_response(self, response_data: Dict[str, Any]):
         """
-        Store web form response and trigger notification (placeholder)
+        Store web form response. Kafka dependency removed.
         """
         # In a real implementation, this might push to a websocket or send a push notification.
         # For now, it's already stored in the DB as a message.
-        # We could also publish to a specific webform_outbound topic.
-        await self.kafka_client.send_to_topic('webform_outbound', response_data)
+        logger.info(f"Web response stored for conversation {response_data.get('conversation_id')}")
         return {"status": "success", "channel": "web_form"}
 
     async def store_email_response(self, response_data: Dict[str, Any]):
@@ -379,9 +305,7 @@ class UnifiedMessageProcessor:
             return {"status": "error", "channel": "email", "error": str(e)}
 
     async def resolve_customer(self, message: Dict[str, Any]) -> Optional[uuid.UUID]:
-        """
-        Match customer across channels by email, phone, or provided customer ID.
-        """
+        """Match customer across channels."""
         try:
             provided_customer_id = message.get('provided_customer_id')
             email = message.get('email', '').strip().lower()
@@ -391,25 +315,20 @@ class UnifiedMessageProcessor:
             if provided_customer_id:
                 try:
                     customer_uuid = uuid.UUID(provided_customer_id)
-                    logger.info(f"Attempting to resolve customer by ID: {customer_uuid}")
                     # Verify customer exists
                     async with db_session() as db:
                         from src.services.customer_service import get_customer_by_id
                         customer = await get_customer_by_id(db, customer_uuid)
                         if customer:
-                            logger.info(f"Successfully resolved customer by ID: {customer_uuid}")
                             return customer_uuid
-                        else:
-                            logger.warning(f"Customer with ID {customer_uuid} not found in database")
                 except ValueError:
-                    logger.warning(f"Invalid UUID provided: {provided_customer_id}")
+                    pass
 
             # Try to find by email
             if email:
                 async with db_session() as db:
                     customer = await get_customer_by_identifier(db, email, 'email')
                     if customer:
-                        logger.info(f"Resolved customer by email: {email}")
                         return customer.id
 
             # Try to find by phone
@@ -417,7 +336,6 @@ class UnifiedMessageProcessor:
                 async with db_session() as db:
                     customer = await get_customer_by_identifier(db, phone, 'phone')
                     if customer:
-                        logger.info(f"Resolved customer by phone: {phone}")
                         return customer.id
 
             # Create new customer if not found
@@ -437,7 +355,6 @@ class UnifiedMessageProcessor:
                 await db.commit()
                 await db.refresh(new_customer)
 
-                logger.info(f"Created new customer: {new_customer.id}")
                 return new_customer.id
 
         except Exception as e:
@@ -445,9 +362,7 @@ class UnifiedMessageProcessor:
             return None
 
     async def get_or_create_conversation(self, customer_id: uuid.UUID, channel: str, message: Dict[str, Any]) -> uuid.UUID:
-        """
-        Get active conversation or create new one based on message context.
-        """
+        """Get or create conversation context."""
         try:
             # Check if there's an active conversation for this customer
             async with db_session() as db:
@@ -460,7 +375,6 @@ class UnifiedMessageProcessor:
                         # Check if conversation is recent (last 24 hours)
                         (datetime.now(timezone.utc) - conversation.updated_at).seconds < 86400):
 
-                        logger.info(f"Found existing conversation: {conversation.id}")
                         return conversation.id
 
                 # Look for a recently closed conversation in the same channel and reopen it
@@ -473,12 +387,12 @@ class UnifiedMessageProcessor:
 
                             # Reopen the conversation
                             async with db_session() as reopen_db:
-                                updated_conversation = await update_conversation_status(
+                                await update_conversation_status(
                                     db=reopen_db,
                                     conversation_id=conversation.id,
                                     status="open"
                                 )
-                                logger.info(f"Reopened conversation: {conversation.id} due to new message")
+                                await reopen_db.commit()
                                 return conversation.id
 
                 # Create new conversation
@@ -492,7 +406,6 @@ class UnifiedMessageProcessor:
                 await db.commit()
                 await db.refresh(new_conversation)
 
-                logger.info(f"Created new conversation: {new_conversation.id}")
                 return new_conversation.id
 
         except Exception as e:
@@ -507,7 +420,6 @@ class UnifiedMessageProcessor:
                 )
                 await db.commit()
                 await db.refresh(fallback_conversation)
-                logger.info(f"Created fallback conversation: {fallback_conversation.id}")
                 return fallback_conversation.id
 
     async def _load_conversation_history(self, conversation_id: uuid.UUID) -> list:
@@ -524,7 +436,6 @@ class UnifiedMessageProcessor:
                         'channel': msg.channel,
                         'content': msg.content,
                         'timestamp': msg.created_at.isoformat() if msg.created_at else None,
-                        'sentiment': float(msg.sentiment_score) if msg.sentiment_score else 0.0
                     })
 
                 logger.info(f"Loaded {len(history)} messages for conversation {conversation_id}")
@@ -534,73 +445,22 @@ class UnifiedMessageProcessor:
             logger.error(f"Error loading conversation history: {str(e)}")
             return []
 
-    async def _publish_metrics(self, metrics_data: Dict[str, Any]):
-        """Publish processing metrics to the metrics topic."""
-        try:
-            await self.kafka_client.send_to_topic('metrics', metrics_data)
-            logger.info("Published metrics to Kafka")
-        except Exception as e:
-            logger.error(f"Error publishing metrics: {str(e)}")
-
-    async def _log_error_to_dlq(self, original_message: Dict[str, Any], error: str):
-        """Log error to dead letter queue for manual processing."""
-        try:
-            dlq_message = {
-                'original_message': original_message,
-                'error': error,
-                'failed_at': datetime.now(timezone.utc).isoformat(),
-                'retry_count': original_message.get('retry_count', 0) + 1
-            }
-
-            await self.kafka_client.send_to_topic('dlq', dlq_message)
-            logger.warning("Error logged to DLQ")
-        except Exception as e:
-            logger.error(f"Error logging to DLQ: {str(e)}")
-
     async def _send_error_response(self, message: Dict[str, Any], error: str):
-        """Send error response back to customer."""
-        try:
-            # Create a generic error response
-            error_response = {
-                'ticket_id': message.get('ticket_id'),
-                'channel': message.get('channel', 'web_form'),
-                'content': 'We encountered an issue processing your request. Our team has been notified and will address this shortly.',
-                'is_error_response': True
-            }
+        """Send error response (logs only in direct mode for now)."""
+        logger.error(f"Critical error in direct processing: {error}")
 
-            # Send to appropriate response topic based on original channel
-            channel_topic_map = {
-                'whatsapp': 'whatsapp_outbound',
-                'web_form': 'webform_outbound',  # Assumed new topic or just internal storage
-                'email': 'webform_outbound'  # Using same topic for simplicity
-            }
 
-            response_topic = channel_topic_map.get(message.get('channel', 'web_form'), 'webform_outbound')
-            await self.kafka_client.send_to_topic(response_topic, error_response)
-
-            logger.info("Error response sent to customer")
-        except Exception as e:
-            logger.error(f"Error sending error response: {str(e)}")
-
+# Global instance for easy access across the monolith components
+message_processor = UnifiedMessageProcessor()
 
 async def main():
     """Main function to run the message processor."""
-    processor = UnifiedMessageProcessor()
-
-    try:
-        await processor.start()
-    except KeyboardInterrupt:
-        logger.info("Received interrupt signal")
-    finally:
-        await processor.stop()
+    await message_processor.start()
 
 
 if __name__ == "__main__":
     # Configure logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
+    logging.basicConfig(level=logging.INFO)
 
     # Run the processor
     asyncio.run(main())

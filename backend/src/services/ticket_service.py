@@ -5,7 +5,6 @@ import uuid
 
 from ..models.ticket import Ticket
 from ..models.conversation import Conversation
-from ..services.kafka_client import kafka_client_service as kafka_service
 
 
 async def create_ticket(
@@ -98,15 +97,8 @@ async def escalate_ticket(
 
     await db.flush()
 
-    # Publish escalation event to Kafka
-    await kafka_service.send_to_topic(
-        "escalations",
-        {
-            "ticket_id": str(ticket_id),
-            "escalation_reason": escalation_reason,
-            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
-        }
-    )
+    # Kafka escalation logic removed for direct flow
+    logger.info(f"Ticket {ticket_id} escalated for reason: {escalation_reason}")
 
     return ticket
 

@@ -49,15 +49,18 @@ async def startup_event():
         
         logger.info("Initiating background workers within main process...")
         
-        # Initialize and start email poller
-        email_poller = EmailPoller(poll_interval=int(os.getenv("EMAIL_POLL_INTERVAL", "30")))
-        asyncio.create_task(email_poller.start())
-        
-        # Initialize and start message processor
+        # Initialize message processor
         message_processor = UnifiedMessageProcessor()
         asyncio.create_task(message_processor.start())
         
-        logger.info("Internal background tasks (Email Poller, Message Processor) started successfully.")
+        # Initialize and start email poller with processor injection
+        email_poller = EmailPoller(
+            poll_interval=int(os.getenv("EMAIL_POLL_INTERVAL", "30")),
+            processor=message_processor
+        )
+        asyncio.create_task(email_poller.start())
+        
+        logger.info("Internal background tasks (Email Poller, Message Processor) started successfully in direct mode.")
     except ImportError as e:
         logger.error(f"Failed to import background workers: {e}. Ensure PYTHONPATH includes the project root.")
     except Exception as e:

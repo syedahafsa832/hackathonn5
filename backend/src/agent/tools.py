@@ -10,7 +10,7 @@ from ..services.customer_service import get_customer_by_id
 from ..services.conversation_service import get_conversations_by_customer
 from ..services.message_service import get_messages_by_conversation
 from ..services.ticket_service import create_ticket as create_ticket_service
-from ..services.kafka_client import kafka_client_service as kafka_service
+# Kafka service removed for direct flow
 
 logger = logging.getLogger(__name__)
 
@@ -60,16 +60,8 @@ async def create_ticket(customer_id: str, source_channel: str, subject: str,
                 description=description
             )
 
-            # Publish to Kafka for processing
-            await kafka_service.send_to_topic(
-                "tickets_incoming",
-                {
-                    "ticket_id": str(ticket.id),
-                    "customer_id": customer_id,
-                    "source_channel": source_channel,
-                    "action": "created"
-                }
-            )
+            # Kafka integration removed for direct internal flow
+            logger.info(f"Ticket {ticket.id} created and will be handled via direct internal flow")
 
             return {
                 "id": str(ticket.id),
@@ -167,17 +159,8 @@ async def escalate_to_human(customer_id: str, conversation_id: str, reason: str)
             # Escalate the conversation itself
             await escalate_conversation(db, conversation_uuid)
 
-            # Publish escalation event to Kafka
-            await kafka_service.send_to_topic(
-                "escalations",
-                {
-                    "customer_id": customer_id,
-                    "conversation_id": conversation_id,
-                    "reason": reason,
-                    "escalated_at": datetime.utcnow().isoformat(),
-                    "escalated_by": "ai_agent"
-                }
-            )
+            # Kafka escalation logic removed for direct flow
+            logger.info(f"Escalating customer {customer_id} in conversation {conversation_id} for reason: {reason}")
 
             return {
                 "status": "escalated",
@@ -212,17 +195,9 @@ async def send_response(response_data: Dict[str, Any]) -> Dict[str, Any]:
 
         logger.info(f"Response prepared for {channel} to {recipient}: {content[:100]}...")
 
-        # Publish to Kafka for processing by the appropriate channel handler
-        await kafka_service.send_to_topic(
-            "fte.responses.outgoing",
-            {
-                "channel": channel,
-                "recipient": recipient,
-                "content": content,
-                "sent_at": datetime.utcnow().isoformat(),
-                "status": "prepared"
-            }
-        )
+        # Kafka response logic removed for direct flow
+        # In a monolith, responses are typically handled by the calling service (UnifiedMessageProcessor)
+        logger.info(f"Agent tool 'send_response' prepared response for {channel} to {recipient}")
 
         return {
             "status": "response_prepared",

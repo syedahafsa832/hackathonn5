@@ -12,7 +12,7 @@ from src.models.message import Message
 from src.models.ticket import Ticket
 from src.services.ticket_service import create_ticket
 from src.services.customer_service import get_or_create_customer
-from src.services.kafka_client import kafka_client_service as kafka_service
+from production.workers.message_processor import message_processor
 
 router = APIRouter()
 
@@ -109,9 +109,9 @@ async def submit_support_request(
 
         await db.commit()
 
-        # Publish to Kafka for processing
+        # Direct call to message processor for immediate AI handling
         background_tasks.add_task(
-            kafka_service.send_to_topic,
+            message_processor.process_message,
             "tickets_incoming",
             {
                 "ticket_id": str(ticket.id),
