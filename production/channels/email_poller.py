@@ -13,6 +13,10 @@ from typing import Dict, Any, List
 from datetime import datetime, timezone
 import uuid
 
+logger = logging.getLogger(__name__)
+from production.channels.gmail_handler import gmail_handler
+
+
 class EmailPoller:
     """Service to poll Gmail for new emails and forward them for processing."""
 

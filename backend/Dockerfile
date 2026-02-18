@@ -41,8 +41,10 @@ ENV PORT=8080
 EXPOSE 8080
 
 # Copy application code
+# Master Blueprint requirement: main.py in the root of /app
 COPY backend /app
 COPY production /app/production
 
 # Production Start
+# gunicorn -w 1 -k uvicorn.workers.UvicornWorker main:app --bind 0.0.0.0:$PORT --timeout 120
 CMD gunicorn -w 1 -k uvicorn.workers.UvicornWorker main:app --bind 0.0.0.0:$PORT --timeout 120
