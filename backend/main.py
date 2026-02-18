@@ -1,8 +1,8 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from .middleware.cors import add_cors_middleware
-from .middleware.logging import setup_logging_middleware
-from .routes import setup_routes
+from src.api.middleware.cors import add_cors_middleware
+from src.api.middleware.logging import setup_logging_middleware
+from src.api.routes import setup_routes
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.services.database import get_db, db_session
 from src.services.conversation_service import get_conversation_by_id, get_conversations_by_customer
@@ -16,63 +16,72 @@ import uuid
 from typing import List
 from pydantic import BaseModel
 from datetime import datetime, timedelta
+import os
+import asyncio
 
 # Configure basic logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Create FastAPI app instance
+# 1. Create FastAPI app instance
 app = FastAPI(
     title="Customer Success AI Agent API",
     description="API for the multi-channel customer success agent system",
     version="1.0.0",
 )
 
-# Add middleware
-add_cors_middleware(app)
-setup_logging_middleware(app)
-
-# Setup API routes
-setup_routes(app)
-
-@app.on_event("startup")
-async def startup_event():
-    """
-    Launch background workers internally within the FastAPI process.
-    This allows the system to operate as a monolith on Render Web Services.
-    """
-    import asyncio
-    import os
-    try:
-        from production.channels.email_poller import EmailPoller
-        from production.workers.message_processor import UnifiedMessageProcessor
-        
-        logger.info("Initiating background workers within main process...")
-        
-        # Initialize message processor
-        message_processor = UnifiedMessageProcessor()
-        asyncio.create_task(message_processor.start())
-        
-        # Initialize and start email poller with processor injection
-        email_poller = EmailPoller(
-            poll_interval=int(os.getenv("EMAIL_POLL_INTERVAL", "30")),
-            processor=message_processor
-        )
-        asyncio.create_task(email_poller.start())
-        
-        logger.info("Internal background tasks (Email Poller, Message Processor) started successfully in direct mode.")
-    except ImportError as e:
-        logger.error(f"Failed to import background workers: {e}. Ensure PYTHONPATH includes the project root.")
-    except Exception as e:
-        logger.error(f"Error starting internal background workers: {e}")
+# 2. IMMEDIATE Health Check (Before any complex imports or logic)
+@app.get("/health")
+async def health_check():
+    """Immediately returns status ok for Render/Railway health checks."""
+    return {"status": "ok"}
 
 @app.get("/")
 async def root():
     return {"message": "Customer Success AI Agent API"}
 
-@app.get("/health")
-async def health_check():
-    return {"status": "ok"}
+# 3. Add middleware and routes
+add_cors_middleware(app)
+setup_logging_middleware(app)
+setup_routes(app)
+
+# 4. Background Workers (Hardened Startup)
+@app.on_event("startup")
+async def startup_event():
+    """
+    Launch background workers internally within the FastAPI process.
+    Wrapped in granular try-except to prevent server crash.
+    """
+    try:
+        from production.channels.email_poller import EmailPoller
+        from production.workers.message_processor import message_processor
+        
+        logger.info("Initiating background workers within main process...")
+        
+        # Start message processor
+        try:
+            asyncio.create_task(message_processor.start())
+            logger.info("Message Processor task created.")
+        except Exception as e:
+            logger.error(f"Critical error starting Message Processor: {e}")
+        
+        # Start email poller
+        try:
+            email_poller = EmailPoller(
+                poll_interval=int(os.getenv("EMAIL_POLL_INTERVAL", "30")),
+                processor=message_processor
+            )
+            asyncio.create_task(email_poller.start())
+            logger.info("Email Poller task created.")
+        except Exception as e:
+            logger.error(f"Critical error starting Email Poller: {e}")
+            
+    except ImportError as e:
+        logger.error(f"Failed to import background workers: {e}. Ensure PYTHONPATH includes the project root.")
+    except Exception as e:
+        logger.error(f"Unexpected error in startup event: {e}")
+
+# Rest of the API logic...
 
 class MessageInfo(BaseModel):
     id: str
@@ -159,13 +168,7 @@ async def get_channel_metrics():
     try:
         from sqlalchemy import func, select
         async with db_session() as db:
-            # Query database for channel metrics:
-            # - Total conversations per channel (last 24h)
-            # - Average sentiment per channel
-            # - Escalation count per channel
-            # - Average response time per channel
-
-            # Get conversation counts by channel
+            # Query database for channel metrics
             conv_result = await db.execute(
                 select(
                     Conversation.initial_channel,
@@ -201,9 +204,9 @@ async def get_channel_metrics():
                 avg_sentiment = msg_stats.get(channel, {}).get('avg_sentiment', 0.0)
 
                 # Calculate additional metrics
-                escalation_count = 0  # This would come from escalation logs in a real implementation
-                avg_response_time = 0.0  # This would come from response time logs
-                resolution_rate = 0.0  # This would come from ticket resolution data
+                escalation_count = 0  
+                avg_response_time = 0.0  
+                resolution_rate = 0.0  
 
                 metrics.append(ChannelMetrics(
                     channel=channel,
@@ -224,4 +227,11 @@ async def get_channel_metrics():
         logger.error(f"Error getting channel metrics: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-logger.info("FastAPI application initialized successfully")
+logger.info("FastAPI application initialized successfully at root")
+
+if __name__ == "__main__":
+    import uvicorn
+    # Use the PORT environment variable if available, otherwise default to 8080
+    port = int(os.getenv("PORT", "8080"))
+    logger.info(f"Starting server on port {port}")
+    uvicorn.run(app, host="0.0.0.0", port=port)
