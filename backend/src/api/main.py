@@ -69,11 +69,7 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {
-        "status": "healthy",
-        "timestamp": __import__('datetime').datetime.utcnow().isoformat(),
-        "service": "customer-success-agent-api"
-    }
+    return {"status": "ok"}
 
 class MessageInfo(BaseModel):
     id: str
