@@ -1,0 +1,153 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: customer-success-worker
+  namespace: customer-success-fte
+  labels:
+    app: customer-success-worker
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: customer-success-worker
+  template:
+    metadata:
+      labels:
+        app: customer-success-worker
+    spec:
+      containers:
+      - name: worker
+        image: customer-success-worker:latest
+        env:
+        - name: DB_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: customer-success-config
+              key: DB_HOST
+        - name: DB_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: customer-success-config
+              key: DB_PORT
+        - name: DB_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: customer-success-config
+              key: DB_NAME
+        - name: DB_SSL_MODE
+          valueFrom:
+            configMapKeyRef:
+              name: customer-success-config
+              key: DB_SSL_MODE
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          valueFrom:
+            configMapKeyRef:
+              name: customer-success-config
+              key: KAFKA_BOOTSTRAP_SERVERS
+        - name: MISTRAL_API_BASE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: customer-success-config
+              key: MISTRAL_API_BASE_URL
+        - name: MISTRAL_MODEL
+          valueFrom:
+            configMapKeyRef:
+              name: customer-success-config
+              key: MISTRAL_MODEL
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: customer-success-config
+              key: LOG_LEVEL
+        - name: DATABASE_POOL_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: customer-success-config
+              key: DATABASE_POOL_SIZE
+        - name: DATABASE_POOL_TIMEOUT
+          valueFrom:
+            configMapKeyRef:
+              name: customer-success-config
+              key: DATABASE_POOL_TIMEOUT
+        - name: DATABASE_POOL_RECYCLE
+          valueFrom:
+            configMapKeyRef:
+              name: customer-success-config
+              key: DATABASE_POOL_RECYCLE
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: customer-success-secrets
+              key: DB_USER
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: customer-success-secrets
+              key: DB_PASSWORD
+        - name: MISTRAL_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: customer-success-secrets
+              key: MISTRAL_API_KEY
+        - name: WHATSAPP_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: customer-success-secrets
+              key: WHATSAPP_TOKEN
+        - name: WHATSAPP_PHONE_NUMBER_ID
+          valueFrom:
+            secretKeyRef:
+              name: customer-success-secrets
+              key: WHATSAPP_PHONE_NUMBER_ID
+        - name: TWILIO_ACCOUNT_SID
+          valueFrom:
+            secretKeyRef:
+              name: customer-success-secrets
+              key: TWILIO_ACCOUNT_SID
+        - name: TWILIO_AUTH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: customer-success-secrets
+              key: TWILIO_AUTH_TOKEN
+        - name: META_WHATSAPP_VERIFY_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: customer-success-secrets
+              key: META_WHATSAPP_VERIFY_TOKEN
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          exec:
+            command:
+            - python
+            - -c
+            - import sys; sys.exit(0 if True else 1)  # Placeholder for actual health check
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+            - python
+            - -c
+            - import sys; sys.exit(0 if True else 1)  # Placeholder for actual readiness check
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        startupProbe:
+          exec:
+            command:
+            - python
+            - -c
+            - import sys; sys.exit(0 if True else 1)  # Placeholder for actual startup check
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 30
