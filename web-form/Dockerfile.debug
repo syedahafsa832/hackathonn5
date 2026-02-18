@@ -1,0 +1,6 @@
+FROM node:18
+WORKDIR /app
+COPY package.json ./
+RUN npm install --verbose > install.log 2>&1 || (cat install.log && exit 1)
+COPY . .
+RUN npm run build

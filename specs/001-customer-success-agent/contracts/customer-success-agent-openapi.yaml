@@ -1,0 +1,841 @@
+openapi: 3.0.3
+info:
+  title: Customer Success AI Agent API
+  description: API for the multi-channel customer success agent system
+  version: 1.0.0
+  contact:
+    name: Customer Success Team
+    email: support@example.com
+
+servers:
+  - url: https://api.example.com/v1
+    description: Production server
+  - url: https://staging-api.example.com/v1
+    description: Staging server
+  - url: http://localhost:8000/v1
+    description: Development server
+
+paths:
+  /support/submit:
+    post:
+      summary: Submit a new support ticket via web form
+      description: Creates a new support ticket from the web form submission
+      tags:
+        - Support
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebFormSubmission'
+      responses:
+        '201':
+          description: Ticket created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketResponse'
+        '400':
+          description: Invalid input data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+
+  /support/ticket/{ticketId}:
+    get:
+      summary: Get ticket status and details
+      description: Retrieve the current status and details of a support ticket
+      tags:
+        - Support
+      parameters:
+        - name: ticketId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Unique identifier of the ticket
+      responses:
+        '200':
+          description: Ticket details retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketDetails'
+        '404':
+          description: Ticket not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /webhooks/gmail:
+    post:
+      summary: Gmail webhook receiver
+      description: Receives incoming emails via Gmail API webhook
+      tags:
+        - Webhooks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GmailWebhookPayload'
+      responses:
+        '200':
+          description: Webhook processed successfully
+        '400':
+          description: Invalid webhook payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized webhook request
+
+  /webhooks/whatsapp:
+    post:
+      summary: WhatsApp webhook receiver
+      description: Receives incoming WhatsApp messages via Twilio webhook
+      tags:
+        - Webhooks
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/WhatsAppWebhookPayload'
+      responses:
+        '200':
+          description: Webhook processed successfully
+        '400':
+          description: Invalid webhook payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized webhook request
+
+  /webhooks/whatsapp/status:
+    post:
+      summary: WhatsApp delivery status webhook
+      description: Receives delivery status updates for WhatsApp messages
+      tags:
+        - Webhooks
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/WhatsAppStatusPayload'
+      responses:
+        '200':
+          description: Status update processed successfully
+        '400':
+          description: Invalid status update payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /conversations/{conversationId}:
+    get:
+      summary: Get conversation history
+      description: Retrieve the full conversation history for a specific conversation
+      tags:
+        - Conversations
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Unique identifier of the conversation
+      responses:
+        '200':
+          description: Conversation history retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationHistory'
+        '404':
+          description: Conversation not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /customers/lookup:
+    get:
+      summary: Lookup customer by identifier
+      description: Find customer by email or phone number
+      tags:
+        - Customers
+      parameters:
+        - name: identifier
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Email address or phone number to search for
+        - name: type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [email, phone]
+            default: email
+          description: Type of identifier (email or phone)
+      responses:
+        '200':
+          description: Customer found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerDetails'
+        '404':
+          description: Customer not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /knowledge-base/search:
+    post:
+      summary: Search knowledge base
+      description: Search the knowledge base using vector similarity
+      tags:
+        - KnowledgeBase
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KnowledgeBaseSearchRequest'
+      responses:
+        '200':
+          description: Search results returned successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeBaseSearchResponse'
+        '400':
+          description: Invalid search query
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /metrics/channels:
+    get:
+      summary: Get channel-specific metrics
+      description: Retrieve metrics for different communication channels
+      tags:
+        - Metrics
+      parameters:
+        - name: from_date
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: Start date for metrics (ISO 8601 format)
+        - name: to_date
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+          description: End date for metrics (ISO 8601 format)
+        - name: channel
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [email, whatsapp, web_form, all]
+          description: Specific channel to get metrics for
+      responses:
+        '200':
+          description: Channel metrics retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelMetrics'
+        '400':
+          description: Invalid date range
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /health:
+    get:
+      summary: Health check
+      description: Check the health status of the API
+      tags:
+        - Health
+      responses:
+        '200':
+          description: API is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: API is unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+components:
+  schemas:
+    WebFormSubmission:
+      type: object
+      required:
+        - name
+        - email
+        - subject
+        - category
+        - priority
+        - message
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: "John Doe"
+        email:
+          type: string
+          format: email
+          example: "john.doe@example.com"
+        subject:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: "Account Access Issue"
+        category:
+          type: string
+          enum: [technical, billing, sales, general]
+          example: "technical"
+        priority:
+          type: string
+          enum: [low, medium, high, critical]
+          example: "medium"
+        message:
+          type: string
+          minLength: 1
+          maxLength: 5000
+          example: "I'm having trouble accessing my account after the recent update."
+        company:
+          type: string
+          nullable: true
+          example: "Acme Corp"
+
+    TicketResponse:
+      type: object
+      required:
+        - id
+        - status
+        - message
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "123e4567-e89b-12d3-a456-426614174000"
+        status:
+          type: string
+          enum: [created, processing, assigned, resolved]
+          example: "created"
+        message:
+          type: string
+          example: "Ticket created successfully"
+        estimated_resolution:
+          type: string
+          format: date-time
+          nullable: true
+          example: "2023-10-15T14:30:00Z"
+
+    TicketDetails:
+      type: object
+      required:
+        - id
+        - status
+        - subject
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "123e4567-e89b-12d3-a456-426614174000"
+        status:
+          type: string
+          enum: [open, in_progress, escalated, resolved, closed]
+          example: "in_progress"
+        subject:
+          type: string
+          example: "Account Access Issue"
+        category:
+          type: string
+          example: "technical"
+        priority:
+          type: string
+          enum: [low, medium, high, critical]
+          example: "medium"
+        description:
+          type: string
+          example: "I'm having trouble accessing my account after the recent update."
+        created_at:
+          type: string
+          format: date-time
+          example: "2023-10-10T09:15:00Z"
+        updated_at:
+          type: string
+          format: date-time
+          example: "2023-10-10T10:30:00Z"
+        resolution_notes:
+          type: string
+          nullable: true
+          example: "Issue resolved by resetting authentication tokens."
+
+    GmailWebhookPayload:
+      type: object
+      required:
+        - userId
+        - historyId
+        - messages
+      properties:
+        userId:
+          type: string
+          example: "me"
+        historyId:
+          type: string
+          example: "123456"
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/GmailMessage'
+
+    GmailMessage:
+      type: object
+      required:
+        - id
+        - threadId
+        - snippet
+        - payload
+      properties:
+        id:
+          type: string
+          example: "183d8c456def7abc"
+        threadId:
+          type: string
+          example: "183d8c456def7xyz"
+        snippet:
+          type: string
+          example: "I'm having trouble accessing my account..."
+        payload:
+          $ref: '#/components/schemas/GmailMessagePayload'
+
+    GmailMessagePayload:
+      type: object
+      required:
+        - headers
+        - body
+      properties:
+        headers:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              value:
+                type: string
+        body:
+          $ref: '#/components/schemas/GmailBody'
+
+    GmailBody:
+      type: object
+      properties:
+        size:
+          type: integer
+        data:
+          type: string
+          format: byte
+
+    WhatsAppWebhookPayload:
+      type: object
+      required:
+        - From
+        - To
+        - Body
+        - MessageSid
+      properties:
+        From:
+          type: string
+          example: "whatsapp:+1234567890"
+        To:
+          type: string
+          example: "whatsapp:+0987654321"
+        Body:
+          type: string
+          example: "Hi, I need help with my account"
+        MessageSid:
+          type: string
+          example: "SMXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        NumMedia:
+          type: string
+          example: "0"
+
+    WhatsAppStatusPayload:
+      type: object
+      required:
+        - MessageSid
+        - MessageStatus
+      properties:
+        MessageSid:
+          type: string
+          example: "SMXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        MessageStatus:
+          type: string
+          enum: [queued, sending, sent, failed, delivered, undelivered, read]
+          example: "delivered"
+
+    ConversationHistory:
+      type: object
+      required:
+        - id
+        - customer_id
+        - messages
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "123e4567-e89b-12d3-a456-426614174000"
+        customer_id:
+          type: string
+          format: uuid
+          example: "987f6543-e21b-45dc-a987-654321fedcba"
+        initial_channel:
+          type: string
+          enum: [email, whatsapp, web_form]
+          example: "email"
+        status:
+          type: string
+          enum: [open, closed, escalated, pending]
+          example: "open"
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+        created_at:
+          type: string
+          format: date-time
+          example: "2023-10-10T09:15:00Z"
+        updated_at:
+          type: string
+          format: date-time
+          example: "2023-10-10T10:30:00Z"
+
+    Message:
+      type: object
+      required:
+        - id
+        - channel
+        - direction
+        - content
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "456a7890-f123-4567-89ab-cdef01234567"
+        channel:
+          type: string
+          enum: [email, whatsapp, web_form]
+          example: "email"
+        direction:
+          type: string
+          enum: [inbound, outbound]
+          example: "inbound"
+        content:
+          type: string
+          example: "I'm having trouble accessing my account after the recent update."
+        delivery_status:
+          type: string
+          enum: [sent, delivered, failed, pending]
+          example: "delivered"
+        sentiment_score:
+          type: number
+          format: float
+          minimum: -1.0
+          maximum: 1.0
+          example: 0.3
+        created_at:
+          type: string
+          format: date-time
+          example: "2023-10-10T09:15:00Z"
+
+    CustomerDetails:
+      type: object
+      required:
+        - id
+        - email
+        - name
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "987f6543-e21b-45dc-a987-654321fedcba"
+        email:
+          type: string
+          format: email
+          example: "john.doe@example.com"
+        phone:
+          type: string
+          nullable: true
+          example: "+1234567890"
+        name:
+          type: string
+          example: "John Doe"
+        company:
+          type: string
+          nullable: true
+          example: "Acme Corp"
+        created_at:
+          type: string
+          format: date-time
+          example: "2023-01-15T10:00:00Z"
+        last_interaction:
+          type: string
+          format: date-time
+          example: "2023-10-10T09:15:00Z"
+        conversation_count:
+          type: integer
+          example: 3
+        ticket_count:
+          type: integer
+          example: 5
+
+    KnowledgeBaseSearchRequest:
+      type: object
+      required:
+        - query
+        - top_k
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          example: "How do I reset my password?"
+        top_k:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 3
+          example: 3
+        filters:
+          type: object
+          additionalProperties: true
+          example:
+            category: "account"
+
+    KnowledgeBaseSearchResponse:
+      type: object
+      required:
+        - results
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/KnowledgeBaseArticle'
+        query:
+          type: string
+          example: "How do I reset my password?"
+        search_time_ms:
+          type: number
+          format: float
+          example: 25.5
+
+    KnowledgeBaseArticle:
+      type: object
+      required:
+        - id
+        - title
+        - content
+        - similarity_score
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "abc123de-f456-7890-abcd-ef0123456789"
+        title:
+          type: string
+          example: "Password Reset Instructions"
+        content:
+          type: string
+          example: "To reset your password, go to the login page and click 'Forgot Password'..."
+        category:
+          type: string
+          example: "account"
+        tags:
+          type: array
+          items:
+            type: string
+          example: ["security", "login", "troubleshooting"]
+        similarity_score:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          example: 0.92
+
+    ChannelMetrics:
+      type: object
+      required:
+        - metrics
+      properties:
+        metrics:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ChannelMetric'
+        period_start:
+          type: string
+          format: date-time
+          example: "2023-10-01T00:00:00Z"
+        period_end:
+          type: string
+          format: date-time
+          example: "2023-10-31T23:59:59Z"
+
+    ChannelMetric:
+      type: object
+      required:
+        - total_messages
+        - avg_response_time
+        - escalation_rate
+      properties:
+        total_messages:
+          type: integer
+          example: 1500
+        avg_response_time:
+          type: number
+          format: float
+          example: 120.5
+        escalation_rate:
+          type: number
+          format: float
+          example: 0.15
+        satisfaction_score:
+          type: number
+          format: float
+          example: 4.2
+
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - timestamp
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unavailable]
+          example: "healthy"
+        timestamp:
+          type: string
+          format: date-time
+          example: "2023-10-10T10:30:00Z"
+        services:
+          type: object
+          additionalProperties:
+            type: string
+            enum: [ok, error]
+          example:
+            database: "ok"
+            openai_api: "ok"
+            kafka: "ok"
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          example: "NOT_FOUND"
+        message:
+          type: string
+          example: "Resource not found"
+        details:
+          type: object
+          nullable: true
+          example:
+            resource_id: "123e4567-e89b-12d3-a456-426614174000"
+
+    ValidationError:
+      type: object
+      required:
+        - error
+        - message
+        - details
+      properties:
+        error:
+          type: string
+          example: "VALIDATION_ERROR"
+        message:
+          type: string
+          example: "Validation failed"
+        details:
+          type: array
+          items:
+            type: object
+            required:
+              - field
+              - message
+            properties:
+              field:
+                type: string
+                example: "email"
+              message:
+                type: string
+                example: "Invalid email format"
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+
+security:
+  - BearerAuth: []
+  - ApiKeyAuth: []
+
+tags:
+  - name: Support
+    description: Support ticket operations
+  - name: Webhooks
+    description: Incoming webhook receivers for channels
+  - name: Conversations
+    description: Conversation history and management
+  - name: Customers
+    description: Customer lookup and management
+  - name: KnowledgeBase
+    description: Knowledge base search operations
+  - name: Metrics
+    description: System metrics and reporting
+  - name: Health
+    description: Health check endpoints

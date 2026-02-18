@@ -1,0 +1,341 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+.venv-local/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.coverage.*
+
+# Local development
+.env
+.env.local
+.env.development
+.env.production
+.env.test
+*.env
+.env.backup
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Distribution
+dist/
+build/
+*.tar.gz
+*.zip
+
+# Secrets
+secrets/
+*.key
+*.pem
+*.crt
+*.cert
+credentials.json
+config.json
+private.key
+private.pem
+
+# Backend specific
+backend/__pycache__/
+backend/*.pyc
+backend/.pytest_cache/
+backend/logs/
+backend/.env
+backend/*.db
+backend/*.SQLite
+
+# Web form specific
+web-form/node_modules/
+web-form/build/
+web-form/dist/
+web-form/public/dist/
+web-form/.next/
+web-form/nuxt/
+web-form/.nuxt/
+web-form/.env
+web-form/*.log
+
+# Database
+*.db
+*.db-journal
+*.SQLite
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+.DS_Store
+
+# Documentation
+docs/_build/
+.sphinx/
+
+# Environment specific
+.docker/
+.kube/
+
+# Backups
+*~
+*.bak
+*.backup
+*.orig
+*.save
+
+# Compiled files
+*.so
+*.dylib
+*.dll
+
+# Coverage
+.coverage
+.coverage.*
+
+# Output of scripts
+*.out
+*.pid
+
+# Local configs
+config/local.json
+config/development.json
+config/staging.json
+config/production.json
+
+# Private keys
+ssh/
+.id_rsa
+.id_dsa
+
+# System files
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Docker
+.dockerignore
+!docker-compose.yml
+!Dockerfile
+
+# Kubernetes
+!production/k8s/
+*.kubeconfig
+
+# Test results
+test-results/
+test_output/
+test-reports/
+
+# Backend artifacts
+backend/.coverage
+backend/htmlcov/
+backend/coverage.xml
+
+# Frontend artifacts
+web-form/coverage/
+web-form/.nyc_output/
+web-form/coverage-final.json
+
+# CI/CD
+.github/
+.circleci/
+.jenkins/
+.drone.yml
+.travis.yml
+.gitlab-ci.yml
+azure-pipelines.yml
+
+# IDE specific
+.vs/
+*.swp
+*.swo
+*~$ 
+*.tmproj
+*.wsp
+*.sublime-workspace
+
+# Editor specific
+*.swp
+*.swo
+*~
+
+# macOS
+.CFUserTextEncoding
+apfsctl
+fseventsd
+.localized
+.TemporaryItems
+.Trashes
+.DocumentRevisions-V100
+-finderinfo
+ Spotlight-V100
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*~
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+
+# Python
+*.py[cod]
+*$py.class
+*$pyc
+*$pyo
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Django
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask
+instance/
+.webassets-cache
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# PEP 582
+__pypackages__/
+
+# Celery stuff
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# IDE
+.vscode
+.idea
+
+# Sensitive files
+passwords.txt
+tokens.json
+keys.json
+api_keys.json
+private_config.json
+config_private.json
+secret_token.rb
+config/secrets.yml
+config/application.yml
+config/database.yml
+config/credentials.yml.enc
+config/master.key
+config/locales/keys.yml
+config/initializers/secret_token.rb
+config/initializers/devise.rb
+config/initializers/omniauth.rb
+config/initializers/session_store.rb
+config/initializers/secret_token.rb
+config/initializers/filter_parameter_logging.rb
+config/initializers/inflections.rb
+config/initializers/mime_types.rb
+config/initializers/session_store.rb
+config/initializers/wrap_parameters.rb
+config/initializers/backtrace_silencers.rb
+config/initializers/cookies_serializer.rb
+config/initializers/filter_parameter_logging.rb
+config/initializers/inflections.rb
+config/initializers/mime_types.rb
+config/initializers/session_store.rb
+config/initializers/wrap_parameters.rb
+config/initializers/backtrace_silencers.rb
+config/initializers/cookies_serializer.rb
+config/initializers/filter_parameter_logging.rb
