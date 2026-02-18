@@ -30,10 +30,10 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# 2. IMMEDIATE Health Check (Before any complex imports or logic)
+# 2. IMMEDIATE Health Check (Top priority)
 @app.get("/health")
 async def health_check():
-    """Immediately returns status ok for Render/Railway health checks."""
+    """Immediately returns status ok."""
     return {"status": "ok"}
 
 @app.get("/")
@@ -232,6 +232,6 @@ logger.info("FastAPI application initialized successfully at root")
 if __name__ == "__main__":
     import uvicorn
     # Use the PORT environment variable if available, otherwise default to 8080
-    port = int(os.getenv("PORT", "8080"))
+    port = int(os.environ.get('PORT', 8080))
     logger.info(f"Starting server on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
