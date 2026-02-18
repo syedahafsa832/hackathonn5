@@ -13,30 +13,28 @@ from typing import Dict, Any, List
 from datetime import datetime, timezone
 import uuid
 
-from src.services.kafka_client import kafka_client_service
-from production.channels.gmail_handler import gmail_handler
-
-logger = logging.getLogger(__name__)
-
-
 class EmailPoller:
     """Service to poll Gmail for new emails and forward them for processing."""
 
-    def __init__(self, poll_interval: int = 30):
+    def __init__(self, poll_interval: int = 30, processor=None):
         """
         Initialize the email poller.
 
         Args:
             poll_interval: Interval in seconds between email checks (default 30 seconds)
+            processor: The message processor to handle discovered emails
         """
         self.poll_interval = poll_interval
         self.running = False
-        self.kafka_client = kafka_client_service
+        self.processor = processor
 
     async def start(self):
         """Start the email polling service."""
         logger.info(f"Starting Email Poller with {self.poll_interval}s interval...")
         self.running = True
+
+        if not self.processor:
+            logger.warning("Email Poller started without a processor. Emails will be logged but not processed.")
 
         logger.info("Email Poller started successfully")
 
@@ -95,8 +93,8 @@ class EmailPoller:
                     # Format the email data for processing
                     email_for_processing = {
                         "ticket_id": str(uuid.uuid4()),  # Generate a new ticket ID
-                        "customer_id": None,  # Will be resolved by the processor
-                        "conversation_id": None,  # Will be created by the processor
+                        "customer_id": None,
+                        "conversation_id": None,
                         "channel": "email",
                         "content": email['body'],
                         "customer_email": email['sender_email'],
@@ -106,10 +104,13 @@ class EmailPoller:
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     }
 
-                    # Publish to Kafka for processing
-                    await self.kafka_client.send_to_topic("tickets_incoming", email_for_processing)
+                    # Direct call to processor instead of Kafka
+                    if self.processor:
+                        await self.processor.process_message("tickets_incoming", email_for_processing)
+                        logger.info(f"Handled email from {email['sender_email']} directly via message processor")
+                    else:
+                        logger.info(f"Discovered email from {email['sender_email']} but no processor available")
 
-                    logger.info(f"Forwarded email from {email['sender_email']} to message processor")
             else:
                 logger.info("No new emails found")
 
@@ -118,8 +119,10 @@ class EmailPoller:
 
 
 async def main():
-    """Main function to run the email poller."""
-    poller = EmailPoller(poll_interval=30)  # Poll every 30 seconds
+    """Main function to run the email poller for testing."""
+    from production.workers.message_processor import UnifiedMessageProcessor
+    processor = UnifiedMessageProcessor()
+    poller = EmailPoller(poll_interval=30, processor=processor)
 
     try:
         await poller.start()

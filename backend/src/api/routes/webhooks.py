@@ -9,7 +9,7 @@ import logging
 
 from src.services.whatsapp_handler import WhatsAppHandler
 from src.services.database import get_db
-from src.services.kafka_client import kafka_client_service as kafka_service
+from production.workers.message_processor import message_processor
 
 # Initialize global handler instance for the router
 whatsapp_handler = WhatsAppHandler()
@@ -48,10 +48,10 @@ async def whatsapp_webhook(
         # Process the WhatsApp webhook via the handler
         result = await whatsapp_handler.process_webhook(payload)
 
-        # Publish to Kafka if it's a valid message
+        # Call message processor directly instead of Kafka
         if result and result.get("status") == "processed":
             background_tasks.add_task(
-                kafka_service.send_to_topic,
+                message_processor.process_message,
                 "whatsapp_inbound",
                 {
                     "channel": "whatsapp",
@@ -76,30 +76,16 @@ async def whatsapp_status_webhook(
     background_tasks: BackgroundTasks
 ):
     """
-    Handle WhatsApp message status updates from Meta
+    Handle WhatsApp message status updates from Meta (Kafka logic removed)
     """
     try:
         # Meta status updates are also JSON
         payload = await request.json()
         
-        # Log and process status (simplified for production)
+        # Log status update
         logger.info(f"Meta WhatsApp status update: {payload}")
 
-        # Publish status update to Kafka
-        background_tasks.add_task(
-            kafka_service.send_to_topic,
-            "fte.whatsapp.status",
-            {
-                "payload": payload,
-                "processed_at": __import__('datetime').datetime.utcnow().isoformat()
-            }
-        )
-
         return {"status": "success"}
-
-    except Exception as e:
-        logger.error(f"WhatsApp status webhook error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"WhatsApp status webhook processing failed: {str(e)}")
 
     except Exception as e:
         logger.error(f"WhatsApp status webhook error: {str(e)}")
@@ -112,7 +98,7 @@ async def generic_webhook(
     background_tasks: BackgroundTasks
 ):
     """
-    Generic webhook endpoint for any other integrations
+    Generic webhook endpoint (Kafka logic replaced with direct processing if needed)
     """
     try:
         # Get JSON payload
@@ -121,16 +107,19 @@ async def generic_webhook(
         # Log the generic webhook
         logger.info(f"Generic webhook received: {payload}")
 
-        # Process asynchronously
-        background_tasks.add_task(
-            kafka_service.send_to_topic,
-            "fte.generic.incoming",
-            {
-                "payload": payload,
-                "source": "generic",
-                "processed_at": __import__('datetime').datetime.utcnow().isoformat()
-            }
-        )
+        # Process via agent if it's a message
+        if payload.get("message") or payload.get("content"):
+            background_tasks.add_task(
+                message_processor.process_message,
+                "generic_incoming",
+                {
+                    "payload": payload,
+                    "source": "generic",
+                    "channel": "generic",
+                    "content": payload.get("message") or payload.get("content"),
+                    "processed_at": __import__('datetime').datetime.utcnow().isoformat()
+                }
+            )
 
         return {"status": "received", "payload_keys": list(payload.keys())}
 
