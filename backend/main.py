@@ -7,6 +7,14 @@ import uuid
 from typing import List
 from pydantic import BaseModel
 from datetime import datetime, timedelta
+from src.services.database import engine, Base
+import src.models.customer
+import src.models.conversation
+import src.models.message
+import src.models.ticket
+import src.models.customer_identifier
+import src.models.knowledge_base
+
 
 # 1. Configure Logging
 logging.basicConfig(level=logging.INFO)
@@ -34,16 +42,26 @@ async def root():
 async def startup_event():
     """
     Launch background workers internally within the FastAPI process.
-    Pre-loads heavy models and connects to DB.
+    Pre-loads heavy models, connects to DB, and runs auto-migrations.
     """
     try:
-        # Pre-load Sentence Transformers (Already baked in Dockerfile)
+        # 1. Database Auto-Migration (Master Blueprint priority for fresh DBs)
+        try:
+            logger.info("Starting database auto-migration...")
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            logger.info("✓ Database schema verified/created successfully.")
+        except Exception as e:
+            logger.error(f"Critical error during database auto-migration: {str(e)}")
+            # We continue startup as Railway/Render health checks might still pass
+
+        # 2. Pre-load Sentence Transformers
         from sentence_transformers import SentenceTransformer
         logger.info("Loading Sentence Transformer model...")
         model = SentenceTransformer('all-MiniLM-L6-v2')
         logger.info("✓ Sentence Transformer model loaded.")
 
-        # Initialize background tasks
+        # 3. Initialize background tasks
         from production.channels.email_poller import EmailPoller
         from production.workers.message_processor import message_processor
         
@@ -60,6 +78,7 @@ async def startup_event():
         )
         asyncio.create_task(email_poller.start())
         logger.info("✓ Email Poller task created.")
+
             
     except Exception as e:
         logger.error(f"CRITICAL ERROR IN STARTUP: {str(e)}")

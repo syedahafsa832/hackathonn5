@@ -259,8 +259,9 @@ class UnifiedMessageProcessor:
 
         except Exception as e:
             logger.error(f"Error processing message: {str(e)}")
-            # Try to send error response to customer if possible
+            # Ensure we don't throw blocking errors that kill the process channel
             await self._send_error_response(message, str(e))
+
 
     async def store_web_response(self, response_data: Dict[str, Any]):
         """
@@ -364,7 +365,12 @@ class UnifiedMessageProcessor:
 
         except Exception as e:
             logger.error(f"Error resolving customer: {str(e)}")
+            # Handle Railway/DB connection errors gracefully
+            if "Name or service not known" in str(e) or "Connection refused" in str(e):
+                logger.warning("Database seems unreachable. Falling back to temporary anonymous context.")
+                return uuid.uuid4() # Fallback ID for processing to continue
             return None
+
 
     async def get_or_create_conversation(self, customer_id: uuid.UUID, channel: str, message: Dict[str, Any]) -> uuid.UUID:
         """Get or create conversation context."""
