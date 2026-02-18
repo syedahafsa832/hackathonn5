@@ -14,12 +14,17 @@ from datetime import datetime, timezone
 import uuid
 
 from src.services.database import get_db, db_session
-from src.services.kafka_client import kafka_client_service
 from src.services.whatsapp_handler import WhatsAppHandler
 from src.services.message_service import create_message, get_messages_by_conversation
 from src.services.customer_service import get_customer_by_identifier, get_or_create_customer, get_customer_by_id
-from src.services.conversation_service import get_conversations_by_customer, create_conversation, get_conversation_by_id
+from src.services.conversation_service import (
+    get_conversations_by_customer, 
+    create_conversation, 
+    get_conversation_by_id,
+    update_conversation_status
+)
 from src.agent.customer_success_agent import customer_success_agent
+
 
 
 logger = logging.getLogger(__name__)

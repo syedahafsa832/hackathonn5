@@ -22,3 +22,7 @@ aiohttp==3.9.1
 httpx==0.25.2
 gunicorn==21.2.0
 tenacity==8.2.3
+numpy==1.26.4
+sentence-transformers==3.0.1
+huggingface-hub==0.23.2
+# torch is handled in Dockerfile with --index-url
