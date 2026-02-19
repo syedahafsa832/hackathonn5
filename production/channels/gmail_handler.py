@@ -47,9 +47,12 @@ class GmailHandler:
                     logger.error(f"Failed to refresh Gmail token: {e}")
                     self.creds = None
 
+            if not self.creds:
+                creds_json = os.getenv("GMAIL_CREDENTIALS")
                 if creds_json:
                     try:
                         creds_data = json.loads(creds_json)
+                        # We use InstalledAppFlow but with a manual redirect URI if needed
                         flow = InstalledAppFlow.from_client_config(creds_data, SCOPES)
                         
                         # Headless Token Exchange: Check if user provided a code
@@ -73,6 +76,49 @@ class GmailHandler:
         
         if self.creds:
             self.service = build('gmail', 'v1', credentials=self.creds)
+
+    async def process_new_emails(self) -> Dict[str, Any]:
+        """Bridge method for EmailPoller compatibility. Fetches unread emails and marks them as read."""
+        emails = await self.get_new_emails()
+        
+        processed_emails = []
+        for email in emails:
+            # Mark as read in Gmail
+            try:
+                self.service.users().messages().batchModify(
+                    userId='me',
+                    body={
+                        'ids': [email['id']],
+                        'removeLabelIds': ['UNREAD']
+                    }
+                ).execute()
+            except Exception as e:
+                logger.error(f"Error marking email {email['id']} as read: {e}")
+
+            # Extract name and email from "Name <email@example.com>" format
+            sender_raw = email['sender_email']
+            sender_name = sender_raw
+            sender_email = sender_raw
+            
+            if '<' in sender_raw and '>' in sender_raw:
+                sender_name = sender_raw.split('<')[0].strip()
+                import re
+                match = re.search(r'<(.*)>', sender_raw)
+                if match:
+                    sender_email = match.group(1)
+
+            processed_emails.append({
+                'id': email['id'],
+                'sender_name': sender_name,
+                'sender_email': sender_email,
+                'subject': email['subject'],
+                'body': email['body']
+            })
+
+        return {
+            'count': len(processed_emails),
+            'emails': processed_emails
+        }
 
     def format_email_response(self, ai_response: str, customer_email: str, original_subject: str = "") -> Dict[str, str]:
         """Format the AI response into a proper email response."""
