@@ -190,28 +190,33 @@ Automated response."""
 
     async def get_new_emails(self, max_results=10) -> List[Dict]:
         """Fetch unread messages from Inbox."""
-        if not self.service: return []
+        if not self.service:
+            logger.warning("Gmail Poller: Service not initialized. Check GMAIL_CREDENTIALS / GMAIL_TOKEN_CODE.")
+            return []
         try:
             results = self.service.users().messages().list(userId='me', q='is:unread').execute()
             messages = results.get('messages', [])
             
             email_data = []
             for msg in messages[:max_results]:
-                full_msg = self.service.users().messages().get(userId='me', id=msg['id']).execute()
-                # Parse headers
-                headers = full_msg['payload']['headers']
-                subject = next(h['value'] for h in headers if h['name'] == 'Subject')
-                sender = next(h['value'] for h in headers if h['name'] == 'From')
-                
-                email_data.append({
-                    'id': msg['id'],
-                    'subject': subject,
-                    'sender_email': sender,
-                    'body': full_msg['snippet'] # Simple snippet for now
-                })
+                try:
+                    full_msg = self.service.users().messages().get(userId='me', id=msg['id']).execute()
+                    # Parse headers
+                    headers = full_msg['payload']['headers']
+                    subject = next((h['value'] for h in headers if h['name'] == 'Subject'), "No Subject")
+                    sender = next((h['value'] for h in headers if h['name'] == 'From'), "Unknown Sender")
+                    
+                    email_data.append({
+                        'id': msg['id'],
+                        'subject': subject,
+                        'sender_email': sender,
+                        'body': full_msg.get('snippet', '')
+                    })
+                except Exception as e:
+                    logger.error(f"Error fetching individual email {msg['id']}: {e}")
             return email_data
         except Exception as e:
-            logger.error(f"Error fetching emails: {e}")
+            logger.error(f"Error fetching unread emails from Gmail: {e}")
             return []
 
 # Singleton instance
