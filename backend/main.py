@@ -7,20 +7,53 @@ import uuid
 from typing import List
 from pydantic import BaseModel
 from datetime import datetime, timedelta
-from src.services.database import engine, Base
-import src.models.customer
-import src.models.conversation
-import src.models.message
-import src.models.ticket
-import src.models.customer_identifier
-import src.models.knowledge_base
 
-
-# 1. Configure Logging
+# 1. Configure Logging First
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+from src.services.database import engine, sync_engine, Base
+
+# Explicitly import models to ensure discovery in Base.metadata
+from src.models.customer import Customer
+from src.models.conversation import Conversation
+from src.models.message import Message
+from src.models.ticket import Ticket
+from src.models.customer_identifier import CustomerIdentifier
+from src.models.knowledge_base import KnowledgeBase
+
+# 0. IMMEDIATE Synchronous Schema Fallback (Master Blueprint Requirement)
+try:
+    logger.info(f"DEBUG: Attempting to create tables for models: {[c.__tablename__ for c in [Customer, Conversation, Message, Ticket, CustomerIdentifier]]}")
+    Base.metadata.create_all(sync_engine)
+    logger.info("✓ Synchronous database schema creation completed.")
+except Exception as sync_err:
+    logger.error(f"Synchronous schema creation failed: {sync_err}. Relying on async/manual fallback.")
+
+# 1. Manual SQL Fallback (Safety Net)
+try:
+    from sqlalchemy import text
+    with sync_engine.connect() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS customer_identifiers (
+                id UUID PRIMARY KEY,
+                customer_id UUID NOT NULL REFERENCES customers(id),
+                identifier_type VARCHAR(50) NOT NULL,
+                identifier_value VARCHAR(255) NOT NULL,
+                is_primary BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            );
+        """))
+        conn.commit()
+    logger.info("✓ Manual SQL fallback check for 'customer_identifiers' completed.")
+except Exception as sql_err:
+    logger.warning(f"Manual SQL fallback failed: {sql_err}. Processing will continue.")
+
+
+
 # 2. Create FastAPI app instance
+
 app = FastAPI(
     title="Customer Success AI Agent API",
     description="Clean Slate Production Backend",

@@ -4,14 +4,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy import MetaData
-from pgvector.sqlalchemy import Vector
-from sqlalchemy import Column, Integer
+import logging
 
 # Database configuration
 raw_db_url = os.getenv("DATABASE_URL")
-
-# Log detection of DATABASE_URL safely
-import logging
 logger = logging.getLogger(__name__)
 
 if raw_db_url:
@@ -24,16 +20,20 @@ if raw_db_url:
     except Exception:
         logger.info("DATABASE_URL detected but could not be parsed for safe logging.")
     
-    # Ensure URL starts with postgresql+asyncpg://
+    # Ensure URL starts with postgresql+asyncpg:// for async and postgresql:// for sync
     if raw_db_url.startswith("postgres://"):
         DATABASE_URL = raw_db_url.replace("postgres://", "postgresql+asyncpg://", 1)
+        SYNC_DATABASE_URL = raw_db_url.replace("postgres://", "postgresql://", 1)
     elif raw_db_url.startswith("postgresql://"):
         DATABASE_URL = raw_db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        SYNC_DATABASE_URL = raw_db_url
     else:
         DATABASE_URL = raw_db_url
+        SYNC_DATABASE_URL = raw_db_url.replace("+asyncpg", "")
 else:
     logger.warning("DATABASE_URL not found in environment, using default local development URL.")
     DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/fte_db"
+    SYNC_DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/fte_db"
 
 # Create async engine with connection pooling
 engine = create_async_engine(
@@ -46,6 +46,12 @@ engine = create_async_engine(
     echo=False
 )
 
+# Create synchronous engine for fallback schema creation
+from sqlalchemy import create_engine
+sync_engine = create_engine(
+    SYNC_DATABASE_URL,
+    pool_pre_ping=True
+)
 
 # Create async session maker
 AsyncSessionFactory = async_sessionmaker(
