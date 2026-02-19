@@ -8,12 +8,12 @@ from typing import List, Dict, Any
 from pydantic import BaseModel
 from datetime import datetime, timedelta
 
-# 1. Configure Logging First (Bulletproof priority)
+# 1. Configure Logging First
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 2. IMMEDIATE Health Check (Master Blueprint priority for Railway)
-# This app instance is created before imports that might fail or hang
+# 2. App Instance & IMMEDIATE Health Check
+# High priority for deployment environments like Render/Railway
 app = FastAPI(
     title="Customer Success AI Agent API",
     description="Clean Slate Production Backend - Multi-Channel",
@@ -22,10 +22,11 @@ app = FastAPI(
 
 @app.get("/health")
 async def health_check():
-    """Immediately returns status ok without blocking or dependencies."""
+    """Immediately returns status ok regardless of background errors."""
     return {"status": "ok"}
 
-# 3. Import logic after app and health check are defined
+# 3. Explicit Imports (Fixing NameErrors)
+# We import these here to ensure they are available for the entire module
 try:
     from src.services.database import engine, sync_engine, Base
     from src.models.customer import Customer
@@ -34,11 +35,14 @@ try:
     from src.models.ticket import Ticket
     from src.models.customer_identifier import CustomerIdentifier
     from src.models.knowledge_base import KnowledgeBase
+    
+    # Message processor and channels
     from production.workers.message_processor import message_processor
     from production.channels.email_poller import EmailPoller
 except ImportError as e:
-    logger.error(f"Import error during startup: {e}")
-    # Don't crash yet, let health check survive
+    logger.error(f"CRITICAL IMPORT ERROR: {e}")
+    # We define placeholders or handle this to keep the process alive for health checks
+    # but the actual logic will likely fail.
 
 # 4. Global Middleware
 app.add_middleware(
@@ -62,7 +66,6 @@ class WebMessage(BaseModel):
 async def receive_web_message(payload: WebMessage):
     """
     Bridge Web Form data to the Unified Message Processor.
-    Consistent with Gmail channel logic.
     """
     try:
         message_data = {
@@ -74,10 +77,13 @@ async def receive_web_message(payload: WebMessage):
             "timestamp": datetime.now().isoformat()
         }
         
-        # Route directly to Mistral Processor
-        asyncio.create_task(message_processor.process_message("web_incoming", message_data))
-        
-        return {"status": "received", "customer_email": payload.customer_email}
+        # Route to Message Processor
+        # Ensure message_processor is defined
+        if 'message_processor' in globals():
+            asyncio.create_task(message_processor.process_message("web_incoming", message_data))
+            return {"status": "received", "customer_email": payload.customer_email}
+        else:
+            raise HTTPException(status_code=503, detail="Message processor not available")
     except Exception as e:
         logger.error(f"Error receiving web message: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -86,40 +92,50 @@ async def receive_web_message(payload: WebMessage):
 async def root():
     return {"message": "Customer Success AI Agent API - Clean Slate Multi-Channel"}
 
-# 7. Threaded Database Initialization & Worker Startup
+# 7. Startup Event: Table Creation & Worker Startup
 @app.on_event("startup")
 async def startup_event():
     """
-    Launches initialization and workers in separate tasks/threads.
-    Ensures Railway health check stays green.
+    Force create tables and launch background workers.
     """
-    # A. Initializing Database in Thread (Non-blocking)
-    async def db_init_task():
-        try:
-            logger.info(f"DEBUG: Attempting to create tables for models: {[c.__tablename__ for c in [Customer, Conversation, Message, Ticket, CustomerIdentifier]]}")
-            # Use to_thread to keep the event loop free for health checks
-            await asyncio.to_thread(Base.metadata.create_all, sync_engine)
-            logger.info("✓ Database schema initialized in background thread.")
-        except Exception as e:
-            logger.error(f"Background DB Initialization FAILED: {e}")
-
-    asyncio.create_task(db_init_task())
-
-    # B. Initialize background workers
+    # Force Create Tables
     try:
-        logger.info("Initiating multi-channel background workers...")
+        logger.info("Starting force-creation of database tables...")
+        # Re-importing models right before creation to ensure they are registered with Base metadata
+        from src.services.database import sync_engine, Base
+        from src.models.customer import Customer
+        from src.models.conversation import Conversation
+        from src.models.message import Message
+        from src.models.ticket import Ticket
+        from src.models.customer_identifier import CustomerIdentifier
+        from src.models.knowledge_base import KnowledgeBase
         
-        # Start message processor
-        asyncio.create_task(message_processor.start())
-        logger.info("✓ Unified Message Processor started.")
+        def create_tables():
+            Base.metadata.create_all(bind=sync_engine)
         
-        # Start email poller
-        email_poller = EmailPoller(
-            poll_interval=int(os.getenv("EMAIL_POLL_INTERVAL", "30")),
-            processor=message_processor
-        )
-        asyncio.create_task(email_poller.start())
-        logger.info("✓ Email Poller started.")
+        await asyncio.to_thread(create_tables)
+        logger.info("✓ Database schema initialized successfully.")
+    except Exception as e:
+        logger.error(f"Table creation error: {e}")
+
+    # Initialize background workers
+    try:
+        if 'message_processor' in globals() and 'EmailPoller' in globals():
+            logger.info("Initiating multi-channel background workers...")
+            
+            # Start message processor
+            asyncio.create_task(message_processor.start())
+            logger.info("✓ Unified Message Processor started.")
+            
+            # Start email poller (non-blocking)
+            email_poller = EmailPoller(
+                poll_interval=int(os.getenv("EMAIL_POLL_INTERVAL", "30")),
+                processor=message_processor
+            )
+            asyncio.create_task(email_poller.start())
+            logger.info("✓ Email Poller started.")
+        else:
+            logger.error("Cannot start workers: message_processor or EmailPoller not imported")
             
     except Exception as e:
         logger.error(f"CRITICAL ERROR IN WORKER STARTUP: {str(e)}")
