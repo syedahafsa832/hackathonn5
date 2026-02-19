@@ -122,6 +122,26 @@ async def receive_web_message(payload: WebMessage):
 async def status():
     return {"message": "Customer Success AI Agent API - Production Ready"}
 
+@app.get("/debug/whatsapp")
+async def debug_whatsapp():
+    """Diagnostic for WhatsApp settings."""
+    token = os.getenv("META_VERIFY_TOKEN")
+    return {
+        "meta_verify_token_configured": token is not None,
+        "token_preview": f"{token[:3]}..." if token else "Not set",
+        "hardcoded_fallback": "my_verify_token_12345",
+        "callback_url_path": "/webhooks/whatsapp"
+    }
+
+@app.get("/debug/email")
+async def debug_email():
+    """Diagnostic for Email delivery."""
+    resend_key = os.getenv("RESEND_API_KEY")
+    return {
+        "resend_active": resend_key is not None,
+        "smtp_server": os.getenv("SMTP_SERVER", "smtp.gmail.com")
+    }
+
 # 7. Startup Event: Database Initialization & Worker Startup
 @app.on_event("startup")
 async def startup_event():

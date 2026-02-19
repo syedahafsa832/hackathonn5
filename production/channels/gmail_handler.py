@@ -100,7 +100,51 @@ This is an automated response. Please note that our AI assistant handles routine
         before_sleep=lambda retry_state: logger.warning(f"Retrying email send to {retry_state.args[1]}. Attempt {retry_state.attempt_number}")
     )
     async def send_response_email(self, to_email: str, subject: str, body: str) -> Dict[str, Any]:
-        """Send an email response to a customer using SMTP with retry logic."""
+        """Send an email response to a customer. Uses Resend (HTTPS) if key is present, otherwise fallback to SMTP."""
+        
+        # 1. Try Resend (HTTPS) - Best for Railway Trial/Free plans where SMTP is blocked
+        resend_key = os.getenv("RESEND_API_KEY")
+        if resend_key:
+            try:
+                import httpx
+                logger.info(f"Attempting HTTPS delivery via Resend to {to_email}...")
+                
+                # Resend's default test email is onboarding@resend.dev
+                # In production, they should use their verified domain
+                from_email = os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev")
+                
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        "https://api.resend.com/emails",
+                        headers={
+                            "Authorization": f"Bearer {resend_key}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "from": from_email,
+                            "to": to_email,
+                            "subject": subject,
+                            "text": body
+                        }
+                    )
+                    
+                    if response.status_code in [200, 201, 202, 204]:
+                        logger.info(f"✓ Email successfully sent via Resend API to {to_email}")
+                        return {
+                            'status': 'sent',
+                            'method': 'resend',
+                            'to_email': to_email,
+                            'subject': subject
+                        }
+                    else:
+                        logger.error(f"Resend API Error ({response.status_code}): {response.text}")
+                        # If Resend fails, we still try SMTP fallback below
+            except ImportError:
+                logger.error("httpx not installed. Cannot use Resend.")
+            except Exception as e:
+                logger.error(f"Resend delivery failed: {e}")
+
+        # 2. Fallback to Traditional SMTP
         try:
             # Create message
             msg = MIMEMultipart()
@@ -122,10 +166,11 @@ This is an automated response. Please note that our AI assistant handles routine
                 logger.info(f"Sending mail to {to_email}...")
                 server.sendmail(self.sender_email, to_email, msg.as_string())
 
-            logger.info(f"Email sent successfully to {to_email}")
+            logger.info(f"Email sent successfully to {to_email} via SMTP")
 
             return {
                 'status': 'sent',
+                'method': 'smtp',
                 'to_email': to_email,
                 'subject': subject
             }
