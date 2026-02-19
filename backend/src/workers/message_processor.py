@@ -179,7 +179,7 @@ class UnifiedMessageProcessor:
                 original_subject=subject
             )
 
-            result = await gmail_handler.send_response_email(
+            result = await gmail_handler.send_reply(
                 to_email=formatted_response['to_email'],
                 subject=formatted_response['subject'],
                 body=formatted_response['body']

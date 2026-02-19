@@ -129,6 +129,10 @@ This is an automated response. Please note that our AI assistant handles routine
             logger.error(f"Final error sending email entry to {to_email}: {e}")
             raise # Important to raise so tenacity can retry
 
+    # Alias for local logic compatibility
+    async def send_reply(self, to_email: str, subject: str, body: str) -> Dict[str, Any]:
+        return await self.send_response_email(to_email, subject, body)
+
     @tenacity.retry(
         wait=tenacity.wait_exponential(multiplier=1, min=2, max=10),
         stop=tenacity.stop_after_attempt(3),
