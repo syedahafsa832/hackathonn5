@@ -14,7 +14,6 @@ class WhatsAppHandler:
         """
         # Note: If the payload is from the /webhooks/whatsapp endpoint, 
         # it might already be the JSON from Meta.
-        # If it's from Twilio (legacy), it would be form data.
         # We assume Meta JSON here for production.
         
         result = await self.meta_handler.process_webhook(payload)

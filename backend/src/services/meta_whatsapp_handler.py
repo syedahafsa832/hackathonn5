@@ -12,7 +12,7 @@ class MetaWhatsAppHandler:
     def __init__(self):
         self.access_token = os.getenv('META_WHATSAPP_ACCESS_TOKEN')
         self.phone_number_id = os.getenv('META_WHATSAPP_PHONE_NUMBER_ID')
-        self.verify_token = os.getenv('META_WHATSAPP_VERIFY_TOKEN', 'my_verify_token')
+        self.verify_token = os.getenv('META_VERIFY_TOKEN', 'my_verify_token')
         self.waba_id = os.getenv('META_WHATSAPP_WABA_ID')
         self.api_version = os.getenv('META_API_VERSION', 'v18.0')
         self.base_url = f"https://graph.facebook.com/{self.api_version}"
