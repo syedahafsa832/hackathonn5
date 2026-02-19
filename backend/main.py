@@ -45,17 +45,19 @@ async def startup_event():
     Pre-loads heavy models, connects to DB, and runs auto-migrations.
     """
     try:
-        # 1. Database Auto-Migration (Master Blueprint priority for fresh DBs)
+        # 1. Database Auto-Migration (Critical for new instances)
         try:
-            logger.info("Starting database auto-migration...")
+            logger.info("Initializing database auto-migration...")
             async with engine.begin() as conn:
+                # This will create tables if they don't exist based on models
                 await conn.run_sync(Base.metadata.create_all)
-            logger.info("✓ Database schema verified/created successfully.")
-        except Exception as e:
-            logger.error(f"Critical error during database auto-migration: {str(e)}")
-            # We continue startup as Railway/Render health checks might still pass
+            logger.info("✓ Database schema verified/synced successfully.")
+        except Exception as db_err:
+            logger.error(f"DATABASE INITIALIZATION FAILED: {str(db_err)}")
+            logger.warning("Continuing startup... Application will enter DB-fallback mode if needed.")
 
         # 2. Pre-load Sentence Transformers
+
         from sentence_transformers import SentenceTransformer
         logger.info("Loading Sentence Transformer model...")
         model = SentenceTransformer('all-MiniLM-L6-v2')
