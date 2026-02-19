@@ -125,8 +125,53 @@ async def receive_web_message(payload: WebMessage):
 
 @app.post("/api/tickets")
 async def receive_web_ticket(payload: WebMessage):
-    """Alias for /api/messages to support frontend requirements."""
-    return await receive_web_message(payload)
+    """Explicitly create a support ticket from the web form."""
+    try:
+        from src.agent.tools import create_ticket
+        from src.services.customer_service import get_or_create_customer
+        from src.services.database import db_session
+        
+        # 1. Ensure customer exists
+        async with db_session() as db:
+            customer = await get_or_create_customer(
+                db=db,
+                email=payload.customer_email,
+                name=payload.customer_name
+            )
+            await db.commit()
+            customer_id = str(customer.id)
+
+        # 2. Create the ticket
+        ticket_result = await create_ticket(
+            customer_id=customer_id,
+            source_channel="web_form",
+            subject=payload.metadata.get("subject", "Web Support Request"),
+            category="web_inquiry",
+            priority="medium",
+            description=payload.content
+        )
+
+        # 3. Trigger message processor for AI reply (Email support)
+        if message_processor:
+            message_data = {
+                "channel": "web_form",
+                "customer_email": payload.customer_email,
+                "customer_name": payload.customer_name,
+                "content": payload.content,
+                "metadata": payload.metadata,
+                "ticket_id": ticket_result.get("id"),
+                "timestamp": datetime.now().isoformat()
+            }
+            asyncio.create_task(message_processor.process_message("web_incoming", message_data))
+            
+        return {
+            "status": "success",
+            "message": "Ticket created and processing started",
+            "ticket_id": ticket_result.get("id")
+        }
+    except Exception as e:
+        logger.error(f"Error in web ticket endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/status")
 async def status():

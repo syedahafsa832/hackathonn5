@@ -26,7 +26,7 @@ class MetaWhatsAppHandler:
     async def send_message(self, to_phone: str, message: str) -> Dict:
         """Send WhatsApp message via Meta Graph API with retry logic"""
         # Ensure phone number is in correct format (no +, no spaces)
-        to_phone = to_phone.replace('+', '').replace(' ', '').replace('whatsapp:', '')
+        to_phone = str(to_phone).replace('+', '').replace(' ', '').replace('whatsapp:', '')
         
         url = f"{self.base_url}/{self.phone_number_id}/messages"
         headers = {

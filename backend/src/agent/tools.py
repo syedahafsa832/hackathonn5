@@ -66,7 +66,7 @@ async def create_ticket(customer_id: str, source_channel: str, subject: str,
             return {
                 "id": str(ticket.id),
                 "status": "created",
-                "message": f"Ticket {ticket.id} created successfully"
+                "message": f"Ticket {str(ticket.id)} created successfully"
             }
 
     except Exception as e:
@@ -160,7 +160,7 @@ async def escalate_to_human(customer_id: str, conversation_id: str, reason: str)
             await escalate_conversation(db, conversation_uuid)
 
             # Kafka escalation logic removed for direct flow
-            logger.info(f"Escalating customer {customer_id} in conversation {conversation_id} for reason: {reason}")
+            logger.info(f"Escalating customer {str(customer_id)} in conversation {str(conversation_id)} for reason: {reason}")
 
             return {
                 "status": "escalated",
