@@ -61,7 +61,7 @@ async def create_ticket(customer_id: str, source_channel: str, subject: str,
             )
 
             # Kafka integration removed for direct internal flow
-            logger.info(f"Ticket {ticket.id} created and will be handled via direct internal flow")
+            logger.info(f"Ticket {str(ticket.id)} created and will be handled via direct internal flow")
 
             return {
                 "id": str(ticket.id),

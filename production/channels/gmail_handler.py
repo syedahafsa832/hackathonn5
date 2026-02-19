@@ -54,6 +54,7 @@ class GmailHandler:
                         creds_data = json.loads(creds_json)
                         # We use InstalledAppFlow but with a manual redirect URI if needed
                         flow = InstalledAppFlow.from_client_config(creds_data, SCOPES)
+                        flow.redirect_uri = 'https://hackathonn5-production.up.railway.app/auth/callback'
                         
                         # Headless Token Exchange: Check if user provided a code
                         auth_code = os.getenv("GMAIL_TOKEN_CODE")
