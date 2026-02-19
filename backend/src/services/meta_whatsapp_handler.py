@@ -65,11 +65,16 @@ class MetaWhatsAppHandler:
         challenge = params.get('hub.challenge')
 
         if mode == 'subscribe' and token == self.verify_token:
-            logger.info("Meta webhook verified successfully")
+            logger.info(f"Meta webhook verified successfully with challenge: {challenge}")
             # CRITICAL: Return ONLY the challenge string as plain text
             from fastapi.responses import PlainTextResponse
-            return PlainTextResponse(content=challenge)
-        logger.warning("Meta webhook verification failed")
+            if challenge:
+                return PlainTextResponse(content=str(challenge))
+            else:
+                logger.warning("Challenge parameter missing in verification request")
+                return PlainTextResponse(content="")
+        
+        logger.warning(f"Meta webhook verification failed. Mode: {mode}, Token Match: {token == self.verify_token}")
         raise HTTPException(status_code=403, detail="Verification failed")
     
     async def process_webhook(self, webhook_data: Dict) -> Optional[Dict]:

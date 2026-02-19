@@ -154,8 +154,13 @@ async def startup_event():
 
 # 8. Static File Hosting (at the bottom)
 # Mount the static directory to server the web form from the root URL
-if os.path.exists("static"):
-    app.mount("/", StaticFiles(directory="static", html=True), name="static")
+# We check both "static" and "backend/static" just in case, but Dockerfile copies backend to /app
+static_path = "static" if os.path.exists("static") else "backend/static"
+if os.path.exists(static_path):
+    logger.info(f"Mounting static files from {static_path}")
+    app.mount("/", StaticFiles(directory=static_path, html=True), name="static")
+else:
+    logger.warning("Static directory not found. Web form may not be served.")
 
 if __name__ == "__main__":
     import uvicorn
