@@ -113,9 +113,13 @@ This is an automated response. Please note that our AI assistant handles routine
 
             # Create SMTP session and send
             # We use a context manager for SMTP to ensure resources are cleaned up
+            logger.info(f"Connecting to SMTP server {self.smtp_server}:{self.smtp_port}...")
             with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
+                server.set_debuglevel(1) if logger.level <= logging.DEBUG else server.set_debuglevel(0)
                 server.starttls()  # Enable security
+                logger.info(f"Logging in as {self.sender_email}...")
                 server.login(self.sender_email, self.email_password)
+                logger.info(f"Sending mail to {to_email}...")
                 server.sendmail(self.sender_email, to_email, msg.as_string())
 
             logger.info(f"Email sent successfully to {to_email}")

@@ -128,15 +128,38 @@ class UnifiedMessageProcessor:
                 recipient = customer_phone or customer_email
                 await self.whatsapp_handler.send_response_message(recipient, agent_response)
                 logger.info(f"Sent WhatsApp response to {recipient}")
+                
+                # Proactive Email: If we have an email for the customer, send a copy there too
+                async with db_session() as db:
+                    customer = await get_customer_by_id(db, resolved_customer_id)
+                    if customer and customer.email:
+                        await self.store_email_response({
+                            "conversation_id": str(resolved_conversation_id),
+                            "content": agent_response,
+                            "customer_id": str(resolved_customer_id),
+                            "recipient_email": customer.email,
+                            "subject": "Update on your WhatsApp Inquiry"
+                        })
             elif channel == "email":
-                await self.store_email_response({
-                    "conversation_id": str(resolved_conversation_id),
-                    "content": agent_response,
-                    "customer_id": str(resolved_customer_id),
-                    "recipient_email": customer_email,
-                    "subject": message.get('subject', 'Response to your inquiry')
-                })
-                logger.info("Email response sent via Gmail")
+                # Ensure we have the latest customer email if missing in payload
+                target_email = customer_email
+                if not target_email:
+                    async with db_session() as db:
+                        customer = await get_customer_by_id(db, resolved_customer_id)
+                        if customer: target_email = customer.email
+
+                if target_email:
+                    await self.store_email_response({
+                        "conversation_id": str(resolved_conversation_id),
+                        "content": agent_response,
+                        "customer_id": str(resolved_customer_id),
+                        "recipient_email": target_email,
+                        "subject": message.get('subject', 'Response to your inquiry')
+                    })
+                    logger.info(f"Email response sent to {target_email} via Gmail")
+                else:
+                    logger.warning(f"No email address found for customer {resolved_customer_id} to send response")
+
             elif channel == "web_form":
                 # For web form, send email notification to the customer if email is available
                 async with db_session() as db:
