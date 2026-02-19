@@ -65,7 +65,7 @@ async def verify_whatsapp(request: Request):
         raise HTTPException(status_code=503, detail="WhatsApp handler not available")
     return await whatsapp_handler.meta_handler.verify_webhook(request)
 
-@app.post("/whatsapp")
+@app.post("/webhooks/whatsapp")
 async def whatsapp_webhook(request: Request):
     """Receive incoming JSON payloads from Meta WhatsApp API."""
     if not message_processor or not whatsapp_handler:
@@ -87,6 +87,11 @@ async def whatsapp_webhook(request: Request):
     except Exception as e:
         logger.error(f"Error in WhatsApp webhook: {e}")
         return {"status": "error", "detail": str(e)}
+
+# Alias for legacy or specific local tests
+@app.post("/whatsapp")
+async def whatsapp_webhook_legacy(request: Request):
+    return await whatsapp_webhook(request)
 
 # 6. Web Form Integration Endpoint
 class WebMessage(BaseModel):
@@ -113,10 +118,15 @@ async def receive_web_message(payload: WebMessage):
             asyncio.create_task(message_processor.process_message("web_incoming", message_data))
             return {"status": "received", "customer_email": payload.customer_email}
         else:
-            raise HTTPException(status_code=503, detail="Message processor not available")
+            raise HTTPException(status_code=530, detail="Message processor not available")
     except Exception as e:
         logger.error(f"Error receiving web message: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/tickets")
+async def receive_web_ticket(payload: WebMessage):
+    """Alias for /api/messages to support frontend requirements."""
+    return await receive_web_message(payload)
 
 @app.get("/status")
 async def status():
@@ -135,11 +145,14 @@ async def debug_whatsapp():
 
 @app.get("/debug/email")
 async def debug_email():
-    """Diagnostic for Email delivery."""
-    resend_key = os.getenv("RESEND_API_KEY")
+    """Diagnostic for Gmail API delivery."""
+    from src.services.database import engine
+    from production.channels.gmail_handler import gmail_handler
+    
     return {
-        "resend_active": resend_key is not None,
-        "smtp_server": os.getenv("SMTP_SERVER", "smtp.gmail.com")
+        "gmail_api_service_ready": gmail_handler.service is not None,
+        "gmail_credentials_configured": os.getenv("GMAIL_CREDENTIALS") is not None,
+        "gmail_token_present": os.getenv("GMAIL_TOKEN") is not None
     }
 
 # 7. Startup Event: Database Initialization & Worker Startup
