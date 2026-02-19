@@ -12,21 +12,8 @@ from datetime import datetime, timedelta
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 2. App Instance & IMMEDIATE Health Check
-# High priority for deployment environments like Render/Railway
-app = FastAPI(
-    title="Customer Success AI Agent API",
-    description="Clean Slate Production Backend - Multi-Channel",
-    version="1.1.0",
-)
-
-@app.get("/health")
-async def health_check():
-    """Immediately returns status ok regardless of background errors."""
-    return {"status": "ok"}
-
-# 3. Explicit Imports (Fixing NameErrors)
-# We import these here to ensure they are available for the entire module
+# 2. Explicit Imports (Fixing NameErrors)
+# High priority: Load models and services before app startup
 try:
     from src.services.database import engine, sync_engine, Base
     from src.models.customer import Customer
@@ -36,13 +23,26 @@ try:
     from src.models.customer_identifier import CustomerIdentifier
     from src.models.knowledge_base import KnowledgeBase
     
-    # Message processor and channels
-    from production.workers.message_processor import message_processor
-    from production.channels.email_poller import EmailPoller
+    # Message processor and channels (Relocated to src)
+    from src.workers.message_processor import message_processor
+    from src.channels.email_poller import EmailPoller
 except ImportError as e:
-    logger.error(f"CRITICAL IMPORT ERROR: {e}")
-    # We define placeholders or handle this to keep the process alive for health checks
-    # but the actual logic will likely fail.
+    logger.error(f"CRITICAL IMPORT FAIL: {e}")
+    # Define placeholders to prevent crashes in the main loop
+    message_processor = None
+    EmailPoller = None
+
+# 3. App Instance & IMMEDIATE Health Check
+app = FastAPI(
+    title="Customer Success AI Agent API",
+    description="Resilient Production Backend",
+    version="1.2.0",
+)
+
+@app.get("/health")
+async def health_check():
+    """Immediately returns status ok regardless of background errors."""
+    return {"status": "ok"}
 
 # 4. Global Middleware
 app.add_middleware(
@@ -77,9 +77,7 @@ async def receive_web_message(payload: WebMessage):
             "timestamp": datetime.now().isoformat()
         }
         
-        # Route to Message Processor
-        # Ensure message_processor is defined
-        if 'message_processor' in globals():
+        if message_processor:
             asyncio.create_task(message_processor.process_message("web_incoming", message_data))
             return {"status": "received", "customer_email": payload.customer_email}
         else:
@@ -90,37 +88,37 @@ async def receive_web_message(payload: WebMessage):
 
 @app.get("/")
 async def root():
-    return {"message": "Customer Success AI Agent API - Clean Slate Multi-Channel"}
+    return {"message": "Customer Success AI Agent API - Multi-Channel Active"}
 
-# 7. Startup Event: Table Creation & Worker Startup
+# 7. Startup Event: Resilient Table Creation & Worker Startup
 @app.on_event("startup")
 async def startup_event():
     """
-    Force create tables and launch background workers.
+    Force create tables (blindly) and launch background workers.
     """
-    # Force Create Tables
-    try:
-        logger.info("Starting force-creation of database tables...")
-        # Re-importing models right before creation to ensure they are registered with Base metadata
-        from src.services.database import sync_engine, Base
-        from src.models.customer import Customer
-        from src.models.conversation import Conversation
-        from src.models.message import Message
-        from src.models.ticket import Ticket
-        from src.models.customer_identifier import CustomerIdentifier
-        from src.models.knowledge_base import KnowledgeBase
-        
-        def create_tables():
+    # A. Resilient Table Creation
+    def force_create_tables():
+        try:
+            logger.info("Attempting blind table creation...")
+            # Import models again inside the function as a safety measure
+            from src.models.customer import Customer
+            from src.models.conversation import Conversation
+            from src.models.message import Message
+            from src.models.ticket import Ticket
+            from src.models.customer_identifier import CustomerIdentifier
+            from src.models.knowledge_base import KnowledgeBase
+            
             Base.metadata.create_all(bind=sync_engine)
-        
-        await asyncio.to_thread(create_tables)
-        logger.info("✓ Database schema initialized successfully.")
-    except Exception as e:
-        logger.error(f"Table creation error: {e}")
+            logger.info("✓ Database schema updated (if connection was available).")
+        except Exception as e:
+            logger.warning(f"Database 'Force Create' skipped or failed: {e}. Moving on.")
 
-    # Initialize background workers
+    # Run DB init in thread to prevent blocking the event loop
+    await asyncio.to_thread(force_create_tables)
+
+    # B. Initialize background workers
     try:
-        if 'message_processor' in globals() and 'EmailPoller' in globals():
+        if message_processor and EmailPoller:
             logger.info("Initiating multi-channel background workers...")
             
             # Start message processor
@@ -128,17 +126,17 @@ async def startup_event():
             logger.info("✓ Unified Message Processor started.")
             
             # Start email poller (non-blocking)
-            email_poller = EmailPoller(
+            ep = EmailPoller(
                 poll_interval=int(os.getenv("EMAIL_POLL_INTERVAL", "30")),
                 processor=message_processor
             )
-            asyncio.create_task(email_poller.start())
+            asyncio.create_task(ep.start())
             logger.info("✓ Email Poller started.")
         else:
-            logger.error("Cannot start workers: message_processor or EmailPoller not imported")
+            logger.error("Cannot start workers: essential modules failing imports.")
             
     except Exception as e:
-        logger.error(f"CRITICAL ERROR IN WORKER STARTUP: {str(e)}")
+        logger.error(f"Worker Startup Error: {e}")
 
 if __name__ == "__main__":
     import uvicorn

@@ -4,9 +4,6 @@ from sqlalchemy.dialects.postgresql import insert
 from typing import List, Optional, Dict, Any
 import uuid
 import numpy as np
-from pgvector.sqlalchemy import Vector
-# from sentence_transformers import SentenceTransformer # Moved to lazy import
-import os
 import logging
 
 from ..models.knowledge_base import KnowledgeBase
@@ -64,13 +61,9 @@ class KnowledgeBaseService:
         query_embedding = await self.create_embedding(query)
 
         # Build the query with vector similarity
+        # Simplified search without pgvector
         stmt = select(KnowledgeBase).where(
-            and_(
-                KnowledgeBase.is_active == True,
-                KnowledgeBase.embedding.cosine_distance(query_embedding) < 0.8  # Adjust threshold as needed
-            )
-        ).order_by(
-            KnowledgeBase.embedding.cosine_distance(query_embedding)
+            KnowledgeBase.is_active == True
         ).limit(top_k)
 
         # Apply filters if provided
