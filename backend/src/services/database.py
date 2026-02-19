@@ -8,10 +8,32 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import Column, Integer
 
 # Database configuration
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://postgres:postgres@localhost:5432/fte_db"
-)
+raw_db_url = os.getenv("DATABASE_URL")
+
+# Log detection of DATABASE_URL safely
+import logging
+logger = logging.getLogger(__name__)
+
+if raw_db_url:
+    # Mask password for safe logging
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(raw_db_url)
+        safe_url = f"{parsed.scheme}://{parsed.username}:****@{parsed.hostname}:{parsed.port}{parsed.path}"
+        logger.info(f"DATABASE_URL detected: {safe_url}")
+    except Exception:
+        logger.info("DATABASE_URL detected but could not be parsed for safe logging.")
+    
+    # Ensure URL starts with postgresql+asyncpg://
+    if raw_db_url.startswith("postgres://"):
+        DATABASE_URL = raw_db_url.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif raw_db_url.startswith("postgresql://"):
+        DATABASE_URL = raw_db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    else:
+        DATABASE_URL = raw_db_url
+else:
+    logger.warning("DATABASE_URL not found in environment, using default local development URL.")
+    DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/fte_db"
 
 # Create async engine with connection pooling
 engine = create_async_engine(
@@ -23,6 +45,7 @@ engine = create_async_engine(
     pool_pre_ping=True,
     echo=False
 )
+
 
 # Create async session maker
 AsyncSessionFactory = async_sessionmaker(

@@ -69,11 +69,15 @@ class UnifiedMessageProcessor:
             logger.info(f"Processing message details: channel={channel}, customer_id={customer_id}, email={customer_email}")
 
             # 2. Resolve customer (cross-channel identification)
-            resolved_customer_id = await self.resolve_customer({
-                'email': customer_email,
-                'phone': customer_phone,
-                'provided_customer_id': customer_id
-            })
+            try:
+                resolved_customer_id = await self.resolve_customer({
+                    'email': customer_email,
+                    'phone': customer_phone,
+                    'provided_customer_id': customer_id
+                })
+            except Exception as e:
+                logger.error(f"Database error during customer resolution: {e}")
+                resolved_customer_id = uuid.uuid4() # Fallback to temporary ID
 
             if not resolved_customer_id:
                 logger.error(f"Could not resolve customer from message: {message}")
@@ -99,28 +103,38 @@ class UnifiedMessageProcessor:
                     # Continue processing even if ticket check fails
 
             # 3. Get or create conversation
-            resolved_conversation_id = await self.get_or_create_conversation(
-                resolved_customer_id, channel, message
-            )
+            try:
+                resolved_conversation_id = await self.get_or_create_conversation(
+                    resolved_customer_id, channel, message
+                )
+            except Exception as e:
+                logger.error(f"Database error during conversation retrieval: {e}")
+                resolved_conversation_id = uuid.uuid4() # Fallback ID
 
             # 4. Store incoming message
-            async with db_session() as db:
-                incoming_message = await create_message(
-                    db=db,
-                    conversation_id=resolved_conversation_id,
-                    channel=channel,
-                    direction="inbound",
-                    sender_identifier=customer_email or customer_phone or str(resolved_customer_id),
-                    content=content
-                )
-
-                logger.info(f"Stored incoming message: {incoming_message.id}")
+            try:
+                async with db_session() as db:
+                    incoming_message = await create_message(
+                        db=db,
+                        conversation_id=resolved_conversation_id,
+                        channel=channel,
+                        direction="inbound",
+                        sender_identifier=customer_email or customer_phone or str(resolved_customer_id),
+                        content=content
+                    )
+                    logger.info(f"Stored incoming message: {incoming_message.id}")
+            except Exception as e:
+                logger.error(f"Failed to store incoming message: {e}")
 
             # 5. Load conversation history
-            conversation_history = await self._load_conversation_history(resolved_conversation_id)
+            try:
+                conversation_history = await self._load_conversation_history(resolved_conversation_id)
+            except Exception as e:
+                logger.error(f"Failed to load conversation history: {e}")
+                conversation_history = []
 
             # 6. Run agent with context to generate response
-            # Mistral-based agent call
+            # Mistral-based agent call (CRITICAL: Runs even if DB fails)
             agent_response = await customer_success_agent.generate_channel_appropriate_response(
                 content,
                 resolved_customer_id,
@@ -129,17 +143,20 @@ class UnifiedMessageProcessor:
             )
 
             # 7. Store agent response
-            async with db_session() as db:
-                response_message = await create_message(
-                    db=db,
-                    conversation_id=resolved_conversation_id,
-                    channel=channel,
-                    direction="outbound",
-                    sender_identifier="ai-agent",
-                    content=agent_response
-                )
+            try:
+                async with db_session() as db:
+                    response_message = await create_message(
+                        db=db,
+                        conversation_id=resolved_conversation_id,
+                        channel=channel,
+                        direction="outbound",
+                        sender_identifier="ai-agent",
+                        content=agent_response
+                    )
+                    logger.info(f"Stored response message: {response_message.id}")
+            except Exception as e:
+                logger.error(f"Failed to store agent response: {e}")
 
-                logger.info(f"Stored response message: {response_message.id}")
 
             # 7.5 Send response via channel
             if channel == "whatsapp":
