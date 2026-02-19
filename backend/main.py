@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import asyncio
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="Customer Success AI Agent API",
     description="Production Multi-Channel Backend (Meta WhatsApp + Email + Web)",
-    version="1.3.0",
+    version="1.3.1",
 )
 
 @app.get("/health")
@@ -57,7 +58,7 @@ app.add_middleware(
 )
 
 # 5. Meta WhatsApp Webhook Endpoints
-@app.get("/whatsapp")
+@app.get("/webhooks/whatsapp")
 async def verify_whatsapp(request: Request):
     """Handle Meta dynamic verification challenge."""
     if not whatsapp_handler:
@@ -117,8 +118,8 @@ async def receive_web_message(payload: WebMessage):
         logger.error(f"Error receiving web message: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/")
-async def root():
+@app.get("/status")
+async def status():
     return {"message": "Customer Success AI Agent API - Production Ready"}
 
 # 7. Startup Event: Database Initialization & Worker Startup
@@ -150,6 +151,11 @@ async def startup_event():
         )
         asyncio.create_task(ep.start())
         logger.info("✓ Background threads active.")
+
+# 8. Static File Hosting (at the bottom)
+# Mount the static directory to server the web form from the root URL
+if os.path.exists("static"):
+    app.mount("/", StaticFiles(directory="static", html=True), name="static")
 
 if __name__ == "__main__":
     import uvicorn

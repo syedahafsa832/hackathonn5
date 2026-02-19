@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Customer Success Support Form</title>
+    <style>
+      body {
+        font-family:
+          "Inter",
+          -apple-system,
+          sans-serif;
+        background: #0f172a;
+        color: white;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+        margin: 0;
+      }
+      .card {
+        background: rgba(30, 41, 59, 0.7);
+        backdrop-filter: blur(10px);
+        padding: 2rem;
+        border-radius: 1rem;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        width: 100%;
+        max-width: 400px;
+        text-align: center;
+      }
+      h1 {
+        margin-bottom: 1.5rem;
+        font-size: 1.5rem;
+      }
+      input,
+      textarea {
+        width: 100%;
+        padding: 0.75rem;
+        margin-bottom: 1rem;
+        background: #0f172a;
+        border: 1px solid #334155;
+        border-radius: 0.5rem;
+        color: white;
+        box-sizing: border-box;
+      }
+      button {
+        width: 100%;
+        padding: 0.75rem;
+        background: #3b82f6;
+        border: none;
+        border-radius: 0.5rem;
+        color: white;
+        font-weight: bold;
+        cursor: pointer;
+        transition: background 0.2s;
+      }
+      button:hover {
+        background: #2563eb;
+      }
+      #status {
+        margin-top: 1rem;
+        font-size: 0.875rem;
+        color: #94a3b8;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Support Request</h1>
+      <input type="text" id="name" placeholder="Name" />
+      <input type="email" id="email" placeholder="Email" />
+      <textarea id="content" placeholder="How can we help?" rows="4"></textarea>
+      <button onclick="send()" id="btn">Send Message</button>
+      <p id="status"></p>
+    </div>
+
+    <script>
+      async function send() {
+        const btn = document.getElementById("btn");
+        const status = document.getElementById("status");
+        const payload = {
+          customer_name: document.getElementById("name").value,
+          customer_email: document.getElementById("email").value,
+          content: document.getElementById("content").value,
+        };
+
+        if (!payload.customer_email || !payload.content) {
+          status.innerText = "Email and message are required";
+          return;
+        }
+
+        try {
+          btn.disabled = true;
+          status.innerText = "Sending...";
+          const res = await fetch("/api/messages", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const data = await res.json();
+          status.innerText =
+            data.status === "received"
+              ? "Message received!"
+              : "Error sending message";
+        } catch (e) {
+          status.innerText = "Connection error";
+        } finally {
+          btn.disabled = false;
+        }
+      }
+    </script>
+  </body>
+</html>
