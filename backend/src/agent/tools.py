@@ -164,8 +164,8 @@ async def escalate_to_human(customer_id: str, conversation_id: str, reason: str)
 
             return {
                 "status": "escalated",
-                "customer_id": customer_id,
-                "conversation_id": conversation_id,
+                "customer_id": str(customer_id),
+                "conversation_id": str(conversation_id),
                 "reason": reason,
                 "message": "Issue escalated to human agent"
             }
