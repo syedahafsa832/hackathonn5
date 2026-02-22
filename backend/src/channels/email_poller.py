@@ -49,6 +49,12 @@ class EmailPoller:
 
                     if sender_email == support_email: continue
                     
+                    # Skip common automated senders
+                    automated_domains = ['no-reply', 'noreply', 'notifications', 'mailer-daemon', 'accounts.google.com', 'linkedin.com', 'railway.app']
+                    if any(domain in sender_email for domain in automated_domains):
+                        logger.info(f"Skipping automated email from {sender_email}")
+                        continue
+
                     email_body_lower = email['body'].lower()
                     if "customer success ai agent" in email_body_lower: continue
 
