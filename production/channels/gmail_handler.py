@@ -204,8 +204,10 @@ Automated response."""
     async def get_new_emails(self, max_results=10) -> List[Dict]:
         """Fetch unread messages from Inbox."""
         if not self.service:
-            logger.warning("Gmail Poller: Service not initialized. Check GMAIL_CREDENTIALS / GMAIL_TOKEN_CODE.")
-            return []
+            self._initialize_credentials()
+            if not self.service:
+                logger.warning("Gmail Poller: Service not initialized. Check GMAIL_CREDENTIALS / GMAIL_TOKEN_CODE.")
+                return []
         try:
             results = self.service.users().messages().list(userId='me', q='is:unread').execute()
             messages = results.get('messages', [])

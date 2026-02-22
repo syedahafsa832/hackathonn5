@@ -93,7 +93,7 @@ class UnifiedMessageProcessor:
         """Helper to send email responses (Gmail integration)."""
         try:
             # Import here to avoid circular dependencies
-            from src.channels.gmail_handler import gmail_handler
+            from production.channels.gmail_handler import gmail_handler
             
             await gmail_handler.send_reply(
                 to_email=email,
