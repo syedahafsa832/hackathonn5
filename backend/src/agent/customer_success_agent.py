@@ -6,13 +6,8 @@ from openai import OpenAI
 from datetime import datetime
 import uuid
 
-from ..services.knowledge_base_service import knowledge_base_service
-# from ..services.database import get_db, db_session # Removed
-# from ..services.customer_service import get_customer_by_id # Removed
-# from ..services.conversation_service import get_conversations_by_customer # Removed
-# from ..services.message_service import get_messages_by_conversation # Removed
 from ..services.sentiment_analyzer import sentiment_analyzer
-# from ..services.ticket_feedback_service import search_successful_qa_pairs # Removed
+
 
 # Temporary placeholders for tools that need refactoring
 async def search_knowledge_base(query: str, top_k: int = 3):

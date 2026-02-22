@@ -8,8 +8,7 @@ import uuid
 import logging
 
 from src.services.whatsapp_handler import WhatsAppHandler
-from src.services.database import get_db
-from production.workers.message_processor import message_processor
+from src.workers.message_processor import message_processor
 
 # Initialize global handler instance for the router
 whatsapp_handler = WhatsAppHandler()
