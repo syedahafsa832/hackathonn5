@@ -39,6 +39,12 @@ class UnifiedMessageProcessor:
                 logger.warning("Message missing customer email, cannot process reliably.")
                 return
 
+            # RE-CHECK: Final safeguard against automated emails (don't store, don't reply)
+            automated_keywords = ['no-reply', 'noreply', 'notifications', 'mailer-daemon', 'linkedin.com', 'skool.com']
+            if any(kw in customer_email for kw in automated_keywords):
+                logger.info(f"Safeguard: Dropping automated message from {customer_email}")
+                return
+
             # 2. Resolve or Create Customer in Supabase
             customer = await supabase_service.get_or_create_customer(
                 email=customer_email,
