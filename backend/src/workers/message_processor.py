@@ -39,10 +39,21 @@ class UnifiedMessageProcessor:
                 logger.warning("Message missing customer email, cannot process reliably.")
                 return
 
-            # RE-CHECK: Final safeguard against automated emails (don't store, don't reply)
-            automated_keywords = ['no-reply', 'noreply', 'notifications', 'mailer-daemon', 'linkedin.com', 'skool.com']
-            if any(kw in customer_email for kw in automated_keywords):
-                logger.info(f"Safeguard: Dropping automated message from {customer_email}")
+            # RE-CHECK: Final safeguard against automated/marketing emails (don't store, don't reply)
+            automated_keywords = [
+                'no-reply', 'noreply', 'notifications', 'mailer-daemon', 'linkedin.com', 'skool.com',
+                'florafauna.ai', 'neon.tech', 'qdrant.io', 'apify.com', 'openai.ai',
+                'newsletter', 'marketing', 'digest', 'updates'
+            ]
+            automated_prefixes = ['hello@', 'info@', 'news@', 'newsletter@', 'community@']
+            marketing_indicators = ['unsubscribe', 'manage preferences', 'view in browser', 'opt out', 'subscription']
+            
+            is_automated = any(kw in customer_email for kw in automated_keywords)
+            is_generic = any(customer_email.startswith(prefix) for prefix in automated_prefixes)
+            is_marketing_body = any(ind in content.lower() for ind in marketing_indicators)
+
+            if is_automated or is_generic or is_marketing_body:
+                logger.info(f"Safeguard: Dropping automated/marketing message from {customer_email}")
                 return
 
             # 2. Resolve or Create Customer in Supabase
