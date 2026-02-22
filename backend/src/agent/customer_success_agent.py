@@ -1,4 +1,5 @@
 import os
+import json
 from typing import Dict, Any, Optional
 import logging
 from openai import OpenAI
@@ -6,25 +7,24 @@ from datetime import datetime
 import uuid
 
 from ..services.knowledge_base_service import knowledge_base_service
-from ..services.database import get_db, db_session
-from ..services.customer_service import get_customer_by_id
-from ..services.conversation_service import get_conversations_by_customer
-from ..services.message_service import get_messages_by_conversation
+# from ..services.database import get_db, db_session # Removed
+# from ..services.customer_service import get_customer_by_id # Removed
+# from ..services.conversation_service import get_conversations_by_customer # Removed
+# from ..services.message_service import get_messages_by_conversation # Removed
 from ..services.sentiment_analyzer import sentiment_analyzer
-from ..services.ticket_feedback_service import search_successful_qa_pairs
-from .tools import (
-    search_knowledge_base,
-    create_ticket,
-    get_customer_history,
-    escalate_to_human,
-    send_response
-)
+# from ..services.ticket_feedback_service import search_successful_qa_pairs # Removed
+
+# Temporary placeholders for tools that need refactoring
+async def search_knowledge_base(query: str, top_k: int = 3):
+    return "Knowledge base results would appear here."
+
+async def get_customer_history(customer_id: uuid.UUID):
+    return {"id": str(customer_id), "name": "Unknown"}
 
 logger = logging.getLogger(__name__)
 
 class CustomerSuccessAgent:
     def __init__(self):
-        # Get Mistral API credentials from environment
         api_key = os.getenv("MISTRAL_API_KEY")
         if not api_key:
             logger.error("MISTRAL_API_KEY not set in environment variables")
@@ -36,188 +36,112 @@ class CustomerSuccessAgent:
         )
         self.model = os.getenv("MISTRAL_MODEL", "mistral-large-latest")
 
-    async def process_customer_query(self, query: str, customer_id: uuid.UUID, conversation_id: uuid.UUID) -> str:
+    async def process_customer_query(self, query: str, customer_info: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Process a customer query and generate an appropriate response
+        Process a customer query and generate a structured JSON response
         """
         try:
-            # Analyze sentiment of the query
-            sentiment_score = sentiment_analyzer.analyze_sentiment(query)
-
-            # Check for escalation triggers
-            should_escalate = await self.check_escalation_triggers(query, sentiment_score)
-
-            if should_escalate:
-                # Trigger escalation to human agent
-                await escalate_to_human(
-                    customer_id=customer_id,
-                    conversation_id=conversation_id,
-                    reason="Escalation trigger detected"
-                )
-
-                return "I understand this is an important matter. Let me connect you with a human agent who can assist you further."
-
-            # Search for successful Q&A pairs that match this query (learning from past success)
-            successful_qa_context = ""
-            async with db_session() as db:
-                try:
-                    similar_qa_pairs = await search_successful_qa_pairs(db, query, limit=3)
-
-                    if similar_qa_pairs:
-                        successful_qa_context = "Previous successful responses to similar questions:\n"
-                        for qa in similar_qa_pairs:
-                            successful_qa_context += f"Q: {qa.original_question}\n"
-                            successful_qa_context += f"A: {qa.ai_response}\n"
-                            successful_qa_context += f"Customer Rating: {qa.customer_rating}/5\n"
-                            successful_qa_context += "---\n"
-                except Exception as e:
-                    logger.warning(f"Error searching for successful Q&A pairs: {e}")
-
             # Search knowledge base for relevant information
             kb_results = await search_knowledge_base(query=query, top_k=3)
 
-            # Get customer history
-            customer_info = await get_customer_history(customer_id=customer_id)
-
-            # Construct the system prompt with learning context
-            system_prompt = self._construct_system_prompt(customer_info, kb_results, successful_qa_context)
+            # Construct the system prompt with requirements for structured JSON
+            system_prompt = self._construct_system_prompt(customer_info, kb_results)
 
             # Construct the user message
-            user_message = self._construct_user_message(query, customer_info)
+            user_message = f"Customer Query: {query}"
 
-            # Call OpenAI API
+            # Call AI API
             response = self.openai_client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message}
                 ],
-                temperature=0.3,  # Lower temperature for more consistent, professional responses
-                max_tokens=1000
+                temperature=0.1,  # Lower temperature for strict JSON compliance
+                response_format={"type": "json_object"} if "mistral" not in self.model.lower() else None # Mistral supports JSON via prompting
             )
 
-            # Extract and return the response
-            agent_response = response.choices[0].message.content
+            # Extract and parse the response
+            raw_content = response.choices[0].message.content
+            try:
+                structured_response = json.loads(raw_content)
+                
+                # Validation & Default values
+                required_fields = ['intent', 'sentiment', 'risk_level', 'confidence_score', 'escalate', 'escalation_reason', 'reply_subject', 'reply_body']
+                for field in required_fields:
+                    if field not in structured_response:
+                        structured_response[field] = None # Or provide defaults
+                
+                # Apply escalation logic (Step 5)
+                if (structured_response.get('risk_level') == 'high' or 
+                    structured_response.get('confidence_score', 0) < 75 or 
+                    structured_response.get('escalate') is True):
+                    structured_response['status'] = 'escalated'
+                else:
+                    structured_response['status'] = 'auto_resolved'
 
-            # Log the interaction
-            logger.info(f"Processed query for customer {customer_id}. Response length: {len(agent_response)}")
+                # Clean up formatting (Step 8)
+                name = customer_info.get('name', 'Customer')
+                body_content = structured_response.get('reply_body', '')
+                if not body_content.startswith(f"Hi {name}"):
+                    structured_response['reply_body'] = f"Hi {name},\n\n{body_content}"
 
-            return agent_response
+                return structured_response
+
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse AI JSON response: {raw_content}. Error: {e}")
+                return self._get_fallback_escalation_response("AI response parsing failed")
 
         except Exception as e:
             logger.error(f"Error processing customer query: {str(e)}")
-            return "I apologize, but I'm experiencing technical difficulties. Please try again later or contact support directly."
+            return self._get_fallback_escalation_response(str(e))
 
-    def _construct_system_prompt(self, customer_info: Dict[str, Any], kb_results: list, successful_qa_context: str = "") -> str:
-        """
-        Construct the system prompt with customer context, knowledge base results, and successful Q&A pairs
-        """
-        system_prompt = f"""
-        You are a helpful Customer Success AI assistant.
-
-        Customer Context:
-        {customer_info}
-
-        Previous successful responses to similar questions:
-        {successful_qa_context if successful_qa_context else "No previous successful responses found for similar questions."}
-
-        Knowledge Base:
-        {kb_results}
-
-        Guidelines:
-        1. Be professional, empathetic, and helpful
-        2. Provide accurate information based on the knowledge base
-        3. If similar questions have been successfully answered before, learn from those responses but adapt to this specific customer's question
-        4. Keep responses concise and clear
-        5. If unsure, acknowledge limitations
-        6. Never discuss pricing, legal matters, or refunds - escalate instead
-        7. Do not share internal system details
-
-        Respond naturally to help the customer with their question.
-        """
-        return system_prompt
-
-    def _construct_user_message(self, query: str, customer_info: Dict[str, Any]) -> str:
-        """
-        Construct the user message with query and context
-        """
+    def _construct_system_prompt(self, customer_info: Dict[str, Any], kb_results: Any) -> str:
         return f"""
-        Customer Query: {query}
+        You are a senior Customer Success AI assistant. You MUST respond ONLY with a structured JSON object.
 
-        Please provide a helpful and accurate response based on the knowledge base and customer context provided in the system message.
+        Customer Name: {customer_info.get('name', 'Unknown')}
+        Customer Context: {customer_info}
+        Knowledge Base Info: {kb_results}
+
+        REQUIREMENTS:
+        1. Start the reply with "Hi [Name],"
+        2. Address the customer's specific message accurately.
+        3. Be professional and concise. No emoji spam.
+        4. No generic repetitive greetings like "Dear Valued Customer".
+        5. If the issue is complex or outside the knowledge base, set escalate to true.
+
+        JSON SCHEMA:
+        {{
+            "intent": "string (e.g., technical_support, billing, sales)",
+            "sentiment": "string (positive, neutral, negative)",
+            "risk_level": "string (low, medium, high)",
+            "confidence_score": 0-100,
+            "escalate": boolean,
+            "escalation_reason": "string or null",
+            "reply_subject": "Professional email subject line",
+            "reply_body": "Detailed and personalized response body"
+        }}
         """
 
-    async def check_escalation_triggers(self, query: str, sentiment_score: float) -> bool:
+    def _get_fallback_escalation_response(self, error_msg: str) -> Dict[str, Any]:
+        return {
+            "intent": "error_fallback",
+            "sentiment": "neutral",
+            "risk_level": "high",
+            "confidence_score": 0,
+            "escalate": True,
+            "escalation_reason": f"System Error: {error_msg}",
+            "reply_subject": "Re: Your Support Request",
+            "reply_body": "I apologize, but I'm having trouble processing your request. One of our human agents will look into this immediately.",
+            "status": "escalated"
+        }
+
+    async def generate_channel_appropriate_response(self, query: str, customer_info: Dict[str, Any], channel: str) -> Dict[str, Any]:
         """
-        Check if the query should be escalated based on triggers
+        Generate a response appropriate for the specific channel, returning structured data
         """
-        # Keywords that trigger escalation
-        escalation_keywords = [
-            'pricing', 'price', 'cost', 'payment', 'refund', 'legal',
-            'lawyer', 'complaint', 'manager', 'supervisor', 'ceo', 'executive',
-            'lawsuit', 'contract', 'agreement', 'billing dispute', 'chargeback'
-        ]
-
-        # Check for escalation keywords
-        query_lower = query.lower()
-        for keyword in escalation_keywords:
-            if keyword in query_lower:
-                logger.info(f"Escalation triggered by keyword: {keyword}")
-                return True
-
-        # Check sentiment - if very negative, escalate
-        if sentiment_score < -0.5:  # Very negative sentiment
-            logger.info(f"Escalation triggered by negative sentiment: {sentiment_score}")
-            return True
-
-        # Check for profanity or aggressive language
-        if self._contains_profanity(query):
-            logger.info("Escalation triggered by potentially inappropriate language")
-            return True
-
-        return False
-
-    def _contains_profanity(self, text: str) -> bool:
-        """
-        Simple profanity check - in production, use a more robust solution
-        """
-        profanity_list = [
-            'fuck', 'shit', 'damn', 'bitch', 'asshole', 'bastard', 'cunt',
-            'dick', 'piss', 'damn', 'bloody', 'bollocks', 'arsehole'
-        ]
-
-        text_lower = text.lower()
-        for word in profanity_list:
-            if word in text_lower:
-                return True
-
-        return False
-
-    async def generate_channel_appropriate_response(self, query: str, customer_id: uuid.UUID,
-                                                 conversation_id: uuid.UUID, channel: str) -> str:
-        """
-        Generate a response appropriate for the specific channel
-        """
-        base_response = await self.process_customer_query(query, customer_id, conversation_id)
-
-        if channel == "whatsapp":
-            # Format for WhatsApp - concise, conversational. Under 300 characters.
-            formatted_response = base_response[:300] if len(base_response) > 300 else base_response
-        elif channel == "email":
-            # Return raw response - Gmail handler will format it with proper email template
-            formatted_response = base_response
-        else:  # web_form
-            # Default format for web form - semi-formal, helpful.
-            formatted_response = base_response
-
-        return formatted_response
+        return await self.process_customer_query(query, customer_info)
 
 # Global instance
 customer_success_agent = CustomerSuccessAgent()
-
-# Convenience function for external use
-async def process_customer_query(query: str, customer_id: uuid.UUID, conversation_id: uuid.UUID) -> str:
-    """
-    Process a customer query and return the response
-    """
-    return await customer_success_agent.process_customer_query(query, customer_id, conversation_id)
