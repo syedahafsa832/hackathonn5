@@ -144,18 +144,14 @@ class GmailHandler:
         # Clean up the AI response
         cleaned_response = self._clean_ai_response(ai_response)
 
-        email_body = f"""Dear Valued Customer,
-
-Thank you for reaching out to our support team.
-
-{cleaned_response}
+        email_body = f"""{cleaned_response}
 
 Best regards,
-Customer Success AI Agent
-TechCorp Support Team
 
----
-Automated response."""
+Luna
+Customer Success Team
+TechCorp
+"""
 
         return {
             'subject': subject,

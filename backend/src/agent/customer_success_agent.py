@@ -81,11 +81,14 @@ class CustomerSuccessAgent:
                 else:
                     structured_response['status'] = 'auto_resolved'
 
-                # Clean up formatting (Step 8)
+                # Clean up formatting (Step 8) - Prevent double greetings
                 name = customer_info.get('name', 'Customer')
+                first_name = name.split()[0] if name else "Customer"
                 body_content = structured_response.get('reply_body', '')
-                if not body_content.startswith(f"Hi {name}"):
-                    structured_response['reply_body'] = f"Hi {name},\n\n{body_content}"
+                
+                # If the body already starts with a greeting, don't add another one
+                if not any(body_content.lower().startswith(g) for g in ['hi ', 'hello ', 'dear ']):
+                    structured_response['reply_body'] = f"Hi {first_name},\n\n{body_content}"
 
                 return structured_response
 
@@ -106,10 +109,10 @@ class CustomerSuccessAgent:
         Knowledge Base Info: {kb_results}
 
         REQUIREMENTS:
-        1. Start the reply with "Hi [Name],"
+        1. Start the reply with "Hi [First Name],"
         2. Address the customer's specific message accurately.
         3. Be professional and concise. No emoji spam.
-        4. No generic repetitive greetings like "Dear Valued Customer".
+        4. Sign the email as "Luna" from the Customer Success Team.
         5. If the issue is complex or outside the knowledge base, set escalate to true.
 
         JSON SCHEMA:
@@ -134,7 +137,7 @@ class CustomerSuccessAgent:
             "escalate": True,
             "escalation_reason": f"System Error: {error_msg}",
             "reply_subject": "Re: Your Support Request",
-            "reply_body": "I apologize, but I'm having trouble processing your request. One of our human agents will look into this immediately.",
+            "reply_body": "I apologize, but I'm having trouble processing your request. I have escalated this to my team, and one of us will look into this immediately.\n\nBest regards,\nLuna",
             "status": "escalated"
         }
 
