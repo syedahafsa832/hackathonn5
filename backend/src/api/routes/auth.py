@@ -12,6 +12,10 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # Scopes required for Gmail
 SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
 
+@router.get("/health")
+async def auth_health():
+    return {"status": "auth router active"}
+
 # Production Redirect URI
 REDIRECT_URI = "https://hackathonn5-production.up.railway.app/auth/callback"
 

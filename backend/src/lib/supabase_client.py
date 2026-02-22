@@ -4,6 +4,7 @@ Supabase REST API Client — uses requests directly to avoid supabase-py depende
 import os
 import logging
 import requests
+from typing import Optional, List, Any, Dict
 from dotenv import load_dotenv
 
 load_dotenv()

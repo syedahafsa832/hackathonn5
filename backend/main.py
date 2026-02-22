@@ -46,8 +46,8 @@ try:
     from src.services.whatsapp_handler import WhatsAppHandler
     whatsapp_handler = WhatsAppHandler()
     logger.info("✓ All core imports succeeded.")
-except ImportError as e:
-    logger.error(f"CRITICAL IMPORT FAIL: {e}")
+except Exception as e:
+    logger.error(f"CRITICAL INITIALIZATION FAIL: {e}")
 
 # 5. Router Registration — also wrapped for safety
 try:
@@ -58,7 +58,7 @@ try:
     app.include_router(tickets_router)
     app.include_router(auth_router)
     logger.info("✓ Routers registered (support, tickets, auth).")
-except ImportError as e:
+except Exception as e:
     logger.error(f"Failed to register routers: {e}")
 
 # 6. WhatsApp Webhook Endpoints
