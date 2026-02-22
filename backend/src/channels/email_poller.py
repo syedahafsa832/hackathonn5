@@ -49,22 +49,37 @@ class EmailPoller:
 
                     if sender_email == support_email: continue
                     
-                    # Skip common automated senders
-                    # We skip them if the domain matches OR if the prefix looks like an automated account
+                    # === STAGE 1: Automated/Marketing Domain & Keyword Check ===
                     automated_keywords = [
                         'no-reply', 'noreply', 'notifications', 'mailer-daemon', 
                         'accounts.google.com', 'linkedin.com', 'railway.app', 
                         'skool.com', 'apify.com', 'qdrant.io', 'openai.ai', 'openai.com',
-                        'facebookmail.com', 'twitter.com', 'github.com'
+                        'facebookmail.com', 'twitter.com', 'github.com', 'florafauna.ai', 'neon.tech',
+                        'newsletter', 'marketing', 'digest', 'updates', 'community'
                     ]
                     
-                    is_automated = any(kw in sender_email for kw in automated_keywords)
+                    # Also skip common generic prefixes that are often marketing/outreach
+                    automated_prefixes = ['hello@', 'info@', 'news@', 'newsletter@', 'community@', 'marketing@', 'digest@']
                     
-                    if is_automated:
-                        logger.info(f"Skipping automated email from {sender_email}")
+                    is_automated = any(kw in sender_email for kw in automated_keywords)
+                    is_generic_prefix = any(sender_email.startswith(prefix) for prefix in automated_prefixes)
+                    
+                    if is_automated or is_generic_prefix:
+                        logger.info(f"Skipping automated/outreach email from {sender_email}")
                         continue
 
                     email_body_lower = email['body'].lower()
+                    
+                    # === STAGE 2: Content-Based Filtering (Newsletter/Spam Detection) ===
+                    marketing_indicators = [
+                        'unsubscribe', 'manage preferences', 'view in browser', 
+                        'privacy policy', 'opt out', 'sent this email to', 
+                        'subscription', 'click here to'
+                    ]
+                    if any(indicator in email_body_lower for indicator in marketing_indicators):
+                        logger.info(f"Skipping marketing/newsletter email from {sender_email} (found unsubscribe/marketing footer)")
+                        continue
+
                     if "customer success ai agent" in email_body_lower: continue
 
                     email_for_processing = {
