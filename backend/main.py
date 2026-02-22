@@ -105,6 +105,26 @@ async def whatsapp_webhook(request: Request):
         logger.error(f"Error in WhatsApp webhook: {e}")
         return {"status": "error", "detail": str(e)}
 
+@app.post("/api/messages")
+async def simple_message_submit(request: Request):
+    """Legacy support for the simple static index.html webform."""
+    if not message_processor:
+        raise HTTPException(status_code=503, detail="Services not initialized")
+    try:
+        payload = await request.json()
+        # payload structure in static/index.html: { customer_name, customer_email, content }
+        await message_processor.process_message("web_form_simple", {
+            "channel": "web_form",
+            "customer_email": payload.get("customer_email"),
+            "customer_name": payload.get("customer_name"),
+            "content": payload.get("content"),
+            "subject": "Web Support Message"
+        })
+        return {"status": "received"}
+    except Exception as e:
+        logger.error(f"Error in simple message submit: {e}")
+        return {"status": "error", "message": str(e)}
+
 # 7. Startup Event
 @app.on_event("startup")
 async def startup_event():

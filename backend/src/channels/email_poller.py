@@ -50,8 +50,17 @@ class EmailPoller:
                     if sender_email == support_email: continue
                     
                     # Skip common automated senders
-                    automated_domains = ['no-reply', 'noreply', 'notifications', 'mailer-daemon', 'accounts.google.com', 'linkedin.com', 'railway.app']
-                    if any(domain in sender_email for domain in automated_domains):
+                    # We skip them if the domain matches OR if the prefix looks like an automated account
+                    automated_keywords = [
+                        'no-reply', 'noreply', 'notifications', 'mailer-daemon', 
+                        'accounts.google.com', 'linkedin.com', 'railway.app', 
+                        'skool.com', 'apify.com', 'qdrant.io', 'openai.ai', 'openai.com',
+                        'facebookmail.com', 'twitter.com', 'github.com'
+                    ]
+                    
+                    is_automated = any(kw in sender_email for kw in automated_keywords)
+                    
+                    if is_automated:
                         logger.info(f"Skipping automated email from {sender_email}")
                         continue
 
