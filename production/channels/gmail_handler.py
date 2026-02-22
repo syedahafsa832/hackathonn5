@@ -14,6 +14,8 @@ from googleapiclient.errors import HttpError
 import base64
 from email.mime.text import MIMEText
 
+from src.lib.supabase_client import supabase_get_setting
+
 logger = logging.getLogger(__name__)
 
 # If modifying these scopes, delete the file token.json.
@@ -26,16 +28,36 @@ class GmailHandler:
         self._initialize_credentials()
 
     def _initialize_credentials(self):
-        """Initialize credentials from environment variables."""
-        # 1. Try to load existing token from GMAIL_TOKEN env var
-        token_json = os.getenv("GMAIL_TOKEN")
+        """Initialize credentials from environment variables or Supabase."""
+        # 0. Try to load from Supabase Settings Table (Primary Source of Truth for Production)
+        token_data = supabase_get_setting("GMAIL_TOKEN")
+        if token_data:
+            try:
+                self.creds = Credentials.from_authorized_user_info(token_data, SCOPES)
+                logger.info("Successfully loaded Gmail credentials from Supabase.")
+            except Exception as e:
+                logger.error(f"Failed to load Gmail token from Supabase: {e}")
+
+        # 1. Fallback to GMAIL_TOKEN env var or token.json file if not found in Supabase
+        if not self.creds:
+            token_json = os.getenv("GMAIL_TOKEN")
+        
+        # Fallback to local token.json if env var is missing
+        if not token_json and os.path.exists("token.json"):
+            try:
+                with open("token.json", "r") as f:
+                    token_json = f.read()
+                logger.info("Found token.json file, using as backup.")
+            except Exception as e:
+                logger.error(f"Failed to read token.json: {e}")
+
         if token_json:
             try:
                 token_data = json.loads(token_json)
                 self.creds = Credentials.from_authorized_user_info(token_data, SCOPES)
-                logger.info("Successfully loaded Gmail credentials from GMAIL_TOKEN")
+                logger.info("Successfully loaded Gmail credentials.")
             except Exception as e:
-                logger.error(f"Failed to load GMAIL_TOKEN: {e}")
+                logger.error(f"Failed to parse Gmail token: {e}")
 
         # 2. If no valid creds, try to use GMAIL_CREDENTIALS for refresh or new auth
         if not self.creds or not self.creds.valid:
