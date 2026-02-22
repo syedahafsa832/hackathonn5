@@ -55,7 +55,7 @@ class EmailPoller:
                         'accounts.google.com', 'linkedin.com', 'railway.app', 
                         'skool.com', 'apify.com', 'qdrant.io', 'openai.ai', 'openai.com',
                         'facebookmail.com', 'twitter.com', 'github.com', 'florafauna.ai', 'neon.tech',
-                        'newsletter', 'marketing', 'digest', 'updates', 'community'
+                        'newsletter', 'marketing', 'digest', 'updates', 'community', 'pinterest', 'googlemail.com'
                     ]
                     
                     # Also skip common generic prefixes that are often marketing/outreach
