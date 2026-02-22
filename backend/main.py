@@ -25,21 +25,15 @@ async def health_check():
     """Immediately returns status ok for Railway/Render."""
     return {"status": "ok"}
 
-# 3. Explicit Imports (Corrected paths)
+# 3. Explicit Imports
 try:
-    from src.services.database import engine, sync_engine, Base
-    from src.models.customer import Customer
-    from src.models.conversation import Conversation
-    from src.models.message import Message
-    from src.models.ticket import Ticket
-    from src.models.customer_identifier import CustomerIdentifier
-    from src.models.knowledge_base import KnowledgeBase
+    from src.lib.supabase_client import supabase
     
     # Message processor and channels
     from src.workers.message_processor import message_processor
     from src.channels.email_poller import EmailPoller
     
-    # WhatsApp Handler for Webhook Verification
+    # WhatsApp Handler for Webhook Verification (Keep if needed)
     from src.services.whatsapp_handler import WhatsAppHandler
     whatsapp_handler = WhatsAppHandler()
 except ImportError as e:
@@ -93,129 +87,50 @@ async def whatsapp_webhook(request: Request):
 async def whatsapp_webhook_legacy(request: Request):
     return await whatsapp_webhook(request)
 
-# 6. Web Form Integration Endpoint
-class WebMessage(BaseModel):
-    customer_email: str
-    customer_name: str = "Anonymous"
-    content: str
-    channel: str = "web_form"
-    metadata: Dict[str, Any] = {}
+# 5. Router Registration
+from src.api.routes.support import router as support_router
+from src.api.routes.tickets import router as tickets_router
 
-@app.post("/api/messages")
-async def receive_web_message(payload: WebMessage):
-    """Bridge Web Form data to the Unified Message Processor."""
+app.include_router(support_router, prefix="/support", tags=["support"])
+app.include_router(tickets_router) # /api/tickets is already prefixed in the router
+
+# 6. Meta WhatsApp Webhook Endpoints
+@app.get("/webhooks/whatsapp")
+async def verify_whatsapp(request: Request):
+    """Handle Meta dynamic verification challenge."""
+    if not whatsapp_handler:
+        raise HTTPException(status_code=503, detail="WhatsApp handler not available")
+    return await whatsapp_handler.meta_handler.verify_webhook(request)
+
+@app.post("/webhooks/whatsapp")
+async def whatsapp_webhook(request: Request):
+    """Receive incoming JSON payloads from Meta WhatsApp API."""
+    if not message_processor or not whatsapp_handler:
+        raise HTTPException(status_code=530, detail="Services not initialized")
+    
     try:
-        message_data = {
-            "channel": payload.channel,
-            "customer_email": payload.customer_email,
-            "customer_name": payload.customer_name,
-            "content": payload.content,
-            "metadata": payload.metadata,
-            "timestamp": datetime.now().isoformat()
-        }
+        payload = await request.json()
+        logger.info(f"Incoming WhatsApp Webhook: {payload}")
+        processed = await whatsapp_handler.meta_handler.process_webhook(payload)
         
-        if message_processor:
-            asyncio.create_task(message_processor.process_message("web_incoming", message_data))
-            return {"status": "received", "customer_email": payload.customer_email}
-        else:
-            raise HTTPException(status_code=530, detail="Message processor not available")
-    except Exception as e:
-        logger.error(f"Error receiving web message: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/tickets")
-async def receive_web_ticket(payload: WebMessage):
-    """Explicitly create a support ticket from the web form."""
-    try:
-        from src.agent.tools import create_ticket
-        from src.services.customer_service import get_or_create_customer
-        from src.services.database import db_session
+        if processed:
+            # Route to message processor for Supabase insertion & AI
+            asyncio.create_task(message_processor.process_message("whatsapp_incoming", processed))
+            return {"status": "accepted"}
         
-        # 1. Ensure customer exists
-        async with db_session() as db:
-            customer = await get_or_create_customer(
-                db=db,
-                email=payload.customer_email,
-                name=payload.customer_name
-            )
-            await db.commit()
-            customer_id = str(customer.id)
-
-        # 2. Create the ticket
-        ticket_result = await create_ticket(
-            customer_id=customer_id,
-            source_channel="web_form",
-            subject=payload.metadata.get("subject", "Web Support Request"),
-            category="web_inquiry",
-            priority="medium",
-            description=payload.content
-        )
-
-        # 3. Trigger message processor for AI reply (Email support)
-        if message_processor:
-            message_data = {
-                "channel": "web_form",
-                "customer_email": payload.customer_email,
-                "customer_name": payload.customer_name,
-                "content": payload.content,
-                "metadata": payload.metadata,
-                "ticket_id": ticket_result.get("id"),
-                "timestamp": datetime.now().isoformat()
-            }
-            asyncio.create_task(message_processor.process_message("web_incoming", message_data))
-            
-        return {
-            "status": "success",
-            "message": "Ticket created and processing started",
-            "ticket_id": ticket_result.get("id")
-        }
+        return {"status": "ignored"}
     except Exception as e:
-        logger.error(f"Error in web ticket endpoint: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error in WhatsApp webhook: {e}")
+        return {"status": "error", "detail": str(e)}
 
 @app.get("/status")
 async def status():
-    return {"message": "Customer Success AI Agent API - Production Ready"}
-
-@app.get("/debug/whatsapp")
-async def debug_whatsapp():
-    """Diagnostic for WhatsApp settings."""
-    token = os.getenv("META_VERIFY_TOKEN")
-    return {
-        "meta_verify_token_configured": token is not None,
-        "token_preview": f"{token[:3]}..." if token else "Not set",
-        "hardcoded_fallback": "my_verify_token_12345",
-        "callback_url_path": "/webhooks/whatsapp"
-    }
-
-@app.get("/debug/email")
-async def debug_email():
-    """Diagnostic for Gmail API delivery."""
-    from src.services.database import engine
-    from production.channels.gmail_handler import gmail_handler
-    
-    return {
-        "gmail_api_service_ready": gmail_handler.service is not None,
-        "gmail_credentials_configured": os.getenv("GMAIL_CREDENTIALS") is not None,
-        "gmail_token_present": os.getenv("GMAIL_TOKEN") is not None
-    }
+    return {"message": "Customer Success AI Agent API - Supabase Mode Active"}
 
 # 7. Startup Event: Database Initialization & Worker Startup
 @app.on_event("startup")
 async def startup_event():
-    """Ensure tables exist and start background polls."""
-    # A. Force Table Creation (Wait for DB)
-    def force_create():
-        try:
-            logger.info("Running Base.metadata.create_all(engine)...")
-            Base.metadata.create_all(bind=sync_engine)
-            logger.info("✓ Database tables verified/created.")
-        except Exception as e:
-            logger.warning(f"Table creation check failed: {e}. If the DB is spinning up, this is expected.")
-
-    await asyncio.to_thread(force_create)
-
-    # B. Initialize background workers
+    """Initialize background polls."""
     if message_processor and EmailPoller:
         logger.info("Initiating Production Background Workers...")
         
@@ -230,18 +145,13 @@ async def startup_event():
         asyncio.create_task(ep.start())
         logger.info("✓ Background threads active.")
 
-# 8. Static File Hosting (at the bottom)
-# Mount the static directory to server the web form from the root URL
-# We check both "static" and "backend/static" just in case, but Dockerfile copies backend to /app
-static_path = "static" if os.path.exists("static") else "backend/static"
+# 8. Static File Hosting
+static_path = "static" if os.path.exists("static") else "web-form/build"
 if os.path.exists(static_path):
     logger.info(f"Mounting static files from {static_path}")
     app.mount("/", StaticFiles(directory=static_path, html=True), name="static")
-else:
-    logger.warning("Static directory not found. Web form may not be served.")
 
 if __name__ == "__main__":
     import uvicorn
-    # Respect $PORT for Railway
     port = int(os.getenv("PORT", "8080"))
     uvicorn.run(app, host="0.0.0.0", port=port)
