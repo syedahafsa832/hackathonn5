@@ -210,7 +210,8 @@ Automated response."""
                 logger.warning("Gmail Poller: Service not initialized. Check GMAIL_CREDENTIALS / GMAIL_TOKEN_CODE.")
                 return []
         try:
-            results = self.service.users().messages().list(userId='me', q='is:unread').execute()
+            # ONLY fetch unread emails from the PRIMARY category (ignoring Promotions, Social, etc.)
+            results = self.service.users().messages().list(userId='me', q='is:unread category:primary').execute()
             messages = results.get('messages', [])
             
             email_data = []

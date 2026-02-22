@@ -43,7 +43,7 @@ class UnifiedMessageProcessor:
             automated_keywords = [
                 'no-reply', 'noreply', 'notifications', 'mailer-daemon', 'linkedin.com', 'skool.com',
                 'florafauna.ai', 'neon.tech', 'qdrant.io', 'apify.com', 'openai.ai',
-                'newsletter', 'marketing', 'digest', 'updates'
+                'newsletter', 'marketing', 'digest', 'updates', 'pinterest', 'googlemail.com'
             ]
             automated_prefixes = ['hello@', 'info@', 'news@', 'newsletter@', 'community@']
             marketing_indicators = ['unsubscribe', 'manage preferences', 'view in browser', 'opt out', 'subscription']
