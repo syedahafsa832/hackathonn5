@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import os
 import asyncio
 import logging
+import traceback
 
 # 1. Configure Logging First
 logging.basicConfig(level=logging.INFO)
@@ -40,26 +41,44 @@ EmailPoller = None
 whatsapp_handler = None
 
 try:
+    logger.info("Importing src.lib.supabase_client...")
     from src.lib.supabase_client import supabase
+    
+    logger.info("Importing src.workers.message_processor...")
     from src.workers.message_processor import message_processor
+    
+    logger.info("Importing src.channels.email_poller...")
     from src.channels.email_poller import EmailPoller
+    
+    logger.info("Importing src.services.whatsapp_handler...")
     from src.services.whatsapp_handler import WhatsAppHandler
+    
+    logger.info("Initializing WhatsAppHandler...")
     whatsapp_handler = WhatsAppHandler()
+    
     logger.info("✓ All core imports succeeded.")
 except Exception as e:
     logger.error(f"CRITICAL INITIALIZATION FAIL: {e}")
+    logger.error(traceback.format_exc())
 
 # 5. Router Registration — also wrapped for safety
 try:
+    logger.info("Registering support router...")
     from src.api.routes.support import router as support_router
-    from src.api.routes.tickets import router as tickets_router
-    from src.api.routes.auth import router as auth_router
     app.include_router(support_router, prefix="/support", tags=["support"])
+    
+    logger.info("Registering tickets router...")
+    from src.api.routes.tickets import router as tickets_router
     app.include_router(tickets_router)
+    
+    logger.info("Registering auth router...")
+    from src.api.routes.auth import router as auth_router
     app.include_router(auth_router)
+    
     logger.info("✓ Routers registered (support, tickets, auth).")
 except Exception as e:
     logger.error(f"Failed to register routers: {e}")
+    logger.error(traceback.format_exc())
 
 # 6. WhatsApp Webhook Endpoints
 @app.get("/webhooks/whatsapp")
