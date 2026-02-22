@@ -40,6 +40,13 @@ create table if not exists knowledge_base (
     created_at timestamp with time zone default now()
 );
 
+-- SETTINGS TABLE (For persistent config/tokens)
+create table if not exists settings (
+    key text primary key,
+    value jsonb not null,
+    updated_at timestamp with time zone default now()
+);
+
 -- INDEXES for Performance
 create index if not exists idx_tickets_status on tickets(status);
 create index if not exists idx_tickets_created_at on tickets(created_at);

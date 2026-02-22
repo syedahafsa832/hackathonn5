@@ -53,9 +53,11 @@ except ImportError as e:
 try:
     from src.api.routes.support import router as support_router
     from src.api.routes.tickets import router as tickets_router
+    from src.api.routes.auth import router as auth_router
     app.include_router(support_router, prefix="/support", tags=["support"])
     app.include_router(tickets_router)
-    logger.info("✓ Routers registered (support, tickets).")
+    app.include_router(auth_router)
+    logger.info("✓ Routers registered (support, tickets, auth).")
 except ImportError as e:
     logger.error(f"Failed to register routers: {e}")
 
