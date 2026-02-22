@@ -46,15 +46,21 @@ class CustomerSuccessAgent:
             user_message = f"Customer Query: {query}"
 
             # Call AI API
-            response = self.openai_client.chat.completions.create(
-                model=self.model,
-                messages=[
+            api_kwargs = {
+                "model": self.model,
+                "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message}
                 ],
-                temperature=0.1,  # Lower temperature for strict JSON compliance
-                response_format={"type": "json_object"} if "mistral" not in self.model.lower() else None # Mistral supports JSON via prompting
-            )
+                "temperature": 0.1,
+            }
+            
+            # Use JSON mode if supported (Mistral Large supports it, and we mention JSON in prompt)
+            # Most OpenAI-compatible APIs prefer either a valid dict or omission, NOT None.
+            if "mistral" in self.model.lower() or "gpt" in self.model.lower():
+                api_kwargs["response_format"] = {"type": "json_object"}
+
+            response = self.openai_client.chat.completions.create(**api_kwargs)
 
             # Extract and parse the response
             raw_content = response.choices[0].message.content
