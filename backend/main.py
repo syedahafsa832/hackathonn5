@@ -119,11 +119,21 @@ async def startup_event():
         asyncio.create_task(ep.start())
         logger.info("✓ Background threads active.")
 
-# 8. Static File Hosting (must be last — catch-all mount)
+# 8. Test Routes for Debugging
+@app.get("/auth/test")
+async def auth_test():
+    return {"status": "Direct /auth/test works"}
+
+# 9. Static File Hosting (must be last — catch-all mount)
 static_path = "static" if os.path.exists("static") else "web-form/build"
 if os.path.exists(static_path):
-    logger.info(f"Mounting static files from {static_path}")
-    app.mount("/", StaticFiles(directory=static_path, html=True), name="static")
+    logger.info(f"Mounting static files from {static_path} at /web")
+    app.mount("/web", StaticFiles(directory=static_path, html=True), name="static")
+    
+    from fastapi.responses import RedirectResponse
+    @app.get("/")
+    async def root_redirect():
+        return RedirectResponse(url="/web/")
 
 if __name__ == "__main__":
     import uvicorn
