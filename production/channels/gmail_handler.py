@@ -74,28 +74,18 @@ class GmailHandler:
                 if creds_json:
                     try:
                         creds_data = json.loads(creds_json)
-                        # We use InstalledAppFlow but with a manual redirect URI if needed
                         flow = InstalledAppFlow.from_client_config(creds_data, SCOPES)
                         flow.redirect_uri = 'https://hackathonn5-production.up.railway.app/auth/callback'
                         
-                        # Headless Token Exchange: Check if user provided a code
-                        auth_code = os.getenv("GMAIL_TOKEN_CODE")
-                        if auth_code:
-                            logger.info("Attempting to exchange GMAIL_TOKEN_CODE for credentials...")
-                            flow.fetch_token(code=auth_code)
-                            self.creds = flow.credentials
-                            logger.info("✓ GMAIL_TOKEN_CODE successfully exchanged for token.")
-                        else:
-                            # Log URL for manual auth
-                            auth_url, _ = flow.authorization_url(prompt='consent')
-                            logger.warning("\n" + "="*60)
-                            logger.warning("AUTHORIZATION_REQUIRED: Gmail API needs setup.")
-                            logger.warning(f"Please open this URL to authorize the application:\n\n{auth_url}\n")
-                            logger.warning("After authorizing, copy the 'code' parameter from the URL")
-                            logger.warning("and set it as GMAIL_TOKEN_CODE in Railway variables.")
-                            logger.warning("="*60 + "\n")
+                        # We no longer exchange GMAIL_TOKEN_CODE here to avoid invalid_grant errors.
+                        # Instead, the user must visit /auth/google to generate a permanent token in Supabase.
+                        auth_url, _ = flow.authorization_url(prompt='consent')
+                        logger.warning("\n" + "="*60)
+                        logger.warning("GMAIL AUTHORIZATION REQUIRED")
+                        logger.warning(f"Please visit: https://hackathonn5-production.up.railway.app/auth/google")
+                        logger.warning("="*60 + "\n")
                     except Exception as e:
-                        logger.error(f"Error initializing Gmail flow: {e}")
+                        logger.error(f"Error preparing Gmail flow: {e}")
         
         if self.creds:
             self.service = build('gmail', 'v1', credentials=self.creds)
