@@ -30,6 +30,7 @@ class GmailHandler:
     def _initialize_credentials(self):
         """Initialize credentials from environment variables or Supabase."""
         # 0. Try to load from Supabase Settings Table (Primary Source of Truth for Production)
+        token_json = None
         token_data = supabase_get_setting("GMAIL_TOKEN")
         if token_data:
             try:
