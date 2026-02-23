@@ -30,6 +30,25 @@ class CustomerSuccessAgent:
             base_url=os.getenv("MISTRAL_API_BASE_URL", "https://api.mistral.ai/v1")
         )
         self.model = os.getenv("MISTRAL_MODEL", "mistral-large-latest")
+        
+        # Load Knowledge Base
+        self.kb_data = self._load_knowledge_base()
+
+    def _load_knowledge_base(self) -> Dict[str, Any]:
+        """Load company and boss info from knowledge_base.json."""
+        try:
+            kb_path = os.path.join(os.getcwd(), "backend", "knowledge_base.json")
+            if not os.path.exists(kb_path):
+                # Fallback for different CWDs
+                kb_path = os.path.join(os.getcwd(), "knowledge_base.json")
+            
+            if os.path.exists(kb_path):
+                with open(kb_path, "r") as f:
+                    return json.load(f)
+            return {}
+        except Exception as e:
+            logger.error(f"Failed to load knowledge base: {e}")
+            return {}
 
     async def process_customer_query(self, query: str, customer_info: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -55,8 +74,7 @@ class CustomerSuccessAgent:
                 "temperature": 0.1,
             }
             
-            # Use JSON mode if supported (Mistral Large supports it, and we mention JSON in prompt)
-            # Most OpenAI-compatible APIs prefer either a valid dict or omission, NOT None.
+            # Use JSON mode if supported
             if "mistral" in self.model.lower() or "gpt" in self.model.lower():
                 api_kwargs["response_format"] = {"type": "json_object"}
 
@@ -73,7 +91,7 @@ class CustomerSuccessAgent:
                     if field not in structured_response:
                         structured_response[field] = None # Or provide defaults
                 
-                # Apply escalation logic (Step 5)
+                # Apply escalation logic
                 if (structured_response.get('risk_level') == 'high' or 
                     structured_response.get('confidence_score', 0) < 75 or 
                     structured_response.get('escalate') is True):
@@ -101,19 +119,35 @@ class CustomerSuccessAgent:
             return self._get_fallback_escalation_response(str(e))
 
     def _construct_system_prompt(self, customer_info: Dict[str, Any], kb_results: Any) -> str:
+        kb_str = json.dumps(self.kb_data, indent=2)
         return f"""
-        You are a senior Customer Success AI assistant. You MUST respond ONLY with a structured JSON object.
+        You are Luna, the Customer Success AI assistant for Syeda Hafsa.
+        Syeda Hafsa is your boss. She is a N8N Certified Developer and Agentic AI expert.
 
-        Customer Name: {customer_info.get('name', 'Unknown')}
-        Customer Context: {customer_info}
-        Knowledge Base Info: {kb_results}
+        YOUR PERSONA:
+        - Name: Luna
+        - Role: Professional and intelligent assistant to Syeda Hafsa.
+        - Tone: Professional, helpful, concise, and focused on automation ROI.
+
+        BOSS BACKGROUND & KNOWLEDGE:
+        {kb_str}
+
+        PRIVACY & DATA RULES:
+        1. DO NOT dump all details about Syeda Hafsa to everyone.
+        2. Only provide specific project details or info if the user explicitly asks about them.
+        3. If a user asks who you are or who Syeda Hafsa is, give a professional introduction based on the knowledge above.
+        4. Focus on how Syeda Hafsa's AI systems can help the customer's specific problem (e.g., manual work reduction).
+
+        CUSTOMER DATA:
+        - Name: {customer_info.get('name', 'Unknown')}
+        - Context: {customer_info}
+        - Search Results: {kb_results}
 
         REQUIREMENTS:
         1. Start the reply with "Hi [First Name],"
-        2. Address the customer's specific message accurately.
-        3. Be professional and concise. No emoji spam.
-        4. Sign the email as "Luna" from the Customer Success Team.
-        5. If the issue is complex or outside the knowledge base, set escalate to true.
+        2. Address the customer's specific message accurately using the knowledge base.
+        3. Sign the email as "Luna" from the Customer Success Team.
+        4. If the issue is complex or outside the knowledge base, set escalate to true.
 
         JSON SCHEMA:
         {{

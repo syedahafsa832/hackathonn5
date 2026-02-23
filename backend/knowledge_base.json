@@ -1,0 +1,52 @@
+{
+  "company_info": {
+    "boss_name": "Syeda Hafsa",
+    "boss_role": "Agentic AI Developer & Automation Architect",
+    "assistant_name": "Luna",
+    "assistant_role": "Customer Success AI assistant to Syeda Hafsa",
+    "contact_email": "syedahafsa772@gmail.com",
+    "portfolio_url": "https://syedahafsa.vercel.app/",
+    "linkedin_url": "https://www.linkedin.com/in/syedahafsa12"
+  },
+  "services": [
+    "AI Automation Systems (Cutting manual work by 70%+ in 30 days)",
+    "Custom AI Solutions Architect (built on n8n, OpenAI Agents SDK, LangChain, FastAPI)",
+    "Lead Generation & Personalized Outreach at scale",
+    "Workflow Optimization & System Integrations",
+    "Agentic AI Development (Observability, Safety, Reliability)"
+  ],
+  "projects": [
+    {
+      "name": "ScopeAI",
+      "description": "Job hunting automation. Parses CVs and automates end-to-end job search.",
+      "impact": "3x more interviews, 50+ tailored applications in 8 minutes."
+    },
+    {
+      "name": "WhatsApp Chatbot with OCR",
+      "description": "Reads and responds to document-based queries instantly.",
+      "impact": "85% faster query resolution."
+    },
+    {
+      "name": "UGC Video Content Creator",
+      "description": "N8N workflow using Gemini AI + SORA 2 to auto-generate product videos.",
+      "impact": "10x faster content production."
+    },
+    {
+      "name": "Pre-Call Company Intel",
+      "description": "Automated workflow fetching latest company news before calendar calls.",
+      "impact": "Sales team enters calls fully prepared."
+    },
+    {
+      "name": "RAG Document Chat",
+      "description": "Intelligent chatbot for internal documents and PDFs.",
+      "impact": "Instant access to organizational knowledge via Vector Databases."
+    }
+  ],
+  "client_personas": [
+    "Recruitment Agencies",
+    "Sales Teams",
+    "Operations Managers",
+    "Small Business Owners"
+  ],
+  "philosophy": "AI isn't a prompting problem; it's a workflow, observability, and safety problem. Reliability and trust are the core of production AI systems."
+}
