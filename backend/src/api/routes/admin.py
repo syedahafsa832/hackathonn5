@@ -42,7 +42,18 @@ async def update_ai_mode(
         if not final_mode or final_mode not in ["active", "paused", "manual"]:
             raise HTTPException(status_code=400, detail=f"Invalid or missing mode. Received: {final_mode}")
             
-        supabase_update("system_settings", {"store_id": f"eq.{final_store_id}"}, {"ai_mode": final_mode})
+        # Robust Upsert: Try update, if it returns empty, it means row doesn't exist -> Insert
+        update_result = supabase_update("system_settings", {"store_id": f"eq.{final_store_id}"}, {"ai_mode": final_mode})
+        
+        if not update_result:
+            logger.info(f"No settings found for store {final_store_id}. Initializing new record.")
+            supabase_insert("system_settings", {
+                "store_id": final_store_id,
+                "ai_mode": final_mode,
+                "confidence_threshold": 0.75,
+                "data_retention_days": 180
+            })
+
         await supabase_service.log_audit(final_store_id, "mode_change", "admin", {"new_mode": final_mode})
         
         return {"status": "success", "mode": final_mode}

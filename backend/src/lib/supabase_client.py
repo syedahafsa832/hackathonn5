@@ -58,7 +58,9 @@ def supabase_update(table: str, match: dict, data: dict) -> dict:
         resp = requests.patch(_rest_url(table), headers=_headers(), params=match, json=data)
         resp.raise_for_status()
         result = resp.json()
-        return result[0] if isinstance(result, list) else result
+        if isinstance(result, list):
+            return result[0] if len(result) > 0 else {}
+        return result
     except Exception as e:
         logger.error(f"Supabase Update Error: {e}")
         raise e
