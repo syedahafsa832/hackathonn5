@@ -6,6 +6,7 @@ import uuid
 
 from src.services.supabase_service import supabase_service
 from src.agent.customer_success_agent import customer_success_agent
+from src.lib.supabase_client import supabase_select, supabase_update
 
 logger = logging.getLogger(__name__)
 
