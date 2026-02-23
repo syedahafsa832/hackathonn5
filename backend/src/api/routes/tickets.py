@@ -12,10 +12,13 @@ class TicketUpdate(BaseModel):
     ai_reply: Optional[str] = None
 
 @router.get("")
-async def list_tickets(status: Optional[str] = Query(None)):
-    """List all tickets with optional status filtering."""
+async def list_tickets(
+    status: Optional[str] = Query(None),
+    store_id: str = Query("00000000-0000-0000-0000-000000000000")
+):
+    """List all tickets with optional status filtering and store isolation."""
     try:
-        tickets = await supabase_service.get_tickets(status=status)
+        tickets = await supabase_service.get_tickets(store_id=store_id, status=status)
         return tickets
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
