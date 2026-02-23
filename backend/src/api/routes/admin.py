@@ -17,23 +17,37 @@ router = APIRouter(tags=["admin"])
 # 1. AI CONTROL CENTER (/api/ai-mode)
 # Using POST, PATCH, and PUT to be resilient to dashboard implementation
 @router.api_route("/ai-mode", methods=["POST", "PATCH", "PUT"])
-async def update_ai_mode(request: Request):
+async def update_ai_mode(
+    request: Request,
+    mode: Optional[str] = Query(None),
+    store_id: str = Query("00000000-0000-0000-0000-000000000000")
+):
     """Update operational mode for the store (active, paused, manual)."""
     try:
         logger.info(f"AI Mode Update Request: {request.method}")
-        payload = await request.json()
-        logger.info(f"Payload: {payload}")
         
-        store_id = payload.get("store_id", "00000000-0000-0000-0000-000000000000")
-        mode = payload.get("mode") # active, paused, manual
+        # Try to get data from JSON body first
+        payload = {}
+        try:
+            body = await request.body()
+            if body:
+                payload = await request.json()
+        except Exception:
+            logger.info("Empty or invalid JSON body, falling back to query parameters.")
+
+        # Priority: JSON payload > Query Parameter > Default
+        final_mode = payload.get("mode") or mode
+        final_store_id = payload.get("store_id") or store_id
         
-        if mode not in ["active", "paused", "manual"]:
-            raise HTTPException(status_code=400, detail=f"Invalid mode: {mode}")
+        if not final_mode or final_mode not in ["active", "paused", "manual"]:
+            raise HTTPException(status_code=400, detail=f"Invalid or missing mode. Received: {final_mode}")
             
-        supabase_update("system_settings", {"store_id": f"eq.{store_id}"}, {"ai_mode": mode})
-        await supabase_service.log_audit(store_id, "mode_change", "admin", {"new_mode": mode})
+        supabase_update("system_settings", {"store_id": f"eq.{final_store_id}"}, {"ai_mode": final_mode})
+        await supabase_service.log_audit(final_store_id, "mode_change", "admin", {"new_mode": final_mode})
         
-        return {"status": "success", "mode": mode}
+        return {"status": "success", "mode": final_mode}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error updating AI mode: {e}")
         raise HTTPException(status_code=500, detail=str(e))
