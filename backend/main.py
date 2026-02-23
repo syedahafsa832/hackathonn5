@@ -74,8 +74,12 @@ try:
     logger.info("Registering auth router...")
     from src.api.routes.auth import router as auth_router
     app.include_router(auth_router)
+
+    logger.info("Registering admin router...")
+    from src.api.routes.admin import router as admin_router
+    app.include_router(admin_router)
     
-    logger.info("✓ Routers registered (support, tickets, auth).")
+    logger.info("✓ Routers registered (support, tickets, auth, admin).")
 except Exception as e:
     logger.error(f"Failed to register routers: {e}")
     logger.error(traceback.format_exc())
