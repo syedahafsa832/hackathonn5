@@ -92,6 +92,16 @@ class SupabaseService:
             params["status"] = f"eq.{status}"
         return supabase_select("tickets", params)
 
+    async def get_ticket_by_id(self, ticket_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch a single ticket by ID."""
+        results = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
+        return results[0] if results else None
+
+    async def update_ticket(self, ticket_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+        """Update a ticket record."""
+        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+        return supabase_update("tickets", {"id": f"eq.{ticket_id}"}, updates)
+
     async def delete_customer_data(self, email: str, store_id: str):
         """GDPR Right to Erasure: Delete all tickets and customer records for an email."""
         # Note: In a real app, you might want to anonymize instead of delete

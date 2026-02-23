@@ -10,9 +10,10 @@ import json
 from src.services.supabase_service import supabase_service
 from src.lib.supabase_client import supabase_update, supabase_select, supabase_insert
 
-router = APIRouter(prefix="/api", tags=["admin"])
+router = APIRouter(tags=["admin"])
 
 # 1. AI CONTROL CENTER (/api/ai-mode)
+@router.post("/ai-mode/")
 @router.post("/ai-mode")
 async def update_ai_mode(request: Request):
     """Update operational mode for the store (active, paused, manual)."""
@@ -31,6 +32,7 @@ async def update_ai_mode(request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/ai-mode/")
 @router.get("/ai-mode")
 async def get_ai_mode(store_id: str = Query("00000000-0000-0000-0000-000000000000")):
     """Get current AI mode for the store."""
@@ -38,6 +40,7 @@ async def get_ai_mode(store_id: str = Query("00000000-0000-0000-0000-00000000000
     return {"mode": settings.get("ai_mode", "active"), "store_id": store_id}
 
 # 2. TICKET TAKEOVER SYSTEM (/api/tickets/:id/takeover)
+@router.post("/tickets/{id}/takeover/")
 @router.post("/tickets/{id}/takeover")
 async def takeover_ticket(id: str, request: Request):
     """Prevent further AI auto-replies for a specific ticket."""
@@ -64,6 +67,7 @@ async def takeover_ticket(id: str, request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/tickets/{id}/release/")
 @router.post("/tickets/{id}/release")
 async def release_ticket(id: str):
     """Release human takeover and return to AI control."""
@@ -79,6 +83,7 @@ async def release_ticket(id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 # 3. GDPR DELETE (/api/gdpr/delete)
+@router.delete("/gdpr/delete/")
 @router.delete("/gdpr/delete")
 async def gdpr_delete(email: str = Query(...), store_id: str = Query("00000000-0000-0000-0000-000000000000")):
     """GDPR Right to Erasure."""
@@ -90,6 +95,7 @@ async def gdpr_delete(email: str = Query(...), store_id: str = Query("00000000-0
         raise HTTPException(status_code=500, detail=str(e))
 
 # 4. DATA EXPORT (/api/export)
+@router.get("/export/")
 @router.get("/export")
 async def export_data(
     store_id: str = Query("00000000-0000-0000-0000-000000000000"),
@@ -137,11 +143,13 @@ async def export_data(
         raise HTTPException(status_code=500, detail=str(e))
 
 # 5. DATA RETENTION SETTINGS (/api/retention)
+@router.get("/retention/")
 @router.get("/retention")
 async def get_retention(store_id: str = Query("00000000-0000-0000-0000-000000000000")):
     settings = await supabase_service.get_system_settings(store_id)
     return {"data_retention_days": settings.get("data_retention_days", 180)}
 
+@router.post("/retention/")
 @router.post("/retention")
 async def update_retention(request: Request):
     try:
@@ -154,6 +162,7 @@ async def update_retention(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 # 6. AUDIT LOGS (/api/audit-logs)
+@router.get("/audit-logs/")
 @router.get("/audit-logs")
 async def get_audit_logs(store_id: str = Query("00000000-0000-0000-0000-000000000000")):
     """Get searchable, filterable audit logs."""

@@ -72,7 +72,7 @@ try:
     app.include_router(support_router, prefix="/support", tags=["support"])
     app.include_router(tickets_router)
     app.include_router(auth_router)
-    app.include_router(api_admin_router)
+    app.include_router(api_admin_router, prefix="/api")
     
     logger.info("✓ Routers registered (support, tickets, auth, api).")
 except Exception as e:
