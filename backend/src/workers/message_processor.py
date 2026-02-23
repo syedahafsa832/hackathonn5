@@ -81,13 +81,33 @@ class UnifiedMessageProcessor:
                 "escalation_reason": ai_result.get("escalation_reason")
             }
 
-            # 7. Check for Human Takeover (only if mode is 'active' or 'paused')
-            # For simplicity, we create the ticket first or use an existing conversation ID if we had one
-            # Here we'll check based on the customer's last active ticket or just assume fresh
+            # 7. Check for Human Takeover
+            # In a real app, we use a thread ID, but here we can check if any override exists for this customer/subject
+            # We'll simulate by checking if there's an active override for THIS specific ticket ID (after we know it) or a previous one.
+            # For this MVP, we perform a lookup on active overrides for the same customer email.
+            overrides = supabase_select("conversation_overrides", {
+                "active": "eq.true"
+            })
+            # Check if any active override references a ticket with same customer email
+            # (In a more robust system, we'd use a thread_id join)
             is_overridden = False
-            # (In a real implementation, we'd lookup by a predictable conversation thread ID)
+            for ov in overrides:
+                convo_id = ov.get("conversation_id")
+                # Look up ticket to see if it's the same customer
+                ov_ticket = await supabase_service.get_ticket_by_id(convo_id)
+                if ov_ticket and ov_ticket.get("customer_email") == customer_email:
+                    is_overridden = True
+                    break
 
-            # 8. Decision Logic
+            # 8. Fail-Safe Mechanism (Anomaly Detection)
+            # If AI confidence is extremely low (<10%), trigger an emergency pause
+            if confidence < 0.10:
+                logger.warning(f"Fail-Safe Triggered: Extremely low confidence ({confidence}). Pausing AI Mode.")
+                supabase_update("system_settings", {"store_id": f"eq.{store_id}"}, {"ai_mode": "paused"})
+                await supabase_service.log_audit(store_id, "fail_safe_pause", "system", {"trigger": "low_confidence", "score": confidence})
+                ai_mode = "paused" # Force state change for this run
+
+            # 9. Decision Logic
             should_auto_reply = False
             if ai_mode == "paused":
                 logger.info("AI Mode: Paused. Storing draft but NOT sending.")
@@ -105,10 +125,10 @@ class UnifiedMessageProcessor:
                     logger.info(f"Low confidence ({confidence}) or escalation requested. Routing to human.")
                     ticket_payload["status"] = "escalated"
 
-            # 9. Store Ticket
+            # 10. Store Ticket
             ticket = await supabase_service.create_ticket(ticket_payload)
             
-            # 10. Send Response if allowed
+            # 11. Send Response if allowed
             if should_auto_reply:
                 await self.send_email_response(customer_email, subject, ai_result)
 
