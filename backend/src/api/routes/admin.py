@@ -114,6 +114,44 @@ async def release_ticket(id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# 2.5 SEND DRAFT (/api/tickets/:id/send-draft)
+@router.post("/tickets/{id}/send-draft")
+@router.post("/tickets/{id}/send-draft/")
+async def send_draft(id: str, request: Request):
+    """Manually approve and send an AI-generated draft."""
+    try:
+        payload = await request.json()
+        body_override = payload.get("reply_body")
+        
+        # 1. Fetch ticket
+        ticket = await supabase_service.get_ticket_by_id(id)
+        if not ticket:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+            
+        draft_content = body_override or ticket.get("ai_draft")
+        if not draft_content:
+            raise HTTPException(status_code=400, detail="No draft content found to send")
+
+        # 2. Send via Gmail handler
+        from production.channels.gmail_handler import gmail_handler
+        await gmail_handler.send_reply(
+            to_email=ticket.get("customer_email"),
+            subject=f"Re: {ticket.get('subject')}",
+            body=draft_content
+        )
+
+        # 3. Update ticket
+        await supabase_service.update_ticket(id, {
+            "ai_reply": draft_content,
+            "status": "auto_resolved",
+            "ai_draft": None # Clear draft
+        })
+
+        return {"status": "success", "message": "Draft sent successfully."}
+    except Exception as e:
+        logger.error(f"Error sending draft: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # 3. GDPR DELETE (/api/gdpr/delete)
 @router.delete("/gdpr/delete")
 async def gdpr_delete(email: str = Query(...), store_id: str = Query("00000000-0000-0000-0000-000000000000")):
