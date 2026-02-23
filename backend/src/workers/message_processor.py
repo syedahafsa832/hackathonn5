@@ -111,8 +111,12 @@ class UnifiedMessageProcessor:
             # 9. Decision Logic
             should_auto_reply = False
             if ai_mode == "paused":
-                logger.info("AI Mode: Paused. Storing draft but NOT sending.")
-                ticket_payload["ai_draft"] = ai_result.get("reply_body")
+                logger.info(f"AI Mode: Paused. Storing draft but NOT sending. AI Result keys: {list(ai_result.keys())}")
+                draft_content = ai_result.get("reply_body")
+                if not draft_content:
+                    logger.warning("AI suggested a response but 'reply_body' was empty or missing.")
+                
+                ticket_payload["ai_draft"] = draft_content
                 ticket_payload["status"] = "ai_suggested"
             elif ai_mode == "active":
                 if is_overridden:
@@ -127,7 +131,9 @@ class UnifiedMessageProcessor:
                     ticket_payload["status"] = "escalated"
 
             # 10. Store Ticket
+            logger.info(f"Creating ticket for {customer_email} in store {store_id}. Status: {ticket_payload.get('status')}")
             ticket = await supabase_service.create_ticket(ticket_payload)
+            logger.info(f"✓ Ticket created with ID: {ticket.get('id') if ticket else 'ERROR'}")
             
             # 11. Send Response if allowed
             if should_auto_reply:

@@ -120,7 +120,17 @@ async def release_ticket(id: str):
 async def send_draft(id: str, request: Request):
     """Manually approve and send an AI-generated draft."""
     try:
-        payload = await request.json()
+        logger.info(f"Send Draft Request for Ticket: {id}")
+        
+        # Robust body parsing
+        payload = {}
+        try:
+            body = await request.body()
+            if body:
+                payload = await request.json()
+        except Exception:
+            logger.info("Empty or invalid JSON body in send-draft, using stored draft only.")
+
         body_override = payload.get("reply_body")
         
         # 1. Fetch ticket
@@ -130,7 +140,8 @@ async def send_draft(id: str, request: Request):
             
         draft_content = body_override or ticket.get("ai_draft")
         if not draft_content:
-            raise HTTPException(status_code=400, detail="No draft content found to send")
+            logger.warning(f"Draft content missing for ticket {id}")
+            raise HTTPException(status_code=400, detail="No draft content found to send. The AI may not have generated a response yet.")
 
         # 2. Send via Gmail handler
         from production.channels.gmail_handler import gmail_handler
@@ -148,6 +159,8 @@ async def send_draft(id: str, request: Request):
         })
 
         return {"status": "success", "message": "Draft sent successfully."}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error sending draft: {e}")
         raise HTTPException(status_code=500, detail=str(e))
