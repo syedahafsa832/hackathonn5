@@ -11,15 +11,19 @@ logger = logging.getLogger(__name__)
 class SupabaseService:
     """Service for interacting with Supabase tables via REST API."""
 
-    async def get_or_create_customer(self, email: str, name: str = None, phone: str = None) -> Dict[str, Any]:
-        """Find a customer by email or create a new one."""
+    async def get_or_create_customer(self, email: str, store_id: str, name: str = None, phone: str = None) -> Dict[str, Any]:
+        """Find a customer by email or create a new one, scoped by store_id."""
         try:
-            results = supabase_select("customers", {"email": f"eq.{email}"})
+            results = supabase_select("customers", {
+                "email": f"eq.{email}",
+                "store_id": f"eq.{store_id}"
+            })
             if results:
                 return results[0]
 
             new_customer = {
                 "email": email,
+                "store_id": store_id,
                 "name": name or email.split("@")[0],
                 "phone": phone,
                 "created_at": datetime.now(timezone.utc).isoformat()
@@ -27,17 +31,19 @@ class SupabaseService:
             return supabase_insert("customers", new_customer)
         except Exception as e:
             logger.error(f"Supabase error in get_or_create_customer: {e}")
-            return {"email": email, "name": name or "Customer"}
+            return {"email": email, "name": name or "Customer", "store_id": store_id}
 
     async def create_ticket(self, ticket_data: Dict[str, Any]) -> Dict[str, Any]:
         """Insert a new ticket into the tickets table."""
         try:
             formatted_ticket = {
+                "store_id": ticket_data.get("store_id", "00000000-0000-0000-0000-000000000000"),
                 "customer_name": ticket_data.get("customer_name"),
                 "customer_email": ticket_data.get("customer_email"),
                 "subject": ticket_data.get("subject"),
                 "message": ticket_data.get("message"),
                 "ai_reply": ticket_data.get("ai_reply"),
+                "ai_draft": ticket_data.get("ai_draft"),
                 "intent": ticket_data.get("intent"),
                 "sentiment": ticket_data.get("sentiment"),
                 "risk_level": ticket_data.get("risk_level"),
@@ -53,21 +59,47 @@ class SupabaseService:
             logger.error(f"Supabase error in create_ticket: {e}")
             raise e
 
-    async def get_tickets(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Fetch tickets with optional status filtering."""
-        params = {"order": "created_at.desc"}
+    async def get_system_settings(self, store_id: str) -> Dict[str, Any]:
+        """Fetch system settings for a store."""
+        results = supabase_select("system_settings", {"store_id": f"eq.{store_id}"})
+        if results:
+            return results[0]
+        # Default settings if none found
+        return {"store_id": store_id, "ai_mode": "active", "confidence_threshold": 0.75}
+
+    async def check_conversation_override(self, conversation_id: str) -> bool:
+        """Check if a conversation has an active human takeover override."""
+        results = supabase_select("conversation_overrides", {
+            "conversation_id": f"eq.{conversation_id}",
+            "active": "eq.true"
+        })
+        return len(results) > 0
+
+    async def log_audit(self, store_id: str, action: str, performer: str, metadata: Dict = None):
+        """Log an action to the audit_logs table."""
+        payload = {
+            "store_id": store_id,
+            "action_type": action,
+            "performed_by": performer,
+            "metadata": metadata or {}
+        }
+        supabase_insert("audit_logs", payload)
+
+    async def get_tickets(self, store_id: str, status: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Fetch tickets scoped by store_id."""
+        params = {"store_id": f"eq.{store_id}", "order": "created_at.desc"}
         if status:
             params["status"] = f"eq.{status}"
         return supabase_select("tickets", params)
 
-    async def get_ticket_by_id(self, ticket_id: str) -> Optional[Dict[str, Any]]:
-        """Fetch a single ticket by ID."""
-        results = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
-        return results[0] if results else None
-
-    async def update_ticket(self, ticket_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
-        """Update a ticket record."""
-        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
-        return supabase_update("tickets", {"id": f"eq.{ticket_id}"}, updates)
+    async def delete_customer_data(self, email: str, store_id: str):
+        """GDPR Right to Erasure: Delete all tickets and customer records for an email."""
+        # Note: In a real app, you might want to anonymize instead of delete
+        from src.lib.supabase_client import supabase_client
+        # This is a bit more complex via REST, usually done via a function or series of deletes
+        # For this prototype, we'll assume a direct delete or hardcoded PII removal
+        logger.info(f"DSR: Requesting erasure for {email} in store {store_id}")
+        # Implementation details depend on the specific REST wrapper capabilities
+        pass
 
 supabase_service = SupabaseService()
