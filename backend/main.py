@@ -64,17 +64,18 @@ except Exception as e:
 # 5. Router Registration — also wrapped for safety
 try:
     logger.info("Registering API routers...")
+    from src.api.routes.admin import router as api_admin_router
     from src.api.routes.support import router as support_router
     from src.api.routes.tickets import router as tickets_router
     from src.api.routes.auth import router as auth_router
-    from src.api.routes.admin import router as api_admin_router
     
+    # Priority routers first
+    app.include_router(api_admin_router, prefix="/api")
     app.include_router(support_router, prefix="/support", tags=["support"])
     app.include_router(tickets_router)
     app.include_router(auth_router)
-    app.include_router(api_admin_router, prefix="/api")
     
-    logger.info("✓ Routers registered (support, tickets, auth, api).")
+    logger.info("✓ Routers registered (api, support, tickets, auth).")
 except Exception as e:
     logger.error(f"Failed to register routers: {e}")
     logger.error(traceback.format_exc())

@@ -6,41 +6,49 @@ import csv
 import io
 from fastapi.responses import StreamingResponse
 import json
+import logging
 
 from src.services.supabase_service import supabase_service
 from src.lib.supabase_client import supabase_update, supabase_select, supabase_insert
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["admin"])
 
 # 1. AI CONTROL CENTER (/api/ai-mode)
-@router.post("/ai-mode/")
-@router.post("/ai-mode")
+# Using POST, PATCH, and PUT to be resilient to dashboard implementation
+@router.api_route("/ai-mode", methods=["POST", "PATCH", "PUT"])
 async def update_ai_mode(request: Request):
     """Update operational mode for the store (active, paused, manual)."""
     try:
+        logger.info(f"AI Mode Update Request: {request.method}")
         payload = await request.json()
+        logger.info(f"Payload: {payload}")
+        
         store_id = payload.get("store_id", "00000000-0000-0000-0000-000000000000")
         mode = payload.get("mode") # active, paused, manual
         
         if mode not in ["active", "paused", "manual"]:
-            raise HTTPException(status_code=400, detail="Invalid mode")
+            raise HTTPException(status_code=400, detail=f"Invalid mode: {mode}")
             
         supabase_update("system_settings", {"store_id": f"eq.{store_id}"}, {"ai_mode": mode})
         await supabase_service.log_audit(store_id, "mode_change", "admin", {"new_mode": mode})
         
         return {"status": "success", "mode": mode}
     except Exception as e:
+        logger.error(f"Error updating AI mode: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/ai-mode/")
 @router.get("/ai-mode")
 async def get_ai_mode(store_id: str = Query("00000000-0000-0000-0000-000000000000")):
     """Get current AI mode for the store."""
-    settings = await supabase_service.get_system_settings(store_id)
-    return {"mode": settings.get("ai_mode", "active"), "store_id": store_id}
+    try:
+        settings = await supabase_service.get_system_settings(store_id)
+        return {"mode": settings.get("ai_mode", "active"), "store_id": store_id}
+    except Exception as e:
+        logger.error(f"Error fetching AI mode: {e}")
+        return {"mode": "active", "store_id": store_id, "error": str(e)}
 
 # 2. TICKET TAKEOVER SYSTEM (/api/tickets/:id/takeover)
-@router.post("/tickets/{id}/takeover/")
 @router.post("/tickets/{id}/takeover")
 async def takeover_ticket(id: str, request: Request):
     """Prevent further AI auto-replies for a specific ticket."""
@@ -67,7 +75,6 @@ async def takeover_ticket(id: str, request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/tickets/{id}/release/")
 @router.post("/tickets/{id}/release")
 async def release_ticket(id: str):
     """Release human takeover and return to AI control."""
@@ -83,7 +90,6 @@ async def release_ticket(id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 # 3. GDPR DELETE (/api/gdpr/delete)
-@router.delete("/gdpr/delete/")
 @router.delete("/gdpr/delete")
 async def gdpr_delete(email: str = Query(...), store_id: str = Query("00000000-0000-0000-0000-000000000000")):
     """GDPR Right to Erasure."""
@@ -95,7 +101,6 @@ async def gdpr_delete(email: str = Query(...), store_id: str = Query("00000000-0
         raise HTTPException(status_code=500, detail=str(e))
 
 # 4. DATA EXPORT (/api/export)
-@router.get("/export/")
 @router.get("/export")
 async def export_data(
     store_id: str = Query("00000000-0000-0000-0000-000000000000"),
@@ -143,13 +148,11 @@ async def export_data(
         raise HTTPException(status_code=500, detail=str(e))
 
 # 5. DATA RETENTION SETTINGS (/api/retention)
-@router.get("/retention/")
 @router.get("/retention")
 async def get_retention(store_id: str = Query("00000000-0000-0000-0000-000000000000")):
     settings = await supabase_service.get_system_settings(store_id)
     return {"data_retention_days": settings.get("data_retention_days", 180)}
 
-@router.post("/retention/")
 @router.post("/retention")
 async def update_retention(request: Request):
     try:
@@ -162,7 +165,6 @@ async def update_retention(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 # 6. AUDIT LOGS (/api/audit-logs)
-@router.get("/audit-logs/")
 @router.get("/audit-logs")
 async def get_audit_logs(store_id: str = Query("00000000-0000-0000-0000-000000000000")):
     """Get searchable, filterable audit logs."""
