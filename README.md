@@ -8,31 +8,30 @@ This project delivers a production-ready, multi-channel **Customer Success AI Ag
 
 ## 🧠 Agent Logic Flow
 
-The core of the system is an event-driven orchestrator that ensures every message is processed with precision, context, and safety.
+The core of the system is a streamlined, Supabase-centric architecture that ensures every message is processed with precision and safety.
 
 ```mermaid
 graph TD
     A[Incoming Message] -->|Channel Specific| B(API Gateway)
-    B -->|Publish Event| C[Kafka Topic: fte.incoming]
-    C -->|Consume| D(Unified Message Processor)
-    D -->|Context Retrieval| E[(PostgreSQL + pgvector)]
-    D -->|Agent Analysis| F{Mistral AI Agent}
-    F -->|Sentiment & Intent| G{Decision Tree}
+    B -->|Direct Process| C(Unified Message Processor)
+    C -->|Context Retrieval| D[(Supabase + pgvector)]
+    C -->|Agent Analysis| E{Mistral AI Agent}
+    E -->|Sentiment & Intent| F{Decision Tree}
 
-    G -->|High Confidence & Safety OK| H[Auto-Reply]
-    G -->|Low Confidence or Trigger Match| I[Escalate to Human]
-    G -->|System Error| J[Emergency Fallback]
+    F -->|High Confidence & Safety OK| G[Auto-Reply]
+    F -->|Low Confidence or Trigger Match| H[Escalate to Human]
+    F -->|System Error| I[Emergency Fallback]
 
-    H -->|Deliver| K[Outbound Channel]
-    I -->|Create Ticket| L[Dashboard: Requires Human]
-    J -->|Log & Notify| M[Admin Alert]
+    G -->|Deliver| J[Outbound Channel]
+    H -->|Create Ticket| K[Supabase: Tickets Table]
+    I -->|Log & Notify| L[Admin Alert]
 ```
 
 ### The Processing Cycle
 
 1.  **Ingestion**: Messages from WhatsApp (Twilio), Email (Gmail SMTP/IMAP), or Web Forms are unified into a standard format.
-2.  **Decoupling**: Kafka ensures that the system stays responsive even during traffic spikes.
-3.  **Contextualization**: The system uses `pgvector` to perform semantic searches over the knowledge base and retrieves historical context for the customer.
+2.  **Orchestration**: The `UnifiedMessageProcessor` handles the logic flow directly, ensuring immediate processing and response.
+3.  **Contextualization**: The system uses **Supabase** with `pgvector` to perform semantic searches over the knowledge base and retrieve historical customer data.
 4.  **Reasoning**: Mistral AI analyzes the message for intent, sentiment, and risk levels.
 
 ---
@@ -54,25 +53,25 @@ The agent is designed with a "Safety First" philosophy. It automatically escalat
 
 ## 🔒 Security & PII Handling
 
-Data protection is baked into the architecture, not bolted on.
+Data protection is integrated into every layer of our Supabase-backed architecture.
 
-- **PII Scrubbing**: The system is designed to minimize the storage of Personally Identifiable Information (PII).
+- **PII Scrubbing**: The system minimizes the storage of Personally Identifiable Information (PII).
 - **GDPR Compliance**: Includes a `GDPRRetentionWorker` that automatically anonymizes or deletes ticket data older than a configurable period (default: 180 days).
 - **Encryption**:
   - **In Transit**: TLS 1.3 for all API and database communications.
-  - **At Rest**: AES-256 encryption via Supabase/PostgreSQL managed storage.
-- **Audit Logging**: Every action (mode changes, human takeovers, AI replies) is logged in the `audit_logs` table for compliance tracking.
+  - **At Rest**: AES-256 encryption via **Supabase** managed PostgreSQL.
+- **Audit Logging**: Every action (mode changes, human takeovers, AI replies) is logged in the Supabase `audit_logs` table.
 
 ---
 
 ## ⚡ High-Performance Architecture
 
-We achieved sustained response times of **under 5 seconds** (frequently < 2s for simple queries) through several architectural choices:
+We achieve response times of **under 5 seconds** through direct integration and optimization:
 
-1.  **Async Everything**: Built on **FastAPI** and `asyncio`, the system never blocks on I/O operations (DB, Kafka, or AI APIs).
-2.  **Event-Driven Scaling**: Kafka allows us to scale the worker layer independently of the API layer. We can spin up multiple `UnifiedMessageProcessor` instances to handle 1000+ requests/minute.
-3.  **Semantic Search Optimization**: Instead of slow keyword searches, we use `pgvector` for O(1) similarity searches across thousands of knowledge base articles.
-4.  **Connection Pooling**: SQLAlchemy async pools ensure database connections are reused efficiently, preventing overhead on high-load cycles.
+1.  **Async FastAPI**: Built on `asyncio`, the system handles concurrent requests without blocking.
+2.  **Supabase Efficiency**: By using Supabase's managed PostgreSQL, we benefit from optimized connection pooling and high-availability infrastructure.
+3.  **Semantic Search**: `pgvector` on Supabase allows for fast, O(1) similarity searches across the knowledge base.
+4.  **Simplified Stack**: Removing Kafka reduced architectural complexity and network hops, further decreasing end-to-end latency for real-time channels like WhatsApp.
 
 ---
 
@@ -81,8 +80,8 @@ We achieved sustained response times of **under 5 seconds** (frequently < 2s for
 - **Languages**: Python 3.9+, JavaScript (React)
 - **Frameworks**: FastAPI, Next.js
 - **Intelligence**: Mistral AI (Mistral-Large-Latest)
-- **Data**: PostgreSQL with `pgvector`
-- **Queue**: Apache Kafka
+- **Unified Backend**: **Supabase** (PostgreSQL + Auth + Realtime)
+- **Vector DB**: `pgvector` (via Supabase)
 - **Infrastructure**: Docker, Kubernetes, Railway
 
 ---
@@ -91,7 +90,7 @@ We achieved sustained response times of **under 5 seconds** (frequently < 2s for
 
 ### Quick Start
 
-Run the integrated setup script to get everything running in minutes:
+Run the integrated setup script:
 
 ```bash
 chmod +x quick_start.sh
@@ -103,7 +102,7 @@ chmod +x quick_start.sh
 1.  **Clone & Configure**:
     ```bash
     cp .env.example .env
-    # Add your MISTRAL_API_KEY and SUPABASE_URL
+    # Add your MISTRAL_API_KEY and SUPABASE_URL/KEY
     ```
 2.  **Launch**:
     ```bash
@@ -119,6 +118,3 @@ To use the live email channel:
 1.  Enable 2FA on your Gmail account.
 2.  Generate an [App Password](https://myaccount.google.com/apppasswords).
 3.  Set `SUPPORT_EMAIL_ADDRESS` and `EMAIL_PASSWORD` in your `.env`.
-
-> [!NOTE]
-> The system polls Gmail every 30 seconds and maintains conversation threads automatically.
