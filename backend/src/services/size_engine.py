@@ -3,7 +3,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-class SizeEngine:
+class SizeEngineV3:
     """
     Deterministic size recommendation engine.
     Calculates size based on user measurements and product garment specs.
@@ -25,63 +25,65 @@ class SizeEngine:
                 "fit_type": str ("slim", "relaxed", "cropped", "oversized"),
                 "stretch_level": int (0 to 3),
                 "size_chart": dict (Optional mapping of sizes to measurements)
-            }
+        Inputs: 
+          - user_profile: {height (cm), weight (kg), build_type, fit_preference}
+          - product_data: {fit_type, stretch_level, model_height, variants}
         """
         try:
-            height = user_profile.get("height", 175)
-            weight = user_profile.get("weight", 75)
-            build = user_profile.get("build_type", "average")
-            preference = user_profile.get("fit_preference", "true")
+            height = user_profile.get("height")
+            weight = user_profile.get("weight")
+            fit_type = product_data.get("fit_type", "tailored")
+            stretch = product_data.get("stretch_level", 0)
             
-            fit_type = product_data.get("fit_type", "relaxed")
-            stretch = product_data.get("stretch_level", 1)
+            if not height or not weight:
+                return {"error": "Missing biometric data (height/weight) for sizing recommendation."}
+
+            # 1. Base BMI-based sizing (Standard starting point)
+            bmi = weight / ((height / 100) ** 2)
             
-            # 1. Base Size Estimation (Weight-based anchor)
-            if weight < 60: base = "S"
-            elif 60 <= weight < 75: base = "M"
-            elif 75 <= weight < 90: base = "L"
-            elif 90 <= weight < 105: base = "XL"
-            else: base = "XXL"
+            # Simple BMI brackets for Aurelio & Finch standard blocks
+            if bmi < 18.5: base_size = "XS"
+            elif 18.5 <= bmi < 23: base_size = "S"
+            elif 23 <= bmi < 27: base_size = "M"
+            elif 27 <= bmi < 31: base_size = "L"
+            elif 31 <= bmi < 35: base_size = "XL"
+            else: base_size = "XXL"
+
+            # 2. Adjust for Fit Type
+            size_chart = ["XS", "S", "M", "L", "XL", "XXL"]
+            current_index = size_chart.index(base_size)
             
-            # 2. Adjustments per industry standard physics
-            # build_shift: how many sizes to move based on body type
-            build_shift = {"slim": -1, "average": 0, "athletic": 0, "heavier": 1}
-            # pref_shift: how many sizes to move based on wearer's desire
-            pref_shift = {"tight": -1, "true": 0, "loose": 1}
-            # fit_shift: how the garment's own cut affects fit (slim fit needs sizing up)
-            fit_shift = {"slim": 1, "relaxed": -1, "cropped": 0, "oversized": -1}
+            # If slim fit and they want comfort, size up
+            if fit_type == "slim" and user_profile.get("fit_preference") == "relaxed":
+                current_index = min(len(size_chart)-1, current_index + 1)
             
-            total_shift = build_shift.get(build, 0) + pref_shift.get(preference, 0) + fit_shift.get(fit_type, 0)
-            
-            # 3. Final Size Calculation
-            sizes = ["XS", "S", "M", "L", "XL", "XXL"]
-            base_idx = sizes.index(base)
-            final_idx = max(0, min(len(sizes)-1, base_idx + total_shift))
-            recommended_size = sizes[final_idx]
-            
-            # 4. Confidence Score (Stretch improves probability of fit)
-            # High stretch (3) = High probability (0.95), No stretch (0) = Lower probability (0.75)
-            probability_score = 0.75 + (stretch * 0.05)
-            if preference == "true": probability_score += 0.05
-            
-            reasoning = (
-                f"Based on a {build} build and {height}cm height, we anchored at {base}. "
-                f"Adjusted for {fit_type} fit and {preference} preference. "
-                f"{'High stretch fabric' if stretch > 1 else 'Low stretch fabric'} factored into fit flexibility."
-            )
-            
+            # If relaxed fit and they want sharp look, size down
+            if fit_type == "relaxed" and user_profile.get("fit_preference") == "slim":
+                current_index = max(0, current_index - 1)
+
+            # 3. Height Bias Adjustment
+            # Over 188cm (6'2"), we add a height warning
+            height_warning = None
+            if height > 188:
+                height_warning = "Note: You are taller than our standard model. Recommending 'Tall' variant if available."
+
+            # 4. Stretch Adjustment
+            # Stretch 3 (High) allows for tighter fits without discomfort
+            reproducibility = 0.85 # Confidence score
+            if stretch >= 3:
+                reproducibility = 0.95
+
+            recommended_size = size_chart[current_index]
+
             return {
+                "success": True,
                 "recommended_size": recommended_size,
-                "probability_score": round(probability_score, 2),
-                "reasoning_summary": reasoning
-            }
-            
-        except Exception as e:
-            logger.error(f"Size engine error: {e}")
-            return {
-                "recommended_size": "M", # Safe default
-                "probability_score": 0.5,
-                "reasoning_summary": "Defaulted due to processing error."
+                "confidence": reproducibility,
+                "reasoning": f"Based on your BMI ({bmi:.1f}) and the {fit_type} fit profile. {height_warning or ''}"
             }
 
-size_engine = SizeEngine()
+        except Exception as e:
+            logger.error(f"Sizing Engine Error: {e}")
+            return {"error": "Calculation error in sizing engine."}
+
+size_engine = SizeEngineV3()

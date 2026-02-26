@@ -45,6 +45,8 @@ def supabase_insert(table: str, data: dict) -> dict:
     """INSERT a row into a Supabase table. Returns the created row."""
     try:
         resp = requests.post(_rest_url(table), headers=_headers(), json=data)
+        if resp.status_code >= 400:
+            logger.error(f"Supabase Insert Error Body: {resp.text}")
         resp.raise_for_status()
         result = resp.json()
         return result[0] if isinstance(result, list) else result
