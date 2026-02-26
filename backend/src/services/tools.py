@@ -92,17 +92,25 @@ class V3Tools:
             return {"error": "AfterShip integration not configured."}
             
         try:
-            url = f"https://api.aftership.com/v4/trackings/{tracking_number}"
-            resp = requests.get(url, headers={"aftership-api-key": self.aftership_key})
+            # V4 Tracking API requires as-api-key and versioned URL
+            url = f"https://api.aftership.com/tracking/2024-10/trackings/{tracking_number}"
+            headers = {
+                "as-api-key": self.aftership_key,
+                "Content-Type": "application/json"
+            }
+            resp = requests.get(url, headers=headers)
+            
             if resp.status_code == 200:
                 data = resp.json()["data"]["tracking"]
                 return {
                     "success": True,
                     "status": data.get("tag"), # e.g. InTransit, Delivered
                     "location": data.get("location"),
-                    "last_checkpoint": data.get("checkpoints", [{}])[-1].get("message"),
+                    "last_checkpoint": data.get("checkpoints", [{}])[-1].get("message") if data.get("checkpoints") else "No checkpoints yet.",
                     "expected_delivery": data.get("expected_delivery")
                 }
+            
+            logger.warning(f"AfterShip Tracking Not Found ({tracking_number}): {resp.text}")
             return {"error": "Tracking number not found in AfterShip."}
         except Exception as e:
             logger.error(f"Tool error [get_shipping_status]: {e}")

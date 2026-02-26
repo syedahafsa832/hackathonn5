@@ -72,15 +72,19 @@ class CustomerSuccessAgent:
             if not rag_context: confidence -= 0.3
             if sentiment["label"] == "negative": confidence -= 0.15
             
+            # Boost for standard, low-risk intents
+            if structured.get("intent") in ["order_status_inquiry", "shipping_inquiry", "sizing_inquiry"] and structured.get("risk_level") == "low":
+                confidence += 0.05
+
             confidence_out_of_100 = int(max(0, min(1, confidence)) * 100)
             structured["confidence_score"] = confidence_out_of_100
 
-            # 5. Escalation Thresholds
+            # 5. Escalation Thresholds (70% / 10%)
             if confidence_out_of_100 < 10:
                 logger.critical(f"FAIL-SAFE: Confidence {confidence_out_of_100}% < 10%. Pausing AI.")
                 structured["status"] = "paused"
                 structured["escalate"] = True
-            elif confidence_out_of_100 < 75 or structured.get("risk_level") == "high":
+            elif confidence_out_of_100 < 70 or structured.get("risk_level") == "high":
                 structured["status"] = "escalated"
                 structured["escalate"] = True
             else:
@@ -118,7 +122,7 @@ class CustomerSuccessAgent:
         1. USE RAG: Only answer based on the provided context. If unsure, escalate.
         2. NO GUESSING: Never guess inventory levels or shipping dates.
         3. SIZE ENGINE: If a customer asks for a size recommendation, explain that you use a deterministic sizing engine. Ask for their height (cm), weight (kg), and fit preference if not provided.
-        4. ESCALATE: Always set escalate=true if the customer is frustrated or if confidence is low.
+        4. ESCALATE: Always set escalate=true if the customer is frustrated or if confidence is low (below 70%).
 
         OUTPUT JSON ONLY:
         {{
