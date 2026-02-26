@@ -64,7 +64,74 @@ class ShopifySyncService:
             else:
                 url = None
         
-        logger.info("Shopify sync completed.")
+        logger.info("Shopify product sync completed.")
+
+    async def sync_all_orders(self, store_id: str = "00000000-0000-0000-0000-000000000000"):
+        """Pull recent orders from Shopify and sync their tracking info."""
+        if not self.shop_name or not self.access_token:
+            logger.error("Shopify credentials missing. Order sync aborted.")
+            return
+
+        logger.info(f"Starting Shopify order sync for {self.shop_name}...")
+        url = f"{self.base_url}/orders.json"
+        params = {"limit": 50, "status": "any"}
+        
+        while url:
+            resp = requests.get(url, headers=self.headers, params=params)
+            if resp.status_code != 200:
+                logger.error(f"Failed to fetch orders: {resp.text}")
+                break
+            
+            data = resp.json()
+            orders = data.get("orders", [])
+            for o in orders:
+                await self.sync_single_order(o, store_id)
+                await asyncio.sleep(0.1)
+            
+            # Pagination
+            link_header = resp.headers.get("Link")
+            if link_header and 'rel="next"' in link_header:
+                parts = link_header.split(",")
+                for part in parts:
+                    if 'rel="next"' in part:
+                        url = part.split(";")[0].strip("< >")
+                        params = {} 
+                        break
+            else:
+                url = None
+        
+        logger.info("Shopify order sync completed.")
+
+    async def sync_single_order(self, shopify_order: Dict[str, Any], store_id: str):
+        """Normalize and upsert a single order and its tracking."""
+        try:
+            # Extract tracking from the first fulfillment that has one
+            tracking_number = None
+            fulfillments = shopify_order.get("fulfillments", [])
+            if fulfillments:
+                for f in fulfillments:
+                    if f.get("tracking_number"):
+                        tracking_number = f["tracking_number"]
+                        break
+
+            o_payload = {
+                "store_id": store_id,
+                "shopify_order_id": shopify_order["id"],
+                "order_number": str(shopify_order["order_number"]),
+                "status": shopify_order.get("fulfillment_status", "unfulfilled"),
+                "total_amount": float(shopify_order["total_price"]),
+                "tracking_number": tracking_number,
+                "last_updated": datetime.now(timezone.utc).isoformat()
+            }
+
+            existing = supabase_select("orders", {"shopify_order_id": f"eq.{o_payload['shopify_order_id']}"})
+            if existing:
+                supabase_update("orders", {"id": f"eq.{existing[0]['id']}"}, o_payload)
+            else:
+                supabase_insert("orders", o_payload)
+
+        except Exception as e:
+            logger.error(f"Error syncing order {shopify_order.get('id')}: {e}")
 
     async def sync_single_product(self, shopify_product: Dict[str, Any], store_id: str):
         """Normalize, embed, and upsert a single product and its variants."""
