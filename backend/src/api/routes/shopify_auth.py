@@ -51,17 +51,23 @@ async def shopify_install(shop: str = Query(...)):
 
 @router.get("/new-install")
 async def shopify_callback(
-    code: str = Query(...),
-    shop: str = Query(...),
-    state: str = Query(...)
+    code: Optional[str] = Query(None),
+    shop: Optional[str] = Query(None),
+    state: Optional[str] = Query(None)
 ):
     """
     Step 2: Handle callback from Shopify, exchange code for permanent access token.
     """
+    if not shop:
+        return JSONResponse(status_code=400, content={"error": "Missing 'shop' parameter. Please start from the /install endpoint."})
+    
     logger.info(f"Received Shopify callback for shop: {shop}")
     
-    if not code or not shop:
-        raise HTTPException(status_code=400, detail="Missing code or shop parameter")
+    if not code:
+        return JSONResponse(status_code=400, content={"error": "Missing 'code' parameter. Shopify authorization failed or was cancelled."})
+    
+    if not state:
+        return JSONResponse(status_code=400, content={"error": "Missing 'state' parameter. This is required for security (CSRF)."})
         
     # 0. Validate State (CSRF Protection)
     if state not in OAUTH_STATES:
