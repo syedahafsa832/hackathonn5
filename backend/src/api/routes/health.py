@@ -32,25 +32,23 @@ async def health_check():
     except Exception:
         services_status["database"] = "error"
 
-    # Check if Grok API key is configured
+    # Check if Shopify is configured
     try:
-        grok_key = os.getenv("GROK_API_KEY")
-        if grok_key and len(grok_key) > 10:  # Basic check for key presence
-            services_status["grok_api"] = "ok"
+        if os.getenv("SHOPIFY_ACCESS_TOKEN") and os.getenv("SHOPIFY_SHOP_NAME"):
+            services_status["shopify"] = "ok"
         else:
-            services_status["grok_api"] = "warning"
+            services_status["shopify"] = "warning"
     except Exception:
-        services_status["grok_api"] = "error"
+        services_status["shopify"] = "error"
 
-    # Check if Kafka is configured
+    # Check if AfterShip is configured
     try:
-        kafka_brokers = os.getenv("KAFKA_BOOTSTRAP_SERVERS")
-        if kafka_brokers:
-            services_status["kafka"] = "ok"
+        if os.getenv("AFTERSHIP_API_KEY"):
+            services_status["aftership"] = "ok"
         else:
-            services_status["kafka"] = "warning"  # Warning if not configured but not critical
+            services_status["aftership"] = "warning"
     except Exception:
-        services_status["kafka"] = "error"
+        services_status["aftership"] = "error"
 
     # Overall status based on critical services
     critical_services_down = [
