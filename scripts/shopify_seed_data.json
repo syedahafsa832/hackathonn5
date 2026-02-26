@@ -1,0 +1,28 @@
+[
+  {
+    "title": "Essential Hoodie V1",
+    "description": "A high-end hoodie made from Organic Cotton. Fit: slim.",
+    "fabric": "Organic Cotton",
+    "fit_type": "slim",
+    "stretch_level": 1,
+    "model_height": "6'1\"",
+    "size_chart": {
+      "XS": {"chest": "34-36", "waist": "28-30"},
+      "S": {"chest": "36-38", "waist": "30-32"},
+      "M": {"chest": "38-40", "waist": "32-34"},
+      "L": {"chest": "40-42", "waist": "34-36"},
+      "XL": {"chest": "42-44", "waist": "36-38"}
+    },
+    "variants": [
+      {"sku": "HD-1-XS", "price": "120.00", "size": "XS"},
+      {"sku": "HD-1-S", "price": "120.00", "size": "S"},
+      {"sku": "HD-1-M", "price": "120.00", "size": "M"},
+      {"sku": "HD-1-L", "price": "120.00", "size": "L"},
+      {"sku": "HD-1-XL", "price": "120.00", "size": "XL"}
+    ],
+    "inventory": {
+      "Online": 25,
+      "Soho": 10
+    }
+  }
+]

@@ -68,14 +68,20 @@ try:
     from src.api.routes.support import router as support_router
     from src.api.routes.tickets import router as tickets_router
     from src.api.routes.auth import router as auth_router
+    from src.api.routes.shopify_auth import router as shopify_auth_router
+    from src.api.routes.webhooks.shopify import router as shopify_webhook_router
+    from src.api.routes.webhooks.aftership import router as aftership_webhook_router
     
     # Priority routers first
+    app.include_router(shopify_auth_router) # Support /install and /new-install at root
     app.include_router(api_admin_router, prefix="/api")
     app.include_router(support_router, prefix="/support", tags=["support"])
     app.include_router(tickets_router)
     app.include_router(auth_router)
+    app.include_router(shopify_webhook_router, prefix="/api/webhooks")
+    app.include_router(aftership_webhook_router, prefix="/api/webhooks/aftership")
     
-    logger.info("✓ Routers registered (api, support, tickets, auth).")
+    logger.info("✓ Routers registered (shopify_auth, api, support, tickets, auth).")
 except Exception as e:
     logger.error(f"Failed to register routers: {e}")
     logger.error(traceback.format_exc())

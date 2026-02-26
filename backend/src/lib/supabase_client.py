@@ -65,6 +65,16 @@ def supabase_update(table: str, match: dict, data: dict) -> dict:
         logger.error(f"Supabase Update Error: {e}")
         raise e
 
+def supabase_rpc(function: str, data: dict) -> Any:
+    """Call a Supabase RPC function."""
+    try:
+        resp = requests.post(f"{SUPABASE_URL}/rest/v1/rpc/{function}", headers=_headers(), json=data)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        logger.error(f"Supabase RPC Error [{function}]: {e}")
+        return None
+
 # --- Settings Helpers ---
 
 def supabase_get_setting(key: str) -> Optional[dict]:
