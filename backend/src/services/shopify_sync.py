@@ -114,6 +114,21 @@ class ShopifySyncService:
                         tracking_number = f["tracking_number"]
                         break
 
+            # Extract customer info
+            customer_email = None
+            customer_name = None
+            customer = shopify_order.get("customer", {})
+            if customer:
+                customer_email = customer.get("email", "").lower()
+                customer_name = customer.get("first_name", "") or ""
+                if customer.get("last_name"):
+                    customer_name = f"{customer_name} {customer['last_name']}".strip()
+
+            # If no customer email, try to get from billing_address
+            if not customer_email:
+                billing = shopify_order.get("billing_address", {})
+                customer_email = billing.get("email", "").lower()
+
             o_payload = {
                 "store_id": store_id,
                 "shopify_order_id": shopify_order["id"],
@@ -121,14 +136,36 @@ class ShopifySyncService:
                 "status": shopify_order.get("fulfillment_status", "unfulfilled"),
                 "total_amount": float(shopify_order["total_price"]),
                 "tracking_number": tracking_number,
+                "customer_email": customer_email,
+                "customer_name": customer_name,
                 "last_updated": datetime.now(timezone.utc).isoformat()
             }
 
             existing = supabase_select("orders", {"shopify_order_id": f"eq.{o_payload['shopify_order_id']}"})
             if existing:
                 supabase_update("orders", {"id": f"eq.{existing[0]['id']}"}, o_payload)
+                order_id = existing[0]["id"]
             else:
-                supabase_insert("orders", o_payload)
+                result = supabase_insert("orders", o_payload)
+                order_id = result.get("id")
+
+            # Sync line items to order_items table
+            line_items = shopify_order.get("line_items", [])
+            for item in line_items:
+                item_payload = {
+                    "order_id": order_id,
+                    "shopify_line_item_id": item.get("id"),
+                    "title": item.get("title", "Unknown Item"),
+                    "quantity": item.get("quantity", 1),
+                    "price": float(item.get("price", 0)),
+                    "sku": item.get("sku", "")
+                }
+                # Upsert by shopify_line_item_id
+                existing_item = supabase_select("order_items", {"shopify_line_item_id": f"eq.{item.get('id')}"})
+                if existing_item:
+                    supabase_update("order_items", {"id": f"eq.{existing_item[0]['id']}"}, item_payload)
+                else:
+                    supabase_insert("order_items", item_payload)
 
         except Exception as e:
             logger.error(f"Error syncing order {shopify_order.get('id')}: {e}")

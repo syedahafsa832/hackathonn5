@@ -40,7 +40,9 @@
       "Bash(PYTHONPATH=E:hackathon5hack5 python -m pytest:*)",
       "Bash(python verify_implementation.py:*)",
       "Bash(python test_cross_channel.py:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(where:*)",
+      "Bash(curl:*)"
     ]
   }
 }
