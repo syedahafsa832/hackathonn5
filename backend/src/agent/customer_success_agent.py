@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import logging
 from typing import Dict, Any, Optional, List
 from openai import OpenAI
@@ -83,7 +84,6 @@ class CustomerSuccessAgent:
             # Check for order status inquiry
             if any(kw in query_lower for kw in ["order", "shipped", "tracking", "delivered", "when will", "what did i order"]):
                 # Try to extract order number from query
-                import re
                 order_match = re.search(r'#?(\d{3,6})', query)
                 if order_match:
                     order_id = order_match.group(1)
