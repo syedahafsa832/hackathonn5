@@ -22,6 +22,13 @@ async def health_check():
     """Immediately returns status ok for Railway/Render."""
     return {"status": "ok"}
 
+@app.get("/debug/order/{order_id}")
+async def debug_order(order_id: str):
+    """Debug endpoint to test order lookup from Shopify."""
+    from src.services.tools import v3_tools
+    result = await v3_tools.get_order_status(order_id)
+    return result
+
 @app.get("/status")
 async def status():
     return {"message": "Customer Success AI Agent API - Supabase Mode Active"}

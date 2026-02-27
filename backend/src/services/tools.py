@@ -73,7 +73,11 @@ class V3Tools:
 
             if not order:
                 # Fallback: Query Shopify directly
+                logger.info(f"Order {order_id} not in local DB, querying Shopify...")
+                logger.info(f"Shopify config: shop={self.shop_name}, token_set={bool(self.shopify_token)}")
+
                 if not self.shop_name or not self.shopify_token:
+                    logger.error("Shopify credentials not configured!")
                     return {"error": f"Order {order_id} not found in our records."}
 
                 # Search for order in Shopify
@@ -83,8 +87,12 @@ class V3Tools:
                     "Content-Type": "application/json"
                 }
 
+                logger.info(f"Querying Shopify: {url}")
                 resp = requests.get(url, headers=headers)
+                logger.info(f"Shopify response: {resp.status_code}")
+
                 if resp.status_code != 200:
+                    logger.error(f"Shopify API error: {resp.text}")
                     return {"error": f"Order {order_id} not found in our records."}
 
                 data = resp.json()
