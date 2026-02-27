@@ -73,7 +73,7 @@ class V3Tools:
             if not order:
                 # Fallback to Shopify direct if not in mirror (resilient)
                 return {"error": f"Order {order_id} not found in our records."}
-            
+
             return {
                 "success": True,
                 "order_id": order_id,
@@ -85,6 +85,36 @@ class V3Tools:
         except Exception as e:
             logger.error(f"Tool error [get_order_status]: {e}")
             return {"error": "Failed to retrieve order status."}
+
+    async def get_orders_by_email(self, email: str) -> Dict[str, Any]:
+        """Find all orders for a customer by email."""
+        try:
+            # Look up orders by customer email
+            orders = supabase_select("orders", {"customer_email": f"eq.{email}"})
+
+            if not orders:
+                return {"error": f"No orders found for {email}"}
+
+            # Return simplified order list
+            order_list = []
+            for o in orders:
+                order_list.append({
+                    "order_number": o.get("order_number"),
+                    "status": o.get("status"),
+                    "tracking_number": o.get("tracking_number"),
+                    "shipping_status": o.get("shipping_status"),
+                    "total_amount": o.get("total_amount")
+                })
+
+            return {
+                "success": True,
+                "email": email,
+                "orders": order_list,
+                "count": len(order_list)
+            }
+        except Exception as e:
+            logger.error(f"Tool error [get_orders_by_email]: {e}")
+            return {"error": "Failed to retrieve orders."}
 
     async def get_shipping_status(self, tracking_number: str) -> Dict[str, Any]:
         """Query AfterShip API for real-time tracking updates."""
@@ -115,6 +145,43 @@ class V3Tools:
         except Exception as e:
             logger.error(f"Tool error [get_shipping_status]: {e}")
             return {"error": "Shipping carrier service unavailable."}
+
+    async def get_inventory_status(self, product_name: str) -> Dict[str, Any]:
+        """Check inventory levels for a product by name."""
+        try:
+            # Search products in Shopify via Supabase mirror
+            products = supabase_select("products", {"name": f"ilike.%{product_name}%"})
+
+            if not products:
+                # Try variants
+                variants = supabase_select("variants", {"title": f"ilike.%{product_name}%"})
+
+            if not products and not variants:
+                return {"error": f"Product '{product_name}' not found in our catalog."}
+
+            # Get inventory from variants
+            inventory_info = []
+            if variants:
+                for v in variants[:5]:  # Limit to 5 results
+                    inventory_info.append({
+                        "variant": v.get("title"),
+                        "sku": v.get("sku"),
+                        "inventory_quantity": v.get("inventory_quantity", 0)
+                    })
+
+            if inventory_info:
+                return {
+                    "success": True,
+                    "product": product_name,
+                    "variants": inventory_info,
+                    "total_available": sum(v.get("inventory_quantity", 0) for v in inventory_info)
+                }
+
+            return {"error": "No inventory data available."}
+
+        except Exception as e:
+            logger.error(f"Tool error [get_inventory_status]: {e}")
+            return {"error": "Inventory service unavailable."}
 
     async def create_back_in_stock_alert(self, email: str, sku: str) -> Dict[str, Any]:
         """Register a customer for a back-in-stock notification."""

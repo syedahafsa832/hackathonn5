@@ -34,14 +34,14 @@ class CustomerSuccessAgent:
         V3 Orchestration:
         1. RAG Retrieval (Policies, Brand, Product Info)
         2. Sizing Check (if applicable)
-        3. Tool Calls (Order/Shipping/Inventory)
+        3. Tool Calls (Order/Shipping/Inventory) - REAL TIME
         4. Structured Response Generation
         5. Confidence & Escalation Enforcement
         """
         try:
             # 1. RAG Retrieval
             rag_context = await rag_engine.get_relevant_context(query)
-            
+
             # 2. Sizing Engine (Deterministic)
             sizing_context = ""
             if any(k in query.lower() for k in ["size", "fit", "small", "medium", "large", "xl"]):
@@ -50,8 +50,54 @@ class CustomerSuccessAgent:
                 else:
                     sizing_context = "\n[SYSTEM] Ask for height/weight/fit-preference to provide precise sizing."
 
-            # 3. Response Generation
-            system_prompt = self._construct_v3_prompt(customer_info, rag_context, sizing_context)
+            # 3. REAL TIME TOOL CALLS - Get live data from Shopify & AfterShip
+            tool_results = {}
+            query_lower = query.lower()
+
+            # Check for order status inquiry
+            if any(kw in query_lower for kw in ["order", "shipped", "tracking", "delivered", "when will"]):
+                # Try to extract order number from query
+                import re
+                order_match = re.search(r'#?(\d{3,6})', query)
+                if order_match:
+                    order_id = order_match.group(1)
+                    tool_results["order_status"] = await v3_tools.get_order_status(order_id)
+
+                # Check for tracking number in query
+                tracking_match = re.search(r'([A-Z]{2}\d{9,10}[A-Z]{0,2})', query.upper())
+                if tracking_match:
+                    tracking_num = tracking_match.group(1)
+                    tool_results["shipping_status"] = await v3_tools.get_shipping_status(tracking_num)
+
+                # Also try to look up by customer email if provided
+                email_match = re.search(r'[\w.-]+@[\w.-]+\.\w+', query)
+                if email_match:
+                    customer_email = email_match.group(0)
+                    tool_results["orders_by_email"] = await v3_tools.get_orders_by_email(customer_email)
+
+            # Check for inventory/product inquiry
+            if any(kw in query_lower for kw in ["in stock", "available", "inventory", "do you have"]):
+                # Extract product name
+                product_match = re.search(r'(hoodie|jacket|pants|shirt|tshirt|coat|dress|skirt)', query_lower)
+                if product_match:
+                    product = product_match.group(1)
+                    tool_results["inventory"] = await v3_tools.get_inventory_status(product)
+
+            # 4. Build tool context for the AI
+            tool_context = ""
+            if tool_results:
+                tool_context = "\n\n[LIVE DATA FROM OUR SYSTEMS]\n"
+                if "order_status" in tool_results:
+                    tool_context += f"Order Status: {json.dumps(tool_results['order_status'])}\n"
+                if "orders_by_email" in tool_results:
+                    tool_context += f"Customer Orders: {json.dumps(tool_results['orders_by_email'])}\n"
+                if "shipping_status" in tool_results:
+                    tool_context += f"Shipping Tracking: {json.dumps(tool_results['shipping_status'])}\n"
+                if "inventory" in tool_results:
+                    tool_context += f"Inventory: {json.dumps(tool_results['inventory'])}\n"
+
+            # 5. Response Generation
+            system_prompt = self._construct_v3_prompt(customer_info, rag_context, sizing_context, tool_context)
             
             response = self.openai_client.chat.completions.create(
                 model=self.model,
@@ -105,24 +151,26 @@ class CustomerSuccessAgent:
             logger.error(f"V3 Agent Error: {e}")
             return self._get_fallback_response(str(e))
 
-    def _construct_v3_prompt(self, customer_info: Dict[str, Any], rag_context: str, sizing_context: str) -> str:
+    def _construct_v3_prompt(self, customer_info: Dict[str, Any], rag_context: str, sizing_context: str, tool_context: str = "") -> str:
         return f"""
         You are Luna, the AI Customer Success Expert for Aurelio & Finch, a premium apparel brand.
         Your tone is refined, concise, confident, and empathetic. Focus on ROI and quality.
 
-        CONTEXT:
+        CONTEXT FROM KNOWLEDGE BASE:
         {rag_context}
         {sizing_context}
+        {tool_context}
 
         CUSTOMER:
         - Name: {customer_info.get('name')}
         - History: {customer_info.get('history', 'New Client')}
 
         V3 OPERATIONAL RULES:
-        1. USE RAG: Only answer based on the provided context. If unsure, escalate.
-        2. NO GUESSING: Never guess inventory levels or shipping dates.
-        3. SIZE ENGINE: If a customer asks for a size recommendation, explain that you use a deterministic sizing engine. Ask for their height (cm), weight (kg), and fit preference if not provided.
-        4. ESCALATE: Always set escalate=true if the customer is frustrated or if confidence is low (below 70%).
+        1. USE LIVE DATA: If you have live tracking/order/inventory data above, use it to provide accurate real-time answers.
+        2. USE RAG: Only answer based on the provided context or live data. If unsure, escalate.
+        3. NO GUESSING: Never guess inventory levels or shipping dates - use the live data tools when available.
+        4. SIZE ENGINE: If a customer asks for a size recommendation, explain that you use a deterministic sizing engine. Ask for their height (cm), weight (kg), and fit preference if not provided.
+        5. ESCALATE: Always set escalate=true if the customer is frustrated or if confidence is low (below 70%).
 
         OUTPUT JSON ONLY:
         {{
