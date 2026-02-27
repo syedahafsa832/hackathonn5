@@ -66,14 +66,48 @@ class V3Tools:
             return {"error": "Failed to check inventory."}
 
     async def get_order_status(self, order_id: str) -> Dict[str, Any]:
-        """Fetch order status, items, and tracking number from Shopify/Supabase."""
+        """Fetch order status, items, and tracking number from Shopify directly."""
         try:
-            # We check our local mirror first
+            # Try local mirror first
             order = supabase_select("orders", {"order_number": f"eq.{order_id}"})
-            if not order:
-                # Fallback to Shopify direct if not in mirror (resilient)
-                return {"error": f"Order {order_id} not found in our records."}
 
+            if not order:
+                # Fallback: Query Shopify directly
+                if not self.shop_name or not self.shopify_token:
+                    return {"error": f"Order {order_id} not found in our records."}
+
+                # Search for order in Shopify
+                url = f"https://{self.shop_name}.myshopify.com/admin/api/{self.api_version}/orders.json?name={order_id}"
+                headers = {
+                    "X-Shopify-Access-Token": self.shopify_token,
+                    "Content-Type": "application/json"
+                }
+
+                resp = requests.get(url, headers=headers)
+                if resp.status_code != 200:
+                    return {"error": f"Order {order_id} not found in our records."}
+
+                data = resp.json()
+                shopify_orders = data.get("orders", [])
+                if not shopify_orders:
+                    return {"error": f"Order {order_id} not found."}
+
+                o = shopify_orders[0]
+                tracking = o.get("fulfillments", [{}])[0].get("tracking_number") if o.get("fulfillments") else None
+
+                return {
+                    "success": True,
+                    "source": "shopify",
+                    "order_id": order_id,
+                    "order_number": o.get("order_number"),
+                    "status": o.get("fulfillment_status") or "unfulfilled",
+                    "tracking_number": tracking,
+                    "total_amount": o.get("total_price"),
+                    "items": [{"title": item.get("title"), "quantity": item.get("quantity")} for item in o.get("line_items", [])],
+                    "created_at": o.get("created_at")
+                }
+
+            # Return from local mirror
             return {
                 "success": True,
                 "order_id": order_id,

@@ -55,7 +55,7 @@ class CustomerSuccessAgent:
             query_lower = query.lower()
 
             # Check for order status inquiry
-            if any(kw in query_lower for kw in ["order", "shipped", "tracking", "delivered", "when will"]):
+            if any(kw in query_lower for kw in ["order", "shipped", "tracking", "delivered", "when will", "what did i order"]):
                 # Try to extract order number from query
                 import re
                 order_match = re.search(r'#?(\d{3,6})', query)
@@ -69,10 +69,16 @@ class CustomerSuccessAgent:
                     tracking_num = tracking_match.group(1)
                     tool_results["shipping_status"] = await v3_tools.get_shipping_status(tracking_num)
 
-                # Also try to look up by customer email if provided
+                # Also try to look up by customer email if provided in query
                 email_match = re.search(r'[\w.-]+@[\w.-]+\.\w+', query)
+                customer_email = None
                 if email_match:
                     customer_email = email_match.group(0)
+                elif customer_info.get("email"):
+                    # Use customer's email from their info
+                    customer_email = customer_info.get("email")
+
+                if customer_email:
                     tool_results["orders_by_email"] = await v3_tools.get_orders_by_email(customer_email)
 
             # Check for inventory/product inquiry
@@ -166,11 +172,12 @@ class CustomerSuccessAgent:
         - History: {customer_info.get('history', 'New Client')}
 
         V3 OPERATIONAL RULES:
-        1. USE LIVE DATA: If you have live tracking/order/inventory data above, use it to provide accurate real-time answers.
-        2. USE RAG: Only answer based on the provided context or live data. If unsure, escalate.
-        3. NO GUESSING: Never guess inventory levels or shipping dates - use the live data tools when available.
-        4. SIZE ENGINE: If a customer asks for a size recommendation, explain that you use a deterministic sizing engine. Ask for their height (cm), weight (kg), and fit preference if not provided.
-        5. ESCALATE: Always set escalate=true if the customer is frustrated or if confidence is low (below 70%).
+        1. USE LIVE DATA FIRST: When you have LIVE DATA from our systems (shown above), you MUST use it to answer the customer's question. Never guess or use policy text when you have real order/tracking data.
+        2. BE SPECIFIC: Include actual order numbers, tracking numbers, item names, and shipping status in your reply when available.
+        3. If order shows items, list them in your response.
+        4. If tracking shows status, tell the customer exactly what's happening.
+        5. SIZE ENGINE: If a customer asks for a size recommendation, explain that you use a deterministic sizing engine. Ask for their height (cm), weight (kg), and fit preference if not provided.
+        6. ESCALATE: Always set escalate=true if the customer is frustrated or if confidence is low (below 70%).
 
         OUTPUT JSON ONLY:
         {{
