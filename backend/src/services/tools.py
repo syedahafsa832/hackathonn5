@@ -116,12 +116,28 @@ class V3Tools:
                 }
 
             # Return from local mirror
+            # Get order items
+            order_items = supabase_select("order_items", {"order_id": f"eq.{order[0]['id']}"})
+            items = []
+            for item in order_items:
+                items.append({
+                    "title": item.get("title"),
+                    "quantity": item.get("quantity"),
+                    "price": item.get("price"),
+                    "sku": item.get("sku")
+                })
+
             return {
                 "success": True,
                 "order_id": order_id,
+                "order_number": order[0].get("order_number"),
                 "status": order[0].get("status"),
                 "tracking_number": order[0].get("tracking_number"),
                 "shipping_status": order[0].get("shipping_status"),
+                "customer_email": order[0].get("customer_email"),
+                "customer_name": order[0].get("customer_name"),
+                "total_amount": order[0].get("total_amount"),
+                "items": items,
                 "last_updated": order[0].get("last_updated")
             }
         except Exception as e:
@@ -137,15 +153,27 @@ class V3Tools:
             if not orders:
                 return {"error": f"No orders found for {email}"}
 
-            # Return simplified order list
+            # Return simplified order list with items
             order_list = []
             for o in orders:
+                # Get order items
+                order_items = supabase_select("order_items", {"order_id": f"eq.{o.get('id')}"})
+                items = []
+                for item in order_items:
+                    items.append({
+                        "title": item.get("title"),
+                        "quantity": item.get("quantity"),
+                        "price": item.get("price"),
+                        "sku": item.get("sku")
+                    })
+
                 order_list.append({
                     "order_number": o.get("order_number"),
                     "status": o.get("status"),
                     "tracking_number": o.get("tracking_number"),
                     "shipping_status": o.get("shipping_status"),
-                    "total_amount": o.get("total_amount")
+                    "total_amount": o.get("total_amount"),
+                    "items": items
                 })
 
             return {

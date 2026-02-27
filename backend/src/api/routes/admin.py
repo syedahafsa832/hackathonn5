@@ -246,3 +246,16 @@ async def get_audit_logs(store_id: str = Query("00000000-0000-0000-0000-00000000
     """Get searchable, filterable audit logs."""
     logs = supabase_select("audit_logs", {"store_id": f"eq.{store_id}", "order": "created_at.desc"})
     return logs
+
+# 7. SYNC ORDERS FROM SHOPIFY (/api/sync-orders)
+@router.post("/sync-orders")
+async def sync_orders_from_shopify(store_id: str = Query("00000000-0000-0000-0000-000000000000")):
+    """Trigger sync of orders from Shopify to populate customer_email, customer_name, and order_items."""
+    try:
+        from src.services.shopify_sync import shopify_sync_service
+        import asyncio
+        await shopify_sync_service.sync_all_orders(store_id)
+        return {"status": "success", "message": "Orders synced from Shopify"}
+    except Exception as e:
+        logger.error(f"Order sync failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
