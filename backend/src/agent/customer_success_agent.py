@@ -42,13 +42,39 @@ class CustomerSuccessAgent:
             # 1. RAG Retrieval
             rag_context = await rag_engine.get_relevant_context(query)
 
-            # 2. Sizing Engine (Deterministic)
+            # 2. Sizing Engine - Get actual recommendation if we have measurements
             sizing_context = ""
             if any(k in query.lower() for k in ["size", "fit", "small", "medium", "large", "xl"]):
-                if customer_info.get("height") and customer_info.get("weight"):
-                    sizing_context = "\n[SYSTEM] Sizing engine is available for deterministic calculations."
+                height = customer_info.get("height")
+                weight = customer_info.get("weight")
+                fit_preference = customer_info.get("fit_preference", "true")
+
+                if height and weight:
+                    # Get actual size recommendation from size engine
+                    from ..services.size_engine import size_engine
+                    product_data = {
+                        "fit_type": "tailored",  # Default, can be extracted from query
+                        "stretch_level": 1
+                    }
+                    user_profile = {
+                        "height": height,
+                        "weight": weight,
+                        "fit_preference": fit_preference
+                    }
+                    size_result = size_engine.recommend_size(user_profile, product_data)
+
+                    if size_result.get("success"):
+                        size = size_result.get("recommended_size")
+                        confidence = size_result.get("confidence", 0)
+                        reasoning = size_result.get("reasoning", "")
+
+                        # Natural language sizing context
+                        confidence_text = "pretty confident" if confidence > 0.85 else "fairly sure"
+                        sizing_context = f"\nBased on their measurements ({height}cm, {weight}kg), I'm {confidence_text} they'd take a **{size}**. {reasoning}"
+                    else:
+                        sizing_context = f"\nI have their height and weight but need a bit more info to pin down the perfect size—specifically how they like to fit their clothes."
                 else:
-                    sizing_context = "\n[SYSTEM] Ask for height/weight/fit-preference to provide precise sizing."
+                    sizing_context = "\nI don't have their measurements yet—I'll need their height and weight to give them a proper recommendation."
 
             # 3. REAL TIME TOOL CALLS - Get live data from Shopify & AfterShip
             tool_results = {}
@@ -89,18 +115,34 @@ class CustomerSuccessAgent:
                     product = product_match.group(1)
                     tool_results["inventory"] = await v3_tools.get_inventory_status(product)
 
-            # 4. Build tool context for the AI
+            # 4. Build tool context for the AI (natural language, not raw JSON)
             tool_context = ""
             if tool_results:
-                tool_context = "\n\n[LIVE DATA FROM OUR SYSTEMS]\n"
                 if "order_status" in tool_results:
-                    tool_context += f"Order Status: {json.dumps(tool_results['order_status'])}\n"
+                    order = tool_results["order_status"]
+                    if order.get("success"):
+                        tool_context += f"\n- Their order #{order.get('order_number')} is {order.get('status')}"
+                        if order.get("items"):
+                            items = ", ".join([i.get("title", "item") for i in order.get("items", [])])
+                            tool_context += f" with {items}"
+                        if order.get("tracking_number"):
+                            tool_context += f". Tracking: {order.get('tracking_number')}"
+
                 if "orders_by_email" in tool_results:
-                    tool_context += f"Customer Orders: {json.dumps(tool_results['orders_by_email'])}\n"
+                    orders = tool_results["orders_by_email"]
+                    if orders.get("success") and orders.get("orders"):
+                        order_list = [f"#{o.get('order_number')} ({o.get('status')})" for o in orders.get("orders", [])]
+                        tool_context += f"\n- Their orders: {', '.join(order_list)}"
+
                 if "shipping_status" in tool_results:
-                    tool_context += f"Shipping Tracking: {json.dumps(tool_results['shipping_status'])}\n"
+                    tracking = tool_results["shipping_status"]
+                    if tracking.get("success"):
+                        tool_context += f"\n- Package status: {tracking.get('status')}"
+
                 if "inventory" in tool_results:
-                    tool_context += f"Inventory: {json.dumps(tool_results['inventory'])}\n"
+                    inv = tool_results["inventory"]
+                    if inv.get("success"):
+                        tool_context += f"\n- {inv.get('message', 'Available')}"
 
             # 5. Response Generation
             system_prompt = self._construct_v3_prompt(customer_info, rag_context, sizing_context, tool_context)
@@ -142,14 +184,20 @@ class CustomerSuccessAgent:
             else:
                 structured["status"] = "auto_resolved"
 
-            # 6. Signature Enforcement
-            name = customer_info.get("name", "valuable customer").split()[0]
+            # 6. Signature Enforcement - Make it natural, not robotic
+            name = customer_info.get("name", "there").split()[0]
             reply = structured.get("reply_body", "")
-            if not reply.startswith("Hi"):
-                structured["reply_body"] = f"Hi {name},\n\n{reply}"
-            
+
+            # Only add greeting if not already present and doesn't start with the name
+            if reply and not reply.lower().startswith("hi") and not reply.lower().startswith("hey") and not reply.lower().startswith("thanks"):
+                structured["reply_body"] = f"Hey {name},\n\n{reply}"
+            elif reply and not (name.lower() in reply.lower()[:20]):
+                # Name mentioned in first 20 chars, skip greeting
+                structured["reply_body"] = f"Hey {name},\n\n{reply}"
+
+            # Add casual sign-off instead of formal
             if "Luna" not in structured["reply_body"]:
-                structured["reply_body"] += "\n\nBest regards,\nLuna\nAurelio & Finch Customer Success"
+                structured["reply_body"] += "\n\n— Luna\nAurelio & Finch"
 
             return structured
 
@@ -159,25 +207,43 @@ class CustomerSuccessAgent:
 
     def _construct_v3_prompt(self, customer_info: Dict[str, Any], rag_context: str, sizing_context: str, tool_context: str = "") -> str:
         return f"""
-        You are Luna, the AI Customer Success Expert for Aurelio & Finch, a premium apparel brand.
-        Your tone is refined, concise, confident, and empathetic. Focus on ROI and quality.
+        You are Luna, the Senior Brand Stylist for Aurelio & Finch—a luxury streetwear house. You are NOT "Customer Success" or a "Support Bot." You are a human-like expert who helps clients build their wardrobes.
 
-        CONTEXT FROM KNOWLEDGE BASE:
+        TONE & VOICE:
+        - Confident & Expert: Use phrases like "I recommend," "In my experience," and "We've designed this for..."
+        - Concise & Fluid: NEVER use bullet points, numbered lists, or "1. 2. 3." logic. Write in natural, flowing paragraphs as if texting or emailing a VIP client.
+        - No Jargon: Never use technical terms like "deterministic," "variant," "sizing engine," "inventory," "algorithm," or "system."
+        - Style-First: Focus on the look and feel of the garment, not measurements or technical details.
+
+        INTERACTION RULES:
+        - Acknowledge the Fear: If a customer mentions a concern (like "looking sloppy," "too big," or "fading"), address it immediately with empathy.
+        - The "We" Mentality: Always speak as part of the brand. "We designed this for..." instead of "The product has..."
+        - The Soft Close: Always end with a helpful question that moves toward a sale, like "Should I check if we still have your size in the black?" or "Which piece caught your eye?"
+
+        FORMATTING:
+        - Use *italics* sparingly for emphasis on key style points
+        - Use **bold** only for specific size recommendations when truly warranted
+        - Keep it conversational—imagine you're texting a friend who knows fashion
+
+        KNOWLEDGE BASE:
         {rag_context}
+
+        SIZING GUIDANCE:
         {sizing_context}
+
+        LIVE ORDER/SHIPPING DATA:
         {tool_context}
 
         CUSTOMER:
         - Name: {customer_info.get('name')}
         - History: {customer_info.get('history', 'New Client')}
 
-        V3 OPERATIONAL RULES:
-        1. USE LIVE DATA FIRST: When you have LIVE DATA from our systems (shown above), you MUST use it to answer the customer's question. Never guess or use policy text when you have real order/tracking data.
-        2. BE SPECIFIC: Include actual order numbers, tracking numbers, item names, and shipping status in your reply when available.
-        3. If order shows items, list them in your response.
-        4. If tracking shows status, tell the customer exactly what's happening.
-        5. SIZE ENGINE: If a customer asks for a size recommendation, explain that you use a deterministic sizing engine. Ask for their height (cm), weight (kg), and fit preference if not provided.
-        6. ESCALATE: Always set escalate=true if the customer is frustrated or if confidence is low (below 70%).
+        OPERATIONAL RULES:
+        1. USE LIVE DATA: When you have real order/tracking data, use it naturally in conversation.
+        2. If order shows items, mention them casually: "I see your order included the Premium Hoodie—that's a great pick."
+        3. If tracking shows status, tell them naturally: "Your package is out for delivery today."
+        4. For sizing questions, give a confident recommendation with warmth. If you need their measurements, ask naturally: "What height and weight should I work with for you?"
+        5. ESCALATE only if they're frustrated or you've tried twice and can't help.
 
         OUTPUT JSON ONLY:
         {{
