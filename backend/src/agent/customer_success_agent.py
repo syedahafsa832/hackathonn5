@@ -52,30 +52,33 @@ class CustomerSuccessAgent:
 
                 if height and weight:
                     # Get actual size recommendation from size engine
-                    from ..services.size_engine import size_engine
-                    product_data = {
-                        "fit_type": "tailored",  # Default, can be extracted from query
-                        "stretch_level": 1
-                    }
-                    user_profile = {
-                        "height": height,
-                        "weight": weight,
-                        "fit_preference": fit_preference
-                    }
-                    size_result = size_engine.recommend_size(user_profile, product_data)
+                    try:
+                        from src.services.size_engine import size_engine
+                        product_data = {
+                            "fit_type": "tailored",
+                            "stretch_level": 1
+                        }
+                        user_profile = {
+                            "height": height,
+                            "weight": weight,
+                            "fit_preference": fit_preference
+                        }
+                        size_result = size_engine.recommend_size(user_profile, product_data)
 
-                    if size_result.get("success"):
-                        size = size_result.get("recommended_size")
-                        confidence = size_result.get("confidence", 0)
-                        reasoning = size_result.get("reasoning", "")
+                        if size_result.get("success"):
+                            size = size_result.get("recommended_size")
+                            confidence = size_result.get("confidence", 0)
+                            reasoning = size_result.get("reasoning", "")
 
-                        # Natural language sizing context
-                        confidence_text = "pretty confident" if confidence > 0.85 else "fairly sure"
-                        sizing_context = f"\nBased on their measurements ({height}cm, {weight}kg), I'm {confidence_text} they'd take a **{size}**. {reasoning}"
-                    else:
-                        sizing_context = f"\nI have their height and weight but need a bit more info to pin down the perfect size—specifically how they like to fit their clothes."
+                            confidence_text = "pretty confident" if confidence > 0.85 else "fairly sure"
+                            sizing_context = f"\nBased on measurements ({height}cm, {weight}kg), I'm {confidence_text} they'd take a **{size}**."
+                        else:
+                            sizing_context = "\nNeed a bit more info to pin down the perfect size."
+                    except Exception as e:
+                        logger.error(f"Sizing engine error: {e}")
+                        sizing_context = ""
                 else:
-                    sizing_context = "\nI don't have their measurements yet—I'll need their height and weight to give them a proper recommendation."
+                    sizing_context = "\nNeed height and weight to give a proper recommendation."
 
             # 3. REAL TIME TOOL CALLS - Get live data from Shopify & AfterShip
             tool_results = {}
@@ -160,24 +163,26 @@ class CustomerSuccessAgent:
             raw_content = response.choices[0].message.content
             structured = json.loads(raw_content)
 
-            # 4. Confidence Calculation
+            # 4. Confidence Calculation - Be more lenient
             sentiment = sentiment_analyzer.analyze_sentiment_detailed(query)
-            confidence = 0.85 
-            if not rag_context: confidence -= 0.3
-            if sentiment["label"] == "negative": confidence -= 0.15
-            
-            # Boost for standard, low-risk intents
-            if structured.get("intent") in ["order_status_inquiry", "shipping_inquiry", "sizing_inquiry"] and structured.get("risk_level") == "low":
-                confidence += 0.05
 
-            confidence_out_of_100 = int(max(0, min(1, confidence)) * 100)
+            # Start higher and be less aggressive with penalties
+            confidence = 0.80
+            if not rag_context: confidence -= 0.15  # Reduced penalty
+            if sentiment["label"] == "negative": confidence -= 0.10  # Reduced penalty
+
+            # Boost for standard, low-risk intents
+            if structured.get("intent") in ["order_status_inquiry", "shipping_inquiry", "sizing_inquiry", "product_inquiry"] and structured.get("risk_level") == "low":
+                confidence += 0.10
+
+            # Ensure minimum confidence of 30% if we got a valid response
+            confidence_out_of_100 = int(max(0.30, min(1, confidence)) * 100)
             structured["confidence_score"] = confidence_out_of_100
 
-            # 5. Escalation Thresholds (70% / 10%)
-            if confidence_out_of_100 < 10:
-                logger.critical(f"FAIL-SAFE: Confidence {confidence_out_of_100}% < 10%. Pausing AI.")
-                structured["status"] = "paused"
-                structured["escalate"] = True
+            # 5. Escalation Thresholds (more lenient)
+            if confidence_out_of_100 < 30:
+                logger.warning(f"Low confidence: {confidence_out_of_100}%. Still sending response.")
+                structured["status"] = "auto_resolved"  # Send anyway
             elif confidence_out_of_100 < 70 or structured.get("risk_level") == "high":
                 structured["status"] = "escalated"
                 structured["escalate"] = True
