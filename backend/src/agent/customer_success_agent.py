@@ -226,9 +226,9 @@ class CustomerSuccessAgent:
         - The Soft Close: Always end with a helpful question that moves toward a sale, like "Should I check if we still have your size in the black?" or "Which piece caught your eye?"
 
         FORMATTING:
-        - Use *italics* sparingly for emphasis on key style points
-        - Use **bold** only for specific size recommendations when truly warranted
-        - Keep it conversational—imagine you're texting a friend who knows fashion
+        - Plain text only—NO markdown formatting (no **bold**, no *italics*, no _underlines_)
+        - Write as you would in a natural email or text message
+        - No bullet points, no numbered lists, no special characters for emphasis
 
         KNOWLEDGE BASE:
         {rag_context}
