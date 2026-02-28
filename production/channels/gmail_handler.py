@@ -141,17 +141,8 @@ class GmailHandler:
         else:
             subject = f"Re: {original_subject}" if original_subject else "Re: Customer Support Response"
 
-        # Clean up the AI response
-        cleaned_response = self._clean_ai_response(ai_response)
-
-        email_body = f"""{cleaned_response}
-
-Best regards,
-
-Luna
-Customer Success Team
-TechCorp
-"""
+        # AI response already includes signature from the agent, just use it as-is
+        email_body = ai_response.strip()
 
         return {
             'subject': subject,
