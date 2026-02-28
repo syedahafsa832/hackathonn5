@@ -194,18 +194,17 @@ class CustomerSuccessAgent:
             reply = structured.get("reply_body", "")
 
             # Post-process: ensure each sentence is on its own line for readability
-            import re
-            # Split on sentence endings (.!?) followed by space or end of string
-            sentences = re.split(r'([.!?])\s+', reply)
-            # Reconstruct with newlines between sentences
+            # Split on sentence endings and add newlines
+            import re as regex_module
+            sentences = regex_module.split(r'([.!?])\s+', reply)
             if len(sentences) > 1:
-                formatted_sentences = []
+                formatted_parts = []
                 for i in range(0, len(sentences)-1, 2):
                     sent = sentences[i].strip()
                     punct = sentences[i+1] if i+1 < len(sentences) else ''
                     if sent:
-                        formatted_sentences.append(sent + punct)
-                reply = '\n'.join(formatted_sentences)
+                        formatted_parts.append(sent + punct)
+                reply = '\n'.join(formatted_parts)
 
             # Only add greeting if not already present and doesn't start with the name
             if reply and not reply.lower().startswith("hi") and not reply.lower().startswith("hey") and not reply.lower().startswith("thanks"):
