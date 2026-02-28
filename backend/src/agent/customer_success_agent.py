@@ -193,6 +193,20 @@ class CustomerSuccessAgent:
             name = customer_info.get("name", "there").split()[0]
             reply = structured.get("reply_body", "")
 
+            # Post-process: ensure each sentence is on its own line for readability
+            import re
+            # Split on sentence endings (.!?) followed by space or end of string
+            sentences = re.split(r'([.!?])\s+', reply)
+            # Reconstruct with newlines between sentences
+            if len(sentences) > 1:
+                formatted_sentences = []
+                for i in range(0, len(sentences)-1, 2):
+                    sent = sentences[i].strip()
+                    punct = sentences[i+1] if i+1 < len(sentences) else ''
+                    if sent:
+                        formatted_sentences.append(sent + punct)
+                reply = '\n'.join(formatted_sentences)
+
             # Only add greeting if not already present and doesn't start with the name
             if reply and not reply.lower().startswith("hi") and not reply.lower().startswith("hey") and not reply.lower().startswith("thanks"):
                 structured["reply_body"] = f"Hey {name},\n\n{reply}"
@@ -227,7 +241,7 @@ class CustomerSuccessAgent:
 
         FORMATTING:
         - Plain text only—NO markdown formatting (no **bold**, no *italics*, no _underlines_)
-        - Write as you would in a natural email or text message
+        - Write each sentence on its own line for readability—short, punchy lines like a text message
         - No bullet points, no numbered lists, no special characters for emphasis
 
         KNOWLEDGE BASE:
