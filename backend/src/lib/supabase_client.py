@@ -35,7 +35,9 @@ def supabase_select(table: str, params: dict = None) -> list:
     """SELECT from a Supabase table. params are query params like {'status': 'eq.open', 'order': 'created_at.desc'}"""
     try:
         resp = requests.get(_rest_url(table), headers=_headers(), params=params or {})
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            logger.error(f"Supabase Select Error: {resp.status_code} for {table} with params {params}. Body: {resp.text[:500]}")
+            resp.raise_for_status()
         return resp.json()
     except Exception as e:
         logger.error(f"Supabase Select Error: {e}")

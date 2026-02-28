@@ -219,39 +219,47 @@ class V3Tools:
     async def get_inventory_status(self, product_name: str) -> Dict[str, Any]:
         """Check inventory levels for a product by name."""
         try:
-            # Search products in Shopify via Supabase mirror
-            products = supabase_select("products", {"name": f"ilike.%{product_name}%"})
+            # Search products in Supabase - use 'title' not 'name'
+            products = supabase_select("products", {"title": f"ilike.%{product_name}%"})
 
             if not products:
-                # Try variants
-                variants = supabase_select("variants", {"title": f"ilike.%{product_name}%"})
+                # Try variants - use 'size' or 'sku', not 'title' for name search
+                variants = supabase_select("variants", {"sku": f"ilike.%{product_name}%"})
 
             if not products and not variants:
-                return {"error": f"Product '{product_name}' not found in our catalog."}
+                return {"success": False, "message": f"I couldn't find '{product_name}' in our current collection. Want me to check something else for you?"}
 
             # Get inventory from variants
             inventory_info = []
+            product_title = ""
+
+            if products:
+                product_title = products[0].get("title", product_name)
+                # Get variants for this product
+                product_id = products[0].get("id")
+                variants = supabase_select("variants", {"product_id": f"eq.{product_id}"})
+
             if variants:
                 for v in variants[:5]:  # Limit to 5 results
                     inventory_info.append({
-                        "variant": v.get("title"),
+                        "size": v.get("size"),
                         "sku": v.get("sku"),
-                        "inventory_quantity": v.get("inventory_quantity", 0)
+                        "price": v.get("price")
                     })
 
             if inventory_info:
                 return {
                     "success": True,
-                    "product": product_name,
+                    "product": product_title or product_name,
                     "variants": inventory_info,
-                    "total_available": sum(v.get("inventory_quantity", 0) for v in inventory_info)
+                    "message": f"Yes, we have {product_title} available in {len(inventory_info)} sizes."
                 }
 
-            return {"error": "No inventory data available."}
+            return {"success": False, "message": f"We have {product_title} in our collection but let me check on specific availability for you."}
 
         except Exception as e:
             logger.error(f"Tool error [get_inventory_status]: {e}")
-            return {"error": "Inventory service unavailable."}
+            return {"success": False, "message": "Let me look into that for you personally."}
 
     async def create_back_in_stock_alert(self, email: str, sku: str) -> Dict[str, Any]:
         """Register a customer for a back-in-stock notification."""

@@ -101,12 +101,12 @@ class UnifiedMessageProcessor:
                     break
 
             # 8. Fail-Safe Mechanism (Anomaly Detection)
-            # If AI confidence is extremely low (<10%), trigger an emergency pause
-            if confidence < 0.10:
-                logger.warning(f"Fail-Safe Triggered: Extremely low confidence ({confidence}). Pausing AI Mode.")
-                supabase_update("system_settings", {"store_id": f"eq.{store_id}"}, {"ai_mode": "paused"})
-                await supabase_service.log_audit(store_id, "fail_safe_pause", "system", {"trigger": "low_confidence", "score": confidence})
-                ai_mode = "paused" # Force state change for this run
+            # If AI confidence is extremely low (<20%), be more lenient but still warn
+            if confidence < 0.20:
+                logger.warning(f"Low confidence detected ({confidence}). Allowing response with draft stored.")
+                # Don't pause the entire system, just store draft
+                ticket_payload["ai_draft"] = ai_result.get("reply_body")
+                ticket_payload["status"] = "ai_suggested"
 
             # 9. Decision Logic
             should_auto_reply = False
