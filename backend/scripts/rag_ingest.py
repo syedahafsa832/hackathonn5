@@ -29,7 +29,7 @@ class RAGIngestor:
             base_url=os.getenv("MISTRAL_API_BASE_URL", "https://api.mistral.ai/v1")
         )
         self.embedding_model = os.getenv("EMBEDDING_MODEL", "mistral-embed")
-        self.docs_dir = os.path.join("backend", "rag_docs")
+        self.docs_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "rag_docs")
 
     async def run_ingestion(self):
         """Main loop to process all files in rag_docs."""
