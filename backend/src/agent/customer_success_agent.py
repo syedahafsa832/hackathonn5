@@ -9,6 +9,7 @@ from ..services.rag_engine import rag_engine
 from ..services.sentiment_analyzer import sentiment_analyzer
 from ..services.size_engine import size_engine
 from ..services.tools import v3_tools
+from ..services.return_actions_integration import return_actions
 from ..lib.supabase_client import supabase_rpc, supabase_update
 
 logger = logging.getLogger(__name__)
@@ -147,8 +148,20 @@ class CustomerSuccessAgent:
                     if inv.get("success"):
                         tool_context += f"\n- {inv.get('message', 'Available')}"
 
+            # 4. Return/Exchange Action Layer
+            action_context = ""
+            if return_actions.should_check_return_eligibility(query):
+                action_result = await return_actions.handle_return_intent(
+                    query=query,
+                    customer_info=customer_info,
+                    existing_tool_results=tool_results
+                )
+                action_context = action_result.get("action_context", "")
+                # Store for debugging/logging
+                tool_results["return_action"] = action_result
+
             # 5. Response Generation
-            system_prompt = self._construct_v3_prompt(customer_info, rag_context, sizing_context, tool_context)
+            system_prompt = self._construct_v3_prompt(customer_info, rag_context, sizing_context, tool_context, action_context)
             
             response = self.openai_client.chat.completions.create(
                 model=self.model,
@@ -223,7 +236,7 @@ class CustomerSuccessAgent:
             logger.error(f"V3 Agent Error: {e}")
             return self._get_fallback_response(str(e))
 
-    def _construct_v3_prompt(self, customer_info: Dict[str, Any], rag_context: str, sizing_context: str, tool_context: str = "") -> str:
+    def _construct_v3_prompt(self, customer_info: Dict[str, Any], rag_context: str, sizing_context: str, tool_context: str = "", action_context: str = "") -> str:
         return f"""
         You are Luna, the Senior Brand Stylist for Aurelio & Finch—a luxury streetwear house. You are NOT "Customer Success" or a "Support Bot." You are a human-like expert who helps clients build their wardrobes.
 
@@ -252,6 +265,9 @@ class CustomerSuccessAgent:
         LIVE ORDER/SHIPPING DATA:
         {tool_context}
 
+        RETURN/EXCHANGE STATUS:
+        {action_context}
+
         CUSTOMER:
         - Name: {customer_info.get('name')}
         - History: {customer_info.get('history', 'New Client')}
@@ -261,7 +277,10 @@ class CustomerSuccessAgent:
         2. If order shows items, mention them casually: "I see your order included the Premium Hoodie—that's a great pick."
         3. If tracking shows status, tell them naturally: "Your package is out for delivery today."
         4. For sizing questions, give a confident recommendation with warmth. If you need their measurements, ask naturally: "What height and weight should I work with for you?"
-        5. ESCALATE only if they're frustrated or you've tried twice and can't help.
+        5. For return/exchange requests, use the RETURN/EXCHANGE STATUS above to determine next steps.
+        6. If return is eligible and customer wants different size, present exchange options as a way to "find the perfect fit" rather than processing a return.
+        7. If return is NOT eligible, do NOT offer exchange—acknowledge the policy and offer to escalate to human support if needed.
+        8. ESCALATE only if they're frustrated or you've tried twice and can't help.
 
         OUTPUT JSON ONLY:
         {{
@@ -270,7 +289,7 @@ class CustomerSuccessAgent:
             "risk_level": "low|medium|high",
             "escalate": boolean,
             "reply_body": "string",
-            "suggested_actions": ["check_inventory", "get_order_status", "escalate"]
+            "suggested_actions": ["check_inventory", "get_order_status", "check_return_eligibility", "escalate"]
         }}
         """
 
