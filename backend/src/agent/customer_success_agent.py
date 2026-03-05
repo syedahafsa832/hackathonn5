@@ -151,14 +151,18 @@ class CustomerSuccessAgent:
             # 4. Return/Exchange Action Layer
             action_context = ""
             if return_actions.should_check_return_eligibility(query):
+                logger.info(f"[ReturnActions] Return intent detected for query: {query[:50]}...")
                 action_result = await return_actions.handle_return_intent(
                     query=query,
                     customer_info=customer_info,
                     existing_tool_results=tool_results
                 )
                 action_context = action_result.get("action_context", "")
+                logger.info(f"[ReturnActions] Action context result: {action_context[:200] if action_context else 'EMPTY'}...")
                 # Store for debugging/logging
                 tool_results["return_action"] = action_result
+            else:
+                logger.info(f"[ReturnActions] No return intent detected")
 
             # 5. Response Generation
             system_prompt = self._construct_v3_prompt(customer_info, rag_context, sizing_context, tool_context, action_context)
@@ -270,17 +274,15 @@ class CustomerSuccessAgent:
 
         CUSTOMER:
         - Name: {customer_info.get('name')}
+        - Email: {customer_info.get('email')}
         - History: {customer_info.get('history', 'New Client')}
 
-        OPERATIONAL RULES:
-        1. USE LIVE DATA: When you have real order/tracking data, use it naturally in conversation.
-        2. If order shows items, mention them casually: "I see your order included the Premium Hoodie—that's a great pick."
-        3. If tracking shows status, tell them naturally: "Your package is out for delivery today."
-        4. For sizing questions, give a confident recommendation with warmth. If you need their measurements, ask naturally: "What height and weight should I work with for you?"
-        5. For return/exchange requests, use the RETURN/EXCHANGE STATUS above to determine next steps.
-        6. If return is eligible and customer wants different size, present exchange options as a way to "find the perfect fit" rather than processing a return.
-        7. If return is NOT eligible, do NOT offer exchange—acknowledge the policy and offer to escalate to human support if needed.
-        8. ESCALATE only if they're frustrated or you've tried twice and can't help.
+        CRITICAL RETURN RULES - MUST FOLLOW EXACTLY:
+        1. If RETURN/EXCHANGE STATUS says "ELIGIBLE" - confirm the return is possible and process it
+        2. If RETURN/EXCHANGE STATUS says "NOT ELIGIBLE" - do NOT process return, explain why, offer to escalate
+        3. If RETURN/EXCHANGE STATUS says "ACTION REQUIRED" - ask for order number/email, do NOT guess
+        4. For size exchanges: use the EXCHANGE AVAILABLE info to upsell
+        5. NEVER contradict the RETURN/EXCHANGE STATUS - it reflects actual Shopify data
 
         OUTPUT JSON ONLY:
         {{
