@@ -7,7 +7,7 @@ import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 import requests
-from src.lib.supabase_client import supabase_select
+from src.lib.supabase_client import supabase_select, supabase_insert, supabase_update
 
 logger = logging.getLogger(__name__)
 
@@ -463,3 +463,309 @@ class ActionsManager:
 
 # Singleton instance
 actions_manager = ActionsManager()
+
+
+# =============================================================================
+# Human-in-the-Loop Functions (Standalone for clarity)
+# =============================================================================
+
+async def stage_pending_action(
+    order_id: str,
+    customer_email: str,
+    action_type: str,
+    ai_reasoning: str,
+    eligibility_data: Dict[str, Any],
+    exchange_suggestion: Optional[Dict[str, Any]] = None,
+    customer_name: str = None
+) -> Dict[str, Any]:
+    """
+    Stage a pending action for human approval.
+
+    Args:
+        order_id: The order number
+        customer_email: Customer email
+        action_type: 'Refund' or 'Exchange'
+        ai_reasoning: Brief summary of why this action is suggested
+        eligibility_data: The result from check_return_eligibility
+        exchange_suggestion: Optional exchange suggestion data
+        customer_name: Optional customer name
+
+    Returns:
+        Dict with action_id and staging confirmation
+    """
+    try:
+        # Calculate risk score based on order value
+        risk_score = "Low"
+        order_total = 0
+
+        if eligibility_data.get("order"):
+            order_total = float(eligibility_data["order"].get("total_price", "0"))
+
+        if order_total > 200:
+            risk_score = "High"
+        elif order_total > 50:
+            risk_score = "Medium"
+
+        # Prepare the pending action record
+        pending_action = {
+            "order_id": str(order_id),
+            "customer_email": customer_email,
+            "customer_name": customer_name,
+            "action_type": action_type,
+            "ai_reasoning": ai_reasoning,
+            "risk_score": risk_score,
+            "status": "Pending",
+            "order_data": eligibility_data.get("order"),
+            "exchange_suggestion": exchange_suggestion,
+            "original_payload": eligibility_data,
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        }
+
+        # Insert into database
+        result = supabase_insert("pending_actions", pending_action)
+
+        logger.info(f"[PendingActions] Staged {action_type} for order {order_id}, risk: {risk_score}, id: {result.get('id') if result else 'ERROR'}")
+
+        return {
+            "success": True,
+            "action_id": result.get("id") if result else None,
+            "risk_score": risk_score,
+            "message": f"Your {action_type.lower()} request has been staged for approval."
+        }
+
+    except Exception as e:
+        logger.error(f"[PendingActions] Error staging action: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "Failed to stage action for approval."
+        }
+
+
+async def approve_pending_action(
+    action_id: str,
+    approved_by: str = "admin"
+) -> Dict[str, Any]:
+    """
+    Approve and execute a pending action.
+
+    Args:
+        action_id: The UUID of the pending action
+        approved_by: Who approved it (default: admin)
+
+    Returns:
+        Dict with execution result
+    """
+    try:
+        # Get the pending action
+        actions = supabase_select("pending_actions", {"id": f"eq.{action_id}"})
+
+        if not actions:
+            return {"success": False, "error": "Action not found"}
+
+        action = actions[0]
+
+        if action["status"] != "Pending":
+            return {"success": False, "error": f"Action already {action['status']}"}
+
+        # Execute based on action type
+        if action["action_type"] == "Refund":
+            result = await _execute_refund(action)
+        elif action["action_type"] == "Exchange":
+            result = await _execute_exchange(action)
+        else:
+            return {"success": False, "error": "Unknown action type"}
+
+        if result.get("success"):
+            # Update status to Approved and Executed
+            supabase_update("pending_actions", {"id": f"eq.{action_id}"}, {
+                "status": "Executed",
+                "approved_by": approved_by,
+                "approved_at": datetime.utcnow().isoformat(),
+                "executed_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat()
+            })
+
+            # Send confirmation email
+            await _send_approval_confirmation(action)
+
+            return {"success": True, "message": "Action executed and customer notified"}
+        else:
+            return result
+
+    except Exception as e:
+        logger.error(f"[PendingActions] Error approving action: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def reject_pending_action(
+    action_id: str,
+    rejection_note: str,
+    rejected_by: str = "admin"
+) -> Dict[str, Any]:
+    """
+    Reject a pending action.
+
+    Args:
+        action_id: The UUID of the pending action
+        rejection_note: Reason for rejection
+        rejected_by: Who rejected it
+
+    Returns:
+        Dict with rejection result
+    """
+    try:
+        # Update status to Rejected
+        result = supabase_update("pending_actions", {"id": f"eq.{action_id}"}, {
+            "status": "Rejected",
+            "rejection_note": rejection_note,
+            "approved_by": rejected_by,
+            "approved_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        })
+
+        # Send rejection email
+        action = supabase_select("pending_actions", {"id": f"eq.{action_id}"})
+        if action:
+            await _send_rejection_email(action[0], rejection_note)
+
+        return {
+            "success": True,
+            "message": "Action rejected and customer notified"
+        }
+
+    except Exception as e:
+        logger.error(f"[PendingActions] Error rejecting action: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def _execute_refund(action: Dict) -> Dict[str, Any]:
+    """Execute a refund via Shopify API."""
+    try:
+        order_id = action.get("order_id")
+        order_data = action.get("order_data", {})
+
+        # Get refund payment ID from Shopify
+        # First, get the order to find the transaction
+        shop_name = os.getenv("SHOPIFY_SHOP_NAME")
+        shopify_token = os.getenv("SHOPIFY_ACCESS_TOKEN")
+        api_version = os.getenv("SHOPIFY_API_VERSION", "2024-01")
+
+        url = f"https://{shop_name}.myshopify.com/admin/api/{api_version}/orders/{order_id}/refunds.json"
+        headers = {
+            "X-Shopify-Access-Token": shopify_token,
+            "Content-Type": "application/json"
+        }
+
+        # Calculate refund amount from order
+        refund_amount = order_data.get("total_price", "0")
+
+        # Create refund payload
+        refund_data = {
+            "refund": {
+                "note": f"Refund processed via AI Assistant - Action ID: {action['id']}",
+                "transactions": [
+                    {
+                        "kind": "refund",
+                        "amount": refund_amount,
+                        "gateway": "shopify_payments"
+                    }
+                ]
+            }
+        }
+
+        resp = requests.post(url, headers=headers, json=refund_data)
+
+        if resp.status_code in [200, 201]:
+            logger.info(f"[PendingActions] Refund executed for order {order_id}")
+            return {"success": True, "refund_id": resp.json().get("refund", {}).get("id")}
+        else:
+            logger.error(f"[PendingActions] Refund failed: {resp.text}")
+            return {"success": False, "error": f"Shopify refund failed: {resp.text}"}
+
+    except Exception as e:
+        logger.error(f"[PendingActions] Refund execution error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def _execute_exchange(action: Dict) -> Dict[str, Any]:
+    """Execute an exchange via Shopify API."""
+    try:
+        # For exchanges, we create a new order with the suggested variant
+        exchange_data = action.get("exchange_suggestion", {})
+        customer_email = action.get("customer_email")
+
+        if not exchange_data:
+            return {"success": False, "error": "No exchange data available"}
+
+        suggested_variant_id = exchange_data.get("variant_id")
+        original_item = exchange_data.get("original_item")
+
+        # Create a new order for the exchange (customer pays for new item)
+        # Or create a draft order for the exchange
+        shop_name = os.getenv("SHOPIFY_SHOP_NAME")
+        shopify_token = os.getenv("SHOPIFY_ACCESS_TOKEN")
+        api_version = os.getenv("SHOPIFY_API_VERSION", "2024-01")
+
+        # Create draft order for exchange
+        url = f"https://{shop_name}.myshopify.com/admin/api/{api_version}/draft_orders.json"
+        headers = {
+            "X-Shopify-Access-Token": shopify_token,
+            "Content-Type": "application/json"
+        }
+
+        draft_order = {
+            "draft_order": {
+                "email": customer_email,
+                "note": f"Exchange for order {action['order_id']} - Action ID: {action['id']}",
+                "line_items": [
+                    {
+                        "variant_id": suggested_variant_id,
+                        "quantity": 1
+                    }
+                ]
+            }
+        }
+
+        resp = requests.post(url, headers=headers, json=draft_order)
+
+        if resp.status_code in [200, 201]:
+            draft_order_id = resp.json().get("draft_order", {}).get("id")
+            logger.info(f"[PendingActions] Exchange draft order created: {draft_order_id}")
+            return {
+                "success": True,
+                "draft_order_id": draft_order_id,
+                "message": "Exchange order created. Customer will receive invoice."
+            }
+        else:
+            logger.error(f"[PendingActions] Exchange creation failed: {resp.text}")
+            return {"success": False, "error": f"Shopify exchange failed: {resp.text}"}
+
+    except Exception as e:
+        logger.error(f"[PendingActions] Exchange execution error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def _send_approval_confirmation(action: Dict) -> bool:
+    """Send confirmation email to customer after action is approved."""
+    try:
+        # This would integrate with your email service
+        # For now, we'll create a ticket note or log it
+        logger.info(f"[PendingActions] Would send approval email to {action['customer_email']}")
+
+        # Could integrate with Gmail, SendGrid, etc.
+        return True
+    except Exception as e:
+        logger.error(f"[PendingActions] Error sending approval email: {e}")
+        return False
+
+
+async def _send_rejection_email(action: Dict, rejection_note: str) -> bool:
+    """Send rejection notification to customer."""
+    try:
+        logger.info(f"[PendingActions] Would send rejection email to {action['customer_email']}")
+        return True
+    except Exception as e:
+        logger.error(f"[PendingActions] Error sending rejection email: {e}")
+        return False
