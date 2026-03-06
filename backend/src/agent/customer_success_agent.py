@@ -278,11 +278,13 @@ class CustomerSuccessAgent:
         - History: {customer_info.get('history', 'New Client')}
 
         CRITICAL RETURN RULES - MUST FOLLOW EXACTLY:
-        1. If RETURN/EXCHANGE STATUS says "ELIGIBLE" - confirm the return is possible and process it
-        2. If RETURN/EXCHANGE STATUS says "NOT ELIGIBLE" - do NOT process return, explain why, offer to escalate
-        3. If RETURN/EXCHANGE STATUS says "ACTION REQUIRED" - ask for order number/email, do NOT guess
-        4. For size exchanges: use the EXCHANGE AVAILABLE info to upsell
-        5. NEVER contradict the RETURN/EXCHANGE STATUS - it reflects actual Shopify data
+        1. If RETURN/EXCHANGE STATUS says "ELIGIBLE" - set risk_level to "low", escalate to false
+        2. If RETURN/EXCHANGE STATUS says "ACTION STAGED FOR APPROVAL" - set risk_level to "low", escalate to false, the request is queued for human review
+        3. If RETURN/EXCHANGE STATUS says "REQUEST SUBMITTED FOR MANUAL REVIEW" - set risk_level to "low", escalate to false
+        4. If RETURN/EXCHANGE STATUS says "NOT ELIGIBLE" - set risk_level to "medium", escalate can be true
+        5. If RETURN/EXCHANGE STATUS says "ACTION REQUIRED" - ask for order number/email, set risk_level to "low"
+        6. For size exchanges: use the EXCHANGE AVAILABLE info to upsell
+        7. NEVER contradict the RETURN/EXCHANGE STATUS - it reflects actual Shopify data
 
         OUTPUT JSON ONLY:
         {{

@@ -95,12 +95,33 @@ class ReturnActionsIntegration:
         result["eligibility"] = eligibility
         result["return_checked"] = True
 
-        # Step 2: If NOT eligible, return the reason (no staging)
+        # Step 2: If NOT eligible (but verified) - determine if we stage for review
         if not eligibility.get("eligible"):
-            result["action_context"] = (
-                f"**RETURN NOT ELIGIBLE**: {eligibility.get('reason')}. "
-                "Do NOT process return. Acknowledge and offer to escalate to human support if frustrated."
-            )
+            # Check if we should stage for manual review (order not found, etc)
+            if eligibility.get("staging_required") or eligibility.get("requires_manual_review"):
+                # Stage for manual review
+                customer_name = customer_info.get("name")
+                staged = await stage_pending_action(
+                    order_id=order_id,
+                    customer_email=email,
+                    action_type="Refund",
+                    ai_reasoning=f"Customer requests refund for order #{order_id}. Manual review required: {eligibility.get('reason')}",
+                    eligibility_data=eligibility,
+                    exchange_suggestion=None,
+                    customer_name=customer_name
+                )
+                result["staged"] = staged
+                result["action_context"] = (
+                    f"**REQUEST SUBMITTED FOR MANUAL REVIEW**: {eligibility.get('reason')} "
+                    "Tell the customer: 'I've submitted your request to our team for manual review. "
+                    "They'll process it within 2 hours and you'll get an email confirmation.'"
+                )
+            else:
+                # Truly not eligible - don't stage
+                result["action_context"] = (
+                    f"**RETURN NOT ELIGIBLE**: {eligibility.get('reason')}. "
+                    "Do NOT process return. Acknowledge and offer to escalate to human support if frustrated."
+                )
             return result
 
         # Step 3: Eligible - stage for human approval

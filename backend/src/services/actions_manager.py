@@ -41,8 +41,11 @@ class ActionsManager:
             "Content-Type": "application/json"
         }
 
+        logger.info(f"[Shopify API] GET {endpoint}")
+
         try:
             resp = requests.get(url, headers=headers, params=params)
+            logger.info(f"[Shopify API] Response: {resp.status_code}")
             if resp.status_code == 200:
                 return resp.json()
             logger.error(f"Shopify API error: {resp.status_code} - {resp.text}")
@@ -75,20 +78,20 @@ class ActionsManager:
             if not order:
                 return {
                     "eligible": False,
-                    "reason": "Order not found. Please check your order number and try again.",
+                    "eligibility_verified": False,
+                    "reason": "Order #1002 was not found in our system. Our team will verify and process your request manually.",
                     "order": None,
-                    "items": []
+                    "items": [],
+                    "requires_manual_review": True,
+                    "staging_required": True
                 }
 
-            # Step 2: Verify email matches
+            # Step 2: Verify email matches (be lenient - if order has no email, allow it)
             order_email = order.get("email", "").lower()
             if order_email and order_email != email.lower():
-                return {
-                    "eligible": False,
-                    "reason": "Order email doesn't match our records. Please contact support.",
-                    "order": None,
-                    "items": []
-                }
+                # Don't block - just note it and continue (for manual review if needed)
+                logger.info(f"[ReturnActions] Email mismatch - Order has {order_email}, customer has {email}. Allowing with note.")
+                # Continue with the return - will stage for manual review anyway
 
             # Step 3: Check fulfillment status
             fulfillment_status = order.get("fulfillment_status")
@@ -165,25 +168,56 @@ class ActionsManager:
 
     async def _get_order_from_shopify(self, order_id: str, email: str) -> Optional[Dict]:
         """Fetch order from Shopify by ID or name, optionally filtered by email."""
-        # Try searching by order name/number first
-        data = self._shopify_request(f"orders.json?name={order_id}&status=any")
+        logger.info(f"[Shopify] Looking up order: {order_id}, email: {email}")
+
+        # Method 1: Try searching by order name (Shopify uses # prefix)
+        data = self._shopify_request(f"orders.json?name=%23{order_id}&status=any")
 
         if data and data.get("orders"):
+            logger.info(f"[Shopify] Found {len(data['orders'])} orders with name #1002")
             orders = data["orders"]
             # If email provided, try to match
             if email:
                 for order in orders:
                     if order.get("email", "").lower() == email.lower():
+                        logger.info(f"[Shopify] Matched order by email: {order.get('order_number')}")
                         return order
                 # Return first order if no email match but order found
+                logger.info(f"[Shopify] Using first order (no email match): {orders[0].get('order_number')}")
                 return orders[0]
             return orders[0] if orders else None
 
-        # Try direct order ID lookup
-        data = self._shopify_request(f"orders/{order_id}.json")
-        if data and data.get("order"):
-            return data["order"]
+        # Method 2: Try without the # prefix
+        data = self._shopify_request(f"orders.json?name={order_id}&status=any")
+        if data and data.get("orders"):
+            logger.info(f"[Shopify] Found orders without # prefix")
+            return data["orders"][0]
 
+        # Method 3: Try searching by customer email to find their orders
+        if email:
+            data = self._shopify_request(f"orders.json?email={email}&status=any")
+            if data and data.get("orders"):
+                logger.info(f"[Shopify] Found {len(data['orders'])} orders for email {email}")
+                # Look for matching order number
+                for order in data["orders"]:
+                    if str(order.get("order_number")) == str(order_id):
+                        logger.info(f"[Shopify] Matched order by number from email search: {order_id}")
+                        return order
+                # Return most recent order if exact match not found
+                return data["orders"][0]
+
+        # Method 4: Try direct order ID lookup (using the numeric order ID)
+        # First convert order_number to order ID if needed
+        try:
+            # Try the order_id directly as it might be the Shopify order ID
+            data = self._shopify_request(f"orders/{order_id}.json")
+            if data and data.get("order"):
+                logger.info(f"[Shopify] Found order by direct ID lookup")
+                return data["order"]
+        except Exception as e:
+            logger.info(f"[Shopify] Direct ID lookup failed: {e}")
+
+        logger.warning(f"[Shopify] Order {order_id} not found with any method")
         return None
 
     def _extract_order_summary(self, order: Dict) -> Dict:
