@@ -384,9 +384,9 @@ class ActionsManager:
                     inv_data = self._shopify_request(f"inventory_levels.json?inventory_item_ids={inventory_item_id}")
                     if inv_data and inv_data.get("inventory_levels"):
                         level = inv_data["inventory_levels"][0]
-                        available_qty = level.get("available", 0)
+                        available_qty = level.get("available") or 0
 
-                        if available_qty > 0:
+                        if available_qty and available_qty > 0:
                             available.append({
                                 "size": variant.get("option1") or variant.get("title"),
                                 "variant_id": variant.get("id"),
