@@ -48,7 +48,7 @@ class UnifiedMessageProcessor:
             # 2. Check System Settings (Operational Mode)
             settings = await supabase_service.get_system_settings(store_id)
             ai_mode = settings.get('ai_mode', 'active')
-            confidence_threshold = settings.get('confidence_threshold', 0.75)
+            confidence_threshold = settings.get('confidence_threshold', 0.65)
 
             # 3. Resolve Customer
             customer = await supabase_service.get_or_create_customer(

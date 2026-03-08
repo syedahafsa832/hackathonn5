@@ -695,15 +695,14 @@ async def _execute_refund(action: Dict) -> Dict[str, Any]:
         # Calculate refund amount from order
         refund_amount = order_data.get("total_price", "0")
 
-        # Create refund payload
+        # Create refund payload (let Shopify use the original transaction's gateway)
         refund_data = {
             "refund": {
                 "note": f"Refund processed via AI Assistant - Action ID: {action['id']}",
                 "transactions": [
                     {
                         "kind": "refund",
-                        "amount": refund_amount,
-                        "gateway": "shopify_payments"
+                        "amount": refund_amount
                     }
                 ]
             }
