@@ -339,3 +339,4 @@ config/initializers/wrap_parameters.rb
 config/initializers/backtrace_silencers.rb
 config/initializers/cookies_serializer.rb
 config/initializers/filter_parameter_logging.rb
+hack5/
