@@ -50,7 +50,7 @@ async def update_ai_mode(
             supabase_insert("system_settings", {
                 "store_id": final_store_id,
                 "ai_mode": final_mode,
-                "confidence_threshold": 0.75,
+                "confidence_threshold": 0.65,
                 "data_retention_days": 180
             })
 
