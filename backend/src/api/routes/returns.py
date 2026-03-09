@@ -108,15 +108,30 @@ async def initiate_return(request: CreateReturnRequest):
         from src.services.supabase_service import supabase_service
         from datetime import datetime
 
-        # Create ticket for return request
+        # Try to get customer name from order lookup
+        customer_name = "Customer"
+        try:
+            from src.services.actions_manager import actions_manager
+            eligibility = await actions_manager.check_return_eligibility(request.order_id, request.email)
+            if eligibility.get("order", {}).get("customer"):
+                customer_name = eligibility["order"]["customer"].get("first_name", "Customer")
+        except Exception:
+            pass  # Use default name if lookup fails
+
+        # Create ticket for return request with all required fields
         ticket_data = {
             "customer_email": request.email,
+            "customer_name": customer_name,
             "subject": f"Return Request - Order #{request.order_id}",
             "message": f"Return Type: {request.return_type}\n"
                       f"Items: {', '.join(request.items)}\n"
                       f"Reason: {request.reason}\n"
                       f"Exchange Size: {request.exchange_size or 'N/A'}",
             "intent": "return_request",
+            "sentiment": "neutral",
+            "risk_level": "low",
+            "confidence_score": 100,
+            "escalate": False,
             "status": "return_pending",
             "return_type": request.return_type,
             "return_reason": request.reason,
