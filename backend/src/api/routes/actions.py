@@ -5,6 +5,7 @@ Human-in-the-Loop Approval Queue Endpoints
 from fastapi import APIRouter, HTTPException, Query
 from typing import Optional, List
 from pydantic import BaseModel
+import uuid
 
 router = APIRouter(prefix="/api/actions", tags=["actions"])
 
@@ -22,41 +23,10 @@ class RejectRequest(BaseModel):
 
 # ============== Endpoints ==============
 
-@router.get("/pending")
-async def list_pending_actions(
-    status: Optional[str] = Query(None, description="Filter by status: Pending, Approved, Rejected, Executed"),
-    risk_score: Optional[str] = Query(None, description="Filter by risk: Low, Medium, High"),
-    limit: int = Query(20, description="Number of records to return")
-):
+@router.get("/stats")
+async def get_actions_stats():
     """
-    List all pending actions for the approval queue.
-    """
-    try:
-        from src.lib.supabase_client import supabase_select
-
-        filters = {}
-        if status:
-            filters["status"] = f"eq.{status}"
-        if risk_score:
-            filters["risk_score"] = f"eq.{risk_score}"
-
-        actions = supabase_select("pending_actions", filters)
-
-        # Sort by created_at descending and limit
-        actions = sorted(actions, key=lambda x: x.get("created_at", ""), reverse=True)[:limit]
-
-        return {
-            "actions": actions,
-            "count": len(actions)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/pending/stats")
-async def get_pending_stats():
-    """
-    Get summary statistics of pending actions.
+    Get summary statistics of all actions.
     """
     try:
         from src.lib.supabase_client import supabase_select
@@ -81,12 +51,72 @@ async def get_pending_stats():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/pending")
+async def list_pending_actions(
+    status: Optional[str] = Query(None, description="Filter by status: Pending, Approved, Rejected, Executed"),
+    risk_score: Optional[str] = Query(None, description="Filter by risk: Low, Medium, High"),
+    limit: int = Query(20, description="Number of records to return")
+):
+    """
+    List all pending actions for the approval queue.
+    """
+    try:
+        from src.lib.supabase_client import supabase_select
+
+        filters = {}
+        if status:
+            filters["status"] = f"eq.{status}"
+        if risk_score:
+            filters["risk_score"] = f"eq.{risk_score}"
+
+        actions = supabase_select("pending_actions", filters)
+
+        # Sort by created_at descending and limit
+        actions = sorted(actions, key=lambda x: x.get("created_at", ""), reverse=True)[:limit]
+
+        # Enrich response with revenue_at_stake and ai_reasoning
+        enriched_actions = []
+        for action in actions:
+            enriched_actions.append({
+                "id": action.get("id"),
+                "order_id": action.get("order_id"),
+                "customer_email": action.get("customer_email"),
+                "customer_name": action.get("customer_name"),
+                "action_type": action.get("action_type"),
+                "ai_reasoning": action.get("ai_reasoning"),
+                "revenue_at_stake": action.get("revenue_at_stake"),
+                "risk_score": action.get("risk_score"),
+                "status": action.get("status"),
+                "exchange_suggestion": action.get("exchange_suggestion"),
+                "order_data": action.get("order_data"),
+                "rejection_note": action.get("rejection_note"),
+                "approved_by": action.get("approved_by"),
+                "approved_at": action.get("approved_at"),
+                "executed_at": action.get("executed_at"),
+                "created_at": action.get("created_at"),
+                "updated_at": action.get("updated_at")
+            })
+
+        return {
+            "actions": enriched_actions,
+            "count": len(enriched_actions)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/{action_id}")
 async def get_action(action_id: str):
     """
     Get a specific pending action by ID.
     """
     try:
+        # Validate UUID format to prevent 500 errors
+        try:
+            uuid.UUID(action_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid action ID format. Must be a valid UUID.")
+
         from src.lib.supabase_client import supabase_select
 
         actions = supabase_select("pending_actions", {"id": f"eq.{action_id}"})
@@ -94,7 +124,29 @@ async def get_action(action_id: str):
         if not actions:
             raise HTTPException(status_code=404, detail="Action not found")
 
-        return actions[0]
+        action = actions[0]
+        # Return enriched response with revenue_at_stake and ai_reasoning
+        return {
+            "id": action.get("id"),
+            "order_id": action.get("order_id"),
+            "customer_email": action.get("customer_email"),
+            "customer_name": action.get("customer_name"),
+            "action_type": action.get("action_type"),
+            "ai_reasoning": action.get("ai_reasoning"),
+            "revenue_at_stake": action.get("revenue_at_stake"),
+            "risk_score": action.get("risk_score"),
+            "status": action.get("status"),
+            "exchange_suggestion": action.get("exchange_suggestion"),
+            "order_data": action.get("order_data"),
+            "rejection_note": action.get("rejection_note"),
+            "approved_by": action.get("approved_by"),
+            "approved_at": action.get("approved_at"),
+            "executed_at": action.get("executed_at"),
+            "created_at": action.get("created_at"),
+            "updated_at": action.get("updated_at")
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -106,6 +158,12 @@ async def approve_action(action_id: str, request: ApproveRequest = None):
     Triggers Shopify API to process the action.
     """
     try:
+        # Validate UUID format to prevent 500 errors
+        try:
+            uuid.UUID(action_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid action ID format. Must be a valid UUID.")
+
         from src.services.actions_manager import approve_pending_action
 
         approved_by = request.approved_by if request else "admin"
@@ -133,6 +191,12 @@ async def reject_action(action_id: str, request: RejectRequest):
     Reject a pending action.
     """
     try:
+        # Validate UUID format to prevent 500 errors
+        try:
+            uuid.UUID(action_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid action ID format. Must be a valid UUID.")
+
         from src.services.actions_manager import reject_pending_action
 
         result = await reject_pending_action(
@@ -162,6 +226,12 @@ async def delete_action(action_id: str):
     Delete a pending action (only if still pending).
     """
     try:
+        # Validate UUID format to prevent 500 errors
+        try:
+            uuid.UUID(action_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid action ID format. Must be a valid UUID.")
+
         from src.lib.supabase_client import supabase_select, supabase_update
 
         actions = supabase_select("pending_actions", {"id": f"eq.{action_id}"})
