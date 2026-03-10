@@ -42,7 +42,10 @@
       "Bash(python test_cross_channel.py:*)",
       "Bash(python:*)",
       "Bash(where:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(netstat:*)",
+      "Bash(findstr:*)",
+      "Bash(tasklist:*)"
     ]
   }
 }
