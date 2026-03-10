@@ -14,32 +14,83 @@ import {
   Package,
   Clock,
   Brain,
-  Loader2,
-  DollarSign,
 } from "lucide-react";
 
-const API_BASE_URL = "https://hackathonn5-production.up.railway.app";
+// Mock data for the dashboard
+const mockMetrics = {
+  revenueProtected: 14280.0,
+  automationRate: 72,
+  highRiskEscalations: 3,
+};
+
+const mockActivityFeed = [
+  {
+    id: 1,
+    timestamp: "11:04 PM",
+    channel: "email",
+    channelIcon: Mail,
+    intent: "Sizing Issue",
+    logic: "Inventory Verified, Exchange Offered",
+    status: "success",
+  },
+  {
+    id: 2,
+    timestamp: "10:58 PM",
+    channel: "chat",
+    channelIcon: MessageSquare,
+    intent: "Refund Request",
+    logic: "Order History Checked, Partial Refund Approved",
+    status: "success",
+  },
+  {
+    id: 3,
+    timestamp: "10:45 PM",
+    channel: "instagram",
+    channelIcon: ShoppingBag,
+    intent: "Damaged Product",
+    logic: "Photo Verification Required, Escalated to Human",
+    status: "escalated",
+  },
+  {
+    id: 4,
+    timestamp: "10:32 PM",
+    channel: "email",
+    channelIcon: Mail,
+    intent: "Return Request",
+    logic: "Return Window Verified, Label Generated",
+    status: "success",
+  },
+  {
+    id: 5,
+    timestamp: "10:15 PM",
+    channel: "chat",
+    channelIcon: MessageSquare,
+    intent: "Exchange Request",
+    logic: "Size Chart Sent, Alternative Suggested",
+    status: "pending",
+  },
+  {
+    id: 6,
+    timestamp: "09:58 PM",
+    channel: "email",
+    channelIcon: Mail,
+    intent: "Order Status",
+    logic: "Tracking Info Retrieved, Auto-Resolved",
+    status: "success",
+  },
+  {
+    id: 7,
+    timestamp: "09:42 PM",
+    channel: "instagram",
+    channelIcon: ShoppingBag,
+    intent: "VIP Complaint",
+    logic: "Priority Queue, Human Handoff",
+    status: "escalated",
+  },
+];
 
 // Components
-function MetricCard({ title, value, subtitle, icon: Icon, glowColor, isCurrency, loading }) {
-  if (loading) {
-    return (
-      <div
-        className="relative p-6 rounded-md animate-pulse"
-        style={{
-          background: "rgba(255, 255, 255, 0.03)",
-          border: "1px solid rgba(255, 255, 255, 0.1)",
-        }}
-      >
-        <div className="flex items-start justify-between mb-4">
-          <div className="w-10 h-10 rounded-md" style={{ background: "rgba(255,255,255,0.1)" }} />
-        </div>
-        <div className="w-32 h-8 rounded" style={{ background: "rgba(255,255,255,0.1)" }} />
-        <div className="w-24 h-4 rounded mt-2" style={{ background: "rgba(255,255,255,0.1)" }} />
-      </div>
-    );
-  }
-
+function MetricCard({ title, value, subtitle, icon: Icon, glowColor, isCurrency }) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -70,7 +121,7 @@ function MetricCard({ title, value, subtitle, icon: Icon, glowColor, isCurrency,
           textShadow: glowColor ? `0 0 30px ${glowColor}40` : "none",
         }}
       >
-        {isCurrency ? `$${Number(value || 0).toLocaleString()}` : value}
+        {isCurrency ? `$${value.toLocaleString()}` : value}
       </div>
       <div className="text-sm mt-1" style={{ color: "rgba(245, 245, 245, 0.6)" }}>
         {title}
@@ -95,21 +146,7 @@ function ActivityItem({ item, index }) {
     pending: Clock,
   };
 
-  const StatusIcon = statusIcons[item.status] || Clock;
-
-  // Format timestamp
-  const formatTime = (timestamp) => {
-    if (!timestamp) return "Just now";
-    const date = new Date(timestamp);
-    const now = new Date();
-    const diffMs = now - date;
-    const diffMins = Math.floor(diffMs / 60000);
-
-    if (diffMins < 1) return "Just now";
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffMins < 1440) return `${Math.floor(diffMins / 60)}h ago`;
-    return `${Math.floor(diffMins / 1440)}d ago`;
-  };
+  const StatusIcon = statusIcons[item.status];
 
   return (
     <motion.div
@@ -120,19 +157,15 @@ function ActivityItem({ item, index }) {
       style={{ borderBottom: "1px solid rgba(255, 255, 255, 0.05)" }}
     >
       <div className="text-xs font-mono mt-1" style={{ color: "rgba(245, 245, 245, 0.4)" }}>
-        {formatTime(item.executed_at)}
+        {item.timestamp}
       </div>
       <div className="p-1.5 rounded-md" style={{ background: "rgba(255, 255, 255, 0.05)" }}>
-        {item.action_type === "Exchange" ? (
-          <TrendingUp className="w-3.5 h-3.5" style={{ color: "#22C55E" }} />
-        ) : (
-          <DollarSign className="w-3.5 h-3.5" style={{ color: "#EF4444" }} />
-        )}
+        <item.channelIcon className="w-3.5 h-3.5" style={{ color: "#00E5FF" }} />
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium" style={{ color: "#F5F5F5" }}>
-            {item.action_type === "Exchange" ? "Exchange Saved" : "Refund Processed"}
+            Intent: {item.intent}
           </span>
           <StatusIcon
             className="w-3.5 h-3.5"
@@ -140,13 +173,8 @@ function ActivityItem({ item, index }) {
           />
         </div>
         <div className="text-xs mt-0.5 truncate" style={{ color: "rgba(245, 245, 245, 0.5)" }}>
-          Order #{item.order_id} - {item.item_name}
+          {item.logic}
         </div>
-        {item.revenue_at_stake && (
-          <div className="text-xs font-medium mt-0.5" style={{ color: "#22C55E" }}>
-            ${Number(item.revenue_at_stake).toFixed(2)}
-          </div>
-        )}
       </div>
     </motion.div>
   );
@@ -216,17 +244,9 @@ function ManualOverrideToggle() {
   );
 }
 
-function CircularProgress({ percentage, label, sublabel, loading }) {
-  if (loading) {
-    return (
-      <div className="relative w-24 h-24 animate-pulse">
-        <div className="absolute inset-0 rounded-full" style={{ background: "rgba(255,255,255,0.1)" }} />
-      </div>
-    );
-  }
-
+function CircularProgress({ percentage, label, sublabel }) {
   const circumference = 2 * Math.PI * 40;
-  const strokeDashoffset = circumference - ((percentage || 0) / 100) * circumference;
+  const strokeDashoffset = circumference - (percentage / 100) * circumference;
 
   return (
     <div className="relative w-24 h-24">
@@ -258,7 +278,7 @@ function CircularProgress({ percentage, label, sublabel, loading }) {
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
         <span className="text-lg font-medium" style={{ color: "#F5F5F5" }}>
-          {percentage || 0}%
+          {percentage}%
         </span>
       </div>
       <div className="absolute -bottom-6 left-0 right-0 text-center">
@@ -274,102 +294,53 @@ function CircularProgress({ percentage, label, sublabel, loading }) {
 }
 
 function ShopifyConnectivityBar() {
-  const [loading, setLoading] = useState(true);
-  const [stats, setStats] = useState(null);
-
-  useEffect(() => {
-    fetch(`${API_BASE_URL}/api/actions/stats`)
-      .then(res => res.json())
-      .then(data => {
-        setStats(data);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-  }, []);
-
   const statusItems = [
     { label: "Shopify API", status: "connected", icon: Store },
     { label: "Inventory", status: "synced", icon: Package },
-    { label: "AI Engine", status: "active", icon: Brain },
+    { label: "Order History", status: "synced", icon: ShoppingBag },
   ];
 
   return (
     <div
-      className="mt-6 p-4 rounded-md"
+      className="flex items-center justify-between px-6 py-3 rounded-md mt-6"
       style={{
-        background: "rgba(255, 255, 255, 0.03)",
-        border: "1px solid rgba(255, 255, 255, 0.1)",
+        background: "rgba(255, 255, 255, 0.02)",
+        border: "1px solid rgba(255, 255, 255, 0.05)",
       }}
     >
+      <div className="flex items-center gap-2">
+        <RefreshCw className="w-4 h-4" style={{ color: "#00E5FF" }} />
+        <span
+          className="text-xs font-medium uppercase tracking-wider"
+          style={{ color: "rgba(245, 245, 245, 0.6)" }}
+        >
+          Shopify Sync Status
+        </span>
+      </div>
       <div className="flex items-center gap-6">
         {statusItems.map((item) => (
           <div key={item.label} className="flex items-center gap-2">
-            <item.icon className="w-4 h-4" style={{ color: "rgba(245, 245, 245, 0.6)" }} />
+            <item.icon className="w-3.5 h-3.5" style={{ color: "#22C55E" }} />
             <span className="text-xs" style={{ color: "rgba(245, 245, 245, 0.6)" }}>
               {item.label}
             </span>
-            <div
-              className="w-2 h-2 rounded-full"
-              style={{
-                background: item.status === "connected" || item.status === "synced" || item.status === "active"
-                  ? "#22C55E"
-                  : "#EF4444",
-              }}
-            />
+            <span className="text-xs capitalize" style={{ color: "#22C55E" }}>
+              {item.status}
+            </span>
           </div>
         ))}
-        <div className="flex-1" />
-        <button
-          onClick={() => window.location.reload()}
-          className="p-2 rounded-md hover:bg-white/5 transition-colors"
-        >
-          <RefreshCw className="w-4 h-4" style={{ color: "rgba(245, 245, 245, 0.5)" }} />
-        </button>
+        <div className="flex items-center gap-1">
+          <Clock className="w-3 h-3" style={{ color: "rgba(245, 245, 245, 0.4)" }} />
+          <span className="text-xs" style={{ color: "rgba(245, 245, 245, 0.4)" }}>
+            Last sync: 2 mins ago
+          </span>
+        </div>
       </div>
     </div>
   );
 }
 
 export default function RevenueCommandCenter() {
-  const [metrics, setMetrics] = useState({
-    revenueProtected: 0,
-    automationRate: 0,
-    highRiskEscalations: 0,
-  });
-  const [activityFeed, setActivityFeed] = useState([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    fetchData();
-    // Auto-refresh every 30 seconds
-    const interval = setInterval(fetchData, 30000);
-    return () => clearInterval(interval);
-  }, []);
-
-  const fetchData = async () => {
-    try {
-      // Fetch stats
-      const statsRes = await fetch(`${API_BASE_URL}/api/actions/stats`);
-      const statsData = await statsRes.json();
-
-      // Fetch executed actions for feed
-      const executedRes = await fetch(`${API_BASE_URL}/api/actions/executed?limit=10`);
-      const executedData = await executedRes.json();
-
-      setMetrics({
-        revenueProtected: statsData.revenue_saved || 0,
-        automationRate: statsData.total > 0 ? Math.round(((statsData.executed || 0) / statsData.total) * 100) : 0,
-        highRiskEscalations: statsData.high_risk || 0,
-      });
-
-      setActivityFeed(executedData.feed || []);
-    } catch (error) {
-      console.error("Failed to fetch dashboard data:", error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   return (
     <div className="min-h-screen" style={{ background: "#090909" }}>
       {/* Global Header */}
@@ -414,12 +385,11 @@ export default function RevenueCommandCenter() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
           <MetricCard
             title="Revenue Protected"
-            value={metrics.revenueProtected}
+            value={mockMetrics.revenueProtected}
             subtitle="Refunds converted to Exchanges"
             icon={TrendingUp}
             glowColor="#9D50BB"
             isCurrency
-            loading={loading}
           />
           <div
             className="flex items-center justify-center p-6 rounded-md"
@@ -430,19 +400,17 @@ export default function RevenueCommandCenter() {
             }}
           >
             <CircularProgress
-              percentage={metrics.automationRate}
+              percentage={mockMetrics.automationRate}
               label="Automation"
               sublabel="Tickets resolved autonomously"
-              loading={loading}
             />
           </div>
           <MetricCard
             title="High-Risk Escalations"
-            value={metrics.highRiskEscalations}
+            value={mockMetrics.highRiskEscalations}
             subtitle="Active tickets requiring human intervention"
             icon={AlertTriangle}
             glowColor="#EF4444"
-            loading={loading}
           />
         </div>
 
@@ -479,21 +447,11 @@ export default function RevenueCommandCenter() {
             </div>
           </div>
           <div className="px-6 py-2 max-h-[400px] overflow-y-auto">
-            {loading ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="w-6 h-6 animate-spin" style={{ color: "#00E5FF" }} />
-              </div>
-            ) : activityFeed.length === 0 ? (
-              <div className="text-center py-8" style={{ color: "rgba(245, 245, 245, 0.5)" }}>
-                No executed actions yet. Approve some exchanges to see the feed.
-              </div>
-            ) : (
-              <AnimatePresence>
-                {activityFeed.map((item, index) => (
-                  <ActivityItem key={item.id || index} item={item} index={index} />
-                ))}
-              </AnimatePresence>
-            )}
+            <AnimatePresence>
+              {mockActivityFeed.map((item, index) => (
+                <ActivityItem key={item.id} item={item} index={index} />
+              ))}
+            </AnimatePresence>
           </div>
         </motion.div>
 
