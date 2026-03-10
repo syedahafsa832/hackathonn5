@@ -186,7 +186,12 @@ async def get_shopify_audit(order_id: str) -> ShopifyAudit:
         # Try to get order from Supabase first
         from src.lib.supabase_client import supabase_select
 
-        orders = supabase_select("orders", {"order_id": f"eq.{order_id}"})
+        # Try to find by order_number (stored as integer) or order_name
+        try:
+            order_num = int(order_id.replace("#", ""))
+            orders = supabase_select("orders", {"order_number": f"eq.{order_num}"})
+        except (ValueError, AttributeError):
+            orders = supabase_select("orders", {"order_name": f"eq.{order_id}"})
 
         if orders:
             order = orders[0]
@@ -242,9 +247,6 @@ async def check_inventory(requested_item: str, order_id: str) -> Optional[Invent
         # Try to get inventory from Supabase
         from src.lib.supabase_client import supabase_select
 
-        # Search for product variants
-        variants = supabase_select("product_variants", {})
-
         # Extract size from requested_item
         size = "M"  # Default
         for s in ["XL", "L", "M", "S"]:
@@ -252,6 +254,20 @@ async def check_inventory(requested_item: str, order_id: str) -> Optional[Invent
                 size = s
                 break
 
+        # Try to find variant by SKU or title containing the size
+        variants = supabase_select("product_variants", {"option1": f"eq.{size}"})
+
+        if variants and len(variants) > 0:
+            variant = variants[0]
+            available = variant.get("inventory_quantity", 0)
+            return InventoryCheck(
+                item_id=str(variant.get("shopify_variant_id", "")),
+                item_name=variant.get("title", f"Product Size {size}"),
+                available_quantity=available,
+                in_stock=available > 0
+            )
+
+        # Fall back to mock data if no variants found
         available = MOCK_INVENTORY.get(size, 0)
 
         return InventoryCheck(
