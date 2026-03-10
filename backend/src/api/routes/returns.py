@@ -153,7 +153,7 @@ async def initiate_return(request: CreateReturnRequest):
 
 @router.get("/history")
 async def get_return_history(
-    email: str = Query(..., description="Customer email"),
+    email: Optional[str] = Query(None, description="Customer email (optional, returns all if not provided)"),
     limit: int = Query(10, description="Number of records to return")
 ):
     """
@@ -164,10 +164,12 @@ async def get_return_history(
     try:
         from src.lib.supabase_client import supabase_select
 
-        returns = supabase_select("tickets", {
-            "customer_email": f"eq.{email}",
-            "intent": "eq.return_request"
-        })
+        # Build query filters
+        filters = {}
+        if email and email != "all" and email != "":
+            filters["customer_email"] = f"eq.{email}"
+
+        returns = supabase_select("tickets", filters)
 
         # Sort by created_at descending and limit
         returns = sorted(returns, key=lambda x: x.get("created_at", ""), reverse=True)[:limit]

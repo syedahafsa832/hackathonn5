@@ -33,6 +33,12 @@ async def get_actions_stats():
 
         all_actions = supabase_select("pending_actions", {})
 
+        # Calculate total revenue saved from executed exchanges
+        revenue_saved = 0
+        for action in all_actions:
+            if action.get("status") == "Executed" and action.get("action_type") == "Exchange":
+                revenue_saved += float(action.get("revenue_at_stake") or 0)
+
         stats = {
             "total": len(all_actions),
             "pending": len([a for a in all_actions if a.get("status") == "Pending"]),
@@ -40,6 +46,7 @@ async def get_actions_stats():
             "executed": len([a for a in all_actions if a.get("status") == "Executed"]),
             "rejected": len([a for a in all_actions if a.get("status") == "Rejected"]),
             "high_risk": len([a for a in all_actions if a.get("risk_score") == "High" and a.get("status") == "Pending"]),
+            "revenue_saved": revenue_saved,
             "by_type": {
                 "refund": len([a for a in all_actions if a.get("action_type") == "Refund"]),
                 "exchange": len([a for a in all_actions if a.get("action_type") == "Exchange"])
@@ -47,6 +54,51 @@ async def get_actions_stats():
         }
 
         return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/executed")
+async def get_executed_actions(
+    limit: int = Query(10, description="Number of records to return")
+):
+    """
+    Get executed actions for the Live Recovery feed.
+    Returns exchanges with revenue saved information.
+    """
+    try:
+        from src.lib.supabase_client import supabase_select
+
+        # Get executed exchanges (revenue saved)
+        actions = supabase_select("pending_actions", {
+            "status": "eq.Executed",
+            "order": "executed_at.desc"
+        })
+
+        # Limit results
+        actions = actions[:limit] if len(actions) > limit else actions
+
+        # Transform for feed
+        feed_items = []
+        for action in actions:
+            order_data = action.get("order_data", {})
+            items = order_data.get("line_items", []) if order_data else []
+            item_name = items[0].get("title", "Order") if items else "Order"
+
+            feed_items.append({
+                "id": action.get("id"),
+                "order_id": action.get("order_id"),
+                "item_name": item_name,
+                "action_type": action.get("action_type"),
+                "revenue_at_stake": action.get("revenue_at_stake"),
+                "executed_at": action.get("executed_at"),
+                "customer_email": action.get("customer_email")
+            })
+
+        return {
+            "feed": feed_items,
+            "count": len(feed_items)
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
