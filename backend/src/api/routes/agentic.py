@@ -186,12 +186,14 @@ async def get_shopify_audit(order_id: str) -> ShopifyAudit:
         # Try to get order from Supabase first
         from src.lib.supabase_client import supabase_select
 
-        # Try to find by order_number (stored as integer) or order_name
+        # Try to find by order_number (stored as integer)
+        # Order ID comes as "ORD-1002" or "1002" format
+        order_num_str = order_id.replace("ORD-", "").replace("#", "").strip()
         try:
-            order_num = int(order_id.replace("#", ""))
+            order_num = int(order_num_str)
             orders = supabase_select("orders", {"order_number": f"eq.{order_num}"})
         except (ValueError, AttributeError):
-            orders = supabase_select("orders", {"order_name": f"eq.{order_id}"})
+            orders = []
 
         if orders:
             order = orders[0]
