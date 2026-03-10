@@ -80,6 +80,7 @@ try:
     from src.api.routes.webhooks.aftership import router as aftership_webhook_router
     from src.api.routes.returns import router as returns_router
     from src.api.routes.actions import router as actions_router
+    from src.api.routes.agentic import router as agentic_router
     
     # Priority routers first
     app.include_router(shopify_auth_router) # Support /install and /new-install at root
@@ -91,6 +92,7 @@ try:
     app.include_router(aftership_webhook_router, prefix="/api/webhooks/aftership")
     app.include_router(returns_router)
     app.include_router(actions_router)
+    app.include_router(agentic_router)
     
     logger.info("✓ Routers registered (shopify_auth, api, support, tickets, auth).")
 except Exception as e:
