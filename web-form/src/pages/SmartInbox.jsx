@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Mail,
@@ -25,7 +25,11 @@ import {
   X,
   Check,
   XCircle,
+  AlertCircle,
+  WifiOff,
 } from "lucide-react";
+
+const API_BASE_URL = "https://hackathonn5-production.up.railway.app";
 
 // Toast notification component
 function Toast({ message, type, onClose }) {
@@ -77,102 +81,108 @@ function Toast({ message, type, onClose }) {
   );
 }
 
-// Mock ticket data
-const mockTickets = [
-  {
-    id: "TKT-1001",
-    customerName: "Sarah Mitchell",
-    customerEmail: "sarah.mitchell@email.com",
-    orderId: "ORD-1002",
-    sentiment: "frustrated",
-    sentimentScore: 8,
-    status: "pending",
-    vipStatus: "VIP",
-    ltv: 2450,
-    intent: "exchange",
-    requestedItem: "Size XL",
-    messageContent:
-      "Hi, I ordered a Navy Blue T-Shirt in Size M but received Size L. I need Size XL instead. Can you please exchange this for me? The fit is completely wrong and I need this for an event this weekend.",
-    channel: "email",
-    channelIcon: Mail,
-    createdAt: "2 hours ago",
-  },
-  {
-    id: "TKT-1002",
-    customerName: "James Chen",
-    customerEmail: "james.chen@techmail.com",
-    orderId: "ORD-1245",
-    sentiment: "neutral",
-    sentimentScore: 5,
-    status: "pending",
-    vipStatus: "Regular",
-    ltv: 380,
-    intent: "refund",
-    requestedItem: null,
-    messageContent:
-      "I'd like to request a refund for my recent order. The delivery was later than expected and I've decided to go with a different brand.",
-    channel: "chat",
-    channelIcon: MessageSquare,
-    createdAt: "4 hours ago",
-  },
-  {
-    id: "TKT-1003",
-    customerName: "Emily Rodriguez",
-    customerEmail: "emily.r@designer.co",
-    orderId: "ORD-1567",
-    sentiment: "happy",
-    sentimentScore: 3,
-    status: "pending",
-    vipStatus: "VIP",
-    lvt: 5200,
-    intent: "order_status",
-    requestedItem: null,
-    messageContent:
-      "Hi, just checking on my order #1567. When will it be delivered? Thanks!",
-    channel: "instagram",
-    channelIcon: ShoppingBag,
-    createdAt: "6 hours ago",
-  },
-];
+// SaaS Noir Skeleton Loader
+function SkeletonCard() {
+  return (
+    <div
+      className="rounded-md overflow-hidden h-full animate-pulse"
+      style={{
+        background: "rgba(255, 255, 255, 0.03)",
+        border: "1px solid rgba(255, 255, 255, 0.1)",
+      }}
+    >
+      <div
+        className="flex items-center justify-between px-4 py-3"
+        style={{ borderBottom: "1px solid rgba(255, 255, 255, 0.05)" }}
+      >
+        <div className="flex items-center gap-2">
+          <div className="w-4 h-4 rounded" style={{ background: "rgba(255,255,255,0.1)" }} />
+          <div className="w-24 h-3 rounded" style={{ background: "rgba(255,255,255,0.1)" }} />
+        </div>
+      </div>
+      <div className="p-4 space-y-3">
+        <div className="w-full h-4 rounded" style={{ background: "rgba(255,255,255,0.05)" }} />
+        <div className="w-3/4 h-4 rounded" style={{ background: "rgba(255,255,255,0.05)" }} />
+        <div className="w-1/2 h-4 rounded" style={{ background: "rgba(255,255,255,0.05)" }} />
+        <div className="w-full h-20 rounded mt-4" style={{ background: "rgba(255,255,255,0.05)" }} />
+      </div>
+    </div>
+  );
+}
 
-// Mock processed data from backend
-const mockProcessedData = {
-  shopifyAudit: {
-    order_id: "ORD-1002",
-    order_date: "2024-01-15T10:30:00Z",
-    order_total: 85.0,
-    items: [{ title: "Premium Cotton T-Shirt", quantity: 1, price: 85.0, variant: "Size M / Navy Blue" }],
-    return_window_open: true,
-    days_remaining: 15,
-    items_count: 1,
-  },
-  inventoryCheck: {
-    item_id: "VAR-1002-XL",
-    item_name: "T-Shirt Size XL",
-    available_quantity: 25,
-    in_stock: true,
-  },
-  aiRecommendation: {
-    intent: "exchange",
-    requested_item: "Size XL",
-    sentiment_score: 8,
-    sentiment_label: "Frustrated",
-    recommended_action: "Exchange (Revenue Saved)",
-    revenue_at_stake: 85.0,
-    reasoning:
-      "Item is in stock (25 available). Exchange saves the full $85.00. Customer is frustrated, so a quick exchange with free shipping would turn this negative experience positive.",
-  },
-};
+// Skeleton for sidebar tickets
+function SkeletonTicketList() {
+  return (
+    <div className="space-y-2 p-4">
+      {[1, 2, 3].map((i) => (
+        <div
+          key={i}
+          className="p-4 animate-pulse"
+          style={{
+            borderBottom: "1px solid rgba(255, 255, 255, 0.05)",
+          }}
+        >
+          <div className="flex items-start justify-between mb-2">
+            <div className="w-16 h-3 rounded" style={{ background: "rgba(255,255,255,0.1)" }} />
+            <div className="w-12 h-4 rounded" style={{ background: "rgba(255,255,255,0.1)" }} />
+          </div>
+          <div className="w-24 h-4 rounded mb-1" style={{ background: "rgba(255,255,255,0.1)" }} />
+          <div className="w-16 h-3 rounded" style={{ background: "rgba(255,255,255,0.1)" }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Stats Skeleton
+function SkeletonStats() {
+  return (
+    <div className="flex items-center gap-6">
+      {[1, 2, 3, 4].map((i) => (
+        <div key={i} className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded animate-pulse" style={{ background: "rgba(255,255,255,0.1)" }} />
+          <div>
+            <div className="w-12 h-3 rounded animate-pulse mb-1" style={{ background: "rgba(255,255,255,0.1)" }} />
+            <div className="w-8 h-5 rounded animate-pulse" style={{ background: "rgba(255,255,255,0.1)" }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 // Section A: Original Thread
 function OriginalThread({ ticket }) {
-  const sentimentColors = {
+  // Map sentiment based on action type and risk score
+  const getSentiment = () => {
+    if (!ticket) return { label: "neutral", score: 5 };
+    const actionType = ticket.action_type?.toLowerCase();
+    const riskScore = ticket.risk_score?.toLowerCase();
+
+    if (actionType === "refund") {
+      return { label: "frustrated", score: riskScore === "high" ? 8 : 6 };
+    } else if (actionType === "exchange") {
+      return { label: "happy", score: 4 };
+    }
+    return { label: "neutral", score: 5 };
+  };
+
+  const sentimentConfig = {
     frustrated: { bg: "rgba(239, 68, 68, 0.15)", text: "#EF4444", border: "rgba(239, 68, 68, 0.3)" },
     neutral: { bg: "rgba(156, 163, 175, 0.15)", text: "#9CA3AF", border: "rgba(156, 163, 175, 0.3)" },
     happy: { bg: "rgba(34, 197, 94, 0.15)", text: "#22C55E", border: "rgba(34, 197, 94, 0.3)" },
   };
 
-  const sentiment = sentimentColors[ticket.sentiment] || sentimentColors.neutral;
+  const sentiment = getSentiment();
+  const config = sentimentConfig[sentiment.label] || sentimentConfig.neutral;
+
+  // Get message content from order_data or use default
+  const messageContent = ticket?.order_data?.message ||
+    `Customer requested ${ticket?.action_type?.toLowerCase()} for Order #${ticket?.order_id}`;
+
+  // Get customer email from ticket
+  const customerEmail = ticket?.customer_email || "No email provided";
+  const customerName = ticket?.customer_name || "Unknown Customer";
 
   return (
     <div
@@ -198,12 +208,12 @@ function OriginalThread({ ticket }) {
         <span
           className="text-xs px-3 py-1 rounded-sm font-medium capitalize"
           style={{
-            background: sentiment.bg,
-            color: sentiment.text,
-            border: `1px solid ${sentiment.border}`,
+            background: config.bg,
+            color: config.text,
+            border: `1px solid ${config.border}`,
           }}
         >
-          {ticket.sentiment} ({ticket.sentimentScore}/10)
+          {sentiment.label} ({sentiment.score}/10)
         </span>
       </div>
       <div className="p-4 overflow-y-auto" style={{ maxHeight: "calc(100vh - 280px)" }}>
@@ -217,14 +227,12 @@ function OriginalThread({ ticket }) {
           <div>
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium" style={{ color: "#F5F5F5" }}>
-                {ticket.customerName}
+                {customerName}
               </span>
-              {ticket.vipStatus === "VIP" && (
-                <Star className="w-3.5 h-3.5" style={{ color: "#F59E0B" }} fill="#F59E0B" />
-              )}
+              {/* VIP status could be derived from order data if available */}
             </div>
             <div className="text-xs" style={{ color: "rgba(245, 245, 245, 0.5)" }}>
-              {ticket.customerEmail}
+              {customerEmail}
             </div>
           </div>
         </div>
@@ -233,7 +241,7 @@ function OriginalThread({ ticket }) {
           style={{ background: "rgba(0, 0, 0, 0.2)", border: "1px solid rgba(255, 255, 255, 0.05)" }}
         >
           <p className="text-sm" style={{ color: "rgba(245, 245, 245, 0.9)", lineHeight: 1.6 }}>
-            {ticket.messageContent}
+            {messageContent}
           </p>
         </div>
       </div>
@@ -242,7 +250,32 @@ function OriginalThread({ ticket }) {
 }
 
 // Section B: Shopify Intelligence Card
-function ShopifyIntelligenceCard({ shopifyAudit, inventoryCheck }) {
+function ShopifyIntelligenceCard({ ticket, loading }) {
+  if (loading) {
+    return <SkeletonCard />;
+  }
+
+  const orderData = ticket?.order_data || {};
+  const shopifyAudit = {
+    order_id: ticket?.order_id || "N/A",
+    order_date: orderData.created_at || null,
+    order_total: parseFloat(ticket?.revenue_at_stake) || 0,
+    items: orderData.line_items?.map((item) => ({
+      title: item.title || "Unknown Item",
+      variant: item.variant_title || "Standard",
+      price: parseFloat(item.price) || 0,
+    })) || [],
+    return_window_open: true, // Default based on eligibility
+    days_remaining: 15, // Could be calculated from order date
+  };
+
+  // Check inventory from exchange_suggestion if available
+  const exchangeSuggestion = ticket?.exchange_suggestion || {};
+  const inventoryCheck = {
+    available_quantity: exchangeSuggestion.available ? 25 : 0,
+    in_stock: exchangeSuggestion.available || false,
+  };
+
   return (
     <div
       className="rounded-md overflow-hidden h-full"
@@ -272,25 +305,34 @@ function ShopifyIntelligenceCard({ shopifyAudit, inventoryCheck }) {
             Order #{shopifyAudit.order_id} Summary
           </div>
           <div className="space-y-2">
-            {shopifyAudit.items.map((item, idx) => (
+            {shopifyAudit.items.length > 0 ? (
+              shopifyAudit.items.map((item, idx) => (
+                <div
+                  key={idx}
+                  className="flex items-center justify-between p-2 rounded-md"
+                  style={{ background: "rgba(0, 0, 0, 0.2)" }}
+                >
+                  <div>
+                    <div className="text-sm" style={{ color: "#F5F5F5" }}>
+                      {item.title}
+                    </div>
+                    <div className="text-xs" style={{ color: "rgba(245, 245, 245, 0.5)" }}>
+                      {item.variant}
+                    </div>
+                  </div>
+                  <div className="text-sm font-medium" style={{ color: "#22C55E" }}>
+                    ${item.price.toFixed(2)}
+                  </div>
+                </div>
+              ))
+            ) : (
               <div
-                key={idx}
-                className="flex items-center justify-between p-2 rounded-md"
-                style={{ background: "rgba(0, 0, 0, 0.2)" }}
+                className="p-2 rounded-md text-sm"
+                style={{ color: "rgba(245, 245, 245, 0.5)", background: "rgba(0, 0, 0, 0.2)" }}
               >
-                <div>
-                  <div className="text-sm" style={{ color: "#F5F5F5" }}>
-                    {item.title}
-                  </div>
-                  <div className="text-xs" style={{ color: "rgba(245, 245, 245, 0.5)" }}>
-                    {item.variant}
-                  </div>
-                </div>
-                <div className="text-sm font-medium" style={{ color: "#22C55E" }}>
-                  ${item.price.toFixed(2)}
-                </div>
+                No items available
               </div>
-            ))}
+            )}
           </div>
         </div>
 
@@ -364,7 +406,39 @@ function ShopifyIntelligenceCard({ shopifyAudit, inventoryCheck }) {
 }
 
 // Section C: AI Strategy Card
-function AIStrategyCard({ recommendation }) {
+function AIStrategyCard({ ticket, loading }) {
+  if (loading) {
+    return <SkeletonCard />;
+  }
+
+  const actionType = ticket?.action_type?.toLowerCase() || "unknown";
+  const revenueAtStake = parseFloat(ticket?.revenue_at_stake) || 0;
+  const aiReasoning = ticket?.ai_reasoning || "No reasoning provided by AI.";
+  const riskScore = ticket?.risk_score || "Low";
+
+  // Map action type to recommended action
+  const recommendedAction = actionType === "exchange"
+    ? "Exchange (Revenue Saved)"
+    : actionType === "refund"
+    ? "Refund (Process)"
+    : "Manual Review Required";
+
+  // Map action type to intent
+  const intent = actionType;
+
+  // Get sentiment based on action type and risk
+  const sentimentLabel = riskScore === "High" ? "Urgent" : riskScore === "Medium" ? "Concerned" : "Neutral";
+  const sentimentScore = riskScore === "High" ? 8 : riskScore === "Medium" ? 6 : 4;
+
+  const recommendation = {
+    recommended_action: recommendedAction,
+    revenue_at_stake: revenueAtStake,
+    reasoning: aiReasoning,
+    intent: intent,
+    sentiment_label: sentimentLabel,
+    sentiment_score: sentimentScore,
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -441,10 +515,10 @@ function AIStrategyCard({ recommendation }) {
             style={{ background: "rgba(0, 0, 0, 0.2)" }}
           >
             <div className="text-xs" style={{ color: "rgba(245, 245, 245, 0.5)" }}>
-              Sentiment
+              Risk Level
             </div>
             <div className="text-sm font-medium" style={{ color: "#F5F5F5" }}>
-              {recommendation.sentiment_label} ({recommendation.sentiment_score}/10)
+              {ticket?.risk_score || "Low"}
             </div>
           </div>
         </div>
@@ -454,7 +528,7 @@ function AIStrategyCard({ recommendation }) {
 }
 
 // Execution Bar
-function ExecutionBar({ onAction, loading }) {
+function ExecutionBar({ onApprove, onReject, loading, currentAction }) {
   return (
     <div
       className="fixed bottom-0 left-0 right-0 flex items-center justify-between px-6 py-4"
@@ -471,53 +545,73 @@ function ExecutionBar({ onAction, loading }) {
       </div>
       <div className="flex items-center gap-3">
         <motion.button
-          onClick={() => onAction("exchange")}
+          onClick={onApprove}
           disabled={loading}
           className="flex items-center gap-2 px-5 py-2.5 rounded-sm font-medium text-sm"
           style={{
-            background: loading ? "rgba(0, 229, 255, 0.5)" : "#00E5FF",
+            background: loading && currentAction === "approve" ? "rgba(0, 229, 255, 0.5)" : "#00E5FF",
             color: "#090909",
           }}
           whileHover={!loading ? { scale: 1.02 } : {}}
           whileTap={!loading ? { scale: 0.98 } : {}}
         >
-          {loading ? (
+          {loading && currentAction === "approve" ? (
             <Loader2 className="w-4 h-4 animate-spin" />
           ) : (
-            <Package className="w-4 h-4" />
+            <CheckCircle className="w-4 h-4" />
           )}
-          Approve Exchange & Send Email
+          Approve Action
         </motion.button>
 
         <motion.button
-          onClick={() => onAction("store_credit")}
+          onClick={onReject}
           disabled={loading}
           className="flex items-center gap-2 px-4 py-2.5 rounded-sm font-medium text-sm"
           style={{
-            background: "rgba(255, 255, 255, 0.1)",
-            color: "#F5F5F5",
-            border: "1px solid rgba(255, 255, 255, 0.2)",
-          }}
-          whileHover={!loading ? { background: "rgba(255, 255, 255, 0.15)" } : {}}
-        >
-          <CreditCard className="w-4 h-4" />
-          Issue Store Credit
-        </motion.button>
-
-        <motion.button
-          onClick={() => onAction("escalate")}
-          disabled={loading}
-          className="flex items-center gap-2 px-4 py-2.5 rounded-sm font-medium text-sm"
-          style={{
-            background: "rgba(239, 68, 68, 0.1)",
+            background: loading && currentAction === "reject" ? "rgba(239, 68, 68, 0.5)" : "rgba(239, 68, 68, 0.1)",
             color: "#EF4444",
             border: "1px solid rgba(239, 68, 68, 0.3)",
           }}
           whileHover={!loading ? { background: "rgba(239, 68, 68, 0.2)" } : {}}
         >
-          <User className="w-4 h-4" />
-          Escalate to Human
+          {loading && currentAction === "reject" ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <XCircle className="w-4 h-4" />
+          )}
+          Reject
         </motion.button>
+      </div>
+    </div>
+  );
+}
+
+// Error State Component
+function ErrorState({ message, onRetry }) {
+  return (
+    <div
+      className="flex flex-col items-center justify-center h-full"
+      style={{ background: "rgba(255, 255, 255, 0.03)" }}
+    >
+      <div
+        className="p-6 rounded-md text-center max-w-md"
+        style={{ background: "rgba(239, 68, 68, 0.1)", border: "1px solid rgba(239, 68, 68, 0.3)" }}
+      >
+        <WifiOff className="w-12 h-12 mx-auto mb-4" style={{ color: "#EF4444" }} />
+        <h3 className="text-lg font-medium mb-2" style={{ color: "#EF4444" }}>
+          Database Connection Error
+        </h3>
+        <p className="text-sm mb-4" style={{ color: "rgba(245, 245, 245, 0.7)" }}>
+          {message || "Unable to connect to the database. Please check your connection and try again."}
+        </p>
+        <button
+          onClick={onRetry}
+          className="flex items-center gap-2 px-4 py-2 rounded-sm font-medium text-sm mx-auto"
+          style={{ background: "#EF4444", color: "#FFFFFF" }}
+        >
+          <RefreshCw className="w-4 h-4" />
+          Retry Connection
+        </button>
       </div>
     </div>
   );
@@ -525,38 +619,169 @@ function ExecutionBar({ onAction, loading }) {
 
 // Main Smart Inbox Component
 export default function SmartInbox() {
-  const [selectedTicketId, setSelectedTicketId] = useState(mockTickets[0].id);
-  const [processedData, setProcessedData] = useState(mockProcessedData);
-  const [loading, setLoading] = useState(false);
+  const [tickets, setTickets] = useState([]);
+  const [stats, setStats] = useState(null);
+  const [selectedTicketId, setSelectedTicketId] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [loadingStats, setLoadingStats] = useState(true);
+  const [error, setError] = useState(null);
   const [toast, setToast] = useState(null);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [currentAction, setCurrentAction] = useState(null);
 
-  const selectedTicket = mockTickets.find((t) => t.id === selectedTicketId) || mockTickets[0];
-
-  // Simulate API call to process ticket
-  useEffect(() => {
-    // In production, this would call /api/agentic/process-ticket
-    setProcessedData(mockProcessedData);
-  }, [selectedTicketId]);
-
-  const handleAction = async (actionType) => {
-    setLoading(true);
-    setToast({ message: "Processing action...", type: "loading" });
-
+  // Fetch stats from API
+  const fetchStats = useCallback(async () => {
     try {
-      // Simulate API call
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      setLoadingStats(true);
+      const response = await fetch(`${API_BASE_URL}/api/actions/stats`);
 
-      const messages = {
-        exchange: "Exchange order created in Shopify! Email sent to customer.",
-        store_credit: "Store credit issued successfully!",
-        escalate: "Ticket escalated to human agent. They'll be notified immediately.",
-      };
+      if (!response.ok) {
+        throw new Error(`Stats API error: ${response.status}`);
+      }
 
-      setToast({ message: messages[actionType], type: "success" });
-    } catch (error) {
-      setToast({ message: "Action failed. Please try again.", type: "error" });
+      const data = await response.json();
+      setStats(data);
+    } catch (err) {
+      console.error("Failed to fetch stats:", err);
+      // Don't set error for stats - just show skeleton
+    } finally {
+      setLoadingStats(false);
+    }
+  }, []);
+
+  // Fetch tickets from API
+  const fetchTickets = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
+
+      const response = await fetch(`${API_BASE_URL}/api/actions/pending?limit=50`);
+
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      if (data.actions && Array.isArray(data.actions)) {
+        setTickets(data.actions);
+
+        // Auto-select first pending ticket
+        const pendingTicket = data.actions.find((t) => t.status === "Pending");
+        if (pendingTicket && !selectedTicketId) {
+          setSelectedTicketId(pendingTicket.id);
+        } else if (data.actions.length > 0 && !selectedTicketId) {
+          setSelectedTicketId(data.actions[0].id);
+        }
+      } else {
+        setTickets([]);
+      }
+    } catch (err) {
+      console.error("Failed to fetch tickets:", err);
+      setError(err.message || "Failed to connect to database");
     } finally {
       setLoading(false);
+    }
+  }, [selectedTicketId]);
+
+  // Initial fetch
+  useEffect(() => {
+    fetchTickets();
+    fetchStats();
+  }, [fetchTickets, fetchStats]);
+
+  // Auto-refresh every 30 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchTickets();
+      fetchStats();
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, [fetchTickets, fetchStats]);
+
+  const selectedTicket = tickets.find((t) => t.id === selectedTicketId) || tickets[0];
+
+  // Handle Approve action
+  const handleApprove = async () => {
+    if (!selectedTicketId) return;
+
+    setActionLoading(true);
+    setCurrentAction("approve");
+    setToast({ message: "Approving action...", type: "loading" });
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/actions/approve/${selectedTicketId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ approved_by: "admin" }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Failed to approve action");
+      }
+
+      setToast({ message: "Action approved successfully!", type: "success" });
+
+      // Refresh tickets list
+      await fetchTickets();
+      await fetchStats();
+    } catch (error) {
+      console.error("Approve error:", error);
+      setToast({ message: error.message || "Failed to approve action", type: "error" });
+    } finally {
+      setActionLoading(false);
+      setCurrentAction(null);
+    }
+  };
+
+  // Handle Reject action
+  const handleReject = async () => {
+    if (!selectedTicketId) return;
+
+    const rejectionNote = prompt("Please enter a reason for rejecting this action:");
+
+    if (!rejectionNote) {
+      return; // User cancelled
+    }
+
+    setActionLoading(true);
+    setCurrentAction("reject");
+    setToast({ message: "Rejecting action...", type: "loading" });
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/actions/reject/${selectedTicketId}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          rejection_note: rejectionNote,
+          rejected_by: "admin",
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Failed to reject action");
+      }
+
+      setToast({ message: "Action rejected successfully!", type: "success" });
+
+      // Refresh tickets list
+      await fetchTickets();
+      await fetchStats();
+    } catch (error) {
+      console.error("Reject error:", error);
+      setToast({ message: error.message || "Failed to reject action", type: "error" });
+    } finally {
+      setActionLoading(false);
+      setCurrentAction(null);
     }
   };
 
@@ -581,68 +806,127 @@ export default function SmartInbox() {
         }}
       >
         <div className="p-4" style={{ borderBottom: "1px solid rgba(255, 255, 255, 0.05)" }}>
-          <h2
-            className="text-sm font-medium uppercase tracking-wider"
-            style={{ color: "rgba(245, 245, 245, 0.8)" }}
-          >
-            Decision Queue
-          </h2>
-        </div>
-        <div>
-          {mockTickets.map((ticket) => {
-            const isSelected = ticket.id === selectedTicketId;
-            const sentimentColors = {
-              frustrated: { bg: "rgba(239, 68, 68, 0.15)", text: "#EF4444" },
-              neutral: { bg: "rgba(156, 163, 175, 0.15)", text: "#9CA3AF" },
-              happy: { bg: "rgba(34, 197, 94, 0.15)", text: "#22C55E" },
-            };
-            const sentiment = sentimentColors[ticket.sentiment] || sentimentColors.neutral;
+          <div className="flex items-center justify-between mb-3">
+            <h2
+              className="text-sm font-medium uppercase tracking-wider"
+              style={{ color: "rgba(245, 245, 245, 0.8)" }}
+            >
+              Decision Queue
+            </h2>
+            <button
+              onClick={() => {
+                fetchTickets();
+                fetchStats();
+              }}
+              className="p-1.5 rounded-sm hover:bg-white/5 transition-colors"
+              title="Refresh"
+            >
+              <RefreshCw className="w-3.5 h-3.5" style={{ color: "rgba(245, 245, 245, 0.5)" }} />
+            </button>
+          </div>
 
-            return (
-              <motion.button
-                key={ticket.id}
-                onClick={() => setSelectedTicketId(ticket.id)}
-                className="w-full text-left p-4 transition-colors"
-                style={{
-                  background: isSelected ? "rgba(0, 229, 255, 0.1)" : "transparent",
-                  borderLeft: isSelected ? "2px solid #00E5FF" : "2px solid transparent",
-                  borderBottom: "1px solid rgba(255, 255, 255, 0.05)",
-                }}
-                whileHover={{ background: "rgba(255, 255, 255, 0.05)" }}
-              >
-                <div className="flex items-start justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <ticket.channelIcon
-                      className="w-3.5 h-3.5"
-                      style={{ color: "rgba(245, 245, 245, 0.5)" }}
-                    />
+          {/* Stats Bar */}
+          {loadingStats ? (
+            <SkeletonStats />
+          ) : stats ? (
+            <div className="flex items-center gap-3 text-xs">
+              <div className="flex items-center gap-1">
+                <Clock className="w-3 h-3" style={{ color: "#F59E0B" }} />
+                <span style={{ color: "rgba(245, 245, 245, 0.7)" }}>{stats.pending || 0}</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <CheckCircle className="w-3 h-3" style={{ color: "#22C55E" }} />
+                <span style={{ color: "rgba(245, 245, 245, 0.7)" }}>{stats.approved || 0}</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <XCircle className="w-3 h-3" style={{ color: "#EF4444" }} />
+                <span style={{ color: "rgba(245, 245, 245, 0.7)" }}>{stats.rejected || 0}</span>
+              </div>
+            </div>
+          ) : null}
+        </div>
+
+        {/* Loading State */}
+        {loading ? (
+          <SkeletonTicketList />
+        ) : error ? (
+          <div className="p-4">
+            <div
+              className="p-3 rounded-md text-center text-sm"
+              style={{ background: "rgba(239, 68, 68, 0.1)", color: "#EF4444" }}
+            >
+              <AlertCircle className="w-5 h-5 mx-auto mb-2" />
+              {error}
+            </div>
+          </div>
+        ) : tickets.length === 0 ? (
+          <div className="p-4 text-center">
+            <p className="text-sm" style={{ color: "rgba(245, 245, 245, 0.5)" }}>
+              No pending actions
+            </p>
+          </div>
+        ) : (
+          <div>
+            {tickets.map((ticket) => {
+              const isSelected = ticket.id === selectedTicketId;
+
+              // Map action type to sentiment color
+              const sentimentColors = {
+                refund: { bg: "rgba(239, 68, 68, 0.15)", text: "#EF4444" },
+                exchange: { bg: "rgba(34, 197, 94, 0.15)", text: "#22C55E" },
+              };
+
+              const sentiment = sentimentColors[ticket.action_type?.toLowerCase()] || sentimentColors.refund;
+
+              return (
+                <motion.button
+                  key={ticket.id}
+                  onClick={() => setSelectedTicketId(ticket.id)}
+                  className="w-full text-left p-4 transition-colors"
+                  style={{
+                    background: isSelected ? "rgba(0, 229, 255, 0.1)" : "transparent",
+                    borderLeft: isSelected ? "2px solid #00E5FF" : "2px solid transparent",
+                    borderBottom: "1px solid rgba(255, 255, 255, 0.05)",
+                  }}
+                  whileHover={{ background: "rgba(255, 255, 255, 0.05)" }}
+                >
+                  <div className="flex items-start justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="text-xs font-mono"
+                        style={{ color: "rgba(245, 245, 245, 0.4)" }}
+                      >
+                        #{ticket.order_id}
+                      </span>
+                    </div>
                     <span
-                      className="text-xs font-mono"
-                      style={{ color: "rgba(245, 245, 245, 0.4)" }}
+                      className="text-xs px-2 py-0.5 rounded-sm capitalize"
+                      style={{
+                        background: sentiment.bg,
+                        color: sentiment.text,
+                      }}
                     >
-                      {ticket.id}
+                      {ticket.action_type}
                     </span>
                   </div>
-                  <span
-                    className="text-xs px-2 py-0.5 rounded-sm capitalize"
-                    style={{
-                      background: sentiment.bg,
-                      color: sentiment.text,
-                    }}
-                  >
-                    {ticket.sentiment}
-                  </span>
-                </div>
-                <div className="text-sm font-medium mb-1" style={{ color: "#F5F5F5" }}>
-                  {ticket.customerName}
-                </div>
-                <div className="text-xs" style={{ color: "rgba(245, 245, 245, 0.5)" }}>
-                  {ticket.intent}
-                </div>
-              </motion.button>
-            );
-          })}
-        </div>
+                  <div className="text-sm font-medium mb-1" style={{ color: "#F5F5F5" }}>
+                    {ticket.customer_name || "Unknown"}
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs" style={{ color: "rgba(245, 245, 245, 0.5)" }}>
+                      {ticket.action_type}
+                    </div>
+                    {ticket.revenue_at_stake && (
+                      <div className="text-xs font-medium" style={{ color: "#22C55E" }}>
+                        ${parseFloat(ticket.revenue_at_stake).toFixed(2)}
+                      </div>
+                    )}
+                  </div>
+                </motion.button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Decision Workspace - 3 Columns */}
@@ -660,35 +944,46 @@ export default function SmartInbox() {
               Agentic Decision Hub
             </h1>
             <p className="text-sm mt-1" style={{ color: "rgba(245, 245, 245, 0.5)" }}>
-              AI-Powered Ticket Processing - COO Command Center
+              {loading ? "Syncing with Shopify..." : `${tickets.length} actions in queue`}
             </p>
           </div>
         </div>
 
         {/* 3-Column Layout */}
         <div className="flex-1 flex gap-4 p-4 overflow-hidden" style={{ paddingBottom: "80px" }}>
-          {/* Section A: Original Thread */}
-          <div className="w-1/3">
-            <OriginalThread ticket={selectedTicket} />
-          </div>
+          {/* Error State */}
+          {error && !tickets.length ? (
+            <div className="w-full">
+              <ErrorState message={error} onRetry={fetchTickets} />
+            </div>
+          ) : (
+            <>
+              {/* Section A: Original Thread */}
+              <div className="w-1/3">
+                <OriginalThread ticket={selectedTicket} />
+              </div>
 
-          {/* Section B: Shopify Intelligence */}
-          <div className="w-1/3">
-            <ShopifyIntelligenceCard
-              shopifyAudit={processedData.shopifyAudit}
-              inventoryCheck={processedData.inventoryCheck}
-            />
-          </div>
+              {/* Section B: Shopify Intelligence */}
+              <div className="w-1/3">
+                <ShopifyIntelligenceCard ticket={selectedTicket} loading={loading} />
+              </div>
 
-          {/* Section C: AI Strategy */}
-          <div className="w-1/3">
-            <AIStrategyCard recommendation={processedData.aiRecommendation} />
-          </div>
+              {/* Section C: AI Strategy */}
+              <div className="w-1/3">
+                <AIStrategyCard ticket={selectedTicket} loading={loading} />
+              </div>
+            </>
+          )}
         </div>
       </div>
 
       {/* Execution Bar */}
-      <ExecutionBar onAction={handleAction} loading={loading} />
+      <ExecutionBar
+        onApprove={handleApprove}
+        onReject={handleReject}
+        loading={actionLoading}
+        currentAction={currentAction}
+      />
     </div>
   );
 }
