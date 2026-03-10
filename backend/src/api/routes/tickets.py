@@ -3,7 +3,7 @@ from typing import Optional, List
 from src.services.supabase_service import supabase_service
 from pydantic import BaseModel
 
-router = APIRouter(prefix="/api/tickets", tags=["tickets"])
+router = APIRouter(prefix="/tickets", tags=["tickets"])
 
 class TicketUpdate(BaseModel):
     status: Optional[str] = None

@@ -86,13 +86,13 @@ try:
     app.include_router(shopify_auth_router) # Support /install and /new-install at root
     app.include_router(api_admin_router, prefix="/api")
     app.include_router(support_router, prefix="/support", tags=["support"])
-    app.include_router(tickets_router)
+    app.include_router(tickets_router, prefix="/api")
     app.include_router(auth_router)
     app.include_router(shopify_webhook_router, prefix="/api/webhooks")
     app.include_router(aftership_webhook_router, prefix="/api/webhooks/aftership")
-    app.include_router(returns_router)
-    app.include_router(actions_router)
-    app.include_router(agentic_router)
+    app.include_router(returns_router, prefix="/api")
+    app.include_router(actions_router, prefix="/api")
+    app.include_router(agentic_router, prefix="/api")
     
     logger.info("✓ Routers registered (shopify_auth, api, support, tickets, auth).")
 except Exception as e:

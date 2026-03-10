@@ -10,7 +10,7 @@ import requests
 import logging
 from datetime import datetime, timedelta
 
-router = APIRouter(prefix="/api/agentic", tags=["agentic"])
+router = APIRouter(prefix="/agentic", tags=["agentic"])
 logger = logging.getLogger(__name__)
 
 # Return window configuration
