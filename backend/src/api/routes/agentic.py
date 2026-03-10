@@ -277,6 +277,8 @@ async def check_inventory(requested_item: str, order_id: str) -> Optional[Invent
             available_quantity=0,
             in_stock=False
         )
+            in_stock=True
+        )
 
 
 def calculate_agentic_strategy(ticket_body: str, shopify_order_data: dict, sentiment_score: float, inventory_data: dict = None) -> dict:
