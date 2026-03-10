@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS pending_actions (
     customer_name TEXT,
     action_type TEXT NOT NULL CHECK (action_type IN ('Refund', 'Exchange')),
     ai_reasoning TEXT,
+    revenue_at_stake NUMERIC(10,2),
     risk_score TEXT NOT NULL CHECK (risk_score IN ('Low', 'Medium', 'High')),
     status TEXT NOT NULL DEFAULT 'Pending' CHECK (status IN ('Pending', 'Approved', 'Rejected', 'Executed')),
     suggested_variant_id TEXT,

@@ -7,6 +7,7 @@ import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 import requests
+import uuid as uuid_lib
 from src.lib.supabase_client import supabase_select, supabase_insert, supabase_update
 
 logger = logging.getLogger(__name__)
@@ -547,6 +548,7 @@ async def stage_pending_action(
             "customer_name": customer_name,
             "action_type": action_type,
             "ai_reasoning": ai_reasoning,
+            "revenue_at_stake": order_total,
             "risk_score": risk_score,
             "status": "Pending",
             "order_data": eligibility_data.get("order"),
@@ -592,6 +594,12 @@ async def approve_pending_action(
         Dict with execution result
     """
     try:
+        # Validate UUID format to prevent database errors
+        try:
+            uuid_lib.UUID(action_id)
+        except ValueError:
+            return {"success": False, "error": "Invalid action ID format. Must be a valid UUID."}
+
         # Get the pending action
         actions = supabase_select("pending_actions", {"id": f"eq.{action_id}"})
 
@@ -650,6 +658,11 @@ async def reject_pending_action(
         Dict with rejection result
     """
     try:
+        # Validate UUID format to prevent database errors
+        try:
+            uuid_lib.UUID(action_id)
+        except ValueError:
+            return {"success": False, "error": "Invalid action ID format. Must be a valid UUID."}
         # Update status to Rejected
         result = supabase_update("pending_actions", {"id": f"eq.{action_id}"}, {
             "status": "Rejected",
@@ -680,13 +693,21 @@ async def _execute_refund(action: Dict) -> Dict[str, Any]:
         order_id = action.get("order_id")
         order_data = action.get("order_data", {})
 
+        # Get the actual Shopify numeric order ID from order_data JSONB
+        # order_data contains the full order from Shopify, including the numeric "id"
+        shopify_order_id = order_data.get("id") if order_data else None
+
+        if not shopify_order_id:
+            logger.error(f"[PendingActions] No Shopify order ID found in order_data for order {order_id}")
+            return {"success": False, "error": "Order data not found. Cannot process refund."}
+
         # Get refund payment ID from Shopify
         # First, get the order to find the transaction
         shop_name = os.getenv("SHOPIFY_SHOP_NAME")
         shopify_token = os.getenv("SHOPIFY_ACCESS_TOKEN")
         api_version = os.getenv("SHOPIFY_API_VERSION", "2024-01")
 
-        url = f"https://{shop_name}.myshopify.com/admin/api/{api_version}/orders/{order_id}/refunds.json"
+        url = f"https://{shop_name}.myshopify.com/admin/api/{api_version}/orders/{shopify_order_id}/refunds.json"
         headers = {
             "X-Shopify-Access-Token": shopify_token,
             "Content-Type": "application/json"
@@ -730,10 +751,18 @@ async def _execute_exchange(action: Dict) -> Dict[str, Any]:
         customer_email = action.get("customer_email")
 
         if not exchange_data:
-            return {"success": False, "error": "No exchange data available"}
+            return {"success": False, "error": "No exchange data available. Cannot process exchange."}
 
         suggested_variant_id = exchange_data.get("variant_id")
         original_item = exchange_data.get("original_item")
+
+        if not suggested_variant_id:
+            return {"success": False, "error": "No suggested variant ID found. Cannot process exchange."}
+
+        # Validate order_data exists
+        order_data = action.get("order_data", {})
+        if not order_data:
+            return {"success": False, "error": "Order data not found. Cannot process exchange."}
 
         # Create a new order for the exchange (customer pays for new item)
         # Or create a draft order for the exchange
