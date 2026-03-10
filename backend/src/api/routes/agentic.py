@@ -13,17 +13,12 @@ from datetime import datetime, timedelta
 router = APIRouter(prefix="/api/agentic", tags=["agentic"])
 logger = logging.getLogger(__name__)
 
+# Return window configuration
+RETURN_WINDOW_DAYS = 30
+
 # Mistral API configuration
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "p1i9KPJCfXxBqWJakwkF5lLJwurKZc1s")
 MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
-
-# Mock inventory for demo
-MOCK_INVENTORY = {
-    "XL": 25,
-    "L": 10,
-    "M": 0,
-    "S": 5
-}
 
 # Mock tickets for demo
 MOCK_TICKETS = {
@@ -210,34 +205,29 @@ async def get_shopify_audit(order_id: str) -> ShopifyAudit:
                 items_count=len(order.get("line_items", []))
             )
         else:
-            # Return mock data for demo
-            mock_order_date = datetime.now() - timedelta(days=15)
+            # Order not found in database - return error state
+            logger.warning(f"Order {order_id} not found in orders table")
             return ShopifyAudit(
                 order_id=order_id,
-                order_date=mock_order_date.isoformat(),
-                order_total=85.00,
-                items=[
-                    {"title": "Premium Cotton T-Shirt", "quantity": 1, "price": 85.00, "variant": "Size M / Navy Blue"}
-                ],
-                return_window_open=True,
-                days_remaining=15,
-                items_count=1
+                order_date="",
+                order_total=0,
+                items=[],
+                return_window_open=False,
+                days_remaining=0,
+                items_count=0
             )
 
     except Exception as e:
         logger.error(f"Shopify audit error: {e}")
-        # Return mock data on error
-        mock_order_date = datetime.now() - timedelta(days=15)
+        # Return error state instead of mock data
         return ShopifyAudit(
             order_id=order_id,
-            order_date=mock_order_date.isoformat(),
-            order_total=85.00,
-            items=[
-                {"title": "Premium Cotton T-Shirt", "quantity": 1, "price": 85.00, "variant": "Size M / Navy Blue"}
-            ],
-            return_window_open=True,
-            days_remaining=15,
-            items_count=1
+            order_date="",
+            order_total=0,
+            items=[],
+            return_window_open=False,
+            days_remaining=0,
+            items_count=0
         )
 
 
@@ -251,10 +241,11 @@ async def check_inventory(requested_item: str, order_id: str) -> Optional[Invent
 
         # Extract size from requested_item
         size = "M"  # Default
-        for s in ["XL", "L", "M", "S"]:
-            if s.lower() in requested_item.lower():
-                size = s
-                break
+        if requested_item:
+            for s in ["XL", "L", "M", "S"]:
+                if s.lower() in requested_item.lower():
+                    size = s
+                    break
 
         # Try to find variant by SKU or title containing the size
         variants = supabase_select("product_variants", {"option1": f"eq.{size}"})
@@ -269,22 +260,23 @@ async def check_inventory(requested_item: str, order_id: str) -> Optional[Invent
                 in_stock=available > 0
             )
 
-        # Fall back to mock data if no variants found
-        available = MOCK_INVENTORY.get(size, 0)
-
+        # No variants found - return not in stock
+        logger.warning(f"No product variants found for size {size}")
         return InventoryCheck(
-            item_id=f"VAR-{order_id}-{size}",
-            item_name=f"T-Shirt Size {size}",
-            available_quantity=available,
-            in_stock=available > 0
+            item_id="",
+            item_name="No variant found",
+            available_quantity=0,
+            in_stock=False
         )
 
     except Exception as e:
         logger.error(f"Inventory check error: {e}")
         return InventoryCheck(
-            item_id=f"VAR-{order_id}-M",
-            item_name="Premium Cotton T-Shirt Size M",
-            available_quantity=10,
+            item_id="",
+            item_name="Error checking inventory",
+            available_quantity=0,
+            in_stock=False
+        )
             in_stock=True
         )
 
@@ -407,8 +399,10 @@ async def process_ticket(request: ProcessTicketRequest):
             request.order_id
         )
 
-        # Use order_id from extraction if not provided
-        order_id = extraction.get("order_id") or request.order_id or "ORD-1002"
+        # Use order_id from extraction or request - fail if not available
+        order_id = extraction.get("order_id") or request.order_id
+        if not order_id:
+            raise HTTPException(status_code=400, detail="Order ID is required for processing")
 
         # Step 2: Get Shopify audit
         shopify_audit = await get_shopify_audit(order_id)
@@ -448,9 +442,6 @@ async def get_ticket_analysis(ticket_id: str):
         tickets = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
 
         if not tickets:
-            # Return mock data for demo
-            if ticket_id in MOCK_TICKETS:
-                return MOCK_TICKETS[ticket_id]
             raise HTTPException(status_code=404, detail="Ticket not found")
 
         return tickets[0]
@@ -465,7 +456,7 @@ async def get_ticket_analysis(ticket_id: str):
 async def get_decision_queue():
     """
     Get all tickets pending AI decision from the database.
-    Falls back to demo tickets if no tickets in database.
+    Returns empty queue if no tickets in database.
     """
     try:
         from src.lib.supabase_client import supabase_select
@@ -474,48 +465,11 @@ async def get_decision_queue():
         tickets = supabase_select("tickets", {"status": "eq.pending"})
 
         if not tickets or len(tickets) == 0:
-            # Return demo tickets if no tickets in database
+            # Return empty queue - no mock data
             return {
-                "tickets": [
-                    {
-                        "id": "TKT-1001",
-                        "ticket_id": "TKT-1001",
-                        "customer_name": "Sarah Mitchell",
-                        "customer_email": "sarah.mitchell@email.com",
-                        "order_id": "ORD-1002",
-                        "sentiment": "frustrated",
-                        "sentiment_score": 8,
-                        "status": "pending",
-                        "vip_status": "VIP",
-                        "ltv": 2450,
-                        "intent": "exchange",
-                        "requested_item": "Size XL",
-                        "message_content": "Hi, I ordered a Navy Blue T-Shirt in Size M but received Size L. I need Size XL instead. Can you please exchange this for me?",
-                        "channel": "email",
-                        "created_at": "2 hours ago",
-                        "createdAt": "2 hours ago",
-                    },
-                    {
-                        "id": "TKT-1002",
-                        "ticket_id": "TKT-1002",
-                        "customer_name": "James Chen",
-                        "customer_email": "james.chen@techmail.com",
-                        "order_id": "ORD-1245",
-                        "sentiment": "neutral",
-                        "sentiment_score": 5,
-                        "status": "pending",
-                        "vip_status": "Regular",
-                        "ltv": 380,
-                        "intent": "refund",
-                        "requested_item": None,
-                        "message_content": "I'd like to request a refund for my recent order.",
-                        "channel": "chat",
-                        "created_at": "4 hours ago",
-                        "createdAt": "4 hours ago",
-                    },
-                ],
-                "count": 2,
-                "source": "demo"
+                "tickets": [],
+                "count": 0,
+                "source": "database"
             }
 
         # Transform database tickets to frontend format
