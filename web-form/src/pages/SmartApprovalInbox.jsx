@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Mail,
@@ -23,73 +23,8 @@ import {
   Zap,
 } from "lucide-react";
 
-// Mock ticket data
-const mockTickets = [
-  {
-    id: "TKT-1001",
-    customerName: "Sarah Mitchell",
-    customerEmail: "sarah.mitchell@email.com",
-    orderId: "ORD-987",
-    sentiment: "frustrated",
-    status: "escalated",
-    vipStatus: "VIP",
-    ltv: 2450,
-    intent: "Refund Request",
-    aiInsight:
-      "Customer #1001 wants a full refund for Order #987. AI detected a sizing issue - customer ordered size M but received L. The item shows 'worn' condition in return photos. Exchange for XL is currently in stock.",
-    channel: "email",
-    channelIcon: Mail,
-    createdAt: "2 hours ago",
-  },
-  {
-    id: "TKT-1002",
-    customerName: "James Chen",
-    customerEmail: "james.chen@techmail.com",
-    orderId: "ORD-1245",
-    sentiment: "neutral",
-    status: "pending",
-    vipStatus: "Regular",
-    ltv: 380,
-    intent: "Exchange Request",
-    aiInsight:
-      "Customer #1002 wants to exchange Order #1245 for a different color. Original item: Navy Blue, Requested: Forest Green. Both sizes available in inventory.",
-    channel: "chat",
-    channelIcon: MessageSquare,
-    createdAt: "4 hours ago",
-  },
-  {
-    id: "TKT-1003",
-    customerName: "Emily Rodriguez",
-    customerEmail: "emily.r@designer.co",
-    orderId: "ORD-1567",
-    sentiment: "inquisitive",
-    status: "pending",
-    vipStatus: "VIP",
-    ltv: 5200,
-    intent: "Order Status",
-    aiInsight:
-      "Customer inquiring about delayed shipment for Order #1567. Package currently in transit, expected delivery in 2 business days. No action required - informational query.",
-    channel: "instagram",
-    channelIcon: ShoppingBag,
-    createdAt: "6 hours ago",
-  },
-  {
-    id: "TKT-1004",
-    customerName: "Michael Park",
-    customerEmail: "m.park@corporate.net",
-    orderId: "ORD-1890",
-    sentiment: "frustrated",
-    status: "escalated",
-    vipStatus: "Regular",
-    ltv: 720,
-    intent: "Damaged Product",
-    aiInsight:
-      "Customer #1004 received damaged item - shattered glass bottle. Photo verification confirmed. Requires immediate replacement or refund. Currently awaiting warehouse inspection.",
-    channel: "email",
-    channelIcon: Mail,
-    createdAt: "1 day ago",
-  },
-];
+// API Base URL - Railway backend
+const API_BASE_URL = "https://hackathonn5-production.up.railway.app";
 
 // Mock ghost draft response
 const mockGhostDraft = `Subject: Re: Your Return Request - We're Here to Help
@@ -517,16 +452,115 @@ function ShopifyActionsPanel({ ticket }) {
 
 // Main Smart Approval Inbox Component
 export default function SmartApprovalInbox() {
-  const [selectedTicketId, setSelectedTicketId] = useState(mockTickets[0].id);
+  const [tickets, setTickets] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [selectedTicketId, setSelectedTicketId] = useState(null);
   const [draft, setDraft] = useState(mockGhostDraft);
 
-  const selectedTicket = mockTickets.find((t) => t.id === selectedTicketId) || mockTickets[0];
+  // Fetch tickets from API on component mount
+  useEffect(() => {
+    const fetchTickets = async () => {
+      try {
+        setLoading(true);
+        const response = await fetch(`${API_BASE_URL}/api/ai-mode`);
+
+        if (!response.ok) {
+          throw new Error(`API error: ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        // Transform API response to match UI format
+        const transformedTickets = (data.tickets || []).map((ticket) => ({
+          id: ticket.ticket_id || ticket.id,
+          customerName: ticket.customer_name || "Unknown",
+          customerEmail: ticket.customer_email || "",
+          orderId: ticket.order_id || "",
+          sentiment: ticket.sentiment || "neutral",
+          status: ticket.status || "pending",
+          vipStatus: ticket.vip_status || "Regular",
+          ltv: ticket.ltv || 0,
+          intent: ticket.intent || "General Inquiry",
+          aiInsight: ticket.ai_reasoning || "No AI analysis available",
+          channel: ticket.channel || "email",
+          channelIcon: ticket.channel === "whatsapp" ? MessageSquare : Mail,
+          createdAt: ticket.createdAt
+            ? new Date(ticket.createdAt).toLocaleDateString()
+            : "Just now",
+        }));
+
+        setTickets(transformedTickets);
+
+        // Set initial selected ticket if available
+        if (transformedTickets.length > 0) {
+          setSelectedTicketId(transformedTickets[0].id);
+        }
+      } catch (err) {
+        console.error("Failed to fetch tickets:", err);
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchTickets();
+  }, []);
+
+  // Find selected ticket from fetched data
+  const selectedTicket =
+    tickets.find((t) => t.id === selectedTicketId) || tickets[0] || null;
+
+  // Handle case when no tickets are available
+  if (loading) {
+    return (
+      <div
+        className="flex items-center justify-center h-screen"
+        style={{ background: "#090909" }}
+      >
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 mx-auto mb-4" style={{ borderColor: "#00E5FF" }}></div>
+          <p style={{ color: "rgba(245, 245, 245, 0.7)" }}>Loading tickets...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div
+        className="flex items-center justify-center h-screen"
+        style={{ background: "#090909" }}
+      >
+        <div className="text-center p-8" style={{ background: "rgba(239, 68, 68, 0.1)", borderRadius: "8px" }}>
+          <AlertTriangle className="w-12 h-12 mx-auto mb-4" style={{ color: "#EF4444" }} />
+          <p style={{ color: "#EF4444" }}>Failed to load tickets</p>
+          <p style={{ color: "rgba(245, 245, 245, 0.5)", marginTop: "8px" }}>{error}</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!selectedTicket) {
+    return (
+      <div
+        className="flex items-center justify-center h-screen"
+        style={{ background: "#090909" }}
+      >
+        <div className="text-center">
+          <CheckCircle className="w-16 h-16 mx-auto mb-4" style={{ color: "#22C55E" }} />
+          <h2 style={{ color: "#F5F5F5", fontSize: "1.25rem", marginBottom: "8px" }}>All Caught Up!</h2>
+          <p style={{ color: "rgba(245, 245, 245, 0.5)" }}>No pending tickets in the queue</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen" style={{ background: "#090909" }}>
       {/* Ticket Sidebar */}
       <TicketSidebar
-        tickets={mockTickets}
+        tickets={tickets}
         selectedTicketId={selectedTicketId}
         onSelectTicket={setSelectedTicketId}
       />

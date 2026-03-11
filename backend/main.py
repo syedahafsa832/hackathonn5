@@ -93,7 +93,14 @@ try:
     app.include_router(returns_router, prefix="/api")
     app.include_router(actions_router, prefix="/api")
     app.include_router(agentic_router, prefix="/api")
-    
+
+    # AI-Mode alias for frontend compatibility
+    @app.get("/api/ai-mode")
+    async def ai_mode_redirect():
+        """Alias endpoint for frontend - redirects to agentic queue"""
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/api/agentic/queue")
+
     logger.info("✓ Routers registered (shopify_auth, api, support, tickets, auth).")
 except Exception as e:
     logger.error(f"Failed to register routers: {e}")
