@@ -463,33 +463,52 @@ export default function SmartApprovalInbox() {
     const fetchTickets = async () => {
       try {
         setLoading(true);
-        const response = await fetch(`${API_BASE_URL}/api/ai-mode`);
+        let data = null;
 
-        if (!response.ok) {
-          throw new Error(`API error: ${response.status}`);
+        // Try /api/ai-mode first (Decision Hub endpoint)
+        try {
+          const response = await fetch(`${API_BASE_URL}/api/ai-mode`);
+          if (response.ok) {
+            data = await response.json();
+          }
+        } catch (e) {
+          console.warn("/api/ai-mode failed, trying /api/tickets:", e);
         }
 
-        const data = await response.json();
+        // Fallback to /api/tickets if ai-mode fails or returns empty
+        if (!data || !data.tickets || data.tickets.length === 0) {
+          const ticketsResponse = await fetch(`${API_BASE_URL}/api/tickets`);
+          if (ticketsResponse.ok) {
+            const ticketsData = await ticketsResponse.json();
+            // Handle both array response and {tickets: [...]} response
+            data = { tickets: Array.isArray(ticketsData) ? ticketsData : ticketsData.tickets || [] };
+          }
+        }
+
+        if (!data || !data.tickets) {
+          throw new Error("No tickets data received from API");
+        }
+
+        console.log("API Response:", data);
 
         // Transform API response to match UI format
         const transformedTickets = (data.tickets || []).map((ticket) => ({
           id: ticket.ticket_id || ticket.id,
-          customerName: ticket.customer_name || "Unknown",
-          customerEmail: ticket.customer_email || "",
-          orderId: ticket.order_id || "",
+          customerName: ticket.customer_name || ticket.customerName || "Unknown",
+          customerEmail: ticket.customer_email || ticket.customerEmail || "",
+          orderId: ticket.order_id || ticket.orderId || "",
           sentiment: ticket.sentiment || "neutral",
           status: ticket.status || "pending",
-          vipStatus: ticket.vip_status || "Regular",
+          vipStatus: ticket.vip_status || ticket.vipStatus || "Regular",
           ltv: ticket.ltv || 0,
           intent: ticket.intent || "General Inquiry",
-          aiInsight: ticket.ai_reasoning || "No AI analysis available",
+          aiInsight: ticket.ai_reasoning || ticket.aiInsight || "No AI analysis available",
           channel: ticket.channel || "email",
           channelIcon: ticket.channel === "whatsapp" ? MessageSquare : Mail,
-          createdAt: ticket.createdAt
-            ? new Date(ticket.createdAt).toLocaleDateString()
-            : "Just now",
+          createdAt: ticket.createdAt || ticket.created_at || "Just now",
         }));
 
+        console.log("Transformed tickets:", transformedTickets);
         setTickets(transformedTickets);
 
         // Set initial selected ticket if available
