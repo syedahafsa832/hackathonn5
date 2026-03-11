@@ -8,7 +8,7 @@ from typing import Optional, List
 import os
 import requests
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 router = APIRouter(prefix="/agentic", tags=["agentic"])
 logger = logging.getLogger(__name__)
@@ -192,8 +192,20 @@ async def get_shopify_audit(order_id: str) -> ShopifyAudit:
 
         if orders:
             order = orders[0]
-            order_date = datetime.fromisoformat(order.get("created_at", datetime.now().isoformat()))
-            days_remaining = RETURN_WINDOW_DAYS - (datetime.now() - order_date).days
+            order_date_str = order.get("created_at", "")
+            if order_date_str:
+                # Handle both timezone-aware and naive datetime strings
+                try:
+                    order_date = datetime.fromisoformat(order_date_str.replace('Z', '+00:00'))
+                    if order_date.tzinfo is None:
+                        order_date = order_date.replace(tzinfo=timezone.utc)
+                    # Use timezone-aware now() for consistency
+                    now = datetime.now(timezone.utc)
+                    days_remaining = RETURN_WINDOW_DAYS - (now - order_date).days
+                except (ValueError, TypeError):
+                    days_remaining = RETURN_WINDOW_DAYS
+            else:
+                days_remaining = RETURN_WINDOW_DAYS
 
             return ShopifyAudit(
                 order_id=order_id,
