@@ -471,8 +471,8 @@ async def get_decision_queue():
     try:
         from src.lib.supabase_client import supabase_select
 
-        # Get pending tickets from database
-        tickets = supabase_select("tickets", {"status": "eq.pending"})
+        # Get open tickets from database
+        tickets = supabase_select("tickets", {"status": "eq.open"})
 
         if not tickets or len(tickets) == 0:
             # Return empty queue - no mock data

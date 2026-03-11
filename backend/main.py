@@ -83,29 +83,27 @@ try:
     from src.api.routes.agentic import router as agentic_router
     
     # Priority routers first
-    app.include_router(shopify_auth_router) # Support /install and /new-install at root
-    app.include_router(api_admin_router, prefix="/api")
-    app.include_router(support_router, prefix="/support", tags=["support"])
-    app.include_router(tickets_router, prefix="/api")
-    app.include_router(auth_router)
-    app.include_router(shopify_webhook_router, prefix="/api/webhooks")
-    app.include_router(aftership_webhook_router, prefix="/api/webhooks/aftership")
-    app.include_router(returns_router, prefix="/api")
-    app.include_router(actions_router, prefix="/api")
-    app.include_router(agentic_router, prefix="/api")
-
-    # AI-Mode endpoint for Decision Hub - returns pending tickets directly
+    # ----------------------------------------------------
+    # Register AI-Mode endpoint explicitly FIRST to override admin.py
+    # ----------------------------------------------------
     @app.get("/api/ai-mode")
-    async def ai_mode_endpoint():
-        """Decision Hub endpoint - returns pending tickets from Supabase"""
+    async def ai_mode_endpoint(store_id: str = "00000000-0000-0000-0000-000000000000"):
+        """Decision Hub endpoint - returns pending tickets AND system mode"""
         try:
             from src.lib.supabase_client import supabase_select
+            from src.services.supabase_service import supabase_service
 
-            # Get pending tickets from database
-            tickets = supabase_select("tickets", {"status": "eq.pending"})
+            # Get system settings for the toggle component
+            settings = await supabase_service.get_system_settings(store_id)
+            current_mode = settings.get("ai_mode", "active")
+
+            # Get open tickets from database
+            tickets = supabase_select("tickets", {"status": "eq.open"})
 
             if not tickets or len(tickets) == 0:
                 return {
+                    "mode": current_mode,
+                    "store_id": store_id,
                     "tickets": [],
                     "count": 0,
                     "source": "database"
@@ -150,6 +148,8 @@ try:
                 })
 
             return {
+                "mode": current_mode,
+                "store_id": store_id,
                 "tickets": transformed_tickets,
                 "count": len(transformed_tickets),
                 "source": "database"
@@ -158,10 +158,24 @@ try:
         except Exception as e:
             logger.error(f"Error in /api/ai-mode: {e}")
             return {
+                "mode": "active",
                 "tickets": [],
                 "count": 0,
                 "error": str(e)
             }
+
+    # Now include routers
+    app.include_router(shopify_auth_router) # Support /install and /new-install at root
+    app.include_router(api_admin_router, prefix="/api")
+    app.include_router(support_router, prefix="/support", tags=["support"])
+    app.include_router(tickets_router, prefix="/api")
+    app.include_router(auth_router)
+    app.include_router(shopify_webhook_router, prefix="/api/webhooks")
+    app.include_router(aftership_webhook_router, prefix="/api/webhooks/aftership")
+    app.include_router(returns_router, prefix="/api")
+    app.include_router(actions_router, prefix="/api")
+    app.include_router(agentic_router, prefix="/api")
+
 
     logger.info("✓ Routers registered (shopify_auth, api, support, tickets, auth).")
 except Exception as e:
