@@ -465,11 +465,14 @@ export default function SmartApprovalInbox() {
         setLoading(true);
         let data = null;
 
-        // Try /api/ai-mode first (Decision Hub endpoint)
+        // Try /api/ai-mode first (Decision Hub endpoint) - add cache bust
+        const cacheBust = `?t=${Date.now()}`;
         try {
-          const response = await fetch(`${API_BASE_URL}/api/ai-mode`);
+          const response = await fetch(`${API_BASE_URL}/api/ai-mode${cacheBust}`);
           if (response.ok) {
             data = await response.json();
+          } else {
+            console.warn(`/api/ai-mode returned ${response.status}`);
           }
         } catch (e) {
           console.warn("/api/ai-mode failed, trying /api/tickets:", e);
@@ -477,7 +480,7 @@ export default function SmartApprovalInbox() {
 
         // Fallback to /api/tickets if ai-mode fails or returns empty
         if (!data || !data.tickets || data.tickets.length === 0) {
-          const ticketsResponse = await fetch(`${API_BASE_URL}/api/tickets`);
+          const ticketsResponse = await fetch(`${API_BASE_URL}/api/tickets${cacheBust}`);
           if (ticketsResponse.ok) {
             const ticketsData = await ticketsResponse.json();
             // Handle both array response and {tickets: [...]} response
