@@ -94,12 +94,74 @@ try:
     app.include_router(actions_router, prefix="/api")
     app.include_router(agentic_router, prefix="/api")
 
-    # AI-Mode alias for frontend compatibility
+    # AI-Mode endpoint for Decision Hub - returns pending tickets directly
     @app.get("/api/ai-mode")
-    async def ai_mode_redirect():
-        """Alias endpoint for frontend - redirects to agentic queue"""
-        from fastapi.responses import RedirectResponse
-        return RedirectResponse(url="/api/agentic/queue")
+    async def ai_mode_endpoint():
+        """Decision Hub endpoint - returns pending tickets from Supabase"""
+        try:
+            from src.lib.supabase_client import supabase_select
+
+            # Get pending tickets from database
+            tickets = supabase_select("tickets", {"status": "eq.pending"})
+
+            if not tickets or len(tickets) == 0:
+                return {
+                    "tickets": [],
+                    "count": 0,
+                    "source": "database"
+                }
+
+            # Transform database tickets to frontend format
+            transformed_tickets = []
+            for ticket in tickets:
+                # Get customer info if available
+                customer_id = ticket.get("customer_id")
+                customer_name = "Unknown Customer"
+                customer_email = ""
+                ltv = 0
+
+                if customer_id:
+                    customers = supabase_select("customers", {"id": f"eq.{customer_id}"})
+                    if customers:
+                        customer_name = customers[0].get("name", "Unknown")
+                        customer_email = customers[0].get("email", "")
+                        ltv = customers[0].get("ltv", 0) or 0
+
+                transformed_tickets.append({
+                    "id": ticket.get("id", ""),
+                    "ticket_id": ticket.get("id", ""),
+                    "customer_name": customer_name,
+                    "customer_email": customer_email,
+                    "order_id": ticket.get("order_id", ""),
+                    "sentiment": ticket.get("sentiment", "neutral"),
+                    "sentiment_score": ticket.get("sentiment_score", 5),
+                    "status": ticket.get("status", "pending"),
+                    "vip_status": "Regular",
+                    "ltv": ltv,
+                    "intent": ticket.get("intent", "other"),
+                    "requested_item": ticket.get("requested_item"),
+                    "message_content": ticket.get("description", ""),
+                    "content": ticket.get("description", ""),
+                    "channel": ticket.get("source_channel", "email"),
+                    "created_at": ticket.get("created_at", ""),
+                    "createdAt": ticket.get("created_at", ""),
+                    "ai_reasoning": ticket.get("ai_reasoning", "No AI analysis available"),
+                    "revenue_at_stake": ticket.get("revenue_at_stake", 0),
+                })
+
+            return {
+                "tickets": transformed_tickets,
+                "count": len(transformed_tickets),
+                "source": "database"
+            }
+
+        except Exception as e:
+            logger.error(f"Error in /api/ai-mode: {e}")
+            return {
+                "tickets": [],
+                "count": 0,
+                "error": str(e)
+            }
 
     logger.info("✓ Routers registered (shopify_auth, api, support, tickets, auth).")
 except Exception as e:
