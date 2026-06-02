@@ -1,3 +1,112 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Responsive Dashboard Layout */
+.App {
+  min-height: 100vh;
+  width: 100%;
+}
+
+/* Responsive container */
+.container {
+  width: 100%;
+  max-width: 100%;
+  padding-left: 1rem;
+  padding-right: 1rem;
+}
+
+@media (min-width: 640px) {
+  .container {
+    padding-left: 1.5rem;
+    padding-right: 1.5rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  .container {
+    padding-left: 2rem;
+    padding-right: 2rem;
+    max-width: 1280px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+}
+
+/* Responsive grid for dashboard pages */
+.dashboard-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 640px) {
+  .dashboard-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (min-width: 1024px) {
+  .dashboard-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (min-width: 1280px) {
+  .dashboard-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+/* Responsive table wrapper */
+.table-responsive {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.table-responsive table {
+  min-width: 600px;
+}
+
+/* Mobile-friendly card layout */
+@media (max-width: 639px) {
+  .card-stack {
+    flex-direction: column;
+  }
+
+  .hide-mobile {
+    display: none;
+  }
+}
+
+@media (min-width: 640px) {
+  .card-stack {
+    flex-direction: row;
+  }
+
+  .hide-desktop {
+    display: none;
+  }
+}
+
+/* Touch-friendly button sizes */
+.btn {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0.5rem 1rem;
+}
+
+@media (min-width: 640px) {
+  .btn {
+    padding: 0.625rem 1.25rem;
+  }
+}
+
+/* Responsive sidebar fallback for mobile */
+@media (max-width: 1023px) {
+  .sidebar-nav {
+    flex-direction: row;
+    overflow-x: auto;
+    padding-bottom: 0.5rem;
+  }
+}

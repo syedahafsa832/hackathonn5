@@ -65,81 +65,92 @@ class V3Tools:
             logger.error(f"Tool error [check_inventory]: {e}")
             return {"error": "Failed to check inventory."}
 
-    async def get_order_status(self, order_id: str) -> Dict[str, Any]:
-        """Fetch order status, items, and tracking number from Shopify directly."""
+    async def get_order_status(self, order_id: str, shop_domain: str = None, access_token: str = None) -> Dict[str, Any]:
+        """Fetch order status directly from Shopify. Local mirror is never used — always live data."""
         try:
-            # Try local mirror first
-            order = supabase_select("orders", {"order_number": f"eq.{order_id}"})
+            shop = shop_domain or self.shop_name
+            token = access_token or self.shopify_token
 
-            if not order:
-                # Fallback: Query Shopify directly
-                logger.info(f"Order {order_id} not in local DB, querying Shopify...")
-                logger.info(f"Shopify config: shop={self.shop_name}, token_set={bool(self.shopify_token)}")
+            logger.info(f"[Tools] Fetching order #{order_id} from Shopify (shop={shop}, token_set={bool(token)})")
 
-                if not self.shop_name or not self.shopify_token:
-                    logger.error("Shopify credentials not configured!")
-                    return {"error": f"Order {order_id} not found in our records."}
+            if not shop or not token:
+                logger.error("[Tools] Shopify credentials not configured!")
+                return {"error": f"Order {order_id} not found — Shopify not connected.", "order_number": order_id}
 
-                # Search for order in Shopify
-                url = f"https://{self.shop_name}.myshopify.com/admin/api/{self.api_version}/orders.json?name={order_id}"
-                headers = {
-                    "X-Shopify-Access-Token": self.shopify_token,
-                    "Content-Type": "application/json"
-                }
+            # Normalize domain
+            shop = shop.rstrip("/").removeprefix("https://").removeprefix("http://")
+            if ".myshopify.com" not in shop:
+                shop = f"{shop}.myshopify.com"
 
-                logger.info(f"Querying Shopify: {url}")
-                resp = requests.get(url, headers=headers)
-                logger.info(f"Shopify response: {resp.status_code}")
-
-                if resp.status_code != 200:
-                    logger.error(f"Shopify API error: {resp.text}")
-                    return {"error": f"Order {order_id} not found in our records."}
-
-                data = resp.json()
-                shopify_orders = data.get("orders", [])
-                if not shopify_orders:
-                    return {"error": f"Order {order_id} not found."}
-
-                o = shopify_orders[0]
-                tracking = o.get("fulfillments", [{}])[0].get("tracking_number") if o.get("fulfillments") else None
-
-                return {
-                    "success": True,
-                    "source": "shopify",
-                    "order_id": order_id,
-                    "order_number": o.get("order_number"),
-                    "status": o.get("fulfillment_status") or "unfulfilled",
-                    "tracking_number": tracking,
-                    "total_amount": o.get("total_price"),
-                    "items": [{"title": item.get("title"), "quantity": item.get("quantity")} for item in o.get("line_items", [])],
-                    "created_at": o.get("created_at")
-                }
-
-            # Return from local mirror
-            # Get order items
-            order_items = supabase_select("order_items", {"order_id": f"eq.{order[0]['id']}"})
-            items = []
-            for item in order_items:
-                items.append({
-                    "title": item.get("title"),
-                    "quantity": item.get("quantity"),
-                    "price": item.get("price"),
-                    "sku": item.get("sku")
-                })
-
-            return {
-                "success": True,
-                "order_id": order_id,
-                "order_number": order[0].get("order_number"),
-                "status": order[0].get("status"),
-                "tracking_number": order[0].get("tracking_number"),
-                "shipping_status": order[0].get("shipping_status"),
-                "customer_email": order[0].get("customer_email"),
-                "customer_name": order[0].get("customer_name"),
-                "total_amount": order[0].get("total_amount"),
-                "items": items,
-                "last_updated": order[0].get("last_updated")
+            headers = {
+                "X-Shopify-Access-Token": token,
+                "Content-Type": "application/json"
             }
+
+            # Try name=#1002 first, then name=1002 (without #)
+            shopify_orders = []
+            for name_param in [f"%23{order_id}", order_id]:
+                url = f"https://{shop}/admin/api/{self.api_version}/orders.json?name={name_param}&status=any&limit=1"
+                logger.info(f"[Tools] Querying Shopify: {url}")
+                resp = requests.get(url, headers=headers)
+                logger.info(f"[Tools] Shopify response: {resp.status_code}")
+                if resp.status_code == 200:
+                    shopify_orders = resp.json().get("orders", [])
+                    if shopify_orders:
+                        break
+
+            if not shopify_orders:
+                # Scan recent 250 orders by integer order_number field (handles custom name prefixes)
+                logger.info(f"[Tools] Name lookup failed for #{order_id} — scanning order_number field")
+                try:
+                    fallback_url = f"https://{shop}/admin/api/{self.api_version}/orders.json?status=any&limit=250&order=created_at+desc"
+                    fb_resp = requests.get(fallback_url, headers=headers, timeout=15)
+                    if fb_resp.status_code == 200:
+                        all_candidates = fb_resp.json().get("orders", [])
+                        sample = [f"#{o.get('order_number')} ({o.get('name')})" for o in all_candidates[:10]]
+                        logger.info(f"[Tools] Scan returned {len(all_candidates)} orders. Sample: {sample}")
+                        for candidate in all_candidates:
+                            if str(candidate.get("order_number")) == str(order_id):
+                                shopify_orders = [candidate]
+                                logger.info(f"[Tools] Found order #{order_id} via order_number scan")
+                                break
+                    else:
+                        logger.warning(f"[Tools] Fallback scan HTTP {fb_resp.status_code}: {fb_resp.text[:200]}")
+                except Exception as fb_err:
+                    logger.warning(f"[Tools] Fallback scan error: {fb_err}")
+
+            if not shopify_orders:
+                logger.warning(f"[Tools] Order #{order_id} not found in Shopify after all lookup strategies")
+                return {"error": f"Order #{order_id} not found.", "order_number": order_id}
+
+            o = shopify_orders[0]
+            tracking = o.get("fulfillments", [{}])[0].get("tracking_number") if o.get("fulfillments") else None
+            tracking_url = o.get("fulfillments", [{}])[0].get("tracking_url") if o.get("fulfillments") else None
+
+            result = {
+                "success": True,
+                "source": "shopify",
+                "order_id": order_id,
+                "order_number": o.get("order_number"),
+                "status": o.get("fulfillment_status") or "unfulfilled",
+                "tracking_number": tracking,
+                "tracking_url": tracking_url,
+                "total_amount": o.get("total_price"),
+                "items": [
+                    {
+                        "title": item.get("title"),
+                        "quantity": item.get("quantity"),
+                        "price": item.get("price"),
+                        "variant_title": item.get("variant_title"),
+                        "sku": item.get("sku"),
+                    }
+                    for item in o.get("line_items", [])
+                ],
+                "created_at": o.get("created_at")
+            }
+            logger.info(f"[Tools] Order #{order_id} fetched from Shopify: {len(result['items'])} items, total={result['total_amount']}")
+            return result
+
         except Exception as e:
             logger.error(f"Tool error [get_order_status]: {e}")
             return {"error": "Failed to retrieve order status."}

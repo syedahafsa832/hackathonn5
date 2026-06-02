@@ -4,10 +4,14 @@ Supabase REST API Client — uses requests directly to avoid supabase-py depende
 import os
 import logging
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from typing import Optional, List, Any, Dict
 from dotenv import load_dotenv
 
+# Load .env.local for local development, fallback to .env
 load_dotenv()
+load_dotenv(".local", override=False)  # override=False keeps .env values
 logger = logging.getLogger(__name__)
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
@@ -17,6 +21,24 @@ if SUPABASE_URL and SUPABASE_KEY:
     logger.info(f"✓ Supabase REST client configured for {SUPABASE_URL}")
 else:
     logger.warning("SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set. Supabase is DISABLED.")
+
+# Shared session with retry + connection pooling.
+# Retries on SSL errors (connect=3) and transient HTTP failures (502/503/504).
+# backoff_factor=0.5 → waits 0s, 0.5s, 1s between attempts.
+_retry = Retry(
+    total=3,
+    connect=3,
+    read=3,
+    backoff_factor=0.5,
+    status_forcelist=[502, 503, 504],
+    allowed_methods=["GET", "POST", "PATCH", "DELETE"],
+    raise_on_status=False,
+)
+_adapter = HTTPAdapter(max_retries=_retry, pool_connections=4, pool_maxsize=10)
+_session = requests.Session()
+_session.mount("https://", _adapter)
+_session.mount("http://", _adapter)
+
 
 def _headers():
     return {
@@ -34,7 +56,7 @@ def _rest_url(table: str) -> str:
 def supabase_select(table: str, params: dict = None) -> list:
     """SELECT from a Supabase table. params are query params like {'status': 'eq.open', 'order': 'created_at.desc'}"""
     try:
-        resp = requests.get(_rest_url(table), headers=_headers(), params=params or {})
+        resp = _session.get(_rest_url(table), headers=_headers(), params=params or {})
         if resp.status_code >= 400:
             logger.error(f"Supabase Select Error: {resp.status_code} for {table} with params {params}. Body: {resp.text[:500]}")
             resp.raise_for_status()
@@ -46,38 +68,56 @@ def supabase_select(table: str, params: dict = None) -> list:
 def supabase_insert(table: str, data: dict) -> dict:
     """INSERT a row into a Supabase table. Returns the created row."""
     try:
-        resp = requests.post(_rest_url(table), headers=_headers(), json=data)
+        resp = _session.post(_rest_url(table), headers=_headers(), json=data)
         if resp.status_code >= 400:
-            logger.error(f"Supabase Insert Error Body: {resp.text}")
+            # 409 Conflict (duplicate key) is a handled race condition — log at WARNING
+            level = logger.warning if resp.status_code == 409 else logger.error
+            level(f"Supabase Insert Error Body: {resp.text}")
         resp.raise_for_status()
         result = resp.json()
         return result[0] if isinstance(result, list) else result
     except Exception as e:
-        logger.error(f"Supabase Insert Error: {e}")
+        if "409" not in str(e):
+            logger.error(f"Supabase Insert Error: {e}")
         raise e
 
 def supabase_update(table: str, match: dict, data: dict) -> dict:
     """UPDATE rows matching the filter. match is like {'id': 'eq.some-uuid'}"""
     try:
-        resp = requests.patch(_rest_url(table), headers=_headers(), params=match, json=data)
+        resp = _session.patch(_rest_url(table), headers=_headers(), params=match, json=data)
+        if resp.status_code >= 400:
+            level = logger.warning if resp.status_code == 409 else logger.error
+            level(f"Supabase Update Error: {resp.status_code} for {table} with match {match}. Body: {resp.text[:300]}")
         resp.raise_for_status()
         result = resp.json()
         if isinstance(result, list):
             return result[0] if len(result) > 0 else {}
         return result
     except Exception as e:
-        logger.error(f"Supabase Update Error: {e}")
+        if "409" not in str(e):
+            logger.error(f"Supabase Update Error: {e}")
         raise e
 
 def supabase_rpc(function: str, data: dict) -> Any:
     """Call a Supabase RPC function."""
     try:
-        resp = requests.post(f"{SUPABASE_URL}/rest/v1/rpc/{function}", headers=_headers(), json=data)
+        resp = _session.post(f"{SUPABASE_URL}/rest/v1/rpc/{function}", headers=_headers(), json=data)
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
         logger.error(f"Supabase RPC Error [{function}]: {e}")
         return None
+
+
+def supabase_delete(table: str, match: dict) -> bool:
+    """DELETE rows matching the filter. match is like {'id': 'eq.some-uuid'}"""
+    try:
+        resp = _session.delete(_rest_url(table), headers=_headers(), params=match)
+        resp.raise_for_status()
+        return True
+    except Exception as e:
+        logger.error(f"Supabase Delete Error: {e}")
+        return False
 
 # --- Settings Helpers ---
 

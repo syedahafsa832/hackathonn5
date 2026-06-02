@@ -1,4 +1,4 @@
-# Claude Code Rules
+ï»¿# Claude Code Rules
 
 This file is generated during init for the selected agent.
 
@@ -47,7 +47,7 @@ After completing requests, you **MUST** create a PHR (Prompt History Record).
    - One of: constitution | spec | plan | tasks | red | green | refactor | explainer | misc | general
 
 2) Generate title
-   - 3–7 words; create a slug for the filename.
+   - 3ï¿½7 words; create a slug for the filename.
 
 2a) Resolve route (all under history/prompts/)
   - `constitution` ? `history/prompts/constitution/`
@@ -103,7 +103,7 @@ After completing requests, you **MUST** create a PHR (Prompt History Record).
 
 ### 4. Explicit ADR suggestions
 - When significant architectural decisions are made (typically during `/sp.plan` and sometimes `/sp.tasks`), run the three-part test and suggest documenting with:
-  "?? Architectural decision detected: <brief> — Document reasoning and tradeoffs? Run `/sp.adr <decision-title>`"
+  "?? Architectural decision detected: <brief> ï¿½ Document reasoning and tradeoffs? Run `/sp.adr <decision-title>`"
 - Wait for user consent; never auto-create the ADR.
 
 ### 5. Human as Tool Strategy
@@ -198,13 +198,13 @@ Wait for consent; never auto-create ADRs. Group related decisions (stacks, authe
 
 ## Basic Project Structure
 
-- `.specify/memory/constitution.md` — Project principles
-- `specs/<feature>/spec.md` — Feature requirements
-- `specs/<feature>/plan.md` — Architecture decisions
-- `specs/<feature>/tasks.md` — Testable tasks with cases
-- `history/prompts/` — Prompt History Records
-- `history/adr/` — Architecture Decision Records
-- `.specify/` — SpecKit Plus templates and scripts
+- `.specify/memory/constitution.md` ï¿½ Project principles
+- `specs/<feature>/spec.md` ï¿½ Feature requirements
+- `specs/<feature>/plan.md` ï¿½ Architecture decisions
+- `specs/<feature>/tasks.md` ï¿½ Testable tasks with cases
+- `history/prompts/` ï¿½ Prompt History Records
+- `history/adr/` ï¿½ Architecture Decision Records
+- `.specify/` ï¿½ SpecKit Plus templates and scripts
 
 ## Code Standards
 See `.specify/memory/constitution.md` for code quality, testing, performance, security, and architecture principles.
