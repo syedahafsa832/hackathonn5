@@ -1,0 +1,516 @@
+openapi: 3.0.3
+info:
+  title: Shopify Customer Support API
+  description: Multi-tenant AI-powered customer support system for Shopify e-commerce brands
+  version: 1.0.0
+
+servers:
+  - url: /api/v2/support
+    description: Current version
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Ticket:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        customer_email:
+          type: string
+          format: email
+        subject:
+          type: string
+        body:
+          type: string
+        status:
+          type: string
+          enum: [new, processing, responded, needs_review, closed]
+        channel:
+          type: string
+          enum: [email, webform]
+        order_id:
+          type: string
+        ai_intent:
+          type: string
+        ai_sentiment:
+          type: number
+        ai_response_sent:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Action:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        ticket_id:
+          type: string
+          format: uuid
+        action_type:
+          type: string
+          enum: [refund, cancel, address_change]
+        order_id:
+          type: string
+        confidence_score:
+          type: number
+          format: float
+        risk_level:
+          type: string
+          enum: [low, medium, high]
+        original_message:
+          type: string
+        suggested_operation:
+          type: string
+        status:
+          type: string
+          enum: [pending, approved, rejected, executed, failed]
+        error_message:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    KnowledgeBaseArticle:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        content:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    TenantSettings:
+      type: object
+      properties:
+        shopify_domain:
+          type: string
+        support_email:
+          type: string
+        smtp_host:
+          type: string
+        smtp_port:
+          type: integer
+        smtp_user:
+          type: string
+
+    AuditLog:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        event_type:
+          type: string
+        entity_type:
+          type: string
+        entity_id:
+          type: string
+          format: uuid
+        details:
+          type: object
+        created_at:
+          type: string
+          format: date-time
+
+    CreateTicketRequest:
+      type: object
+      required:
+        - customer_email
+        - subject
+        - body
+        - channel
+      properties:
+        customer_email:
+          type: string
+          format: email
+        subject:
+          type: string
+        body:
+          type: string
+        channel:
+          type: string
+          enum: [email, webform]
+        order_id:
+          type: string
+
+    ActionDecisionRequest:
+      type: object
+      properties:
+        notes:
+          type: string
+
+paths:
+  /tickets:
+    get:
+      summary: List tickets
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [new, processing, responded, needs_review, closed]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: List of tickets
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Ticket'
+                  total:
+                    type: integer
+
+    post:
+      summary: Create ticket
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTicketRequest'
+      responses:
+        '201':
+          description: Ticket created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ticket'
+
+  /tickets/{ticket_id}:
+    get:
+      summary: Get ticket details
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: ticket_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Ticket details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ticket'
+
+  /actions:
+    get:
+      summary: List pending actions
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, approved, rejected, executed, failed]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: List of actions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Action'
+                  total:
+                    type: integer
+
+  /actions/{action_id}/approve:
+    post:
+      summary: Approve action
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActionDecisionRequest'
+      responses:
+        '200':
+          description: Action approved and executed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Action'
+
+  /actions/{action_id}/reject:
+    post:
+      summary: Reject action
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActionDecisionRequest'
+      responses:
+        '200':
+          description: Action rejected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Action'
+
+  /knowledge:
+    get:
+      summary: List knowledge base articles
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: List of articles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/KnowledgeBaseArticle'
+
+    post:
+      summary: Create knowledge base article
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - title
+                - content
+              properties:
+                title:
+                  type: string
+                content:
+                  type: string
+      responses:
+        '201':
+          description: Article created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeBaseArticle'
+
+  /knowledge/{article_id}:
+    get:
+      summary: Get article details
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: article_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Article details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeBaseArticle'
+
+    put:
+      summary: Update article
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: article_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                content:
+                  type: string
+      responses:
+        '200':
+          description: Article updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeBaseArticle'
+
+    delete:
+      summary: Delete article
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: article_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Article deleted
+
+  /settings:
+    get:
+      summary: Get tenant settings
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Tenant settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSettings'
+
+    put:
+      summary: Update tenant settings
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantSettings'
+      responses:
+        '200':
+          description: Settings updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSettings'
+
+  /history:
+    get:
+      summary: Get audit log history
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: event_type
+          in: query
+          schema:
+            type: string
+        - name: entity_type
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: List of audit logs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditLog'
+                  total:
+                    type: integer

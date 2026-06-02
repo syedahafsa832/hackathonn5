@@ -76,17 +76,20 @@ class GmailHandler:
                     try:
                         creds_data = json.loads(creds_json)
                         flow = InstalledAppFlow.from_client_config(creds_data, SCOPES)
-                        flow.redirect_uri = 'https://hackathonn5-production.up.railway.app/auth/callback'
-                        
-                        # We no longer exchange GMAIL_TOKEN_CODE here to avoid invalid_grant errors.
-                        # Instead, the user must visit /auth/google to generate a permanent token in Supabase.
+                        redirect_uri = os.getenv("REDIRECT_URI", "http://localhost:8000/auth/callback")
+                        flow.redirect_uri = redirect_uri
                         auth_url, _ = flow.authorization_url(prompt='consent')
+                        auth_base = redirect_uri.replace("/auth/callback", "/auth/google")
                         logger.warning("\n" + "="*60)
                         logger.warning("GMAIL AUTHORIZATION REQUIRED")
-                        logger.warning(f"Please visit: https://hackathonn5-production.up.railway.app/auth/google")
+                        logger.warning(f"Please visit: {auth_base}")
                         logger.warning("="*60 + "\n")
                     except Exception as e:
                         logger.error(f"Error preparing Gmail flow: {e}")
+                else:
+                    # No global Gmail credentials configured — per-brand Gmail OAuth is in use.
+                    # This is expected. Global handler will be inactive.
+                    logger.info("Global Gmail credentials not configured — per-brand Gmail OAuth is active.")
         
         if self.creds:
             self.service = build('gmail', 'v1', credentials=self.creds)

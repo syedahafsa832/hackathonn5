@@ -1,0 +1,278 @@
+openapi: "3.1.0"
+info:
+  title: Email Guardian API
+  version: "1.0.0"
+  description: |
+    Quarantine queue management and extended email filter settings for the
+    006-email-guardian feature. All endpoints require v1 JWT Bearer token
+    (Authorization: Bearer <token>) via get_current_tenant middleware.
+
+servers:
+  - url: /api/v1
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+
+  schemas:
+    QuarantineRecord:
+      type: object
+      properties:
+        id:          { type: string, format: uuid }
+        brand_id:    { type: string, format: uuid }
+        sender_email: { type: string }
+        subject:     { type: string, nullable: true }
+        body_preview: { type: string, nullable: true, description: "First 500 chars of email body" }
+        thread_id:   { type: string, nullable: true }
+        ai_classification:
+          type: string
+          enum: [customer_support, unknown]
+          nullable: true
+        ai_confidence:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          nullable: true
+        status:
+          type: string
+          enum: [pending, promoted, discarded, expired]
+        actioned_by: { type: string, nullable: true }
+        actioned_at: { type: string, format: date-time, nullable: true }
+        expires_at:  { type: string, format: date-time }
+        created_at:  { type: string, format: date-time }
+
+    QuarantineListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/QuarantineRecord" }
+        total:   { type: integer }
+        pending: { type: integer }
+
+    PromoteResponse:
+      type: object
+      properties:
+        success:   { type: boolean }
+        ticket_id: { type: string, format: uuid }
+        message:   { type: string }
+
+    DiscardResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        message: { type: string }
+
+    EmailFilterSettingsResponse:
+      type: object
+      description: "Extended settings response — includes guardian fields added in feature 006"
+      properties:
+        blocked_domains:       { type: array, items: { type: string } }
+        whitelisted_domains:   { type: array, items: { type: string } }
+        max_auto_replies:      { type: integer, minimum: 0, maximum: 10 }
+        promotion_filter_enabled: { type: boolean }
+        loop_protection_enabled:  { type: boolean }
+        support_only_mode:     { type: boolean, description: "Default: true" }
+        confidence_threshold:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          description: "Default: 0.75"
+        auto_reply_enabled:    { type: boolean, description: "Default: true" }
+
+    EmailFilterSettingsPatch:
+      type: object
+      description: "Partial update — any combination of fields"
+      properties:
+        blocked_domains:       { type: array, items: { type: string } }
+        whitelisted_domains:   { type: array, items: { type: string } }
+        max_auto_replies:      { type: integer, minimum: 0, maximum: 10 }
+        promotion_filter_enabled: { type: boolean }
+        loop_protection_enabled:  { type: boolean }
+        support_only_mode:     { type: boolean }
+        confidence_threshold:  { type: number, format: float, minimum: 0.0, maximum: 1.0 }
+        auto_reply_enabled:    { type: boolean }
+
+security:
+  - BearerAuth: []
+
+paths:
+
+  # ── Quarantine Queue ─────────────────────────────────────────────────────────
+
+  /quarantine:
+    get:
+      summary: List quarantined emails for the authenticated brand
+      operationId: listQuarantine
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending, promoted, discarded, expired]
+            default: pending
+          description: "Filter by status. Default: pending"
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, maximum: 100 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: Quarantine list
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QuarantineListResponse" }
+        "401":
+          description: Missing or invalid token
+
+  /quarantine/{id}/promote:
+    post:
+      summary: Promote a quarantined email to a support ticket
+      operationId: promoteQuarantine
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Ticket created from quarantined email
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PromoteResponse" }
+        "404":
+          description: Quarantine record not found or already actioned
+        "401":
+          description: Missing or invalid token
+
+  /quarantine/{id}/discard:
+    post:
+      summary: Discard a quarantined email
+      operationId: discardQuarantine
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Quarantine record marked discarded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscardResponse" }
+        "404":
+          description: Quarantine record not found or already actioned
+        "401":
+          description: Missing or invalid token
+
+  # ── Extended Settings (extends feature 005 endpoints) ────────────────────────
+
+  /settings/email-filter:
+    get:
+      summary: Get email filter + guardian settings for the authenticated brand
+      operationId: getEmailFilterSettings
+      description: |
+        Returns all filter settings including new guardian fields:
+        support_only_mode, confidence_threshold, auto_reply_enabled.
+        Defaults applied when no brand-specific row exists.
+      responses:
+        "200":
+          description: Settings object
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EmailFilterSettingsResponse" }
+        "401":
+          description: Missing or invalid token
+
+    patch:
+      summary: Update email filter + guardian settings (partial update)
+      operationId: patchEmailFilterSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EmailFilterSettingsPatch" }
+            examples:
+              enable_support_only:
+                summary: Enable support-only mode with custom threshold
+                value:
+                  support_only_mode: true
+                  confidence_threshold: 0.80
+              disable_auto_reply:
+                summary: Disable auto-reply (tickets still created, no AI reply sent)
+                value:
+                  auto_reply_enabled: false
+      responses:
+        "200":
+          description: Updated settings
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EmailFilterSettingsResponse" }
+        "400":
+          description: Validation error (e.g. confidence_threshold out of 0–1 range)
+        "401":
+          description: Missing or invalid token
+
+  # ── Extended Filter Logs (adds ai_classification + quarantine to summary) ────
+
+  /filter-logs:
+    get:
+      summary: Get filter log summary or paginated log entries
+      operationId: getFilterLogs
+      description: |
+        When summary=true, returns aggregated counts including quarantine total
+        and by_reason breakdown that now includes ai_classification and low_confidence.
+      parameters:
+        - name: summary
+          in: query
+          schema: { type: boolean, default: false }
+        - name: days
+          in: query
+          schema: { type: integer, default: 7 }
+        - name: decision
+          in: query
+          schema: { type: string, enum: [allowed, blocked, quarantined] }
+        - name: reason
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: Filter log summary or paginated entries
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    description: Summary mode
+                    properties:
+                      total_blocked:    { type: integer }
+                      total_allowed:    { type: integer }
+                      total_quarantined: { type: integer }
+                      prevented_loops:  { type: integer }
+                      by_reason:
+                        type: object
+                        additionalProperties: { type: integer }
+                        example:
+                          gmail_category: 12
+                          blocked_domain: 8
+                          ai_classification: 5
+                          low_confidence: 3
+                          loop_risk: 1
+                  - type: object
+                    description: Paginated mode
+                    properties:
+                      items: { type: array }
+                      total: { type: integer }

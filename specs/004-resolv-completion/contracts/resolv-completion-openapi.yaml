@@ -1,0 +1,235 @@
+openapi: "3.0.3"
+info:
+  title: Resolv MVP Completion — Affected Endpoints
+  version: "1.0.0"
+  description: >
+    Contracts for the 9 items in the Resolv MVP completion spec.
+    Only endpoints that are new or modified are listed here.
+
+servers:
+  - url: http://localhost:8001
+    description: Local development
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: v1 JWT token from POST /api/v1/auth/login
+
+  schemas:
+    Ticket:
+      type: object
+      required: [id, status, channel, customer_email, created_at]
+      properties:
+        id:          { type: string, format: uuid }
+        status:      { type: string, enum: [open, resolved, escalated] }
+        channel:     { type: string, enum: [email, whatsapp, web], default: email }
+        customer_email: { type: string, format: email }
+        customer_name:  { type: string, nullable: true }
+        subject:     { type: string, nullable: true }
+        ai_draft:    { type: string, nullable: true }
+        email_sent:  { type: boolean }
+        gmail_thread_id: { type: string, nullable: true }
+        created_at:  { type: string, format: date-time }
+
+    ActionStats:
+      type: object
+      properties:
+        pending_count: { type: integer }
+        approved_count: { type: integer }
+        rejected_count: { type: integer }
+        total: { type: integer }
+
+    DashboardStats:
+      type: object
+      properties:
+        active_tickets:   { type: integer }
+        total_tickets:    { type: integer }
+        escalated_count:  { type: integer }
+        pending_actions:  { type: integer }
+        ai_handled_pct:   { type: number, format: float }
+
+    KnowledgeSource:
+      type: object
+      required: [id, title, created_at]
+      properties:
+        id:         { type: string, format: uuid }
+        title:      { type: string }
+        content:    { type: string }
+        created_at: { type: string, format: date-time }
+
+    Error:
+      type: object
+      required: [detail]
+      properties:
+        detail: { type: string }
+
+paths:
+
+  # ─── ITEM A: Auth — existing endpoint, fix makes v1 tokens work on all routes ───
+
+  /api/v1/auth/login:
+    post:
+      summary: Login — issues v1 JWT token
+      description: >
+        The ONLY auth endpoint used by Resolv. Returns a v1 JWT with sub=tenant_id.
+        This token must be accepted by ALL protected routes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:    { type: string, format: email }
+                password: { type: string, minLength: 8 }
+      responses:
+        "200":
+          description: Auth successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:       { type: boolean }
+                  access_token:  { type: string }
+                  refresh_token: { type: string }
+                  tenant_id:     { type: string }
+                  email:         { type: string }
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  # ─── ITEM B: Dashboard Stats ───
+
+  /api/tickets:
+    get:
+      summary: List tickets (used for dashboard stats)
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string }
+        - name: store_id
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Array of tickets
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Ticket' }
+
+  /api/v1/actions/stats:
+    get:
+      summary: Action statistics for dashboard
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Action counts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ActionStats' }
+        "401":
+          description: Unauthorized
+
+  # ─── ITEM C: Ticket List Fields ───
+  # /api/tickets GET (above) — channel and customer_email MUST be in response
+
+  # ─── ITEM E: Approve-AI / Send Reply ───
+
+  /api/tickets/{ticket_id}/send-reply:
+    post:
+      summary: Send reply email for a ticket
+      parameters:
+        - name: ticket_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                body:
+                  type: string
+                  description: Manual reply text. If omitted, uses ai_draft from ticket.
+      responses:
+        "200":
+          description: Email sent successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  message: { type: string }
+        "400":
+          description: Gmail not connected or no reply body available
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        "404":
+          description: Ticket not found
+
+  # ─── ITEM F: Knowledge Base ───
+
+  /api/v1/settings/knowledge-base/sources:
+    get:
+      summary: List knowledge base sources for current tenant
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List of sources
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/KnowledgeSource' }
+
+  /api/v1/settings/knowledge-base/upload:
+    post:
+      summary: Upload a knowledge base document
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, content]
+              properties:
+                title:   { type: string, minLength: 1 }
+                content: { type: string, minLength: 1 }
+      responses:
+        "200":
+          description: Source created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KnowledgeSource' }
+
+  /api/v1/settings/knowledge-base/sources/{source_id}:
+    delete:
+      summary: Delete a knowledge base source
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: source_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Source deleted
+        "404":
+          description: Source not found

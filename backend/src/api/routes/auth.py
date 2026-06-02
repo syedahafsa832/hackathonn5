@@ -17,8 +17,8 @@ SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
 async def auth_health():
     return {"status": "auth router active"}
 
-# Production Redirect URI
-REDIRECT_URI = "https://hackathonn5-production.up.railway.app/auth/callback"
+# Production Redirect URI (use env var or default to localhost for dev)
+REDIRECT_URI = os.getenv("REDIRECT_URI", "http://localhost:8000/auth/callback")
 
 # Load client config from file or env
 CLIENT_CONFIG_PATH = r"C:\Users\Uswer\Downloads\client_secret_909957709543-nl5u456fqt0n9d6kchehbfud0amd14gt.apps.googleusercontent.com.json"
