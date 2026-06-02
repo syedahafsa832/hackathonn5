@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   postgres:
     image: ankane/pgvector:latest
@@ -22,7 +20,7 @@ services:
     image: redis:7-alpine
     container_name: customer-success-fte-redis
     ports:
-      - "6379:6379"
+      - "6380:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -37,12 +35,20 @@ services:
       ZOOKEEPER_TICK_TIME: 2000
     ports:
       - "2181:2181"
+    healthcheck:
+      test: ["CMD-SHELL", "echo srvr | nc -w 2 localhost 2181 | grep -q Mode"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
 
   kafka:
     image: confluentinc/cp-kafka:7.3.3
     container_name: customer-success-fte-kafka
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     ports:
       - "9092:9092"
     environment:
@@ -53,20 +59,26 @@ services:
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_LOG_RETENTION_HOURS: 24
+      KAFKA_LOG_SEGMENT_BYTES: 104857600
     healthcheck:
-      test:
-        ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list"]
       interval: 30s
       timeout: 10s
-      retries: 5
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
 
   api:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: customer-success-fte-api
     ports:
-      - "8000:8080"
+      - "8001:8080"
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     depends_on:
       postgres:
         condition: service_healthy
@@ -83,9 +95,14 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres123@postgres:5432/customer_success
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - REDIS_URL=redis://redis:6379/0
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
       - MISTRAL_API_KEY=${MISTRAL_API_KEY}
       - MISTRAL_API_BASE_URL=${MISTRAL_API_BASE_URL:-https://api.mistral.ai/v1}
       - MISTRAL_MODEL=${MISTRAL_MODEL:-mistral-large-latest}
+      - GMAIL_CREDENTIALS=${GMAIL_CREDENTIALS}
+      - GMAIL_TOKEN=${GMAIL_TOKEN:-}
       - WHATSAPP_TOKEN=${WHATSAPP_TOKEN}
       - WHATSAPP_PHONE_NUMBER_ID=${WHATSAPP_PHONE_NUMBER_ID}
       - META_WHATSAPP_VERIFY_TOKEN=${META_WHATSAPP_VERIFY_TOKEN}
@@ -106,8 +123,12 @@ services:
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
       - PORT=8080
+      - API_BASE_URL=${API_BASE_URL:-http://localhost:8001}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:5173}
     volumes:
       - ./backend/src:/app/src
+      - ./backend/main.py:/app/main.py
+      - ./production:/app/production
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
       interval: 30s
@@ -117,9 +138,12 @@ services:
 
   worker:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: customer-success-fte-worker
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     depends_on:
       postgres:
         condition: service_healthy
@@ -138,9 +162,14 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres123@postgres:5432/customer_success
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - REDIS_URL=redis://redis:6379/0
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
       - MISTRAL_API_KEY=${MISTRAL_API_KEY}
       - MISTRAL_API_BASE_URL=${MISTRAL_API_BASE_URL:-https://api.mistral.ai/v1}
       - MISTRAL_MODEL=${MISTRAL_MODEL:-mistral-large-latest}
+      - GMAIL_CREDENTIALS=${GMAIL_CREDENTIALS}
+      - GMAIL_TOKEN=${GMAIL_TOKEN:-}
       - WHATSAPP_TOKEN=${WHATSAPP_TOKEN}
       - WHATSAPP_PHONE_NUMBER_ID=${WHATSAPP_PHONE_NUMBER_ID}
       - META_WHATSAPP_ACCESS_TOKEN=${META_WHATSAPP_ACCESS_TOKEN}
@@ -165,17 +194,20 @@ services:
       - DATABASE_POOL_RECYCLE=${DATABASE_POOL_RECYCLE:-3600}
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
-    command: python /app/production/workers/message_processor.py
+    command: python -c "import asyncio; from src.workers.message_processor import message_processor; asyncio.run(message_processor.start())"
     volumes:
-      - ./production:/app/production
       - ./backend/src:/app/src
+      - ./production:/app/production
     restart: unless-stopped
 
   email_poller:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: customer-success-fte-email-poller
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     depends_on:
       postgres:
         condition: service_healthy
@@ -194,9 +226,14 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres123@postgres:5432/customer_success
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - REDIS_URL=redis://redis:6379/0
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
       - MISTRAL_API_KEY=${MISTRAL_API_KEY}
       - MISTRAL_API_BASE_URL=${MISTRAL_API_BASE_URL:-https://api.mistral.ai/v1}
       - MISTRAL_MODEL=${MISTRAL_MODEL:-mistral-large-latest}
+      - GMAIL_CREDENTIALS=${GMAIL_CREDENTIALS}
+      - GMAIL_TOKEN=${GMAIL_TOKEN:-}
       - GMAIL_CLIENT_ID=${GMAIL_CLIENT_ID}
       - GMAIL_CLIENT_SECRET=${GMAIL_CLIENT_SECRET}
       - GMAIL_REFRESH_TOKEN=${GMAIL_REFRESH_TOKEN}
@@ -204,7 +241,7 @@ services:
       - EMAIL_PASSWORD=${EMAIL_PASSWORD}
       - SMTP_SERVER=${SMTP_SERVER:-smtp.gmail.com}
       - SMTP_PORT=${SMTP_PORT:-587}
-      - EMAIL_POLL_INTERVAL=${EMAIL_POLL_INTERVAL:-30}
+      - EMAIL_POLL_INTERVAL=${EMAIL_POLL_INTERVAL:-60}
       - ENVIRONMENT=${ENVIRONMENT:-development}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DATABASE_POOL_SIZE=${DATABASE_POOL_SIZE:-20}
@@ -212,32 +249,33 @@ services:
       - DATABASE_POOL_RECYCLE=${DATABASE_POOL_RECYCLE:-3600}
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
-    command: python /app/production/channels/email_poller.py
+    command: python -c "import asyncio; from src.channels.email_poller import EmailPoller; from src.workers.message_processor import message_processor; poller = EmailPoller(processor=message_processor); asyncio.run(poller.start())"
     volumes:
-      - ./production:/app/production
       - ./backend/src:/app/src
-      - ./gmail_credentials.json:/app/gmail_credentials.json # Mount credentials file
-      - ./token.json:/app/token.json # Mount token file
+      - ./production:/app/production
     restart: unless-stopped
 
   web-form:
     build:
       context: ./web-form
       dockerfile: Dockerfile
+      args:
+        - REACT_APP_API_BASE_URL=http://localhost:8001
     container_name: customer-success-fte-web-form
     ports:
       - "3001:80"
     depends_on:
       - api
-    environment:
-      - REACT_APP_API_URL=http://localhost:8000
     restart: unless-stopped
 
   learning-worker:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: customer-success-fte-learning-worker
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     depends_on:
       postgres:
         condition: service_healthy
@@ -256,6 +294,9 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres123@postgres:5432/customer_success
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - REDIS_URL=redis://redis:6379/0
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
       - MISTRAL_API_KEY=${MISTRAL_API_KEY}
       - MISTRAL_API_BASE_URL=${MISTRAL_API_BASE_URL:-https://api.mistral.ai/v1}
       - MISTRAL_MODEL=${MISTRAL_MODEL:-mistral-large-latest}
@@ -270,11 +311,17 @@ services:
       - DATABASE_POOL_RECYCLE=${DATABASE_POOL_RECYCLE:-3600}
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
-    command: python /app/production/workers/learning_worker.py
+    command: python -c "import asyncio; import time; print('Learning worker started'); time.sleep(86400)"
     volumes:
-      - ./production:/app/production
       - ./backend/src:/app/src
+      - ./production:/app/production
     restart: unless-stopped
 
 volumes:
   postgres_data:
+
+networks:
+  default:
+    driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: "1450"

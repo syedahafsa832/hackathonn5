@@ -1,0 +1,1002 @@
+import { useEffect, useState, useCallback, useRef } from 'react';
+import client from '../api/client';
+
+const inputStyle = {
+  width: '100%',
+  padding: '9px 12px',
+  border: '1px solid var(--border-strong)',
+  borderRadius: '4px',
+  fontSize: '14px',
+  background: 'var(--bg-primary)',
+  color: 'var(--text-primary)',
+  boxSizing: 'border-box',
+};
+
+// ──────────────────────────────────────────────────────── Email Tab ──
+
+function EmailTab() {
+  const [gmailStatus, setGmailStatus] = useState(null);
+  const [queueStatus, setQueueStatus] = useState(null);
+  const [loadingStatus, setLoadingStatus] = useState(true);
+  const [disconnecting, setDisconnecting] = useState(false);
+  const [mode, setMode] = useState('supervised');
+  const [threshold, setThreshold] = useState(80);
+  const [savingMode, setSavingMode] = useState(false);
+  const [msg, setMsg] = useState('');
+  const thresholdTimer = useRef(null);
+
+  const loadStatus = useCallback(() => {
+    setLoadingStatus(true);
+    Promise.all([
+      client.get('/api/v1/settings/gmail/status').catch(() => ({ data: { connected: false } })),
+      client.get('/api/v1/settings/gmail/queue-status').catch(() => ({ data: {} })),
+      client.get('/api/ai-mode').catch(() => ({ data: { mode: 'supervised' } })),
+      client.get('/api/v1/settings/account').catch(() => ({ data: {} })),
+    ]).then(([gmailRes, queueRes, modeRes, accountRes]) => {
+      setGmailStatus(gmailRes.data);
+      setQueueStatus(queueRes.data);
+      setMode(modeRes.data?.mode || 'supervised');
+      setThreshold(accountRes.data?.settings?.confidence_threshold ?? accountRes.data?.confidence_threshold ?? 80);
+    }).finally(() => setLoadingStatus(false));
+  }, []);
+
+  useEffect(() => {
+    loadStatus();
+    // If we're returning from Gmail OAuth, refresh status and clean up URL
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('gmail_connected')) {
+      setMsg('Gmail connected successfully!');
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (params.get('gmail_error')) {
+      setMsg(`Gmail connection failed: ${params.get('gmail_error')}`);
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, [loadStatus]);
+
+  const handleConnect = async () => {
+    try {
+      // Get the Google OAuth URL via authenticated API call (Bearer token sent by axios)
+      const res = await client.get('/api/v1/settings/gmail/connect');
+      const authUrl = res.data?.auth_url;
+      if (!authUrl) {
+        setMsg('Could not get Gmail auth URL. Check GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET env vars.');
+        return;
+      }
+      // Navigate the browser directly to Google's consent screen
+      window.location.href = authUrl;
+    } catch (err) {
+      setMsg(err.response?.data?.detail || 'Failed to start Gmail connection. Make sure a brand exists first.');
+    }
+  };
+
+  const handleDisconnect = async () => {
+    if (!window.confirm('Disconnect Gmail? Resolv will stop monitoring your inbox.')) return;
+    setDisconnecting(true);
+    try {
+      await client.delete('/api/v1/settings/gmail/disconnect');
+      setGmailStatus({ connected: false, email: null });
+      setMsg('Gmail disconnected.');
+    } catch {
+      setMsg('Failed to disconnect Gmail.');
+    } finally {
+      setDisconnecting(false);
+    }
+  };
+
+  const handleModeChange = async (newMode) => {
+    setSavingMode(true);
+    setMsg('');
+    try {
+      await client.patch('/api/ai-mode', { mode: newMode });
+      setMode(newMode);
+    } catch {
+      setMsg('Failed to update AI mode.');
+    } finally {
+      setSavingMode(false);
+    }
+  };
+
+  const handleThresholdChange = (val) => {
+    setThreshold(val);
+    clearTimeout(thresholdTimer.current);
+    thresholdTimer.current = setTimeout(async () => {
+      try {
+        await client.patch('/api/v1/settings/account', { confidence_threshold: val });
+      } catch {
+        setMsg('Failed to save threshold.');
+      }
+    }, 500);
+  };
+
+  if (loadingStatus) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', maxWidth: '520px' }}>
+        {[1,2,3].map(i => <div key={i} className="skeleton" style={{ height: '80px', borderRadius: '6px' }} />)}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ maxWidth: '520px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+      {msg && (
+        <div style={{ fontSize: '13px', color: msg.includes('Failed') ? 'var(--danger)' : 'var(--success)', padding: '8px 12px', background: msg.includes('Failed') ? 'var(--danger-light)' : 'var(--success-light)', borderRadius: '4px' }}>
+          {msg}
+        </div>
+      )}
+
+      {/* Gmail Connection */}
+      <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '20px' }}>
+        <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '14px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Gmail Connection</div>
+        {gmailStatus?.connected ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: 'var(--success)', flexShrink: 0 }} />
+              <div>
+                <div style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)' }}>Connected</div>
+                <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>{gmailStatus.email}</div>
+              </div>
+            </div>
+            {gmailStatus.last_polled_at && (
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+                Inbox checked every 60 seconds
+              </div>
+            )}
+            <button
+              onClick={handleDisconnect}
+              disabled={disconnecting}
+              style={{ alignSelf: 'flex-start', padding: '7px 14px', borderRadius: '4px', border: '1px solid var(--danger)', background: 'transparent', color: 'var(--danger)', fontSize: '13px', fontWeight: '500', cursor: disconnecting ? 'not-allowed' : 'pointer' }}
+            >
+              {disconnecting ? 'Disconnecting...' : 'Disconnect'}
+            </button>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', alignItems: 'flex-start' }}>
+            <div style={{ fontSize: '14px', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
+              Resolv will monitor this inbox every 60 seconds for new customer emails and send replies from it — directly from your address.
+            </div>
+            <button
+              onClick={handleConnect}
+              style={{ padding: '9px 18px', borderRadius: '4px', background: 'var(--accent)', color: 'white', fontWeight: '600', fontSize: '14px', cursor: 'pointer' }}
+            >
+              Connect Gmail →
+            </button>
+            <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+              Google permissions required: read emails, send emails, mark as read
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Send Queue Status */}
+      {queueStatus && (
+        <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '20px' }}>
+          <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '14px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Send Queue Status</div>
+          <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
+            {[
+              { label: 'Queued', value: queueStatus.queued_count ?? 0 },
+              { label: 'Sent (24h)', value: queueStatus.sent_24h ?? 0 },
+              { label: 'Failed', value: queueStatus.failed_count ?? 0, danger: true },
+            ].map(({ label, value, danger }) => (
+              <div key={label}>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '2px' }}>{label}</div>
+                <div style={{ fontSize: '20px', fontWeight: '700', color: danger && value > 0 ? 'var(--danger)' : 'var(--text-primary)', fontFamily: 'DM Mono, monospace' }}>{value}</div>
+              </div>
+            ))}
+          </div>
+          {(queueStatus.failed_count ?? 0) > 0 && (
+            <div style={{ marginTop: '12px', padding: '10px 12px', background: 'var(--warning-light, #fef3c7)', borderRadius: '6px', fontSize: '13px', color: 'var(--warning, #92400e)' }}>
+              ⚠ {queueStatus.failed_count} email(s) failed to send. Check your Gmail connection.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* AI Mode */}
+      <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '20px' }}>
+        <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '14px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>AI Mode</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          {[
+            { id: 'autopilot', label: 'Autopilot', desc: `Resolv sends replies automatically when confidence ≥ ${threshold}%. Refunds and cancellations always require your approval.` },
+            { id: 'supervised', label: 'Supervised', desc: 'All AI replies are saved as drafts. You approve before anything sends.' },
+          ].map(({ id, label, desc }) => (
+            <div
+              key={id}
+              onClick={() => !savingMode && handleModeChange(id)}
+              style={{ padding: '14px', border: `1px solid ${mode === id ? 'var(--accent)' : 'var(--border-strong)'}`, borderRadius: '6px', cursor: savingMode ? 'not-allowed' : 'pointer', background: mode === id ? 'var(--bg-secondary)' : 'var(--bg-primary)' }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
+                <div style={{ width: '14px', height: '14px', borderRadius: '50%', border: '2px solid var(--accent)', background: mode === id ? 'var(--accent)' : 'transparent', flexShrink: 0 }} />
+                <div style={{ fontWeight: '600', fontSize: '14px', color: 'var(--text-primary)' }}>{label}</div>
+              </div>
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginLeft: '24px' }}>{desc}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Confidence Threshold */}
+        <div style={{ marginTop: '16px' }}>
+          <label style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', display: 'block', marginBottom: '8px' }}>
+            Auto-send threshold: <span style={{ color: 'var(--accent)', fontFamily: 'DM Mono, monospace' }}>{threshold}%</span>
+          </label>
+          <input
+            type="range"
+            min={70}
+            max={95}
+            step={5}
+            value={threshold}
+            onChange={e => handleThresholdChange(Number(e.target.value))}
+            style={{ width: '100%' }}
+          />
+          <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
+            Resolv only sends automatically when it is this confident the reply is correct.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────── Shopify Tab ──
+
+function ShopifyTab() {
+  const [shopifyStatus, setShopifyStatus] = useState(null);
+  const [loadingStatus, setLoadingStatus] = useState(true);
+  const [form, setForm] = useState({ shopify_domain: '', access_token: '' });
+  const [connecting, setConnecting] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [error, setError] = useState('');
+  const [showUpdateToken, setShowUpdateToken] = useState(false);
+  const [newToken, setNewToken] = useState('');
+  const [updatingToken, setUpdatingToken] = useState(false);
+
+  const loadStatus = useCallback(() => {
+    setLoadingStatus(true);
+    client.get('/api/v1/settings/shopify')
+      .then(res => setShopifyStatus(res.data))
+      .catch(() => setShopifyStatus({ connected: false }))
+      .finally(() => setLoadingStatus(false));
+  }, []);
+
+  useEffect(() => { loadStatus(); }, [loadStatus]);
+
+  const isConnected = shopifyStatus?.connected;
+
+  const handleConnect = async () => {
+    if (!form.shopify_domain.trim() || !form.access_token.trim()) {
+      setError('Both store URL and access token are required.');
+      return;
+    }
+    setConnecting(true);
+    setError('');
+    setMsg('');
+    try {
+      const res = await client.post('/api/v1/settings/shopify/connect', {
+        shop_domain: form.shopify_domain.trim(),
+        access_token: form.access_token.trim(),
+      });
+      setMsg(`Connected: ${res.data.shop_name || 'Shopify store'}`);
+      setForm({ shopify_domain: '', access_token: '' });
+      loadStatus();
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      setError(typeof detail === 'string' ? detail : detail?.error || 'Failed to connect. Check your domain and token.');
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    if (!window.confirm('Disconnect Shopify? AI actions requiring order data will be disabled.')) return;
+    setDisconnecting(true);
+    try {
+      await client.post('/api/v1/settings/shopify/disconnect');
+      setMsg('Shopify disconnected.');
+      loadStatus();
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to disconnect Shopify.');
+    } finally {
+      setDisconnecting(false);
+    }
+  };
+
+  const handleUpdateToken = async () => {
+    if (!newToken.trim()) {
+      setError('Enter a new access token.');
+      return;
+    }
+    setUpdatingToken(true);
+    setError('');
+    setMsg('');
+    try {
+      const res = await client.post('/api/v1/settings/shopify/connect', {
+        shop_domain: shopifyStatus.shop_domain,
+        access_token: newToken.trim(),
+      });
+      setMsg(`Token updated for ${res.data.shop_name || shopifyStatus.shop_domain}.`);
+      setNewToken('');
+      setShowUpdateToken(false);
+      loadStatus();
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      setError(typeof detail === 'string' ? detail : detail?.error || 'Failed to update token. Check the token and try again.');
+    } finally {
+      setUpdatingToken(false);
+    }
+  };
+
+  if (loadingStatus) {
+    return <div className="skeleton" style={{ height: '200px', borderRadius: '8px', maxWidth: '520px' }} />;
+  }
+
+  return (
+    <div style={{ maxWidth: '520px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      {msg && (
+        <div style={{ fontSize: '13px', color: 'var(--success)', padding: '8px 12px', background: 'var(--success-light)', borderRadius: '4px' }}>{msg}</div>
+      )}
+      {error && (
+        <div style={{ fontSize: '13px', color: 'var(--danger)', padding: '8px 12px', background: 'var(--danger-light)', borderRadius: '4px' }}>{error}</div>
+      )}
+
+      {isConnected ? (
+        <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: 'var(--success)', flexShrink: 0 }} />
+            <div>
+              <div style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                {shopifyStatus?.shop_name || 'Shopify Store'}
+              </div>
+              <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>{shopifyStatus?.shop_domain}</div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {['Order lookup by number', 'Refund processing', 'Order cancellation', 'Shipping address changes', 'Order reship', 'Inventory check'].map(cap => (
+              <div key={cap} style={{ fontSize: '13px', color: 'var(--text-secondary)', display: 'flex', gap: '8px' }}>
+                <span style={{ color: 'var(--success)' }}>✓</span>{cap}
+              </div>
+            ))}
+          </div>
+
+          {/* Update API Token */}
+          <div style={{ borderTop: '1px solid var(--border)', paddingTop: '14px' }}>
+            <button
+              onClick={() => { setShowUpdateToken(v => !v); setNewToken(''); setError(''); }}
+              style={{ fontSize: '13px', color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontWeight: '500' }}
+            >
+              {showUpdateToken ? '↑ Cancel token update' : '↓ Update API access token'}
+            </button>
+            {showUpdateToken && (
+              <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: '1.5' }}>
+                  Generate a new Admin API access token in Shopify → Settings → Apps → Develop apps, then paste it below.
+                </div>
+                <input
+                  type="password"
+                  value={newToken}
+                  onChange={e => setNewToken(e.target.value)}
+                  placeholder="shpat_... or shpca_..."
+                  style={inputStyle}
+                />
+                <button
+                  onClick={handleUpdateToken}
+                  disabled={updatingToken}
+                  style={{ alignSelf: 'flex-start', padding: '7px 14px', borderRadius: '4px', background: updatingToken ? 'var(--bg-tertiary)' : 'var(--accent)', color: updatingToken ? 'var(--text-muted)' : 'white', fontSize: '13px', fontWeight: '500', cursor: updatingToken ? 'not-allowed' : 'pointer' }}
+                >
+                  {updatingToken ? 'Updating...' : 'Update Token'}
+                </button>
+              </div>
+            )}
+          </div>
+
+          <button
+            onClick={handleDisconnect}
+            disabled={disconnecting}
+            style={{ alignSelf: 'flex-start', padding: '7px 14px', borderRadius: '4px', border: '1px solid var(--danger)', background: 'transparent', color: 'var(--danger)', fontSize: '13px', fontWeight: '500', cursor: disconnecting ? 'not-allowed' : 'pointer' }}
+          >
+            {disconnecting ? 'Disconnecting...' : 'Disconnect Shopify'}
+          </button>
+        </div>
+      ) : (
+        <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)' }}>Connect your Shopify store</div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px', fontSize: '13px', color: 'var(--text-secondary)', lineHeight: '1.7' }}>
+            <div><strong>Step 1:</strong> In Shopify, go to Settings → Apps → Develop apps</div>
+            <div><strong>Step 2:</strong> Create an app and configure Admin API scopes: <code style={{ fontSize: '12px', background: 'var(--bg-tertiary)', padding: '1px 4px', borderRadius: '3px' }}>read_orders, write_orders, read_customers, read_products, write_order_edits</code></div>
+            <div><strong>Step 3:</strong> Install the app and copy your Admin API access token</div>
+          </div>
+
+          <div>
+            <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', marginBottom: '5px' }}>Store URL</label>
+            <input
+              value={form.shopify_domain}
+              onChange={e => setForm(f => ({ ...f, shopify_domain: e.target.value }))}
+              placeholder="mystore.myshopify.com"
+              style={inputStyle}
+            />
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', marginBottom: '5px' }}>Admin API Access Token</label>
+            <input
+              type="password"
+              value={form.access_token}
+              onChange={e => setForm(f => ({ ...f, access_token: e.target.value }))}
+              placeholder="shpat_..."
+              style={inputStyle}
+            />
+          </div>
+          <button
+            onClick={handleConnect}
+            disabled={connecting}
+            style={{ padding: '9px 18px', borderRadius: '4px', background: connecting ? 'var(--bg-tertiary)' : 'var(--accent)', color: connecting ? 'var(--text-muted)' : 'white', fontWeight: '600', fontSize: '14px', cursor: connecting ? 'not-allowed' : 'pointer', alignSelf: 'flex-start' }}
+          >
+            {connecting ? 'Connecting...' : 'Connect Shopify →'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────── Knowledge Base Tab ──
+
+function KnowledgeBaseTab() {
+  const [sources, setSources] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [form, setForm] = useState({ title: '', content: '' });
+  const [uploading, setUploading] = useState(false);
+  const [uploadMsg, setUploadMsg] = useState('');
+
+  const fetchSources = () => {
+    setLoading(true);
+    setError('');
+    client.get('/api/v1/settings/knowledge-base/sources')
+      .then(res => setSources(Array.isArray(res.data) ? res.data : (res.data?.sources || [])))
+      .catch(() => setError('Failed to load knowledge base sources.'))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { fetchSources(); }, []);
+
+  const handleUpload = async () => {
+    if (!form.title.trim() || !form.content.trim()) {
+      setUploadMsg('Title and content are required.');
+      return;
+    }
+    setUploading(true);
+    setUploadMsg('');
+    try {
+      await client.post('/api/v1/settings/knowledge-base/upload', {
+        name: form.title.trim(),
+        content: form.content.trim(),
+      });
+      setForm({ title: '', content: '' });
+      setUploadMsg('Document uploaded successfully.');
+      fetchSources();
+    } catch {
+      setUploadMsg('Upload failed. Please try again.');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    try {
+      await client.delete(`/api/v1/settings/knowledge-base/sources/${id}`);
+      setSources(s => s.filter(src => src.id !== id));
+    } catch {
+      setError('Failed to delete source.');
+    }
+  };
+
+  return (
+    <div style={{ maxWidth: '600px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        <div style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)' }}>Add Document</div>
+        <div>
+          <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', marginBottom: '5px' }}>Title</label>
+          <input
+            value={form.title}
+            onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
+            placeholder="e.g. Return Policy"
+            style={inputStyle}
+          />
+        </div>
+        <div>
+          <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', marginBottom: '5px' }}>Content</label>
+          <textarea
+            value={form.content}
+            onChange={e => setForm(f => ({ ...f, content: e.target.value }))}
+            placeholder="Paste your document text here..."
+            rows={6}
+            style={{ ...inputStyle, resize: 'vertical', lineHeight: '1.5' }}
+          />
+        </div>
+        {uploadMsg && (
+          <div style={{ fontSize: '13px', color: uploadMsg.includes('fail') || uploadMsg.includes('required') ? 'var(--danger)' : 'var(--success)', padding: '8px 12px', background: uploadMsg.includes('fail') || uploadMsg.includes('required') ? 'var(--danger-light)' : 'var(--success-light)', borderRadius: '4px' }}>
+            {uploadMsg}
+          </div>
+        )}
+        <button
+          onClick={handleUpload}
+          disabled={uploading}
+          style={{ padding: '9px 20px', borderRadius: '4px', background: uploading ? 'var(--bg-tertiary)' : 'var(--accent)', color: uploading ? 'var(--text-muted)' : 'white', fontWeight: '500', fontSize: '14px', cursor: uploading ? 'not-allowed' : 'pointer', alignSelf: 'flex-start' }}
+        >
+          {uploading ? 'Uploading...' : 'Upload'}
+        </button>
+      </div>
+
+      <div>
+        <div style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '12px' }}>Knowledge Sources</div>
+        {error && (
+          <div style={{ padding: '10px 14px', background: 'var(--danger-light)', color: 'var(--danger)', borderRadius: '4px', fontSize: '13px', marginBottom: '12px' }}>{error}</div>
+        )}
+        {loading ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {[1,2,3].map(i => <div key={i} className="skeleton" style={{ height: '48px', borderRadius: '4px' }} />)}
+          </div>
+        ) : sources.length === 0 ? (
+          <div style={{ padding: '32px', textAlign: 'center', color: 'var(--text-muted)', border: '1px dashed var(--border)', borderRadius: '6px', fontSize: '14px' }}>
+            Add your return policy, shipping info, and FAQs. Resolv uses this to answer questions accurately.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {sources.map(src => (
+              <div key={src.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', border: '1px solid var(--border)', borderRadius: '6px', background: 'var(--bg-primary)' }}>
+                <div>
+                  <div style={{ fontWeight: '500', fontSize: '14px', color: 'var(--text-primary)' }}>{src.name || src.title}</div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                    {src.created_at ? new Date(src.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'}
+                  </div>
+                </div>
+                <button
+                  onClick={() => handleDelete(src.id)}
+                  style={{ padding: '5px 12px', borderRadius: '4px', border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--danger)', fontSize: '12px', cursor: 'pointer' }}
+                >
+                  Delete
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────── Email Filter Tab ──
+
+function FilterTab() {
+  const [settings, setSettings] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [form, setForm] = useState({
+    blocked_domains: '',
+    whitelisted_domains: '',
+    max_auto_replies: 2,
+    promotion_filter_enabled: true,
+    loop_protection_enabled: true,
+    // Guardian fields (feature 006)
+    support_only_mode: true,
+    auto_reply_enabled: true,
+    confidence_threshold: 0.75,
+  });
+
+  useEffect(() => {
+    setLoading(true);
+    client.get('/api/v1/settings/email-filter')
+      .then(res => {
+        const d = res.data;
+        setSettings(d);
+        setForm({
+          blocked_domains: (d.blocked_domains || []).join(', '),
+          whitelisted_domains: (d.whitelisted_domains || []).join(', '),
+          max_auto_replies: d.max_auto_replies ?? 2,
+          promotion_filter_enabled: d.promotion_filter_enabled ?? true,
+          loop_protection_enabled: d.loop_protection_enabled ?? true,
+          // Guardian fields (feature 006)
+          support_only_mode: d.support_only_mode ?? true,
+          auto_reply_enabled: d.auto_reply_enabled ?? true,
+          confidence_threshold: d.confidence_threshold ?? 0.75,
+        });
+      })
+      .catch(() => setMsg('Failed to load filter settings.'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const parseDomains = (str) =>
+    str.split(',').map(d => d.trim().toLowerCase()).filter(Boolean);
+
+  const handleSave = async () => {
+    setSaving(true);
+    setMsg('');
+    const maxReplies = Number(form.max_auto_replies);
+    if (isNaN(maxReplies) || maxReplies < 0 || maxReplies > 10) {
+      setMsg('Max auto-replies must be between 0 and 10.');
+      setSaving(false);
+      return;
+    }
+    const threshold = parseFloat(form.confidence_threshold);
+    if (isNaN(threshold) || threshold < 0 || threshold > 1) {
+      setMsg('Confidence threshold must be between 0.0 and 1.0.');
+      setSaving(false);
+      return;
+    }
+    try {
+      await client.patch('/api/v1/settings/email-filter', {
+        blocked_domains: parseDomains(form.blocked_domains),
+        whitelisted_domains: parseDomains(form.whitelisted_domains),
+        max_auto_replies: maxReplies,
+        promotion_filter_enabled: form.promotion_filter_enabled,
+        loop_protection_enabled: form.loop_protection_enabled,
+        // Guardian fields (feature 006)
+        support_only_mode: form.support_only_mode,
+        auto_reply_enabled: form.auto_reply_enabled,
+        confidence_threshold: threshold,
+      });
+      setMsg('Filter settings saved. Changes take effect within 60 seconds.');
+    } catch (err) {
+      setMsg(err.response?.data?.detail || 'Failed to save filter settings.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', maxWidth: '520px' }}>
+        {[1,2,3].map(i => <div key={i} className="skeleton" style={{ height: '60px', borderRadius: '6px' }} />)}
+      </div>
+    );
+  }
+
+  const labelStyle = { display: 'block', fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', marginBottom: '5px' };
+  const hintStyle = { fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' };
+  const cardStyle = { background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' };
+  const toggleRowStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 0', borderTop: '1px solid var(--border)' };
+
+  return (
+    <div style={{ maxWidth: '520px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+      {msg && (
+        <div style={{ fontSize: '13px', color: msg.includes('Failed') || msg.includes('must') ? 'var(--danger)' : 'var(--success)', padding: '8px 12px', background: msg.includes('Failed') || msg.includes('must') ? 'var(--danger-light)' : 'var(--success-light)', borderRadius: '4px' }}>
+          {msg}
+        </div>
+      )}
+
+      {/* Domain Lists */}
+      <div style={cardStyle}>
+        <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Domain Rules</div>
+        <div>
+          <label style={labelStyle}>Blocked Domains</label>
+          <input
+            value={form.blocked_domains}
+            onChange={e => setForm(f => ({ ...f, blocked_domains: e.target.value }))}
+            placeholder="spamco.io, newsletter.example.com"
+            style={inputStyle}
+          />
+          <div style={hintStyle}>Comma-separated. Emails from these domains are always blocked.</div>
+        </div>
+        <div>
+          <label style={labelStyle}>Whitelisted Domains</label>
+          <input
+            value={form.whitelisted_domains}
+            onChange={e => setForm(f => ({ ...f, whitelisted_domains: e.target.value }))}
+            placeholder="trusteddomain.com, partner-crm.io"
+            style={inputStyle}
+          />
+          <div style={hintStyle}>These bypass sender-pattern and Gmail category checks. Auto-reply header checks still apply.</div>
+        </div>
+      </div>
+
+      {/* Loop Protection */}
+      <div style={cardStyle}>
+        <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Loop Protection</div>
+        <div>
+          <label style={labelStyle}>Max Auto-Replies per Thread</label>
+          <input
+            type="number"
+            min={0}
+            max={10}
+            value={form.max_auto_replies}
+            onChange={e => setForm(f => ({ ...f, max_auto_replies: e.target.value }))}
+            style={{ ...inputStyle, width: '80px' }}
+          />
+          <div style={hintStyle}>0 = AI replies always require human approval. Max 10.</div>
+        </div>
+        <div style={toggleRowStyle}>
+          <div>
+            <div style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-primary)' }}>Loop Protection</div>
+            <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>Stop AI replies when a thread exceeds the threshold above</div>
+          </div>
+          <input
+            type="checkbox"
+            checked={form.loop_protection_enabled}
+            onChange={e => setForm(f => ({ ...f, loop_protection_enabled: e.target.checked }))}
+            style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+          />
+        </div>
+      </div>
+
+      {/* Content Filtering */}
+      <div style={cardStyle}>
+        <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Content Filtering</div>
+        <div style={{ ...toggleRowStyle, borderTop: 'none', paddingTop: 0 }}>
+          <div>
+            <div style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-primary)' }}>Promotion Filter</div>
+            <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>Block emails with promotional keywords (unsubscribe, webinar, discount, etc.)</div>
+          </div>
+          <input
+            type="checkbox"
+            checked={form.promotion_filter_enabled}
+            onChange={e => setForm(f => ({ ...f, promotion_filter_enabled: e.target.checked }))}
+            style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+          />
+        </div>
+      </div>
+
+      {/* AI Guardian */}
+      <div style={cardStyle}>
+        <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>AI Guardian (Layer 4–5)</div>
+
+        <div style={toggleRowStyle}>
+          <div>
+            <div style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-primary)' }}>Support-Only Mode</div>
+            <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>Only <strong>customer_support</strong> emails create tickets. All other emails are silently discarded.</div>
+          </div>
+          <input
+            type="checkbox"
+            checked={form.support_only_mode}
+            onChange={e => setForm(f => ({ ...f, support_only_mode: e.target.checked }))}
+            style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+          />
+        </div>
+
+        <div style={toggleRowStyle}>
+          <div>
+            <div style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-primary)' }}>Send AI Replies Automatically</div>
+            <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>When disabled, tickets are created but no AI reply is sent. Human agents reply manually.</div>
+          </div>
+          <input
+            type="checkbox"
+            checked={form.auto_reply_enabled}
+            onChange={e => setForm(f => ({ ...f, auto_reply_enabled: e.target.checked }))}
+            style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+          />
+        </div>
+
+        <div>
+          <label style={labelStyle}>
+            Confidence Threshold: <span style={{ color: 'var(--accent)', fontFamily: 'DM Mono, monospace' }}>{Math.round((form.confidence_threshold || 0) * 100)}%</span>
+          </label>
+          <input
+            type="number"
+            min={0}
+            max={1}
+            step={0.05}
+            value={form.confidence_threshold}
+            onChange={e => setForm(f => ({ ...f, confidence_threshold: e.target.value }))}
+            style={{ ...inputStyle, width: '100px' }}
+          />
+          <div style={hintStyle}>Minimum AI confidence to create a ticket. Below this threshold the email goes to the Quarantine Queue for human review. (0.75 = 75%)</div>
+        </div>
+      </div>
+
+      <button
+        onClick={handleSave}
+        disabled={saving}
+        style={{ padding: '10px 22px', borderRadius: '4px', background: saving ? 'var(--bg-tertiary)' : 'var(--accent)', color: saving ? 'var(--text-muted)' : 'white', fontWeight: '600', fontSize: '14px', cursor: saving ? 'not-allowed' : 'pointer', alignSelf: 'flex-start' }}
+      >
+        {saving ? 'Saving...' : 'Save Filter Settings'}
+      </button>
+    </div>
+  );
+}
+
+// ───────────────────────────────────────────────────────── Account Tab ──
+
+function AccountTab() {
+  const [profile, setProfile] = useState({ full_name: '', email: '' });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  useEffect(() => {
+    client.get('/api/v1/settings/account').then(res => {
+      const u = res.data?.settings || res.data;
+      setProfile({ full_name: u?.full_name || u?.company_name || u?.name || '', email: u?.email || '' });
+    }).catch(() => {}).finally(() => setLoading(false));
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    setMsg('');
+    try {
+      await client.put('/api/v1/settings/account', { company_name: profile.full_name });
+      setMsg('Saved successfully.');
+    } catch {
+      setMsg('Failed to save.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', maxWidth: '400px' }}>
+        {[1,2].map(i => <div key={i} className="skeleton" style={{ height: '44px', borderRadius: '4px' }} />)}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ maxWidth: '400px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      <div>
+        <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', marginBottom: '5px' }}>Name</label>
+        <input
+          value={profile.full_name}
+          onChange={e => setProfile(p => ({ ...p, full_name: e.target.value }))}
+          style={inputStyle}
+        />
+      </div>
+      <div>
+        <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', marginBottom: '5px' }}>Email</label>
+        <input value={profile.email} readOnly style={{ ...inputStyle, background: 'var(--bg-secondary)', color: 'var(--text-muted)' }} />
+        <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>Email cannot be changed here</div>
+      </div>
+      {msg && (
+        <div style={{ fontSize: '13px', color: msg.includes('Failed') ? 'var(--danger)' : 'var(--success)', padding: '8px 12px', background: msg.includes('Failed') ? 'var(--danger-light)' : 'var(--success-light)', borderRadius: '4px' }}>
+          {msg}
+        </div>
+      )}
+      <button
+        onClick={save}
+        disabled={saving}
+        style={{ padding: '9px 20px', borderRadius: '4px', background: 'var(--accent)', color: 'white', fontWeight: '500', fontSize: '14px', cursor: saving ? 'not-allowed' : 'pointer', alignSelf: 'flex-start' }}
+      >
+        {saving ? 'Saving...' : 'Save changes'}
+      </button>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────── Canned Responses Tab ──
+
+function CannedResponsesTab() {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [form, setForm] = useState({ title: '', trigger_keywords: '', response_text: '' });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const load = () => {
+    setLoading(true);
+    client.get('/api/v1/canned-responses')
+      .then(res => setItems(res.data?.items || []))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const handleCreate = async (e) => {
+    e.preventDefault();
+    if (!form.title || !form.trigger_keywords || !form.response_text) {
+      setError('All fields are required.');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      await client.post('/api/v1/canned-responses', form);
+      setForm({ title: '', trigger_keywords: '', response_text: '' });
+      load();
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to save.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    try {
+      await client.delete(`/api/v1/canned-responses/${id}`);
+      load();
+    } catch {}
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+      <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '24px' }}>
+        <h3 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '16px' }}>Add Canned Response</h3>
+        <form onSubmit={handleCreate} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <input
+            placeholder="Title (e.g. Return Policy)"
+            value={form.title}
+            onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
+            style={{ padding: '8px 12px', border: '1px solid var(--border-strong)', borderRadius: '4px', fontSize: '14px', background: 'var(--bg-primary)' }}
+          />
+          <input
+            placeholder="Trigger keywords (comma-separated, e.g. return,refund,money back)"
+            value={form.trigger_keywords}
+            onChange={e => setForm(f => ({ ...f, trigger_keywords: e.target.value }))}
+            style={{ padding: '8px 12px', border: '1px solid var(--border-strong)', borderRadius: '4px', fontSize: '14px', background: 'var(--bg-primary)' }}
+          />
+          <textarea
+            placeholder="Response text (shown verbatim to customer)"
+            value={form.response_text}
+            onChange={e => setForm(f => ({ ...f, response_text: e.target.value }))}
+            rows={4}
+            style={{ padding: '8px 12px', border: '1px solid var(--border-strong)', borderRadius: '4px', fontSize: '14px', background: 'var(--bg-primary)', resize: 'vertical' }}
+          />
+          {error && <div style={{ fontSize: '13px', color: 'var(--danger)' }}>{error}</div>}
+          <button type="submit" disabled={saving} style={{ alignSelf: 'flex-start', padding: '8px 18px', borderRadius: '4px', background: 'var(--accent)', color: 'white', fontWeight: '600', fontSize: '13px', cursor: saving ? 'not-allowed' : 'pointer' }}>
+            {saving ? 'Saving...' : 'Save Response'}
+          </button>
+        </form>
+      </div>
+
+      <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '24px' }}>
+        <h3 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '16px' }}>Saved Responses</h3>
+        {loading ? (
+          [1,2].map(i => <div key={i} className="skeleton" style={{ height: '60px', borderRadius: '6px', marginBottom: '8px' }} />)
+        ) : items.length === 0 ? (
+          <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>No canned responses yet. Add one above.</div>
+        ) : items.map(item => (
+          <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', padding: '12px 0', borderBottom: '1px solid var(--border)' }}>
+            <div>
+              <div style={{ fontWeight: '600', fontSize: '13px', marginBottom: '3px' }}>{item.title}</div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>Keywords: {item.trigger_keywords}</div>
+              <div style={{ fontSize: '12px', color: 'var(--text-secondary)', maxWidth: '400px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.response_text}</div>
+            </div>
+            <button onClick={() => handleDelete(item.id)} style={{ fontSize: '12px', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer', padding: '4px', flexShrink: 0 }}>Delete</button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────── Main Settings Page ──
+
+const TABS = [
+  { id: 'email', label: 'Email' },
+  { id: 'filter', label: 'Email Filters' },
+  { id: 'shopify', label: 'Shopify' },
+  { id: 'kb', label: 'Knowledge Base' },
+  { id: 'canned', label: 'Canned Responses' },
+  { id: 'account', label: 'Account' },
+];
+
+export default function Settings() {
+  const [activeTab, setActiveTab] = useState('email');
+
+  const tabStyle = (id) => ({
+    padding: '10px 20px',
+    borderBottom: activeTab === id ? '2px solid var(--accent)' : '2px solid transparent',
+    color: activeTab === id ? 'var(--accent)' : 'var(--text-secondary)',
+    fontWeight: '600',
+    fontSize: '14px',
+    cursor: 'pointer',
+    transition: 'all 0.2s',
+    whiteSpace: 'nowrap',
+  });
+
+  return (
+    <div style={{ padding: '24px' }}>
+      <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', marginBottom: '28px', overflowX: 'auto' }}>
+        {TABS.map(t => (
+          <div key={t.id} style={tabStyle(t.id)} onClick={() => setActiveTab(t.id)}>{t.label}</div>
+        ))}
+      </div>
+
+      {activeTab === 'email' && <EmailTab />}
+      {activeTab === 'filter' && <FilterTab />}
+      {activeTab === 'shopify' && <ShopifyTab />}
+      {activeTab === 'kb' && <KnowledgeBaseTab />}
+      {activeTab === 'canned' && <CannedResponsesTab />}
+      {activeTab === 'account' && <AccountTab />}
+    </div>
+  );
+}

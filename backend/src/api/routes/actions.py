@@ -2,12 +2,17 @@
 Pending Actions API Routes
 Human-in-the-Loop Approval Queue Endpoints
 """
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from typing import Optional, List
 from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 import uuid
 
 router = APIRouter(prefix="/actions", tags=["actions"])
+
+# Rate limiter for public endpoints
+limiter = Limiter(key_func=get_remote_address)
 
 
 # ============== Request Models ==============
@@ -24,7 +29,8 @@ class RejectRequest(BaseModel):
 # ============== Endpoints ==============
 
 @router.get("/stats")
-async def get_actions_stats():
+@limiter.limit("60/minute")
+async def get_actions_stats(request: Request):
     """
     Get summary statistics of all actions.
     """
@@ -59,9 +65,9 @@ async def get_actions_stats():
 
 
 @router.get("/executed")
-async def get_executed_actions(
-    limit: int = Query(10, description="Number of records to return")
-):
+@limiter.limit("60/minute")
+async def get_executed_actions(request: Request,
+    limit: int = Query(10, description="Number of records to return")):
     """
     Get executed actions for the Live Recovery feed.
     """
@@ -91,7 +97,8 @@ async def get_executed_actions(
 
 
 @router.get("/pending")
-async def list_pending_actions(
+@limiter.limit("60/minute")
+async def list_pending_actions(request: Request,
     status: Optional[str] = Query(None, description="Filter by status: Pending, Approved, Rejected, Executed"),
     risk_score: Optional[str] = Query(None, description="Filter by risk: Low, Medium, High"),
     limit: int = Query(20, description="Number of records to return")
@@ -145,7 +152,8 @@ async def list_pending_actions(
 
 
 @router.get("/{action_id}")
-async def get_action(action_id: str):
+@limiter.limit("60/minute")
+async def get_action(request: Request, action_id: str):
     """
     Get a specific pending action by ID.
     """
@@ -191,7 +199,8 @@ async def get_action(action_id: str):
 
 
 @router.post("/approve/{action_id}")
-async def approve_action(action_id: str, request: ApproveRequest = None):
+@limiter.limit("30/minute")
+async def approve_action(request: Request, action_id: str, request_data: ApproveRequest = None):
     """
     Approve and execute a pending action (Refund or Exchange).
     Triggers Shopify API to process the action.
@@ -205,7 +214,7 @@ async def approve_action(action_id: str, request: ApproveRequest = None):
 
         from src.services.actions_manager import approve_pending_action
 
-        approved_by = request.approved_by if request else "admin"
+        approved_by = request_data.approved_by if request_data else "admin"
 
         result = await approve_pending_action(action_id, approved_by)
 
@@ -225,7 +234,8 @@ async def approve_action(action_id: str, request: ApproveRequest = None):
 
 
 @router.post("/reject/{action_id}")
-async def reject_action(action_id: str, request: RejectRequest):
+@limiter.limit("30/minute")
+async def reject_action(request: Request, action_id: str, request_data: RejectRequest):
     """
     Reject a pending action.
     """
@@ -240,7 +250,7 @@ async def reject_action(action_id: str, request: RejectRequest):
 
         result = await reject_pending_action(
             action_id=action_id,
-            rejection_note=request.rejection_note,
+            rejection_note=request_data.rejection_note,
             rejected_by=request.rejected_by
         )
 
@@ -260,7 +270,8 @@ async def reject_action(action_id: str, request: RejectRequest):
 
 
 @router.delete("/{action_id}")
-async def delete_action(action_id: str):
+@limiter.limit("30/minute")
+async def delete_action(request: Request, action_id: str):
     """
     Delete a pending action (only if still pending).
     """

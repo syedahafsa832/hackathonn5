@@ -1,0 +1,395 @@
+openapi: "3.1.0"
+info:
+  title: Email Filter & Loop Prevention API
+  version: "1.0.0"
+  description: >
+    Endpoints for managing email filter settings and querying filter decision logs.
+    All endpoints require a valid v1 JWT token (Authorization: Bearer <token>).
+    Settings are scoped to the tenant's primary brand derived from the JWT.
+
+servers:
+  - url: http://localhost:8000
+    description: Local development
+
+security:
+  - BearerAuth: []
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        v1 JWT issued by /api/v1/auth/login. Sub claim contains tenant_id.
+        Brand is resolved server-side from tenant context.
+
+  schemas:
+    EmailFilterSettings:
+      type: object
+      description: Per-brand email filter configuration stored in system_settings.
+      properties:
+        blocked_domains:
+          type: array
+          items:
+            type: string
+          description: Lowercase domain strings. Emails from these domains are always blocked.
+          example: ["spamco.io", "newsletter.example.com"]
+        whitelisted_domains:
+          type: array
+          items:
+            type: string
+          description: >
+            Lowercase domain strings. Emails from these domains bypass sender-pattern
+            and Gmail category checks. Auto-reply header checks still apply.
+          example: ["trusteddomain.com", "partner-crm.io"]
+        max_auto_replies:
+          type: integer
+          minimum: 0
+          maximum: 10
+          description: >
+            Maximum AI replies per thread. When auto_reply_count reaches this threshold
+            the thread is marked loop_risk=true and AI replies stop.
+            Setting to 0 disables auto-send entirely (all replies require human approval).
+          default: 2
+          example: 2
+        promotion_filter_enabled:
+          type: boolean
+          description: >
+            When false, the promotional-content keyword check (FR-006) is skipped.
+            Header and sender-pattern checks remain active regardless.
+          default: true
+          example: true
+        loop_protection_enabled:
+          type: boolean
+          description: >
+            When false, auto_reply_count is still tracked but never blocks AI sends.
+            Loop risk flagging is also disabled.
+          default: true
+          example: true
+
+    EmailFilterSettingsPatch:
+      type: object
+      description: Partial update — only provided fields are changed.
+      properties:
+        blocked_domains:
+          type: array
+          items:
+            type: string
+          example: ["spamco.io"]
+        whitelisted_domains:
+          type: array
+          items:
+            type: string
+          example: ["trusteddomain.com"]
+        max_auto_replies:
+          type: integer
+          minimum: 0
+          maximum: 10
+          example: 1
+        promotion_filter_enabled:
+          type: boolean
+          example: false
+        loop_protection_enabled:
+          type: boolean
+          example: true
+
+    FilterLogEntry:
+      type: object
+      description: A single filter decision record from email_filter_log.
+      properties:
+        id:
+          type: string
+          format: uuid
+        brand_id:
+          type: string
+          format: uuid
+        sender_email:
+          type: string
+          example: "newsletter@klaviyo-mail.io"
+        thread_id:
+          type: string
+          nullable: true
+          example: "18f2a3b4c5d6"
+        decision:
+          type: string
+          enum: [allowed, blocked]
+        filter_reason:
+          type: string
+          nullable: true
+          enum:
+            - gmail_category
+            - blocked_sender_pattern
+            - blocked_domain
+            - auto_reply_header
+            - promotional_content
+            - loop_risk
+            - self_reply
+          description: Present when decision is 'blocked'.
+        email_category:
+          type: string
+          nullable: true
+          enum: [support, promotional, social, updates, unknown]
+        sender_type:
+          type: string
+          nullable: true
+          enum: [human, automated, unknown]
+        created_at:
+          type: string
+          format: date-time
+
+    FilterLogSummary:
+      type: object
+      description: Aggregated filter activity for the dashboard widget.
+      properties:
+        total_blocked:
+          type: integer
+          description: Total emails blocked in the requested period.
+          example: 47
+        total_allowed:
+          type: integer
+          description: Total emails that passed all filters in the requested period.
+          example: 12
+        by_reason:
+          type: object
+          description: Blocked count grouped by filter_reason.
+          additionalProperties:
+            type: integer
+          example:
+            gmail_category: 18
+            blocked_sender_pattern: 15
+            auto_reply_header: 8
+            promotional_content: 4
+            loop_risk: 2
+        prevented_loops:
+          type: integer
+          description: Count of filter decisions with reason=loop_risk.
+          example: 2
+        period_days:
+          type: integer
+          description: The window used for aggregation.
+          example: 7
+        brand_id:
+          type: string
+          format: uuid
+
+    ErrorResponse:
+      type: object
+      properties:
+        detail:
+          type: string
+          example: "Not authenticated"
+
+paths:
+  /api/v1/settings/email-filter:
+    get:
+      summary: Get email filter settings
+      description: >
+        Returns the current email filter configuration for the tenant's brand.
+        If no brand-specific settings row exists, returns defaults.
+      operationId: getEmailFilterSettings
+      tags: [Email Filter]
+      responses:
+        "200":
+          description: Current filter settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmailFilterSettings"
+              example:
+                blocked_domains: []
+                whitelisted_domains: []
+                max_auto_replies: 2
+                promotion_filter_enabled: true
+                loop_protection_enabled: true
+        "401":
+          description: Missing or invalid JWT
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: No brand found for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    patch:
+      summary: Update email filter settings
+      description: >
+        Partially updates the email filter configuration for the tenant's brand.
+        Only provided fields are changed; omitted fields retain current values.
+        Changes take effect on the next email poll cycle (≤ 60 seconds).
+      operationId: patchEmailFilterSettings
+      tags: [Email Filter]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailFilterSettingsPatch"
+            examples:
+              add_blocked_domain:
+                summary: Block a domain
+                value:
+                  blocked_domains: ["spamco.io", "newsletter.example.com"]
+              set_loop_threshold:
+                summary: Reduce loop threshold
+                value:
+                  max_auto_replies: 1
+              disable_promotion_filter:
+                summary: Turn off keyword content filtering
+                value:
+                  promotion_filter_enabled: false
+      responses:
+        "200":
+          description: Updated filter settings (full object returned)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmailFilterSettings"
+        "400":
+          description: Validation error (e.g., max_auto_replies > 10)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                detail: "max_auto_replies must be between 0 and 10"
+        "401":
+          description: Missing or invalid JWT
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: No brand found for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/filter-logs:
+    get:
+      summary: Get filter log entries or summary
+      description: >
+        Returns either a paginated list of individual filter decisions or an
+        aggregated summary for the dashboard widget, depending on the `summary`
+        query parameter. All results are scoped to the tenant's brand.
+      operationId: getFilterLogs
+      tags: [Email Filter]
+      parameters:
+        - name: summary
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: >
+            When true, returns a FilterLogSummary object for the dashboard widget.
+            When false (default), returns a paginated list of FilterLogEntry objects.
+        - name: days
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 90
+            default: 7
+          description: Number of days to include in the query window (relative to now).
+        - name: decision
+          in: query
+          schema:
+            type: string
+            enum: [allowed, blocked]
+          description: Filter list results to a specific decision. Ignored when summary=true.
+        - name: reason
+          in: query
+          schema:
+            type: string
+            enum:
+              - gmail_category
+              - blocked_sender_pattern
+              - blocked_domain
+              - auto_reply_header
+              - promotional_content
+              - loop_risk
+              - self_reply
+          description: Filter list results to a specific reason code. Ignored when summary=true.
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+          description: Max records to return (list mode only).
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Pagination offset (list mode only).
+      responses:
+        "200":
+          description: Filter log results
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/FilterLogSummary"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/FilterLogEntry"
+                      total:
+                        type: integer
+                      limit:
+                        type: integer
+                      offset:
+                        type: integer
+              examples:
+                summary_response:
+                  summary: Dashboard widget summary
+                  value:
+                    total_blocked: 47
+                    total_allowed: 12
+                    by_reason:
+                      gmail_category: 18
+                      blocked_sender_pattern: 15
+                      auto_reply_header: 8
+                      promotional_content: 4
+                      loop_risk: 2
+                    prevented_loops: 2
+                    period_days: 7
+                    brand_id: "fcf1add0-0000-0000-0000-000000000000"
+                list_response:
+                  summary: Paginated log list
+                  value:
+                    items:
+                      - id: "a1b2c3d4-..."
+                        brand_id: "fcf1add0-..."
+                        sender_email: "newsletter@klaviyo-mail.io"
+                        thread_id: null
+                        decision: blocked
+                        filter_reason: blocked_sender_pattern
+                        email_category: promotional
+                        sender_type: automated
+                        created_at: "2026-05-15T10:23:00Z"
+                    total: 47
+                    limit: 50
+                    offset: 0
+        "401":
+          description: Missing or invalid JWT
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: No brand found for this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"

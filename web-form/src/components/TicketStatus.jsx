@@ -113,13 +113,13 @@ const TicketStatus = ({ ticketId: initialTicketId }) => {
               <div>
                 <span className="text-sm text-gray-500">Status:</span>
                 <span className={`ml-2 inline-flex px-3 py-1 text-xs font-semibold rounded-full ${getStatusColor(ticketData.status)}`}>
-                  {ticketData.status.replace('_', ' ').toUpperCase()}
+                  {(ticketData.status || 'unknown').replace('_', ' ').toUpperCase()}
                 </span>
               </div>
               <div>
                 <span className="text-sm text-gray-500">Priority:</span>
                 <span className={`ml-2 text-sm font-semibold ${getPriorityColor(ticketData.priority)}`}>
-                  {ticketData.priority.toUpperCase()}
+                  {(ticketData.priority || 'medium').toUpperCase()}
                 </span>
               </div>
             </div>
@@ -142,10 +142,10 @@ const TicketStatus = ({ ticketId: initialTicketId }) => {
               <p className="text-sm text-gray-900 capitalize">{ticketData.category}</p>
             </div>
 
-            {/* Description */}
+            {/* Customer Message */}
             <div>
-              <p className="text-sm text-gray-500">Description</p>
-              <p className="text-sm text-gray-900 whitespace-pre-wrap">{ticketData.description}</p>
+              <p className="text-sm text-gray-500">Customer Message</p>
+              <p className="text-sm text-gray-900 whitespace-pre-wrap">{ticketData.message || ticketData.content || ticketData.description}</p>
             </div>
 
             {/* Timestamps */}
@@ -169,6 +169,21 @@ const TicketStatus = ({ ticketId: initialTicketId }) => {
               <div className="pt-4 border-t border-gray-200">
                 <p className="text-sm text-gray-500">Resolution Notes</p>
                 <p className="text-sm text-gray-900 whitespace-pre-wrap">{ticketData.resolution_notes}</p>
+              </div>
+            )}
+
+            {/* AI Reply */}
+            {(ticketData.ai_reply || ticketData.ai_draft) && (
+              <div className="pt-4 border-t border-gray-200">
+                <div className="flex items-center gap-2 mb-2">
+                  <p className="text-sm text-gray-500">AI Reply</p>
+                  {ticketData.email_sent ? (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-800">Sent</span>
+                  ) : (
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-800">Draft</span>
+                  )}
+                </div>
+                <p className="text-sm text-gray-900 whitespace-pre-wrap">{ticketData.ai_reply || ticketData.ai_draft}</p>
               </div>
             )}
           </div>

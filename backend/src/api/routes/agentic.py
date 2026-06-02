@@ -2,13 +2,14 @@
 Agentic Decision Hub API Routes
 The Intelligence Layer for AI Ops Console
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel
 from typing import Optional, List
 import os
 import requests
 import logging
 from datetime import datetime, timedelta, timezone
+from src.api.middleware.tenant_auth import get_optional_tenant
 
 router = APIRouter(prefix="/agentic", tags=["agentic"])
 logger = logging.getLogger(__name__)
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 RETURN_WINDOW_DAYS = 30
 
 # Mistral API configuration
-MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "p1i9KPJCfXxBqWJakwkF5lLJwurKZc1s")
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
 MISTRAL_API_URL = "https://api.mistral.ai/v1/chat/completions"
 
 # Mock tickets for demo
@@ -463,16 +464,34 @@ async def get_ticket_analysis(ticket_id: str):
 
 
 @router.get("/queue")
-async def get_decision_queue():
+async def get_decision_queue(
+    request: Request,
+    tenant=Depends(get_optional_tenant),
+):
     """
-    Get all tickets pending AI decision from the database.
-    Returns empty queue if no tickets in database.
+    Get tickets pending AI decision, scoped to the authenticated tenant.
+    Returns empty queue if unauthenticated (never leaks cross-tenant data).
     """
-    try:
-        from src.lib.supabase_client import supabase_select
+    from src.lib.supabase_client import supabase_select
 
-        # Get open tickets from database
-        tickets = supabase_select("tickets", {"status": "eq.open"})
+    try:
+        if not tenant:
+            # No valid JWT — return empty rather than leaking all tickets
+            return {"tickets": [], "count": 0, "source": "database"}
+
+        # Look up all brands for this tenant
+        from src.api.routes.tickets import _get_tenant_brand_ids
+        brand_ids = await _get_tenant_brand_ids(tenant)
+        if not brand_ids:
+            return {"tickets": [], "count": 0, "source": "database"}
+
+        # Fetch open tickets for each brand (tenant-scoped)
+        all_tickets = []
+        for bid in brand_ids:
+            chunk = supabase_select("tickets", {"store_id": f"eq.{bid}", "status": "eq.open"})
+            if chunk:
+                all_tickets.extend(chunk)
+        tickets = all_tickets
 
         if not tickets or len(tickets) == 0:
             # Return empty queue - no mock data

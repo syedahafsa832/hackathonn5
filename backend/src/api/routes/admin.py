@@ -15,8 +15,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["admin"])
 
 # 1. AI CONTROL CENTER (/api/ai-mode)
-# Using POST, PATCH, and PUT to be resilient to dashboard implementation
-@router.api_route("/ai-mode", methods=["POST", "PATCH", "PUT"])
+@router.post("/ai-mode", operation_id="set_ai_mode_post")
+@router.patch("/ai-mode", operation_id="set_ai_mode_patch")
+@router.put("/ai-mode", operation_id="set_ai_mode_put")
 async def update_ai_mode(
     request: Request,
     mode: Optional[str] = Query(None),
@@ -39,8 +40,9 @@ async def update_ai_mode(
         final_mode = payload.get("mode") or mode
         final_store_id = payload.get("store_id") or store_id
         
-        if not final_mode or final_mode not in ["active", "paused", "manual"]:
-            raise HTTPException(status_code=400, detail=f"Invalid or missing mode. Received: {final_mode}")
+        VALID_MODES = {"active", "paused", "manual", "autopilot", "supervised"}
+        if not final_mode or final_mode not in VALID_MODES:
+            raise HTTPException(status_code=400, detail=f"Invalid or missing mode. Received: {final_mode}. Valid: {VALID_MODES}")
             
         # Robust Upsert: Try update, if it returns empty, it means row doesn't exist -> Insert
         update_result = supabase_update("system_settings", {"store_id": f"eq.{final_store_id}"}, {"ai_mode": final_mode})
@@ -78,7 +80,11 @@ async def get_ai_mode(store_id: str = Query("00000000-0000-0000-0000-00000000000
 async def takeover_ticket(id: str, request: Request):
     """Prevent further AI auto-replies for a specific ticket."""
     try:
-        payload = await request.json()
+        try:
+            body = await request.body()
+            payload = await request.json() if body else {}
+        except Exception:
+            payload = {}
         user_id = payload.get("user_id", "admin")
         
         ticket = await supabase_service.get_ticket_by_id(id)
@@ -116,7 +122,6 @@ async def release_ticket(id: str):
 
 # 2.5 SEND DRAFT (/api/tickets/:id/send-draft)
 @router.post("/tickets/{id}/send-draft")
-@router.post("/tickets/{id}/send-draft/")
 async def send_draft(id: str, request: Request):
     """Manually approve and send an AI-generated draft."""
     try:

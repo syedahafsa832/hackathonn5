@@ -21,6 +21,8 @@ import {
   CreditCard,
   Package,
   Zap,
+  Menu,
+  X,
 } from "lucide-react";
 
 // API Base URL - Railway backend
@@ -59,18 +61,18 @@ function TicketSidebar({ tickets, selectedTicketId, onSelectTicket }) {
 
   return (
     <div
-      className="w-80 flex-shrink-0 overflow-y-auto"
+      className="w-72 md:w-80 flex-shrink-0 overflow-y-auto h-screen"
       style={{
         borderRight: "1px solid rgba(255, 255, 255, 0.05)",
         background: "rgba(255, 255, 255, 0.02)",
       }}
     >
-      <div className="p-4" style={{ borderBottom: "1px solid rgba(255, 255, 255, 0.05)" }}>
+      <div className="p-3 md:p-4" style={{ borderBottom: "1px solid rgba(255, 255, 255, 0.05)" }}>
         <h2
-          className="text-sm font-medium uppercase tracking-wider"
+          className="text-xs md:text-sm font-medium uppercase tracking-wider"
           style={{ color: "rgba(245, 245, 245, 0.8)" }}
         >
-          Escalated & Pending Tickets
+          Escalated & Pending
         </h2>
       </div>
       <div>
@@ -453,10 +455,12 @@ function ShopifyActionsPanel({ ticket }) {
 // Main Smart Approval Inbox Component
 export default function SmartApprovalInbox() {
   const [tickets, setTickets] = useState([]);
+  const [pendingActions, setPendingActions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [selectedTicketId, setSelectedTicketId] = useState(null);
   const [draft, setDraft] = useState(mockGhostDraft);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   // Fetch tickets from API on component mount
   useEffect(() => {
@@ -527,7 +531,52 @@ export default function SmartApprovalInbox() {
     };
 
     fetchTickets();
+
+    // Fetch pending actions separately (fail-safe — won't block UI)
+    const fetchPendingActions = async () => {
+      try {
+        const authToken = localStorage.getItem("authToken") || "";
+        const res = await fetch(`${API_BASE_URL}/api/v2/actions/pending`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setPendingActions(data.actions || []);
+        }
+      } catch (e) {
+        // Non-blocking — actions section stays empty on error
+      }
+    };
+
+    fetchPendingActions();
   }, []);
+
+  const handleApproveAction = async (actionId) => {
+    try {
+      const authToken = localStorage.getItem("authToken") || "";
+      await fetch(`${API_BASE_URL}/api/v2/actions/${actionId}/approve`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${authToken}`, "Content-Type": "application/json" },
+      });
+      setPendingActions((prev) => prev.filter((a) => a.id !== actionId));
+    } catch (e) {
+      console.error("Approve action failed:", e);
+    }
+  };
+
+  const handleRejectAction = async (actionId) => {
+    try {
+      const authToken = localStorage.getItem("authToken") || "";
+      await fetch(`${API_BASE_URL}/api/v2/actions/${actionId}/reject`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${authToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "Rejected by agent" }),
+      });
+      setPendingActions((prev) => prev.filter((a) => a.id !== actionId));
+    } catch (e) {
+      console.error("Reject action failed:", e);
+    }
+  };
 
   // Find selected ticket from fetched data
   const selectedTicket =
@@ -580,12 +629,34 @@ export default function SmartApprovalInbox() {
 
   return (
     <div className="flex h-screen" style={{ background: "#090909" }}>
+      {/* Mobile Toggle Button */}
+      <button
+        onClick={() => setSidebarOpen(!sidebarOpen)}
+        className="fixed top-4 left-4 z-50 p-2 rounded-md md:hidden"
+        style={{ background: "rgba(255, 255, 255, 0.1)" }}
+      >
+        {sidebarOpen ? (
+          <X className="w-5 h-5" style={{ color: "#F5F5F5" }} />
+        ) : (
+          <Menu className="w-5 h-5" style={{ color: "#F5F5F5" }} />
+        )}
+      </button>
+
       {/* Ticket Sidebar */}
-      <TicketSidebar
-        tickets={tickets}
-        selectedTicketId={selectedTicketId}
-        onSelectTicket={setSelectedTicketId}
-      />
+      <div
+        className={`fixed md:relative z-40 md:z-auto transition-transform duration-300 ${
+          sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
+        }`}
+      >
+        <TicketSidebar
+          tickets={tickets}
+          selectedTicketId={selectedTicketId}
+          onSelectTicket={(id) => {
+            setSelectedTicketId(id);
+            setSidebarOpen(false);
+          }}
+        />
+      </div>
 
       {/* Main Workspace */}
       <div className="flex-1 overflow-y-auto">
@@ -596,22 +667,83 @@ export default function SmartApprovalInbox() {
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -20 }}
             transition={{ duration: 0.3 }}
-            className="p-6"
+            className="p-4 md:p-6"
           >
             {/* Deep Context Workspace Header */}
-            <div className="flex items-center justify-between mb-6">
-              <div>
+            <div className="flex items-center justify-between mb-4 md:mb-6">
+              <div className="pl-12 md:pl-0">
                 <h1
-                  className="text-xl font-medium tracking-wide"
+                  className="text-lg md:text-xl font-medium tracking-wide"
                   style={{ color: "#F5F5F5", letterSpacing: "0.03em" }}
                 >
                   Smart Approval Inbox
                 </h1>
-                <p className="text-sm mt-1" style={{ color: "rgba(245, 245, 245, 0.5)" }}>
-                  Support Team View - Turn 10-min tasks into 2-second clicks
+                <p className="text-xs md:text-sm mt-1" style={{ color: "rgba(245, 245, 245, 0.5)" }}>
+                  Turn 10-min tasks into 2-second clicks
                 </p>
               </div>
             </div>
+
+            {/* Pending Actions requiring approval */}
+            {pendingActions.length > 0 && (
+              <div style={{ marginBottom: "24px" }}>
+                <h3 className="text-xs font-medium uppercase tracking-wider mb-3" style={{ color: "rgba(245,245,245,0.6)" }}>
+                  Pending Approvals ({pendingActions.length})
+                </h3>
+                {pendingActions.map((action) => (
+                  <div
+                    key={action.id}
+                    className="mb-2 p-3 rounded-md"
+                    style={{
+                      background: "rgba(255,255,255,0.03)",
+                      borderLeft: action.action_type === "cancel_order" || action.action_type === "CANCEL"
+                        ? "3px solid rgba(245,158,11,0.8)"
+                        : "3px solid rgba(239,68,68,0.8)",
+                      border: "1px solid rgba(255,255,255,0.08)",
+                    }}
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <span
+                        className="text-xs font-medium px-2 py-0.5 rounded-sm uppercase"
+                        style={{
+                          background: action.action_type === "cancel_order" || action.action_type === "CANCEL"
+                            ? "rgba(245,158,11,0.15)" : "rgba(239,68,68,0.15)",
+                          color: action.action_type === "cancel_order" || action.action_type === "CANCEL"
+                            ? "#F59E0B" : "#EF4444",
+                        }}
+                      >
+                        {action.action_type}
+                      </span>
+                      <span className="text-xs" style={{ color: "rgba(245,245,245,0.5)" }}>{action.customer_email}</span>
+                    </div>
+                    {(action.order_id || action.order_number) && (
+                      <div className="text-sm font-medium mb-1" style={{ color: "#F5F5F5" }}>
+                        Order #{action.order_number || action.order_id}
+                      </div>
+                    )}
+                    {action.ai_reasoning && (
+                      <div className="text-xs mb-2" style={{ color: "rgba(245,245,245,0.5)" }}>{action.ai_reasoning}</div>
+                    )}
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleApproveAction(action.id)}
+                        className="text-xs px-3 py-1 rounded-sm font-medium"
+                        style={{ background: "rgba(34,197,94,0.15)", color: "#22C55E", border: "1px solid rgba(34,197,94,0.3)" }}
+                      >
+                        ✓ Approve
+                      </button>
+                      <button
+                        onClick={() => handleRejectAction(action.id)}
+                        className="text-xs px-3 py-1 rounded-sm"
+                        style={{ background: "transparent", color: "rgba(245,245,245,0.5)", border: "1px solid rgba(255,255,255,0.1)" }}
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {/* Customer Brief */}
             <CustomerBrief ticket={selectedTicket} />
