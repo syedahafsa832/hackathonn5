@@ -216,7 +216,8 @@ class UnifiedMessageProcessor:
             # ========== STAGE 5: AI ANALYSIS ==========
             logger.info(f"[PROCESSOR] Generating AI response (tenant_id={tenant_id})...")
             ai_result = await customer_success_agent.generate_channel_appropriate_response(
-                query=content, customer_info=customer, channel=channel, tenant_id=tenant_id, store_id=store_id
+                query=content, customer_info=customer, channel=channel, tenant_id=tenant_id, store_id=store_id,
+                ticket_id=early_ticket_id,
             )
 
             confidence = ai_result.get("confidence_score", 0) / 100.0
@@ -287,18 +288,25 @@ class UnifiedMessageProcessor:
                     ticket_payload["status"] = "auto_resolved"
                     logger.info(f"[PROCESSOR] ✓ AUTO-REPLY APPROVED - Confidence: {confidence:.0%}")
 
-                elif confidence >= 0.5 and risk_level in ["low", "medium"]:
-                    # MEDIUM CONFIDENCE: Still send but mark for review
+                elif confidence >= 0.5 and risk_level == "low" and not ticket_payload["escalate"]:
+                    # MEDIUM CONFIDENCE + LOW RISK only: send but flag for review
                     should_auto_reply = True
                     ticket_payload["ai_reply"] = reply_body
                     ticket_payload["status"] = "auto_resolved_review"
                     logger.info(f"[PROCESSOR] ✓ AUTO-REPLY (needs review) - Confidence: {confidence:.0%}")
 
                 else:
-                    # LOW CONFIDENCE or HIGH RISK: Escalate to human
-                    logger.info(f"[PROCESSOR] Escalating to human - Confidence: {confidence:.0%}, Risk: {risk_level}")
-                    ticket_payload["ai_draft"] = reply_body
+                    # MEDIUM/HIGH RISK or AI-flagged escalation → human queue for the ACTION
+                    # but the acknowledgment reply ("we'll review your request") is safe to send now.
                     ticket_payload["status"] = "escalated"
+                    if reply_body and confidence >= 0.5:
+                        # Send the acknowledgment; the financial action still needs approval.
+                        should_auto_reply = True
+                        ticket_payload["ai_reply"] = reply_body
+                        logger.info(f"[PROCESSOR] ✓ Sending acknowledgment (escalated) - Confidence: {confidence:.0%}, Risk: {risk_level}")
+                    else:
+                        ticket_payload["ai_draft"] = reply_body
+                        logger.info(f"[PROCESSOR] Escalating (no send) - Confidence: {confidence:.0%}, Risk: {risk_level}")
 
             # ========== STAGE 9: UPDATE TICKET with AI results (was created at Stage 1.8) ==========
             logger.info(f"[PROCESSOR] Finalising ticket with status: {ticket_payload.get('status')}")
@@ -326,7 +334,9 @@ class UnifiedMessageProcessor:
                         customer_email=customer_email,
                         customer_name=customer_name,
                         message=content,
-                        ai_analysis={"reasoning": ai_result.get("intent", ""), "confidence": confidence}
+                        ai_analysis={"reasoning": ai_result.get("intent", ""), "confidence": confidence},
+                        brand_id=store_id,
+                        ticket_id=ticket_id,
                     )
                     if action_result and action_result.get("success"):
                         logger.info(f"[Stage 9.5] Action detection completed for ticket {ticket_id}: {action_result.get('action_id')} ({action_result.get('action_type')})")
@@ -334,92 +344,82 @@ class UnifiedMessageProcessor:
                         logger.info(f"[Stage 9.5] Action detection completed for ticket {ticket_id}: no actionable request detected")
                 else:
                     logger.warning(f"[Stage 9.5] Skipping action detection: ACTIONS_SERVICE_AVAILABLE={ACTIONS_SERVICE_AVAILABLE}, tenant_id={tenant_id}")
-                    # Inline fallback cancel/refund detection when actions service unavailable
+                    # Inline fallback using AI intent detector
                     if tenant_id:
-                        import re as _re
-                        _cancel_kw = ['cancel', 'cancellation', "don't want", 'changed my mind', 'cancel my order', 'cancel rn']
-                        _refund_kw = ['refund', 'money back', 'return my money', 'i want my money']
-                        _body_lower = (ticket_payload.get('message', '') + ' ' + ticket_payload.get('subject', '')).lower()
-                        _order_match = _re.search(r'(?:order\s*#?\s*|#)(\d{3,6})', _body_lower)
-                        _order_num = _order_match.group(1) if _order_match else None
-                        _detected_order_id = ticket_payload.get('detected_order_id') or _order_num
-
-                        for _kw_list, _atype in [(_cancel_kw, 'cancel_order'), (_refund_kw, 'refund')]:
-                            if any(k in _body_lower for k in _kw_list):
-                                try:
-                                    from src.lib.supabase_client import supabase_insert
-                                    # Dedup: skip if pending action for same type+order already exists
-                                    if _detected_order_id:
-                                        _existing = supabase_select("actions", {
-                                            "tenant_id": f"eq.{tenant_id}",
-                                            "action_type": f"eq.{_atype}",
-                                            "order_id": f"eq.{_detected_order_id}",
-                                            "status": "eq.pending",
-                                        })
-                                        if _existing:
-                                            logger.info(f"[Stage 9.5 fallback] Duplicate skipped — pending {_atype} for order {_detected_order_id} already exists")
-                                            continue
-                                    supabase_insert("actions", {
-                                        "ticket_id": ticket_id,
+                        try:
+                            from src.services.intent_detector import intent_detector as _idet
+                            from src.lib.supabase_client import supabase_insert as _sb_insert
+                            _intent = await _idet.detect(content)
+                            if _intent.has_action:
+                                _atype_map = {'cancel': 'cancel_order', 'refund': 'refund', 'address_change': 'change_address', 'reship': 'reship'}
+                                _atype = _atype_map.get(_intent.action_type)
+                                if _atype and _intent.order_id:  # Never create without order_id
+                                    _sb_insert("actions", {
                                         "tenant_id": tenant_id,
-                                        "brand_id": store_id,
                                         "action_type": _atype,
+                                        "customer_email": customer_email,
+                                        "customer_name": customer_name,
+                                        "order_id": _intent.order_id,
+                                        "original_message": content[:500],
                                         "status": "pending",
-                                        "order_id": _detected_order_id,
-                                        "customer_email": ticket_payload.get('customer_email'),
-                                        "ai_reasoning": f"Customer requested {_atype.lower()} — detected in email body",
+                                        "confidence": _intent.confidence,
+                                        "ai_reasoning": f"Inline detection: {_intent.action_type} (source={_intent.source})",
+                                        "ticket_id": ticket_id,
                                     })
-                                    logger.info(f"[Stage 9.5 fallback] Staged {_atype} action for ticket {ticket_id}")
-                                except Exception as _ae:
-                                    logger.error(f"[Stage 9.5 fallback] Failed to stage {_atype}: {_ae}")
+                                    logger.info(f"[Stage 9.5 fallback] Created {_atype} action via intent_detector")
+                        except Exception as _fe:
+                            logger.warning(f"[Stage 9.5 fallback] Intent detection error: {_fe}")
             except Exception as e:
                 logger.error(f"[Stage 9.5] Action detection failed: {e}", exc_info=True)
 
             # ========== STAGE 10: SEND EMAIL RESPONSE ==========
-            if not auto_reply_enabled:
-                logger.info(f"[PROCESSOR] auto_reply_enabled=False — skipping AI email send (ticket created, human must reply)")
+            email_actually_sent = False
             if should_auto_reply and reply_body and auto_reply_enabled:
                 logger.info(f"[PROCESSOR] Sending email to {customer_email}...")
                 await self._send_email_with_logging(customer_email, subject, ai_result, ticket_id, store_id=store_id)
-
-                # Track AI reply count for loop prevention and append to conversation
-                if ticket_id:
-                    try:
-                        ticket_rows = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
-                        settings_rows = supabase_select("system_settings", {"store_id": f"eq.{store_id}"})
-                        if not settings_rows:
-                            settings_rows = supabase_select("system_settings", {"store_id": "eq.00000000-0000-0000-0000-000000000000"})
-                        max_replies = 2
-                        if settings_rows and settings_rows[0].get("max_auto_replies") is not None:
-                            max_replies = settings_rows[0]["max_auto_replies"]
-                        current_count = 0
-                        existing_messages = []
-                        if ticket_rows:
-                            current_count = ticket_rows[0].get("auto_reply_count") or 0
-                            existing_messages = list(ticket_rows[0].get("messages") or [])
-                        new_count = current_count + 1
-                        existing_messages.append({
-                            "from": "AI Agent",
-                            "body": reply_body,
-                            "sent_at": datetime.now(timezone.utc).isoformat(),
-                            "direction": "outbound",
-                        })
-                        supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {
-                            "auto_reply_count": new_count,
-                            "loop_risk": new_count >= max_replies,
-                            "messages": existing_messages,
-                        })
-                        logger.info(f"[PROCESSOR] auto_reply_count={new_count}, loop_risk={new_count >= max_replies}")
-                    except Exception as loop_err:
-                        logger.warning(f"[PROCESSOR] auto_reply_count update failed (non-blocking): {loop_err}")
+                email_actually_sent = True
             else:
                 logger.info(f"[PROCESSOR] Email NOT sent - should_auto_reply={should_auto_reply}, has_reply={bool(reply_body)}, auto_reply_enabled={auto_reply_enabled}")
+
+            # Always append AI reply to messages so conversation replay is complete,
+            # whether or not the email was actually sent.
+            # direction="outbound" = sent; direction="draft" = generated but not emailed.
+            if reply_body and ticket_id:
+                try:
+                    ticket_rows = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
+                    settings_rows = supabase_select("system_settings", {"store_id": f"eq.{store_id}"})
+                    if not settings_rows:
+                        settings_rows = supabase_select("system_settings", {"store_id": "eq.00000000-0000-0000-0000-000000000000"})
+                    max_replies = 2
+                    if settings_rows and settings_rows[0].get("max_auto_replies") is not None:
+                        max_replies = settings_rows[0]["max_auto_replies"]
+                    current_count = 0
+                    existing_messages = []
+                    if ticket_rows:
+                        current_count = ticket_rows[0].get("auto_reply_count") or 0
+                        existing_messages = list(ticket_rows[0].get("messages") or [])
+                    msg_direction = "outbound" if email_actually_sent else "draft"
+                    existing_messages.append({
+                        "from": "AI Agent",
+                        "body": reply_body,
+                        "sent_at": datetime.now(timezone.utc).isoformat(),
+                        "direction": msg_direction,
+                    })
+                    update = {"messages": existing_messages}
+                    if email_actually_sent:
+                        new_count = current_count + 1
+                        update["auto_reply_count"] = new_count
+                        update["loop_risk"] = new_count >= max_replies
+                        logger.info(f"[PROCESSOR] auto_reply_count={new_count}, loop_risk={new_count >= max_replies}")
+                    supabase_update("tickets", {"id": f"eq.{ticket_id}"}, update)
+                except Exception as loop_err:
+                    logger.warning(f"[PROCESSOR] messages append failed (non-blocking): {loop_err}")
 
             # ========== STAGE 11: RETURN RESULT ==========
             result = {
                 "ticket_id": ticket_id,
                 "status": ticket_payload.get("status"),
-                "email_sent": should_auto_reply and bool(reply_body)
+                "email_sent": should_auto_reply and bool(reply_body) and auto_reply_enabled
             }
             logger.info(f"[PROCESSOR] ========== COMPLETE: {result} ==========")
             return result

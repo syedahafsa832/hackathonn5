@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Luna Apparel — Widget Test</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f7f7f5;
+      color: #111;
+      min-height: 100vh;
+    }
+    nav {
+      padding: 0 40px;
+      height: 60px;
+      background: #fff;
+      border-bottom: 1px solid #eee;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .brand { font-weight: 800; letter-spacing: 2px; font-size: 13px; text-transform: uppercase; }
+    .hero {
+      max-width: 820px;
+      margin: 88px auto 72px;
+      padding: 0 40px;
+      text-align: center;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 14px;
+      background: #eeecff;
+      border-radius: 100px;
+      font-size: 11px;
+      font-weight: 700;
+      color: #6366F1;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      margin-bottom: 22px;
+    }
+    h1 { font-size: clamp(36px, 6vw, 60px); font-weight: 800; letter-spacing: -0.03em; line-height: 1.08; margin-bottom: 18px; }
+    p.sub { font-size: 16px; color: #666; max-width: 480px; margin: 0 auto 36px; line-height: 1.65; }
+    .btn-row { display: flex; gap: 12px; justify-content: center; }
+    .btn-primary { padding: 13px 30px; background: #111; color: #fff; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }
+    .btn-secondary { padding: 13px 30px; background: transparent; color: #111; border: 1px solid #ccc; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer; }
+    .products {
+      max-width: 900px;
+      margin: 0 auto 100px;
+      padding: 0 40px;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 20px;
+    }
+    .card {
+      background: #fff;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06), 0 4px 16px rgba(0,0,0,0.04);
+      cursor: pointer;
+      transition: box-shadow 0.2s, transform 0.2s;
+    }
+    .card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.08), 0 12px 32px rgba(0,0,0,0.08); transform: translateY(-3px); }
+    .card-img {
+      height: 220px;
+      background: linear-gradient(135deg, #e8e8f4, #d6d4f0);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+    .card-emoji { font-size: 56px; }
+    .card-tag {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      padding: 3px 9px;
+      background: #6366F1;
+      color: #fff;
+      font-size: 10px;
+      font-weight: 700;
+      border-radius: 6px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .card-body { padding: 16px 18px; }
+    .card-name { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+    .card-price { font-size: 13px; color: #888; }
+    .banner {
+      background: #111;
+      color: #fff;
+      text-align: center;
+      padding: 14px;
+      font-size: 13px;
+      letter-spacing: 0.03em;
+      margin-bottom: 60px;
+    }
+  </style>
+</head>
+<body>
+
+  <nav>
+    <span class="brand">Luna Apparel</span>
+    <div style="display:flex;gap:28px;font-size:13px;color:#555;">
+      <a href="#" style="text-decoration:none;color:inherit;">Shop</a>
+      <a href="#" style="text-decoration:none;color:inherit;">Collections</a>
+      <a href="#" style="text-decoration:none;color:inherit;">About</a>
+      <a href="#" style="text-decoration:none;color:inherit;">Journal</a>
+    </div>
+    <div style="font-size:13px;color:#555;">🛒 Cart (0)</div>
+  </nav>
+
+  <section class="hero">
+    <div class="badge">New Summer Drop — 2026</div>
+    <h1>Lightweight<br>Linen Essentials</h1>
+    <p class="sub">Breathable organic linen crafted for the season. Each piece designed to feel effortless from morning to evening.</p>
+    <div class="btn-row">
+      <button class="btn-primary">Shop Now</button>
+      <button class="btn-secondary">View Lookbook</button>
+    </div>
+  </section>
+
+  <section class="products">
+    <div class="card">
+      <div class="card-img"><span class="card-emoji">👕</span><span class="card-tag">BESTSELLER</span></div>
+      <div class="card-body"><div class="card-name">Essential Hoodie V10</div><div class="card-price">Rs 120</div></div>
+    </div>
+    <div class="card">
+      <div class="card-img"><span class="card-emoji">👖</span><span class="card-tag">NEW</span></div>
+      <div class="card-body"><div class="card-name">Linen Wide-Leg Pants</div><div class="card-price">Rs 95</div></div>
+    </div>
+    <div class="card">
+      <div class="card-img"><span class="card-emoji">🧵</span><span class="card-tag">NEW</span></div>
+      <div class="card-body"><div class="card-name">Woven Crop Top</div><div class="card-price">Rs 65</div></div>
+    </div>
+  </section>
+
+  <div class="banner">
+    Free shipping on orders over Rs 300 &nbsp;·&nbsp; Easy 30-day returns &nbsp;·&nbsp;
+    <strong>Chat with Luna →</strong> for instant support
+  </div>
+
+  <!-- tResolv Chat Widget -->
+  <script
+    src="http://localhost:8001/widget.js"
+    data-brand="bf304c42-3dab-4583-8d91-ba97907fcc94"
+    data-color="#6366F1"
+    data-bot-name="Luna"
+    data-brand-label="Luna Support">
+  </script>
+
+</body>
+</html>

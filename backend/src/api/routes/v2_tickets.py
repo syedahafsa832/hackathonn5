@@ -45,6 +45,11 @@ class UpdateTicketRequest(BaseModel):
     tags: Optional[List[str]] = None
 
 
+class BulkEscalationCloseRequest(BaseModel):
+    ticket_ids: Optional[List[str]] = None
+    close_all: bool = False
+
+
 class RespondToTicketRequest(BaseModel):
     response: str = Field(..., min_length=1)
     send_to_customer: bool = True
@@ -96,14 +101,18 @@ async def list_tickets(
     try:
         # Build base filter for user's brands
         if UserRole.is_admin(context.user.role):
-            # Admin sees all tickets in org's brands
             org_brands = supabase_select("brands", {
                 "organization_id": f"eq.{context.user.organization_id}",
                 "is_active": "eq.true"
-            })
-            brand_ids = [b["id"] for b in org_brands] if org_brands else []
+            }) or []
+            if not org_brands:
+                org_brands = supabase_select("brands", {
+                    "tenant_id": f"eq.{context.user.organization_id}",
+                    "is_active": "is.true"
+                }) or []
+            brand_ids = [b["id"] for b in org_brands]
         else:
-            brand_ids = context.brand_ids
+            brand_ids = list(context.brand_ids or [])
 
         if not brand_ids:
             return {"tickets": [], "count": 0, "total": 0}
@@ -231,6 +240,77 @@ async def get_ticket_stats(
     except Exception as e:
         logger.error(f"Error getting ticket stats: {e}")
         raise HTTPException(status_code=500, detail="Failed to get stats")
+
+
+@router.post("/bulk-escalation-close")
+async def bulk_close_escalations_route(
+    request: BulkEscalationCloseRequest,
+    context: AuthenticatedContext = Depends(require_agent_or_admin)
+):
+    """Mark multiple escalated tickets as resolved, or clear all escalations."""
+    try:
+        if UserRole.is_admin(context.user.role):
+            org_brands = supabase_select("brands", {
+                "organization_id": f"eq.{context.user.organization_id}",
+                "is_active": "eq.true"
+            }) or []
+            if not org_brands:
+                # v1 accounts: brands use tenant_id; skip is_active filter to handle NULL values
+                org_brands = supabase_select("brands", {
+                    "tenant_id": f"eq.{context.user.organization_id}",
+                }) or []
+            brand_ids = [b["id"] for b in org_brands]
+        else:
+            brand_ids = list(context.brand_ids or [])
+            if not brand_ids:
+                fallback = supabase_select("brands", {
+                    "tenant_id": f"eq.{context.user.organization_id}",
+                }) or []
+                brand_ids = [b["id"] for b in fallback]
+
+        if not brand_ids:
+            logger.warning(f"[bulk-escalation-close] No brands found for user {context.user.email}")
+            return {"success": True, "closed": 0}
+
+        brand_filter = f"in.({','.join(brand_ids)})"
+        now = datetime.now(timezone.utc).isoformat()
+
+        if request.close_all:
+            escalated = supabase_select("tickets", {
+                "brand_id": brand_filter,
+                "status": "eq.escalated",
+            }) or []
+            ids_to_close = [t["id"] for t in escalated]
+        elif request.ticket_ids:
+            ids_to_close = request.ticket_ids
+        else:
+            return {"success": False, "error": "Provide ticket_ids or close_all=true"}
+
+        closed = 0
+        for ticket_id in ids_to_close:
+            try:
+                rows = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
+                if not rows:
+                    continue
+                ticket = rows[0]
+                if ticket.get("brand_id") not in brand_ids:
+                    continue
+                supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {
+                    "status": "resolved",
+                    "resolved_at": now,
+                })
+                closed += 1
+            except Exception as item_err:
+                logger.warning(f"[bulk-escalation-close] Failed to close {ticket_id}: {item_err}")
+
+        logger.info(f"[bulk-escalation-close] {closed} escalations resolved by {context.user.email}")
+        return {"success": True, "closed": closed}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in bulk escalation close: {e}")
+        raise HTTPException(status_code=500, detail="Failed to close escalations")
 
 
 @router.get("/{ticket_id}")
@@ -503,6 +583,15 @@ async def approve_ai_response(
                         updates["response_method"] = "email"
                         updates["status"] = "resolved"
                         updates["email_sent"] = True
+                        # Append sent message to thread so conversation replay shows it
+                        existing_msgs = list(ticket.get("messages") or [])
+                        existing_msgs.append({
+                            "from": "AI Agent",
+                            "body": reply_body,
+                            "sent_at": datetime.now(timezone.utc).isoformat(),
+                            "direction": "outbound",
+                        })
+                        updates["messages"] = existing_msgs
                     else:
                         logger.warning(f"[v2_tickets] Gmail send failed: {send_result.get('error')}")
                 else:
@@ -576,6 +665,263 @@ async def get_ticket_order(
     except Exception as e:
         logger.error(f"Error fetching order for ticket {ticket_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch order data")
+
+
+@router.post("/{ticket_id}/actions/cancel")
+async def execute_cancel_order(
+    ticket_id: str,
+    context: AuthenticatedContext = Depends(require_agent_or_admin)
+):
+    """Cancel the Shopify order attached to this ticket and send confirmation email."""
+    try:
+        tickets = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
+        if not tickets:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+        ticket = tickets[0]
+
+        brand_id = ticket.get("brand_id") or ticket.get("store_id")
+        if brand_id not in context.brand_ids:
+            if not UserRole.is_admin(context.user.role):
+                raise HTTPException(status_code=403, detail="Access denied")
+
+        brands = supabase_select("brands", {"id": f"eq.{brand_id}"})
+        if not brands:
+            raise HTTPException(status_code=404, detail="Brand not found")
+        brand = brands[0]
+
+        if not brand.get("shopify_connected") or not brand.get("shopify_access_token"):
+            raise HTTPException(status_code=400, detail="Shopify not connected for this brand")
+
+        order_identifier = ticket.get("detected_order_id") or ticket.get("detected_order_number")
+        if not order_identifier:
+            raise HTTPException(status_code=400, detail="No order number detected on this ticket")
+
+        # Execute cancel in Shopify
+        try:
+            from src.services.shopify_service import ShopifyClient, decrypt_token
+            client = ShopifyClient(
+                brand["shopify_domain"],
+                decrypt_token(brand["shopify_access_token"])
+            )
+            result = await client.cancel_order(
+                order_id=str(order_identifier),
+                reason="customer",
+                email_customer=False,
+                restock=True
+            )
+        except Exception as shopify_err:
+            raise HTTPException(status_code=422, detail=str(shopify_err))
+
+        order_name = result.get("order_name") or f"#{order_identifier}"
+
+        # Build and send confirmation email
+        customer_name = (ticket.get("customer_name") or ticket.get("customer_email", "").split("@")[0]).capitalize()
+        brand_name = brand.get("name", "our team")
+        confirmation = (
+            f"Hey {customer_name},\n\n"
+            f"Your cancellation request for order {order_name} has been processed.\n\n"
+            f"Your order has been successfully cancelled. "
+            f"If you paid by card, your refund will appear within 3–5 business days depending on your bank.\n\n"
+            f"If you have any other questions, just reply to this email.\n\n"
+            f"Thank you for your patience.\n\n"
+            f"Luna\n{brand_name}"
+        )
+
+        email_sent = False
+        try:
+            from src.services.brand_gmail_service import brand_gmail_service
+            gmail_brands = supabase_select("brands", {
+                "id": f"eq.{brand_id}",
+                "gmail_connected": "is.true"
+            })
+            if gmail_brands:
+                subject = ticket.get("subject") or "Your order cancellation"
+                reply_subject = subject if subject.startswith("Re:") else f"Re: {subject}"
+                send_result = await brand_gmail_service.send_email(
+                    gmail_brands[0], ticket["customer_email"], reply_subject, confirmation
+                )
+                email_sent = send_result.get("success", False)
+        except Exception as mail_err:
+            logger.warning(f"[cancel] Confirmation email failed: {mail_err}")
+
+        # Append confirmation to messages array
+        existing = list(ticket.get("messages") or [])
+        existing.append({
+            "from": "AI Agent",
+            "body": confirmation,
+            "sent_at": datetime.now(timezone.utc).isoformat(),
+            "direction": "outbound" if email_sent else "draft",
+        })
+
+        supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {
+            "status": "resolved",
+            "messages": existing,
+            "email_sent": email_sent,
+        })
+
+        # Mark the pending cancel action as executed
+        pending = supabase_select("actions", {
+            "ticket_id": f"eq.{ticket_id}",
+            "action_type": "eq.cancel_order",
+            "status": "eq.pending",
+        })
+        if pending:
+            supabase_update("actions", {"id": f"eq.{pending[0]['id']}"}, {
+                "status": "executed",
+                "executed_at": datetime.now(timezone.utc).isoformat(),
+                "approved_by": context.user.user_id,
+            })
+
+        logger.info(f"[cancel] Order {order_name} cancelled, ticket {ticket_id} resolved by {context.user.email}")
+
+        return {
+            "success": True,
+            "message": f"Order {order_name} cancelled.",
+            "email_sent": email_sent,
+            "confirmation": confirmation,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[cancel] Error for ticket {ticket_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to cancel order")
+
+
+@router.post("/{ticket_id}/actions/refund")
+async def execute_refund(
+    ticket_id: str,
+    context: AuthenticatedContext = Depends(require_agent_or_admin)
+):
+    """Issue a full Shopify refund for the order attached to this ticket and send confirmation."""
+    try:
+        tickets = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
+        if not tickets:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+        ticket = tickets[0]
+
+        brand_id = ticket.get("brand_id") or ticket.get("store_id")
+        if brand_id not in context.brand_ids:
+            if not UserRole.is_admin(context.user.role):
+                raise HTTPException(status_code=403, detail="Access denied")
+
+        brands = supabase_select("brands", {"id": f"eq.{brand_id}"})
+        if not brands:
+            raise HTTPException(status_code=404, detail="Brand not found")
+        brand = brands[0]
+
+        if not brand.get("shopify_connected") or not brand.get("shopify_access_token"):
+            raise HTTPException(status_code=400, detail="Shopify not connected for this brand")
+
+        order_identifier = ticket.get("detected_order_id") or ticket.get("detected_order_number")
+        if not order_identifier:
+            raise HTTPException(status_code=400, detail="No order number detected on this ticket")
+
+        # Execute refund in Shopify
+        try:
+            from src.services.shopify_service import ShopifyClient, decrypt_token
+            client = ShopifyClient(
+                brand["shopify_domain"],
+                decrypt_token(brand["shopify_access_token"])
+            )
+            result = await client.process_refund(
+                order_id=str(order_identifier),
+                amount=None,  # full refund
+                reason="Customer refund request",
+                restock=True,
+                notify_customer=False,
+            )
+        except Exception as shopify_err:
+            raise HTTPException(status_code=422, detail=str(shopify_err))
+
+        order_name = result.get("order_name") or f"#{order_identifier}"
+        refund_amount = result.get("amount", "")
+        currency = "PKR"
+        try:
+            order_rows = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
+        except Exception:
+            pass
+        # Try to get currency from order context already fetched; fall back to brand default
+        try:
+            from src.services.shopify_service import fetch_shopify_order
+            ord_data = await fetch_shopify_order(brand, str(order_identifier))
+            if ord_data:
+                currency = ord_data.get("currency", "PKR")
+        except Exception:
+            pass
+
+        # Build confirmation email
+        customer_name = (ticket.get("customer_name") or ticket.get("customer_email", "").split("@")[0]).capitalize()
+        brand_name = brand.get("name", "our team")
+        refund_display = f"{currency} {refund_amount:.2f}" if isinstance(refund_amount, float) else str(refund_amount)
+        confirmation = (
+            f"Hey {customer_name},\n\n"
+            f"Your refund for order {order_name} has been processed.\n\n"
+            f"{refund_display} will be returned to your original payment method "
+            f"within 3–5 business days, depending on your bank.\n\n"
+            f"If you have any questions, just reply to this email.\n\n"
+            f"Luna\n{brand_name}"
+        )
+
+        email_sent = False
+        try:
+            from src.services.brand_gmail_service import brand_gmail_service
+            gmail_brands = supabase_select("brands", {
+                "id": f"eq.{brand_id}",
+                "gmail_connected": "is.true"
+            })
+            if gmail_brands:
+                subject = ticket.get("subject") or "Your refund"
+                reply_subject = subject if subject.startswith("Re:") else f"Re: {subject}"
+                send_result = await brand_gmail_service.send_email(
+                    gmail_brands[0], ticket["customer_email"], reply_subject, confirmation
+                )
+                email_sent = send_result.get("success", False)
+        except Exception as mail_err:
+            logger.warning(f"[refund] Confirmation email failed: {mail_err}")
+
+        # Append confirmation to messages array
+        existing = list(ticket.get("messages") or [])
+        existing.append({
+            "from": "AI Agent",
+            "body": confirmation,
+            "sent_at": datetime.now(timezone.utc).isoformat(),
+            "direction": "outbound" if email_sent else "draft",
+        })
+
+        supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {
+            "status": "resolved",
+            "messages": existing,
+            "email_sent": email_sent,
+        })
+
+        # Mark the pending refund action as executed
+        pending = supabase_select("actions", {
+            "ticket_id": f"eq.{ticket_id}",
+            "action_type": "eq.refund",
+            "status": "eq.pending",
+        })
+        if pending:
+            supabase_update("actions", {"id": f"eq.{pending[0]['id']}"}, {
+                "status": "executed",
+                "executed_at": datetime.now(timezone.utc).isoformat(),
+                "approved_by": context.user.user_id,
+            })
+
+        logger.info(f"[refund] {refund_display} refunded, ticket {ticket_id} resolved by {context.user.email}")
+
+        return {
+            "success": True,
+            "message": f"Refund of {refund_display} issued for order {order_name}.",
+            "email_sent": email_sent,
+            "confirmation": confirmation,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[refund] Error for ticket {ticket_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to process refund")
 
 
 @router.post("/{ticket_id}/escalate")

@@ -85,9 +85,11 @@ def _is_automated(sender_email: str, body: str, headers: dict = None) -> bool:
 
 class EmailPoller:
     def __init__(self, poll_interval: int = None, processor=None):
-        self.poll_interval = poll_interval or int(os.getenv("EMAIL_POLL_INTERVAL", "60"))
+        self.poll_interval = poll_interval or int(os.getenv("EMAIL_POLL_INTERVAL", "15"))
         self.running = False
         self.processor = processor
+        self._csat_loop_counter = 0
+        self._csat_every_n = max(1, 1800 // self.poll_interval)  # ~30 min
 
     async def start(self):
         import logging as _logging
@@ -110,6 +112,15 @@ class EmailPoller:
             except Exception as e:
                 logger.error(f"Email polling error: {e}")
                 await asyncio.sleep(5)
+
+            self._csat_loop_counter += 1
+            if self._csat_loop_counter >= self._csat_every_n:
+                self._csat_loop_counter = 0
+                try:
+                    await self._send_csat_surveys()
+                except Exception as e:
+                    logger.error(f"[CSAT] Survey send failed: {e}")
+
             await asyncio.sleep(self.poll_interval)
 
     # ── Main dispatch ──────────────────────────────────────────────────────
@@ -127,9 +138,18 @@ class EmailPoller:
             brands = []
 
         if brands:
+            # Build set of ALL brand Gmail addresses once per cycle.
+            # Any email whose sender matches one of these is an AI outbound reply
+            # that was delivered back into another brand's inbox — skip it to
+            # prevent cross-brand AI-to-AI loops.
+            all_brand_emails = frozenset(
+                b.get("gmail_email", "").lower()
+                for b in brands
+                if b.get("gmail_email")
+            )
             for brand in brands:
                 try:
-                    await self._poll_brand_inbox(brand)
+                    await self._poll_brand_inbox(brand, all_brand_emails)
                 except Exception as e:
                     logger.error(f"[Poller] Brand {brand.get('id')} poll failed: {e}")
         else:
@@ -138,7 +158,7 @@ class EmailPoller:
 
     # ── Per-brand polling ──────────────────────────────────────────────────
 
-    async def _poll_brand_inbox(self, brand: dict):
+    async def _poll_brand_inbox(self, brand: dict, all_brand_emails: frozenset = frozenset()):
         try:
             from src.services.brand_gmail_service import brand_gmail_service
 
@@ -157,7 +177,11 @@ class EmailPoller:
             logger.info(f"[POLL] Brand {brand.get('id')} ({brand.get('gmail_email')}): last_polled_at = {last_polled_at}")
             logger.info(f"[POLL] Gmail query: {gmail_query}")
 
-            emails = await brand_gmail_service.get_new_emails(brand, max_results=50, since_dt=since_dt)
+            try:
+                emails = await brand_gmail_service.get_new_emails(brand, max_results=50, since_dt=since_dt)
+            except Exception as fetch_err:
+                logger.error(f"[Poller] Gmail fetch failed for brand '{brand.get('name')}': {fetch_err} — skipping last_polled_at update to retry next cycle")
+                return
             logger.info(f"[POLL] Messages found: {len(emails)}")
 
             for email in emails:
@@ -165,12 +189,13 @@ class EmailPoller:
                 thread_id = email.get("thread_id")
                 gmail_msg_id = email.get("id")
 
-                # Skip emails FROM the brand's own Gmail address — the AI sends from this
-                # address so without this check every AI reply gets re-processed as a new
-                # customer email, producing an infinite Re: Re: Re: loop.
-                brand_gmail = brand.get("gmail_email", "").lower()
-                if brand_gmail and sender == brand_gmail:
-                    logger.info(f"[Poller] Skipping own-address email from {sender} — loop prevention")
+                # Skip emails whose sender is ANY connected brand Gmail address.
+                # The AI sends replies FROM brand addresses; when those replies land in
+                # another brand's inbox the old per-brand check missed them, causing
+                # cross-brand infinite Re: loops (brand A replies → lands in brand B's
+                # inbox → brand B replies → lands in brand A's inbox → ...).
+                if sender in all_brand_emails:
+                    logger.info(f"[Poller] Skipping brand-owned address email from {sender} — cross-brand loop prevention")
                     continue
 
                 # Skip deep reply chains (Re: Re: Re: ≥ 3) — second line of loop defence
@@ -282,6 +307,76 @@ class EmailPoller:
 
         except Exception as e:
             logger.error(f"[Poller] Error polling brand '{brand.get('name')}': {e}")
+
+    # ── CSAT surveys ──────────────────────────────────────────────────────
+
+    async def _send_csat_surveys(self):
+        """Send a one-question satisfaction survey to tickets resolved 30-60 min ago."""
+        try:
+            from src.services.brand_gmail_service import brand_gmail_service
+            now = datetime.now(timezone.utc)
+            window_start = (now - timedelta(minutes=60)).isoformat()
+            window_end = (now - timedelta(minutes=30)).isoformat()
+
+            # Fetch recently resolved tickets
+            resolved = supabase_select("tickets", {
+                "status": "in.(auto_resolved,resolved)",
+                "email_sent": "is.true",
+                "updated_at": f"gte.{window_start}",
+            })
+            if not resolved:
+                return
+
+            for ticket in resolved:
+                # Skip if CSAT already sent (column may not exist yet — handled by KeyError)
+                if ticket.get("csat_sent"):
+                    continue
+                # Skip tickets outside the 30-60 min window
+                updated = ticket.get("updated_at", "")
+                if not updated or updated < window_start or updated > window_end:
+                    continue
+
+                brand_id = ticket.get("store_id") or ticket.get("brand_id")
+                customer_email = ticket.get("customer_email")
+                thread_id = ticket.get("gmail_thread_id")
+                subject = ticket.get("subject") or "Your inquiry"
+                if not brand_id or not customer_email or not thread_id:
+                    continue
+
+                brands = supabase_select("brands", {"id": f"eq.{brand_id}", "gmail_connected": "is.true"})
+                if not brands:
+                    continue
+                brand = brands[0]
+
+                brand_name = brand.get("name", "us")
+                csat_body = (
+                    f"Hey,\n\n"
+                    f"Just following up — was your issue resolved to your satisfaction?\n\n"
+                    f"Reply with:\n"
+                    f"YES — all sorted, thanks!\n"
+                    f"NO — still need help\n\n"
+                    f"Your feedback helps us improve.\n\n"
+                    f"Luna\n{brand_name}"
+                )
+
+                try:
+                    await brand_gmail_service.send_reply_in_thread(
+                        brand=brand,
+                        to_email=customer_email,
+                        subject=f"Re: {subject}",
+                        body=csat_body,
+                        thread_id=thread_id,
+                    )
+                    # Mark csat_sent — safe if column doesn't exist yet
+                    try:
+                        supabase_update("tickets", {"id": f"eq.{ticket['id']}"}, {"csat_sent": True})
+                    except Exception:
+                        pass
+                    logger.info(f"[CSAT] Sent survey for ticket {ticket['id']} to {customer_email}")
+                except Exception as e:
+                    logger.warning(f"[CSAT] Could not send survey for ticket {ticket['id']}: {e}")
+        except Exception as e:
+            logger.error(f"[CSAT] _send_csat_surveys error: {e}")
 
     # ── Legacy global inbox fallback ───────────────────────────────────────
 

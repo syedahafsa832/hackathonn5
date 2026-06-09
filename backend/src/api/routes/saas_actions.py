@@ -19,7 +19,7 @@ router = APIRouter(prefix="/actions", tags=["Actions"])
 # ==================== Request/Response Models ====================
 
 class CreateActionRequest(BaseModel):
-    action_type: str = Field(..., pattern="^(refund|cancel_order|change_address)$")
+    action_type: str = Field(..., pattern="^(refund|cancel_order|change_address|reship|restore_order)$")
     customer_email: str
     customer_name: Optional[str] = None
     order_id: Optional[str] = None

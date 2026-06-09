@@ -65,6 +65,21 @@ async def debug_order(order_id: str):
 async def status():
     return {"message": "Customer Success AI Agent API - Supabase Mode Active"}
 
+@app.get("/widget.js")
+async def widget_js():
+    """Serve the embeddable chat widget JavaScript."""
+    from fastapi.responses import FileResponse
+    import pathlib
+    path = pathlib.Path(__file__).parent / "src" / "static" / "widget.js"
+    if not path.exists():
+        from fastapi.responses import PlainTextResponse
+        return PlainTextResponse("/* widget.js not found */", media_type="application/javascript")
+    return FileResponse(str(path), media_type="application/javascript", headers={
+        "Cache-Control": "public, max-age=300",
+        "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff",
+    })
+
 # 3. Global Middleware
 app.add_middleware(
     CORSMiddleware,
@@ -392,6 +407,14 @@ try:
     except Exception as e:
       logger.warning(f"Failed to register canned responses router: {e}")
 
+    # Chat Widget (public — no auth)
+    try:
+      from src.api.routes.v2_chat_widget import router as chat_widget_router
+      register_router(chat_widget_router, prefix="/api/v2")
+      logger.info("✓ Chat Widget router registered")
+    except Exception as e:
+      logger.warning(f"Failed to register chat widget router: {e}")
+
     logger.info("✓ Routers processed (resilient registration).")
 except Exception as e:
     logger.error(f"Critical error in router setup block: {e}")
@@ -413,14 +436,33 @@ async def startup_heal():
         from src.lib.supabase_client import supabase_select, supabase_update
         healed = 0
 
-        # 1. Brands with a stored refresh token that are marked as disconnected
-        # (happens when gmail_connected is set to false by a transient error)
+        # 1. Brands with a stored gmail_token but marked as disconnected.
+        # The refresh_token lives inside the gmail_token JSON blob (not a separate column).
+        # Only restore brands whose stored credentials include a refresh_token — a stale
+        # access-token blob with no refresh_token cannot be renewed and would spam logs
+        # with invalid_grant errors (and would re-enable orphaned brands like 7b977597).
         try:
-            broken = supabase_select("brands", {
+            import json as _json
+            token_brands_false = supabase_select("brands", {
                 "gmail_connected": "eq.false",
-                "gmail_refresh_token": "not.is.null",
+                "gmail_token": "not.is.null",
             })
-            for brand in (broken or []):
+            token_brands_null = supabase_select("brands", {
+                "gmail_connected": "is.null",
+                "gmail_token": "not.is.null",
+            })
+            token_brands = (token_brands_false or []) + (token_brands_null or [])
+            for brand in token_brands:
+                raw_token = brand.get("gmail_token")
+                if not raw_token:
+                    continue
+                try:
+                    token_data = _json.loads(raw_token) if isinstance(raw_token, str) else raw_token
+                except Exception:
+                    continue
+                if not token_data.get("refresh_token"):
+                    logger.info(f"[STARTUP-HEAL] Skipping brand {brand['id']} — no refresh_token in stored credentials (orphan/stale)")
+                    continue
                 if brand.get("gmail_email"):
                     supabase_update("brands", {"id": f"eq.{brand['id']}"}, {
                         "gmail_connected": True,
@@ -431,38 +473,30 @@ async def startup_heal():
         except Exception as e:
             logger.warning(f"[STARTUP-HEAL] Step 1 (gmail_connected) failed: {e}")
 
-        # Also fix brands whose gmail_token column holds credentials but gmail_refresh_token
-        # is a separate column that may not be set (older schema had only gmail_token)
+        # 2. Brands with null tenant_id — backfill from tenants table via email match.
+        # SAFETY: only run in single-tenant deployments. In multi-tenant setups a brand's
+        # polling Gmail address (e.g. syedahafsa772@gmail.com) may match a *different*
+        # tenant's login email, silently mis-assigning the brand and hiding its tickets.
         try:
-            token_brands = supabase_select("brands", {
-                "gmail_connected": "eq.false",
-                "gmail_token": "not.is.null",
-            })
-            for brand in (token_brands or []):
-                if brand.get("gmail_email"):
-                    supabase_update("brands", {"id": f"eq.{brand['id']}"}, {
-                        "gmail_connected": True,
-                        "is_active": True,
-                    })
-                    logger.info(f"[STARTUP-HEAL] Restored gmail_connected (via gmail_token) for brand {brand['id']} ({brand.get('gmail_email')})")
-                    healed += 1
-        except Exception as e:
-            logger.warning(f"[STARTUP-HEAL] Step 1b (gmail_token) failed: {e}")
-
-        # 2. Brands with null tenant_id — backfill from tenants table via email match
-        try:
-            unlinked_brands = supabase_select("brands", {"tenant_id": "is.null"})
-            for brand in (unlinked_brands or []):
-                gmail_email = brand.get("gmail_email")
-                if not gmail_email:
-                    continue
-                tenants = supabase_select("tenants", {"email": f"eq.{gmail_email}"})
-                if tenants:
-                    supabase_update("brands", {"id": f"eq.{brand['id']}"}, {
-                        "tenant_id": tenants[0]["id"]
-                    })
-                    logger.info(f"[STARTUP-HEAL] Linked brand {brand['id']} to tenant {tenants[0]['id']} via email match")
-                    healed += 1
+            all_tenants = supabase_select("tenants", {})
+            if len(all_tenants or []) > 1:
+                logger.info(
+                    f"[STARTUP-HEAL] Step 2 skipped — {len(all_tenants)} tenants detected; "
+                    "gmail_email→tenant matching is unsafe in multi-tenant mode"
+                )
+            else:
+                unlinked_brands = supabase_select("brands", {"tenant_id": "is.null"})
+                for brand in (unlinked_brands or []):
+                    gmail_email = brand.get("gmail_email")
+                    if not gmail_email:
+                        continue
+                    tenants = supabase_select("tenants", {"email": f"eq.{gmail_email}"})
+                    if tenants:
+                        supabase_update("brands", {"id": f"eq.{brand['id']}"}, {
+                            "tenant_id": tenants[0]["id"]
+                        })
+                        logger.info(f"[STARTUP-HEAL] Linked brand {brand['id']} to tenant {tenants[0]['id']} via email match")
+                        healed += 1
         except Exception as e:
             logger.warning(f"[STARTUP-HEAL] Step 2 (brand tenant_id backfill) failed: {e}")
 
@@ -508,6 +542,42 @@ async def startup_heal():
                     healed += 1
         except Exception as e:
             logger.warning(f"[STARTUP-HEAL] Step 4 (duplicate actions) failed: {e}")
+
+        # 4b. Brands with null is_active — backfill to True so lookups don't miss them.
+        try:
+            null_active_brands = supabase_select("brands", {"is_active": "is.null"})
+            for brand in (null_active_brands or []):
+                supabase_update("brands", {"id": f"eq.{brand['id']}"}, {"is_active": True})
+                logger.info(f"[STARTUP-HEAL] Set is_active=True for brand {brand['id']} (was null)")
+                healed += 1
+        except Exception as e:
+            logger.warning(f"[STARTUP-HEAL] Step 4b (is_active backfill) failed: {e}")
+
+        # 5. Tenants with no brand — create a default brand so Gmail connect works.
+        # Applies to tenants who registered before auto-brand-creation was added.
+        try:
+            all_tenants = supabase_select("tenants", {"is_active": "is.true"}) or []
+            for tenant in all_tenants:
+                tid = tenant.get("id")
+                if not tid:
+                    continue
+                tenant_brands = supabase_select("brands", {"tenant_id": f"eq.{tid}"})
+                if tenant_brands:
+                    continue  # already has a brand
+                email = tenant.get("email", "")
+                brand_name = tenant.get("company_name") or (
+                    f"{email.split('@')[0].title()}'s Store" if email else "My Store"
+                )
+                supabase_insert("brands", {
+                    "name": brand_name,
+                    "is_active": True,
+                    "tenant_id": tid,
+                    "gmail_connected": False,
+                })
+                logger.info(f"[STARTUP-HEAL] Created default brand for tenant {tid} ({email})")
+                healed += 1
+        except Exception as e:
+            logger.warning(f"[STARTUP-HEAL] Step 5 (default brand creation) failed: {e}")
 
         if healed > 0:
             logger.info(f"[STARTUP-HEAL] Fixed {healed} data issue(s) automatically")

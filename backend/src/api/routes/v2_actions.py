@@ -28,7 +28,7 @@ router = APIRouter(prefix="/actions", tags=["Actions"])
 class CreateActionRequest(BaseModel):
     brand_id: str
     ticket_id: Optional[str] = None
-    action_type: str = Field(..., pattern=r"^(refund|cancel_order|change_address|discount|exchange)$")
+    action_type: str = Field(..., pattern=r"^(refund|cancel_order|change_address|reship|discount|exchange|restore_order)$")
     customer_email: str
     customer_name: Optional[str] = None
     order_id: Optional[str] = None
@@ -409,12 +409,10 @@ async def approve_action(
         execution_error = None
 
         try:
-            from src.services.shopify_service import ShopifyClient
+            from src.services.shopify_service import ShopifyClient, decrypt_token
 
-            client = ShopifyClient(
-                brand["shopify_domain"],
-                brand["shopify_access_token"]
-            )
+            shopify_token = decrypt_token(brand["shopify_access_token"])
+            client = ShopifyClient(brand["shopify_domain"], shopify_token)
 
             if action["action_type"] == "refund":
                 execution_result = await client.process_refund(
@@ -422,21 +420,61 @@ async def approve_action(
                     amount=action.get("amount"),
                     reason=action.get("reason", "Customer request"),
                     restock=action.get("extracted_data", {}).get("restock", True),
-                    notify_customer=True
+                    notify_customer=False,
                 )
             elif action["action_type"] == "cancel_order":
                 execution_result = await client.cancel_order(
                     order_id=action["order_id"],
                     reason=action.get("reason", "Customer request"),
-                    email_customer=True,
-                    restock=True
+                    email_customer=False,
+                    restock=True,
                 )
             elif action["action_type"] == "change_address":
-                new_address = action.get("extracted_data", {}).get("new_address", {})
-                execution_result = await client.update_shipping_address(
-                    order_id=action["order_id"],
-                    new_address=new_address
+                extracted_data = action.get("extracted_data", {})
+                new_address = extracted_data.get("new_address", {})
+                if not new_address:
+                    execution_result = {
+                        "success": True,
+                        "manual_action_required": True,
+                        "message": "Please update the shipping address manually in Shopify admin.",
+                        "order_id": action["order_id"],
+                        "order_name": f"#{action['order_id']}",
+                        "new_address_text": extracted_data.get("new_address_text"),
+                    }
+                else:
+                    execution_result = await client.update_shipping_address(
+                        order_id=action["order_id"],
+                        new_address=new_address,
+                        customer_name=action.get("customer_name")
+                    )
+            elif action["action_type"] == "reship":
+                execution_result = {
+                    "success": True,
+                    "manual_action_required": True,
+                    "message": "Please create a replacement shipment in Shopify admin for this order.",
+                    "order_id": action["order_id"],
+                    "order_name": f"#{action['order_id']}",
+                }
+            elif action["action_type"] == "restore_order":
+                # Check restocked status in real time, then try Shopify reopen.json
+                order_resp = await client.get_order(action["order_id"])
+                if not order_resp.get("success") or not order_resp.get("order"):
+                    raise Exception(f"Order #{action['order_id']} not found in Shopify")
+                order_raw = order_resp["order"]
+                fulfillment_status = order_raw.get("fulfillment_status", "")
+                line_items = order_raw.get("line_items", [])
+                is_restocked = (
+                    fulfillment_status == "restocked" or
+                    any(item.get("fulfillment_status") == "restocked" for item in line_items)
                 )
+                if is_restocked:
+                    raise Exception(
+                        "Order inventory has been restocked — this order cannot be restored via Shopify. "
+                        "The customer will need to place a new order."
+                    )
+                if not order_raw.get("cancelled_at"):
+                    raise Exception("Order is not cancelled — nothing to restore.")
+                execution_result = await client.reopen_order(action["order_id"])
             else:
                 execution_result = {"success": True, "message": "No execution needed"}
 
@@ -454,6 +492,16 @@ async def approve_action(
                     "performed_by": context.user.user_id,
                     "details": execution_result
                 })
+
+                # Send branded confirmation email + resolve ticket (non-blocking)
+                try:
+                    from src.services.actions_service import actions_service
+                    await actions_service._post_execution_notify(
+                        action, action["action_type"], execution_result
+                    )
+                except Exception as notify_err:
+                    logger.warning(f"[v2_actions] Post-execution notify failed (non-blocking): {notify_err}")
+
             else:
                 execution_error = execution_result.get("error", "Execution failed")
 
@@ -603,3 +651,80 @@ async def retry_action(
     except Exception as e:
         logger.error(f"Error retrying action: {e}")
         raise HTTPException(status_code=500, detail="Failed to retry action")
+
+
+class BulkRejectRequest(BaseModel):
+    action_ids: Optional[List[str]] = None
+    clear_all: bool = False
+
+
+@router.post("/bulk-reject")
+async def bulk_reject_actions(
+    request: BulkRejectRequest,
+    context: AuthenticatedContext = Depends(require_agent_or_admin)
+):
+    """Reject multiple pending actions at once, or clear all pending actions."""
+    try:
+        if UserRole.is_admin(context.user.role):
+            org_brands = supabase_select("brands", {
+                "organization_id": f"eq.{context.user.organization_id}",
+                "is_active": "eq.true"
+            }) or []
+            if not org_brands:
+                org_brands = supabase_select("brands", {
+                    "tenant_id": f"eq.{context.user.organization_id}",
+                }) or []
+            brand_ids = [b["id"] for b in org_brands]
+        else:
+            brand_ids = list(context.brand_ids or [])
+            if not brand_ids:
+                fallback = supabase_select("brands", {
+                    "tenant_id": f"eq.{context.user.organization_id}",
+                }) or []
+                brand_ids = [b["id"] for b in fallback]
+
+        if not brand_ids:
+            return {"success": True, "cleared": 0}
+
+        brand_filter = f"in.({','.join(brand_ids)})"
+
+        if request.clear_all:
+            pending = supabase_select("actions", {
+                "brand_id": brand_filter,
+                "status": "eq.pending",
+            }) or []
+            ids_to_reject = [a["id"] for a in pending]
+        elif request.action_ids:
+            ids_to_reject = request.action_ids
+        else:
+            return {"success": False, "error": "Provide action_ids or clear_all=true"}
+
+        cleared = 0
+        for action_id in ids_to_reject:
+            try:
+                actions = supabase_select("actions", {"id": f"eq.{action_id}"})
+                if not actions:
+                    continue
+                action = actions[0]
+                if action.get("brand_id") not in brand_ids:
+                    continue
+                if action.get("status") != "pending":
+                    continue
+                supabase_update("actions", {"id": f"eq.{action_id}"}, {
+                    "status": "rejected",
+                    "rejection_reason": "Cleared by user",
+                    "rejected_by": context.user.user_id,
+                    "rejected_at": datetime.now(timezone.utc).isoformat(),
+                })
+                cleared += 1
+            except Exception as item_err:
+                logger.warning(f"[bulk-reject] Failed to reject {action_id}: {item_err}")
+
+        logger.info(f"[bulk-reject] {cleared} actions rejected by {context.user.email}")
+        return {"success": True, "cleared": cleared}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in bulk reject: {e}")
+        raise HTTPException(status_code=500, detail="Failed to bulk reject actions")

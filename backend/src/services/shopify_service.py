@@ -407,32 +407,36 @@ class ShopifyClient:
                 ShopifyErrorCode.ORDER_ALREADY_REFUNDED
             )
 
-        # Build refund payload
+        # Fetch the sale/capture transaction to use as parent_id
+        parent_transaction_id = None
+        try:
+            txn_result = self._request("GET", f"orders/{shopify_order_id}/transactions.json")
+            txns = txn_result.get("data", {}).get("transactions", [])
+            for t in txns:
+                if t.get("kind") in ("sale", "capture") and t.get("status") == "success":
+                    parent_transaction_id = t.get("id")
+                    break
+            if not parent_transaction_id and txns:
+                parent_transaction_id = txns[0].get("id")
+        except Exception as txn_err:
+            logger.warning(f"[Shopify] Could not fetch transactions for refund parent_id: {txn_err}")
+
+        # Build refund payload — no refund_line_items to avoid location requirement
         refund_data = {
             "refund": {
                 "note": reason or "Refund processed via AI Support System",
                 "notify": notify_customer,
-                "shipping": {"full_refund": True} if not restock else {},
-                "transactions": [
-                    {
-                        "parent_id": order.get("transactions", [{}])[0].get("id"),
-                        "kind": "refund",
-                        "amount": str(round(amount, 2)),
-                        "gateway": order.get("gateway", "manual")
-                    }
-                ]
+                "shipping": {"full_refund": True},
             }
         }
-
-        # Add line items for restock if needed
-        if restock and order.get("line_items"):
-            refund_data["refund"]["refund_line_items"] = [
+        if parent_transaction_id:
+            refund_data["refund"]["transactions"] = [
                 {
-                    "line_item_id": item.get("id"),
-                    "quantity": item.get("quantity"),
-                    "restock_type": "return"
+                    "parent_id": parent_transaction_id,
+                    "kind": "refund",
+                    "amount": str(round(amount, 2)),
+                    "gateway": order.get("gateway", "manual")
                 }
-                for item in order.get("line_items", [])
             ]
 
         result = self._request("POST", f"orders/{shopify_order_id}/refunds.json", refund_data)
@@ -502,7 +506,8 @@ class ShopifyClient:
     async def update_shipping_address(
         self,
         order_id: str,
-        new_address: Dict[str, str]
+        new_address: Dict[str, str],
+        customer_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Update shipping address for an unfulfilled order.
@@ -510,6 +515,7 @@ class ShopifyClient:
         Args:
             order_id: Order ID or number
             new_address: Dict with address fields
+            customer_name: Full customer name — split into first/last for Shopify
         """
         # Get the order first
         order_result = await self.get_order(order_id)
@@ -534,8 +540,20 @@ class ShopifyClient:
             "phone": new_address.get("phone", "")
         }
 
-        # Remove None values
-        shipping_address = {k: v for k, v in shipping_address.items() if v}
+        # Include name fields — Shopify requires at least first_name or last_name
+        name_to_use = customer_name or new_address.get("name", "")
+        if name_to_use:
+            parts = name_to_use.strip().split(None, 1)
+            shipping_address["first_name"] = parts[0]
+            shipping_address["last_name"] = parts[1] if len(parts) > 1 else ""
+        else:
+            # Fall back to existing order name so the field is never blank
+            existing = order.get("shipping_address") or {}
+            shipping_address["first_name"] = existing.get("first_name", "")
+            shipping_address["last_name"] = existing.get("last_name", "")
+
+        # Remove None/empty values
+        shipping_address = {k: v for k, v in shipping_address.items() if v is not None}
 
         update_data = {
             "order": {
@@ -553,6 +571,32 @@ class ShopifyClient:
             "order_name": order.get("name"),
             "new_address": updated_order.get("shipping_address"),
             "message": f"Successfully updated shipping address for order {order.get('name')}"
+        }
+
+
+    async def reopen_order(self, order_id: str) -> Dict[str, Any]:
+        """
+        Reopen (restore) a cancelled order.
+        Shopify API: POST /admin/api/{version}/orders/{id}/reopen.json
+        """
+        order_result = await self.get_order(order_id)
+        order = order_result.get("order", {})
+        shopify_order_id = order.get("id")
+
+        if not order.get("cancelled_at"):
+            raise ShopifyError(
+                "This order is not cancelled — nothing to restore.",
+                ShopifyErrorCode.INVALID_REQUEST
+            )
+
+        result = self._request("POST", f"orders/{shopify_order_id}/reopen.json", {})
+        reopened = result.get("data", {}).get("order", {})
+
+        return {
+            "success": True,
+            "order_id": order_id,
+            "order_name": order.get("name"),
+            "message": f"Order {order.get('name')} has been restored and is active again."
         }
 
 

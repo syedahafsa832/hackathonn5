@@ -30,7 +30,7 @@ def _format_address(addr: dict) -> str:
     return ", ".join(p for p in parts if p)
 
 
-def _build_order_context(order: dict) -> str:
+def _build_order_context(order: dict, tracking_context: str = "") -> str:
     """Build an explicit order context block that the LLM cannot ignore."""
     if not order or not order.get("success"):
         return ""
@@ -53,22 +53,61 @@ def _build_order_context(order: dict) -> str:
     total = order.get("total_amount", "")
     tracking = order.get("tracking_number", "")
     tracking_url = order.get("tracking_url", "")
+    tracking_company = order.get("tracking_company", "")
+
+    financial_status = order.get("financial_status", "")
+    cancelled_at = order.get("cancelled_at")
 
     lines = [
         "=== REAL ORDER DATA FROM SHOPIFY — USE THIS EXACT INFORMATION ===",
         f"Order Number: #{order_num}",
-        f"Status: {status}",
+        f"Fulfillment Status: {status}",
+        f"Payment Status: {financial_status or 'unknown'}",
     ]
+    if cancelled_at:
+        lines.append(f"CANCELLED: Yes (cancelled at {cancelled_at})")
     if total:
         lines.append(f"Total: Rs {total}")
     if items:
         lines.append("Items Ordered:")
         for item_line in items:
             lines.append(f"  - {item_line}")
-    if tracking:
-        lines.append(f"Tracking Number: {tracking}")
-    if tracking_url:
-        lines.append(f"Track Here: {tracking_url}")
+
+    if tracking_context:
+        # Live Aftership data or fallback instructions — injected by caller
+        lines.append(tracking_context)
+    elif tracking:
+        lines.append("")
+        lines.append("SHIPPING INFO:")
+        if tracking_company:
+            lines.append(f"  Carrier: {tracking_company}")
+        lines.append(f"  Tracking Number: {tracking}")
+        if tracking_url:
+            lines.append(f"  Track Here: {tracking_url}")
+        lines.append("")
+        lines.append("IF CUSTOMER ASKS WHERE THEIR ORDER IS:")
+        track_msg = f"Your tracking number is {tracking}"
+        if tracking_url:
+            track_msg += f" — track it here: {tracking_url}"
+        lines.append(f"  Tell them exactly: '{track_msg}'")
+    elif status == "unfulfilled":
+        lines.append("")
+        lines.append("Order has not shipped yet — if customer asks, tell them it hasn't been dispatched.")
+
+    # Derive what actions are sensible given current order state
+    state_notes = []
+    if cancelled_at:
+        state_notes.append("ORDER IS ALREADY CANCELLED — do not offer to cancel again.")
+    if financial_status in ("refunded", "partially_refunded"):
+        state_notes.append(f"ORDER IS ALREADY {financial_status.upper()} — do not offer another refund.")
+    if status == "fulfilled" and not cancelled_at:
+        state_notes.append("ORDER IS FULFILLED (shipped) — cancellation is not possible; address change is not possible.")
+    if state_notes:
+        lines.append("")
+        lines.append("COMMON SENSE RULES FOR THIS ORDER:")
+        for note in state_notes:
+            lines.append(f"  ⚠ {note}")
+
     lines.extend([
         "",
         f"CRITICAL: Use ONLY the items listed above. Do NOT invent product names.",
@@ -94,11 +133,13 @@ class CustomerSuccessAgent:
         else:
             self.openai_client = OpenAI(
                 api_key=api_key,
-                base_url=os.getenv("MISTRAL_API_BASE_URL", "https://api.mistral.ai/v1")
+                base_url=os.getenv("MISTRAL_API_BASE_URL", "https://api.mistral.ai/v1"),
+                max_retries=1,
+                timeout=15.0,
             )
             logger.info("V3 Agent OpenAI client initialized successfully")
 
-    async def process_customer_query(self, query: str, customer_info: Dict[str, Any], tenant_id: Optional[str] = None, store_id: Optional[str] = None) -> Dict[str, Any]:
+    async def process_customer_query(self, query: str, customer_info: Dict[str, Any], tenant_id: Optional[str] = None, store_id: Optional[str] = None, ticket_id: Optional[str] = None) -> Dict[str, Any]:
         """
         V3 Orchestration:
         1. RAG Retrieval (Policies, Brand, Product Info) - tenant-specific if tenant_id provided
@@ -108,9 +149,14 @@ class CustomerSuccessAgent:
         5. Confidence & Escalation Enforcement
         """
         try:
-            # 1. RAG Retrieval - use tenant-specific knowledge base if available
-            rag_context = await rag_engine.get_relevant_context(query, tenant_id=tenant_id)
-            logger.info(f"[Agent] RAG context retrieved: {len(rag_context)} chars")
+            _is_chat = "[CHAT MODE" in query
+
+            # 1. RAG Retrieval - skip for chat widget (saves embedding API call when KB is likely empty)
+            if _is_chat:
+                rag_context = ""
+            else:
+                rag_context = await rag_engine.get_relevant_context(query, tenant_id=tenant_id)
+                logger.info(f"[Agent] RAG context retrieved: {len(rag_context)} chars")
 
             # 2. Sizing Engine - Get actual recommendation if we have measurements
             sizing_context = ""
@@ -153,10 +199,11 @@ class CustomerSuccessAgent:
             tool_results = {}
             query_lower = query.lower()
 
-            # Resolve brand-specific Shopify credentials (preferred over global env vars)
+            # Resolve brand-specific Shopify + Aftership credentials
             _brand_name = "our store"
             _brand_shopify_domain = None
             _brand_shopify_token = None
+            _brand_aftership_key = None
             _default_store = "00000000-0000-0000-0000-000000000000"
             if store_id and store_id != _default_store:
                 try:
@@ -169,9 +216,10 @@ class CustomerSuccessAgent:
                             _brand_shopify_domain = _b[0].get("shopify_domain")
                             _raw = _b[0].get("shopify_access_token") or ""
                             _brand_shopify_token = _dec(_raw) if _raw else None
-                        logger.info(f"[Agent] Brand found: name={_brand_name}, domain={_brand_shopify_domain}")
+                        _brand_aftership_key = _b[0].get("aftership_api_key") or None
+                        logger.info(f"[Agent] Brand found: name={_brand_name}, domain={_brand_shopify_domain}, aftership={'set' if _brand_aftership_key else 'not set'}")
                 except Exception as _se:
-                    logger.warning(f"[Agent] Brand Shopify lookup failed (non-blocking): {_se}")
+                    logger.warning(f"[Agent] Brand lookup failed (non-blocking): {_se}")
 
             # Check for order status inquiry
             if any(kw in query_lower for kw in ["order", "shipped", "tracking", "delivered", "when will", "what did i order"]):
@@ -211,13 +259,46 @@ class CustomerSuccessAgent:
                     product = product_match.group(1)
                     tool_results["inventory"] = await v3_tools.get_inventory_status(product)
 
+            # 3b. Aftership live tracking — runs only when order was found and has a tracking number
+            if "order_status" in tool_results and tool_results["order_status"].get("success"):
+                _order = tool_results["order_status"]
+                _tn = _order.get("tracking_number")
+                _tc = _order.get("tracking_company") or ""
+                if _tn and _brand_aftership_key:
+                    try:
+                        from src.services.tracking_service import (
+                            get_tracking_status,
+                            shopify_carrier_to_aftership_slug,
+                            build_tracking_context,
+                        )
+                        _slug = shopify_carrier_to_aftership_slug(_tc)
+                        if _slug:
+                            _tracking_info = await get_tracking_status(_tn, _slug, _brand_aftership_key)
+                            tool_results["tracking_info"] = _tracking_info
+                            logger.info(f"[Agent] Aftership tracking fetched: status={(_tracking_info or {}).get('status')}")
+                        else:
+                            logger.info(f"[Agent] Carrier '{_tc}' not in Aftership map — skipping live tracking")
+                    except Exception as _te:
+                        logger.warning(f"[Agent] Aftership call failed (non-blocking): {_te}")
+
             # 4. Build tool context for the AI (explicit Shopify data — AI must use this verbatim)
             tool_context = ""
             if tool_results:
                 if "order_status" in tool_results:
                     order = tool_results["order_status"]
                     if order.get("success"):
-                        order_block = _build_order_context(order)
+                        # Build Aftership tracking block (or URL fallback)
+                        try:
+                            from src.services.tracking_service import build_tracking_context
+                            _tracking_ctx = build_tracking_context(
+                                tracking_info=tool_results.get("tracking_info"),
+                                tracking_number=order.get("tracking_number"),
+                                tracking_url=order.get("tracking_url"),
+                                tracking_company=order.get("tracking_company"),
+                            )
+                        except Exception:
+                            _tracking_ctx = ""
+                        order_block = _build_order_context(order, tracking_context=_tracking_ctx)
                         tool_context += order_block + "\n"
                         logger.info(f"[Agent] Order context built:\n{order_block}")
                     elif order.get("error"):
@@ -241,21 +322,29 @@ class CustomerSuccessAgent:
                     if inv.get("success"):
                         tool_context += f"{inv.get('message', 'Available')}\n"
 
-            # 4. Return/Exchange Action Layer
+            # 4. Return/Exchange Action Layer — skip LLM intent call for chat (saves API call)
             action_context = ""
-            if return_actions.should_check_return_eligibility(query):
-                logger.info(f"[ReturnActions] Return intent detected for query: {query[:50]}...")
-                action_result = await return_actions.handle_return_intent(
-                    query=query,
-                    customer_info=customer_info,
-                    existing_tool_results=tool_results
-                )
-                action_context = action_result.get("action_context", "")
-                logger.info(f"[ReturnActions] Action context result: {action_context[:200] if action_context else 'EMPTY'}...")
-                # Store for debugging/logging
-                tool_results["return_action"] = action_result
+            if not _is_chat:
+                from src.services.intent_detector import intent_detector as _intent_detector
+                _intent_result = await _intent_detector.detect(query)
+                if _intent_result.has_action:
+                    logger.info(f"[ReturnActions] Intent detected: {_intent_result.action_type} (order={_intent_result.order_id}, source={_intent_result.source})")
+                    action_result = await return_actions.handle_return_intent(
+                        query=query,
+                        customer_info=customer_info,
+                        existing_tool_results=tool_results,
+                        tenant_id=tenant_id,
+                        brand_id=store_id,
+                        ticket_id=ticket_id,
+                        intent_result=_intent_result,
+                    )
+                    action_context = action_result.get("action_context", "")
+                    logger.info(f"[ReturnActions] Action context: {action_context[:200] if action_context else 'EMPTY'}")
+                    tool_results["return_action"] = action_result
+                else:
+                    logger.info(f"[ReturnActions] No action intent (source={_intent_result.source})")
             else:
-                logger.info(f"[ReturnActions] No return intent detected")
+                logger.info("[ReturnActions] Skipping intent detection for chat mode")
 
             # 5. Response Generation
             system_prompt = self._construct_v3_prompt(customer_info, rag_context, sizing_context, tool_context, action_context, brand_name=_brand_name)
@@ -287,6 +376,9 @@ class CustomerSuccessAgent:
                     temperature=0.1
                 )
             except Exception as api_error:
+                if getattr(api_error, 'status_code', None) == 429 or "429" in str(api_error):
+                    logger.warning("[Agent] Mistral rate limited — returning fallback immediately")
+                    return self._get_fallback_response("Rate limited", brand_name=_brand_name)
                 logger.error(f"Mistral API call failed: {api_error}")
                 return self._get_fallback_response(f"API error: {str(api_error)}")
 
@@ -354,16 +446,41 @@ class CustomerSuccessAgent:
                         formatted_parts.append(sent + punct)
                 reply = '\n'.join(formatted_parts)
 
-            # Only add greeting if not already present and doesn't start with the name
-            if reply and not reply.lower().startswith("hi") and not reply.lower().startswith("hey") and not reply.lower().startswith("thanks"):
-                structured["reply_body"] = f"Hey {name},\n\n{reply}"
-            elif reply and not (name.lower() in reply.lower()[:20]):
-                # Name mentioned in first 20 chars, skip greeting
-                structured["reply_body"] = f"Hey {name},\n\n{reply}"
+            # For email: add greeting. For chat: skip — widget is already mid-conversation.
+            if not _is_chat:
+                if reply and not reply.lower().startswith("hi") and not reply.lower().startswith("hey") and not reply.lower().startswith("thanks"):
+                    structured["reply_body"] = f"Hey {name},\n\n{reply}"
+                elif reply and not (name.lower() in reply.lower()[:20]):
+                    structured["reply_body"] = f"Hey {name},\n\n{reply}"
 
             # Add casual sign-off instead of formal
             if "Luna" not in structured["reply_body"]:
                 structured["reply_body"] += f"\n\n— Luna\n{_brand_name}"
+
+            # Attach order_data for widget card display
+            _os = tool_results.get("order_status", {})
+            if _os.get("success"):
+                _fs = _os.get("status") or "pending"
+                if _os.get("cancelled_at"):
+                    _widget_status = "cancelled"
+                elif _fs == "fulfilled":
+                    _widget_status = "fulfilled"
+                elif _fs in ("partial", "unfulfilled"):
+                    _widget_status = "processing"
+                else:
+                    _widget_status = "pending"
+                _fin = _os.get("financial_status") or ""
+                _payment_status = "refunded" if "refund" in _fin else ("paid" if _fin == "paid" else "pending")
+                structured["order_data"] = {
+                    "orderNumber": str(_os.get("order_number", "")),
+                    "items": [
+                        {"name": i.get("title", ""), "quantity": i.get("quantity", 1), "price": i.get("price", "")}
+                        for i in _os.get("items", [])
+                    ],
+                    "status": _widget_status,
+                    "paymentStatus": _payment_status,
+                    "cancelledAt": _os.get("cancelled_at"),
+                }
 
             return structured
 
@@ -371,7 +488,7 @@ class CustomerSuccessAgent:
             import traceback
             logger.error(f"V3 Agent Error: {e}")
             logger.error(f"Full traceback: {traceback.format_exc()}")
-            return self._get_fallback_response(str(e))
+            return self._get_fallback_response(str(e), brand_name=_brand_name)
 
     def _construct_v3_prompt(self, customer_info: Dict[str, Any], rag_context: str, sizing_context: str, tool_context: str = "", action_context: str = "", brand_name: str = "our store") -> str:
         order_critical = (
@@ -392,14 +509,20 @@ class CustomerSuccessAgent:
         - NEVER say "let me check", "I'll look into it", "give me a moment", or anything that implies you will do something later — respond fully RIGHT NOW based only on what is in ORDER INFO
         - If ORDER INFO shows a lookup failure, apologize you can't see the order and ask the customer for their order confirmation email or contact details so someone can follow up
 
+        TRACKING RULES (CRITICAL — follow exactly):
+        - If ORDER INFO contains a tracking URL, you MUST paste it directly in your reply. Do NOT say "check your email".
+        - WRONG: "Check your email for tracking details."
+        - WRONG: "Your tracking info has been sent to your email."
+        - RIGHT: "Your order has shipped! Here's your tracking link: https://track.aftership.com/..."
+        - If ORDER INFO has a tracking number but no URL, share the number directly: "Your tracking number is ABC123 via FedEx."
+        - If ORDER INFO shows "fulfilled" but no tracking number exists, say: "Your order has shipped but we don't have a live tracking link yet. It usually takes 24h to activate."
+
         FORMATTING RULES:
         - NEVER use em dashes (—) or en dashes (–) anywhere in your response
         - NEVER use hyphens to join or separate clauses in a sentence
         - Use a comma or start a new sentence instead of a dash
         - WRONG: "I'd love to help—could you share your order number?"
         - RIGHT: "I'd love to help! Could you share your order number?"
-        - WRONG: "Your order shipped—check your email for tracking."
-        - RIGHT: "Your order has shipped. Check your email for the tracking number."
 
         KNOWLEDGE BASE:
         {rag_context}
@@ -425,6 +548,13 @@ class CustomerSuccessAgent:
         4. Always say the request is "being reviewed" or "sent for confirmation"
         5. If not eligible - be honest and offer alternatives
 
+        COMMON SENSE — READ ORDER STATUS BEFORE RESPONDING:
+        - If ORDER DATA says "CANCELLED" — do NOT offer cancellation. Acknowledge it is cancelled already.
+        - If ORDER DATA says "refunded" or "partially_refunded" — do NOT offer a refund. Acknowledge it is refunded already.
+        - If ORDER DATA says "fulfilled" (shipped) AND a tracking URL is present — share that URL directly in your reply. Never say "check your email".
+        - If ORDER DATA says "fulfilled" (shipped) — do NOT offer cancellation or address change. Offer reship/refund if relevant.
+        - Never suggest an action that the order state makes impossible.
+
         RESPONSE (JSON only):
         {{
             "intent": "what they want (refund_request|cancellation_request|address_change|order_status_inquiry|shipping_inquiry|sizing_inquiry|product_inquiry|general_inquiry)",
@@ -441,8 +571,9 @@ class CustomerSuccessAgent:
         95-100: definitive answer. 80-94: quite sure. 60-79: mostly sure. Below 60: escalate.
         """
 
-    def _get_fallback_response(self, error: str) -> Dict[str, Any]:
+    def _get_fallback_response(self, error: str, brand_name: str = "") -> Dict[str, Any]:
         logger.error(f"Using fallback response due to error: {error}")
+        sign_off = f"— Luna\n{brand_name}" if brand_name else "— Luna"
         return {
             "intent": "general_inquiry",
             "sentiment": "neutral",
@@ -450,11 +581,11 @@ class CustomerSuccessAgent:
             "confidence_score": 40,
             "escalate": True,
             "escalation_reason": f"System error: {error}",
-            "reply_body": "Hey there!\n\nThanks for reaching out. I'm having a bit of trouble processing your message right now, but I've flagged this for my team to take a look.\n\nSomeone will get back to you shortly!\n\n— Luna",
+            "reply_body": f"Hey there!\n\nThanks for reaching out. I'm having a bit of trouble processing your message right now, but I've flagged this for my team to take a look.\n\nSomeone will get back to you shortly!\n\n{sign_off}",
             "status": "escalated"
         }
 
-    async def generate_channel_appropriate_response(self, query: str, customer_info: Dict[str, Any], channel: str, tenant_id: Optional[str] = None, store_id: Optional[str] = None) -> Dict[str, Any]:
-        return await self.process_customer_query(query, customer_info, tenant_id=tenant_id, store_id=store_id)
+    async def generate_channel_appropriate_response(self, query: str, customer_info: Dict[str, Any], channel: str, tenant_id: Optional[str] = None, store_id: Optional[str] = None, ticket_id: Optional[str] = None) -> Dict[str, Any]:
+        return await self.process_customer_query(query, customer_info, tenant_id=tenant_id, store_id=store_id, ticket_id=ticket_id)
 
 customer_success_agent = CustomerSuccessAgent()

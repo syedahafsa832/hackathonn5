@@ -138,6 +138,20 @@ export function useRejectAction() {
 }
 
 /**
+ * Mutation to cancel an order directly from a ticket
+ */
+export function useCancelOrder() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id) => api.cancelOrder(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries(['conversations']);
+      queryClient.invalidateQueries(['actions']);
+    },
+  });
+}
+
+/**
  * Mutation for sending an admin message
  */
 export function useSendMessage() {

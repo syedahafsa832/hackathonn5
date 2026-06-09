@@ -5,9 +5,17 @@ import Badge from '../components/Badge';
 import ActionCard from '../components/ActionCard';
 import { useMessages, useSendMessage, useTakeover, useRelease, useConversations, useTicket, useMarkRead } from '../hooks/useApi';
 
-function OrderPanel({ ticketId }) {
+const ACTION_TYPE_MAP = {
+  CANCEL: 'cancel_order',
+  REFUND: 'refund',
+  ADDRESS_CHANGE: 'change_address',
+};
+
+function OrderPanel({ ticketId, ticket }) {
   const [order, setOrder] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState(null);
+  const [actionResult, setActionResult] = useState(null);
   const [stagingAction, setStagingAction] = useState('');
 
   useEffect(() => {
@@ -17,14 +25,43 @@ function OrderPanel({ ticketId }) {
       .finally(() => setLoading(false));
   }, [ticketId]);
 
+  // Cancel / Refund — execute immediately in Shopify + send confirmation email
+  const executeAction = async (type) => {
+    const orderLabel = order?.order_name || (order?.order_number ? `#${order.order_number}` : 'this order');
+    const confirmMsg = type === 'cancel'
+      ? `Cancel ${orderLabel} for ${ticket?.customer_email}? This cannot be undone.`
+      : `Issue a full refund for ${orderLabel}? This cannot be undone.`;
+    if (!window.confirm(confirmMsg)) return;
+
+    setActionLoading(type);
+    setActionResult(null);
+    try {
+      const res = await client.post(`/api/v2/tickets/${ticketId}/actions/${type}`, {}, { timeout: 30000 });
+      const msg = res.data?.message || 'Done.';
+      const emailNote = res.data?.email_sent === false
+        ? ' Confirmation email could not be sent — check Gmail connection.'
+        : '';
+      setActionResult({ ok: true, msg: msg + emailNote });
+      setTimeout(() => window.location.reload(), 1800);
+    } catch (err) {
+      setActionResult({ ok: false, msg: err.response?.data?.detail || err.message || 'Action failed' });
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  // Address change / Reship — stage for approval queue
   const stageAction = async (type) => {
     setStagingAction(type);
+    const actionType = ACTION_TYPE_MAP[type] || type.toLowerCase();
     try {
       await client.post(`/api/v1/actions/create`, {
         ticket_id: ticketId,
-        action_type: type,
-        order_id: order?.id,
-        order_number: order?.order_name,
+        action_type: actionType,
+        order_id: order?.id || order?.order_number,
+        customer_email: ticket?.customer_email || '',
+        customer_name: ticket?.customer_name || ticket?.customer_email || '',
+        ai_reasoning: `Manually staged by brand owner from conversation detail`,
       });
       setStagingAction('done:' + type);
     } catch {
@@ -68,23 +105,69 @@ function OrderPanel({ ticketId }) {
               </div>
             )}
           </div>
+
+          {actionResult && (
+            <div style={{
+              padding: '8px 10px', borderRadius: '4px', fontSize: '12px', lineHeight: '1.5',
+              background: actionResult.ok ? 'var(--success-light)' : 'var(--danger-light)',
+              color: actionResult.ok ? 'var(--success)' : 'var(--danger)',
+            }}>
+              {actionResult.msg}
+            </div>
+          )}
+
+          {(() => {
+            const isRestocked = !!order.cancelled_at && order.fulfillment_status === 'restocked';
+            return isRestocked ? (
+              <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--text-muted)', padding: '8px 10px', background: 'rgba(255,255,255,0.03)', borderRadius: '6px', borderTop: '1px solid var(--border)', paddingTop: '10px' }}>
+                Order was cancelled and inventory restocked. Cannot be restored — customer must place a new order.
+              </div>
+            ) : null;
+          })()}
+
           <div style={{ borderTop: '1px solid var(--border)', paddingTop: '10px', display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+            {/* Refund — only when paid and not cancelled+restocked */}
+            {order.financial_status === 'paid' && !order.cancelled_at && (
+              <button
+                onClick={() => executeAction('refund')}
+                disabled={!!actionLoading}
+                style={{ padding: '5px 10px', fontSize: '11px', borderRadius: '3px', border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-secondary)', cursor: actionLoading ? 'not-allowed' : 'pointer', fontWeight: '500' }}
+              >
+                {actionLoading === 'refund' ? 'Refunding...' : 'Refund'}
+              </button>
+            )}
+
+            {/* Cancel — only when not fulfilled and not already cancelled */}
+            {order.fulfillment_status !== 'fulfilled' && !order.cancelled_at && (
+              <button
+                onClick={() => executeAction('cancel')}
+                disabled={!!actionLoading}
+                style={{ padding: '5px 10px', fontSize: '11px', borderRadius: '3px', border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-secondary)', cursor: actionLoading ? 'not-allowed' : 'pointer', fontWeight: '500' }}
+              >
+                {actionLoading === 'cancel' ? 'Cancelling...' : 'Cancel'}
+              </button>
+            )}
+
+            {/* Address change + Reship — stage for approval queue; hidden when restocked */}
             {[
-              { type: 'REFUND', label: 'Refund', show: order.financial_status === 'paid' },
-              { type: 'CANCEL', label: 'Cancel', show: order.fulfillment_status !== 'fulfilled' && !order.cancelled_at },
-              { type: 'ADDRESS_CHANGE', label: 'Update Address', show: order.fulfillment_status !== 'fulfilled' },
-              { type: 'RESHIP', label: 'Reship', show: true },
+              { type: 'ADDRESS_CHANGE', label: 'Update Address', show: order.fulfillment_status !== 'fulfilled' && !order.cancelled_at },
+              { type: 'RESHIP', label: 'Reship', show: !(order.cancelled_at && order.fulfillment_status === 'restocked') },
             ].filter(a => a.show).map(({ type, label }) => (
               <button
                 key={type}
                 onClick={() => stageAction(type)}
-                disabled={!!stagingAction}
+                disabled={!!actionLoading || stagingAction === type}
                 style={{ padding: '5px 10px', fontSize: '11px', borderRadius: '3px', border: '1px solid var(--border)', background: stagingAction === 'done:' + type ? 'var(--success-light)' : 'var(--bg-secondary)', color: stagingAction === 'done:' + type ? 'var(--success)' : 'var(--text-secondary)', cursor: 'pointer', fontWeight: '500' }}
               >
-                {stagingAction === 'done:' + type ? '✓ Staged' : stagingAction === 'err:' + type ? '✗ Failed' : label}
+                {stagingAction === 'done:' + type ? '✓ Queued' : stagingAction === 'err:' + type ? '✗ Failed' : label}
               </button>
             ))}
           </div>
+          {stagingAction.startsWith('done:') && (
+            <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+              Go to <strong>Escalations</strong> to approve and execute.
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -118,25 +201,27 @@ function cleanEmailBody(raw) {
 function ChatBubble({ message, role }) {
   const isCustomer = role === 'customer';
   const isAI = role === 'ai';
+  const isDraft = message.isDraft;
   const body = cleanEmailBody(message.content || message.message || message.text || '');
   return (
     <div style={{ display: 'flex', justifyContent: isCustomer ? 'flex-start' : 'flex-end', marginBottom: '12px' }}>
       <div style={{ maxWidth: '70%' }}>
         {!isCustomer && (
           <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '3px', textAlign: 'right', fontWeight: '500' }}>
-            {isAI ? 'AI' : 'You'}
+            {isAI ? 'AI' : 'You'}{isDraft ? ' · Draft (not sent)' : ''}
           </div>
         )}
         <div style={{
           padding: '10px 14px',
           borderRadius: isCustomer ? '4px 8px 8px 4px' : '8px 4px 4px 8px',
-          background: isCustomer ? 'var(--bg-tertiary)' : isAI ? 'var(--accent)' : 'var(--bg-primary)',
-          color: isCustomer ? 'var(--text-primary)' : isAI ? 'white' : 'var(--text-primary)',
-          border: (!isCustomer && !isAI) ? '1px solid var(--border)' : 'none',
+          background: isCustomer ? 'var(--bg-tertiary)' : isAI ? (isDraft ? 'transparent' : 'var(--accent)') : 'var(--bg-primary)',
+          color: isCustomer ? 'var(--text-primary)' : isAI ? (isDraft ? 'var(--text-secondary)' : 'white') : 'var(--text-primary)',
+          border: isDraft ? '1px dashed var(--border)' : (!isCustomer && !isAI) ? '1px solid var(--border)' : 'none',
           fontSize: '14px',
           lineHeight: '1.5',
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-word',
+          opacity: isDraft ? 0.85 : 1,
         }}>
           {body}
         </div>
@@ -220,11 +305,12 @@ export default function TicketDetail() {
     setApproving(true);
     setActionStatus('');
     try {
-      const res = await client.post(`/api/tickets/${ticket_id}/approve-ai`);
+      const res = await client.post(`/api/v2/tickets/${ticket_id}/approve-ai`);
       if (res.data?.success) {
         setActionStatus('AI response approved and email sent.');
+        setTimeout(() => window.location.reload(), 1500);
       } else {
-        setActionStatus(res.data?.error || 'Approved but email could not be sent.');
+        setActionStatus(res.data?.error || 'Approved but email could not be sent. Check Gmail connection.');
       }
     } catch (err) {
       setActionStatus(err.response?.data?.detail || err.response?.data?.error || 'Failed to approve AI response.');
@@ -422,7 +508,7 @@ export default function TicketDetail() {
         </div>
 
         {/* Order Context */}
-        <OrderPanel ticketId={ticket_id} />
+        <OrderPanel ticketId={ticket_id} ticket={ticket} />
 
         {/* AI Draft Approval */}
         {(ticket.ai_draft || ticket.ai_response) && ticket.status !== 'resolved' && (

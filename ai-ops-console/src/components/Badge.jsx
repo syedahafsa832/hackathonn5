@@ -1,4 +1,7 @@
 const STATUS_MAP = {
+  // Channel badges
+  chat:  { label: '💬 Chat', color: '#7C3AED', bg: '#F5F3FF' },
+  email: { label: '✉ Email', color: 'var(--accent)', bg: 'var(--accent-light)' },
   processing: { label: '⟳ Processing…', color: 'var(--text-secondary)', bg: 'var(--bg-tertiary)' },
   auto_resolved: { label: 'Auto-resolved', color: 'var(--success)', bg: 'var(--success-light)' },
   resolved: { label: 'Resolved', color: 'var(--success)', bg: 'var(--success-light)' },
