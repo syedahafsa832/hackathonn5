@@ -101,7 +101,13 @@
       "Bash(Get-ChildItem -Path \"E:\\\\hack5\\\\hack5\\\\ai-ops-console\\\\src\" -Recurse -Filter \"*.tsx\" -o Name)",
       "Bash(dir E:hack5hack5 *)",
       "PowerShell(Get-ChildItem \"E:\\\\hack5\\\\hack5\\\\resolution-canvas\" -Recurse -File | Where-Object { $_.FullName -notmatch 'node_modules' } | Select-Object -ExpandProperty FullName | Sort-Object)",
-      "Bash(dir /s /b components\\\\chat-widget\\\\*.tsx components\\\\chat-widget\\\\*.ts)"
+      "Bash(dir /s /b components\\\\chat-widget\\\\*.tsx components\\\\chat-widget\\\\*.ts)",
+      "Bash(dir E:/hack5/hack5/)",
+      "PowerShell(Rename-Item *)",
+      "Bash(awk '{print $NF}')",
+      "Bash(git mv *)",
+      "PowerShell(Stop-Process *)",
+      "PowerShell(cmd /c \"move E:\\\\hack5\\\\hack5\\\\ai-ops-console E:\\\\hack5\\\\hack5\\\\dashboard\" 2>&1)"
     ]
   }
 }
