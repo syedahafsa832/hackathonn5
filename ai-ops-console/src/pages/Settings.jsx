@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import client from '../api/client';
+import ChatWidget from '../components/ChatWidget';
 
 const inputStyle = {
   width: '100%',
@@ -958,14 +959,368 @@ function CannedResponsesTab() {
   );
 }
 
+// ──────────────────────────────────────────────────── Chat Widget Tab ──
+
+function ChatWidgetTab() {
+  const [brands, setBrands] = useState([]);
+  const [selectedBrand, setSelectedBrand] = useState(null);
+  const [copied, setCopied] = useState(false);
+  const [accentColor, setAccentColor] = useState('#6C63FF');
+
+  useEffect(() => {
+    client.get('/api/brands').then(res => {
+      const list = Array.isArray(res.data) ? res.data : res.data?.brands || [];
+      setBrands(list);
+      if (list.length > 0) setSelectedBrand(list[0]);
+    }).catch(() => {});
+  }, []);
+
+  const backendUrl = import.meta.env.VITE_API_BASE_URL ||
+    window.location.origin.replace(':5173', ':8001').replace(':3000', ':8001');
+  const embedCode = selectedBrand
+    ? `<script>
+  window.tResolvConfig = {
+    brandId:    "${selectedBrand.id}",
+    botName:    "Luna",
+    color:      "#FFFFFF",
+    brandLabel: "AI Support"
+  };
+</script>
+<script src="${backendUrl}/widget.js" async></script>`
+    : '';
+
+  const copy = () => {
+    navigator.clipboard.writeText(embedCode).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const section = { marginBottom: '28px' };
+  const label = { fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '8px' };
+  const card = { background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '6px', padding: '20px 24px' };
+
+  return (
+    <div>
+      <div style={{ ...card, marginBottom: '20px' }}>
+        <div style={{ fontSize: '14px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '6px' }}>Chat Widget</div>
+        <div style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: '1.6' }}>
+          Add a floating chat bubble to your Shopify store. Customers can ask questions, look up their orders,
+          and request refunds or changes — all handled by Luna in real time.
+        </div>
+      </div>
+
+      {brands.length > 1 && (
+        <div style={section}>
+          <div style={label}>Select brand</div>
+          <select
+            value={selectedBrand?.id || ''}
+            onChange={e => setSelectedBrand(brands.find(b => b.id === e.target.value))}
+            style={{ padding: '8px 12px', borderRadius: '4px', border: '1px solid var(--border)', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '13px' }}
+          >
+            {brands.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+        </div>
+      )}
+
+      <div style={section}>
+        <div style={label}>Embed code — paste before {'</body>'} in your Shopify theme</div>
+        <div style={{ position: 'relative' }}>
+          <pre style={{
+            background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: '6px',
+            padding: '14px 16px', fontSize: '12px', color: 'var(--text-primary)',
+            fontFamily: 'DM Mono, monospace', overflowX: 'auto', margin: 0,
+            whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+          }}>
+            {embedCode || 'No brand found — add a brand first.'}
+          </pre>
+          {embedCode && (
+            <button
+              onClick={copy}
+              style={{
+                position: 'absolute', top: '10px', right: '10px',
+                padding: '4px 10px', fontSize: '11px', borderRadius: '4px',
+                background: copied ? 'var(--success)' : 'var(--accent)', color: '#fff',
+                border: 'none', cursor: 'pointer', fontWeight: '600',
+              }}
+            >
+              {copied ? 'Copied!' : 'Copy'}
+            </button>
+          )}
+        </div>
+        <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '8px' }}>
+          In Shopify: Online Store → Themes → Edit code → theme.liquid → paste before {'</body>'}
+        </div>
+      </div>
+
+      <div style={section}>
+        <div style={label}>Live Preview</div>
+        {selectedBrand ? (
+          <div className="demo-phone-frame" style={{
+            width: '320px',
+            height: '520px',
+            border: '12px solid #1a1a1a',
+            borderRadius: '36px',
+            position: 'relative',
+            transform: 'translate(0, 0)',
+            overflow: 'hidden',
+            background: '#ffffff',
+            boxShadow: '0 20px 40px rgba(0,0,0,0.15)',
+            margin: '20px auto 0',
+            display: 'flex',
+            flexDirection: 'column'
+          }}>
+            {/* Phone notch/speaker header */}
+            <div style={{
+              height: '24px',
+              background: '#1a1a1a',
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+              color: '#fff',
+              fontSize: '10px',
+              fontFamily: 'sans-serif',
+              padding: '0 20px',
+              flexShrink: 0
+            }}>
+              <div style={{ width: '60px', height: '12px', background: '#000', borderRadius: '0 0 8px 8px' }} />
+            </div>
+
+            {/* Simulated Store Header */}
+            <div style={{ padding: '12px 16px', borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
+              <span style={{ fontSize: '11px', fontWeight: 'bold', letterSpacing: '1px' }}>LUNA APPAREL</span>
+              <div style={{ width: '16px', height: '12px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                <span style={{ height: '2px', background: '#333', width: '100%' }} />
+                <span style={{ height: '2px', background: '#333', width: '100%' }} />
+                <span style={{ height: '2px', background: '#333', width: '100%' }} />
+              </div>
+            </div>
+
+            {/* Simulated Store Hero */}
+            <div style={{ flex: 1, padding: '32px 20px', textAlign: 'center', background: '#fcfcfd', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
+              <h4 style={{ fontSize: '18px', fontWeight: '800', margin: '0 0 8px' }}>Summer Drop</h4>
+              <p style={{ fontSize: '11px', color: '#666', margin: '0 0 16px', lineHeight: '1.4' }}>Shop the new lightweight organic linen essentials.</p>
+              <button style={{ background: '#111', color: '#fff', border: 'none', padding: '8px 16px', borderRadius: '4px', fontSize: '11px', fontWeight: '600', cursor: 'pointer' }}>Shop Now</button>
+            </div>
+
+            {/* The ChatWidget */}
+            <ChatWidget brandId={selectedBrand.id} accentColor={accentColor} />
+
+            {/* Style overrides to keep the widget confined within the phone frame */}
+            <style>{`
+              .demo-phone-frame .tw-panel {
+                position: absolute !important;
+                bottom: 0 !important;
+                right: 0 !important;
+                width: 100% !important;
+                height: calc(100% - 24px) !important;
+                border-radius: 0 !important;
+                border: none !important;
+                z-index: 100 !important;
+              }
+              .demo-phone-frame .tw-launcher {
+                position: absolute !important;
+                bottom: 20px !important;
+                right: 20px !important;
+                z-index: 99 !important;
+                box-shadow: 0 4px 16px rgba(0,0,0,0.15) !important;
+              }
+            `}</style>
+          </div>
+        ) : (
+          <div style={{ ...card, padding: '32px', textAlign: 'center', color: 'var(--text-secondary)' }}>
+            Select a brand to preview the widget
+          </div>
+        )}
+      </div>
+
+      <div style={section}>
+        <div style={label}>Customization (window.tResolvConfig keys)</div>
+        <div style={{ ...card, fontSize: '12px', fontFamily: 'DM Mono, monospace', color: 'var(--text-secondary)', lineHeight: '2' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ color: 'var(--accent)' }}>color</span>: &quot;{accentColor}&quot; — widget accent color
+            <input
+              type="color"
+              value={accentColor}
+              onChange={e => setAccentColor(e.target.value)}
+              style={{
+                width: '24px',
+                height: '18px',
+                padding: 0,
+                border: '1px solid var(--border)',
+                borderRadius: '3px',
+                cursor: 'pointer',
+                background: 'none',
+                verticalAlign: 'middle'
+              }}
+            />
+          </div>
+          <div><span style={{ color: 'var(--accent)' }}>botName</span>: &quot;Luna&quot; — AI agent name shown in header</div>
+          <div><span style={{ color: 'var(--accent)' }}>brandLabel</span>: &quot;AI Support&quot; — subtitle in header</div>
+          <div><span style={{ color: 'var(--accent)' }}>apiBase</span>: &quot;https://…&quot; — override API URL (optional)</div>
+        </div>
+      </div>
+
+      <div style={section}>
+        <div style={label}>How it works</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          {[
+            ['1', 'Customer clicks the blue chat bubble on your store'],
+            ['2', 'Luna greets them and offers quick replies'],
+            ['3', 'Customer asks about an order → Luna looks it up in Shopify instantly'],
+            ['4', 'Cancel / refund requests appear in your Escalations queue for approval'],
+            ['5', 'All chat sessions appear in your Conversations page'],
+          ].map(([n, t]) => (
+            <div key={n} style={{ display: 'flex', gap: '12px', alignItems: 'flex-start', fontSize: '13px', color: 'var(--text-secondary)' }}>
+              <div style={{ width: '22px', height: '22px', borderRadius: '50%', background: 'var(--accent)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', fontWeight: '700', flexShrink: 0, marginTop: '1px' }}>{n}</div>
+              <div style={{ paddingTop: '2px' }}>{t}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────── Integrations Tab ──
+
+function IntegrationsTab() {
+  const [aftershipKey, setAftershipKey] = useState('');
+  const [status, setStatus]             = useState(null); // { connected, key_preview }
+  const [loading, setLoading]           = useState(true);
+  const [saving, setSaving]             = useState(false);
+  const [msg, setMsg]                   = useState('');
+
+  useEffect(() => {
+    client.get('/api/v1/settings/aftership')
+      .then(r => setStatus(r.data))
+      .catch(() => setStatus({ connected: false }))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleSave = async () => {
+    if (!aftershipKey.trim()) return;
+    setSaving(true);
+    setMsg('');
+    try {
+      await client.post('/api/v1/settings/aftership', { aftership_api_key: aftershipKey.trim() });
+      setMsg('Aftership key saved. Luna will now give live tracking updates.');
+      setAftershipKey('');
+      const r = await client.get('/api/v1/settings/aftership');
+      setStatus(r.data);
+    } catch (err) {
+      setMsg(err.response?.data?.detail || 'Failed to save key.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRemove = async () => {
+    if (!window.confirm('Remove Aftership key? Luna will fall back to sharing raw tracking links.')) return;
+    setSaving(true);
+    try {
+      await client.delete('/api/v1/settings/aftership');
+      setStatus({ connected: false });
+      setMsg('Aftership key removed.');
+    } catch {
+      setMsg('Failed to remove key.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const card  = { background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '6px', padding: '20px 24px', marginBottom: '20px' };
+  const label = { fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '8px' };
+  const input = { width: '100%', padding: '8px 12px', borderRadius: '4px', border: '1px solid var(--border-strong)', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '13px', fontFamily: 'DM Mono, monospace' };
+
+  return (
+    <div>
+      {/* Aftership */}
+      <div style={card}>
+        <div style={{ fontSize: '14px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '4px' }}>
+          Aftership — Live Tracking
+        </div>
+        <div style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: '1.6', marginBottom: '16px' }}>
+          Connect Aftership to let Luna give customers real-time tracking updates
+          ("Your order is in Lahore, expected June 10.") instead of raw tracking links.
+          Supports TCS, Leopards, Trax, BlueEx, PostEx, M&amp;P, Speedex, DHL and 1100+ carriers.
+        </div>
+
+        {loading ? (
+          <div className="skeleton" style={{ height: '36px', borderRadius: '4px', width: '200px' }} />
+        ) : status?.connected ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: '13px', padding: '5px 12px', background: 'var(--success-light)', color: 'var(--success)', borderRadius: '4px', fontWeight: '600' }}>
+              ✓ Connected {status.key_preview ? `(key ending ${status.key_preview})` : ''}
+            </span>
+            <button
+              onClick={handleRemove}
+              disabled={saving}
+              style={{ padding: '5px 12px', fontSize: '12px', borderRadius: '4px', border: '1px solid var(--danger)', color: 'var(--danger)', background: 'transparent', cursor: 'pointer' }}
+            >
+              Remove key
+            </button>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxWidth: '440px' }}>
+            <div style={label}>Aftership API Key</div>
+            <input
+              type="password"
+              value={aftershipKey}
+              onChange={e => setAftershipKey(e.target.value)}
+              placeholder="at_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+              style={input}
+              onKeyDown={e => e.key === 'Enter' && handleSave()}
+            />
+            <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+              Get your key at{' '}
+              <a href="https://admin.aftership.com/apps/api" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>
+                admin.aftership.com → Apps → API
+              </a>
+              {' '}· Free plan: 100 trackings/month
+            </div>
+            <button
+              onClick={handleSave}
+              disabled={saving || !aftershipKey.trim()}
+              style={{ alignSelf: 'flex-start', padding: '7px 18px', borderRadius: '4px', background: 'var(--accent)', color: '#fff', fontSize: '13px', fontWeight: '600', border: 'none', cursor: 'pointer', opacity: saving || !aftershipKey.trim() ? 0.5 : 1 }}
+            >
+              {saving ? 'Saving…' : 'Save key'}
+            </button>
+          </div>
+        )}
+
+        {msg && (
+          <div style={{ marginTop: '12px', fontSize: '13px', color: msg.includes('ailed') ? 'var(--danger)' : 'var(--success)' }}>
+            {msg}
+          </div>
+        )}
+      </div>
+
+      {/* Carrier reference */}
+      <div style={{ ...card, background: 'var(--bg-secondary)' }}>
+        <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '10px' }}>Pakistan carrier support</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '6px' }}>
+          {['TCS', 'Leopards', 'Trax', 'BlueEx', 'PostEx', 'M&P / MNP', 'Speedex', 'Swyft', 'Call Courier', 'DHL', 'FedEx'].map(c => (
+            <div key={c} style={{ fontSize: '12px', color: 'var(--text-secondary)', padding: '4px 8px', background: 'var(--bg-primary)', borderRadius: '4px', border: '1px solid var(--border)' }}>
+              {c}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────── Main Settings Page ──
 
 const TABS = [
   { id: 'email', label: 'Email' },
   { id: 'filter', label: 'Email Filters' },
   { id: 'shopify', label: 'Shopify' },
+  { id: 'integrations', label: 'Integrations' },
   { id: 'kb', label: 'Knowledge Base' },
   { id: 'canned', label: 'Canned Responses' },
+  { id: 'widget', label: 'Chat Widget' },
   { id: 'account', label: 'Account' },
 ];
 
@@ -994,8 +1349,10 @@ export default function Settings() {
       {activeTab === 'email' && <EmailTab />}
       {activeTab === 'filter' && <FilterTab />}
       {activeTab === 'shopify' && <ShopifyTab />}
+      {activeTab === 'integrations' && <IntegrationsTab />}
       {activeTab === 'kb' && <KnowledgeBaseTab />}
       {activeTab === 'canned' && <CannedResponsesTab />}
+      {activeTab === 'widget' && <ChatWidgetTab />}
       {activeTab === 'account' && <AccountTab />}
     </div>
   );

@@ -19,6 +19,8 @@ class ActionType(str, Enum):
     REFUND = "refund"
     CANCEL_ORDER = "cancel_order"
     CHANGE_ADDRESS = "change_address"
+    RESHIP = "reship"
+    RESTORE_ORDER = "restore_order"
 
 
 class ActionStatus(str, Enum):
@@ -30,117 +32,55 @@ class ActionStatus(str, Enum):
 
 
 class ActionDetector:
-    """Detects and extracts action requests from customer messages."""
+    """Detects and extracts action requests from customer messages using AI."""
 
-    REFUND_PATTERNS = [
-        r'refund', r'money\s*back', r'get\s*my\s*money', r'want\s*a?\s*refund',
-        r'full\s*refund', r'partial\s*refund', r'reimburse', r'reimbursement'
-    ]
+    async def detect_async(self, message: str):
+        """AI-based action detection — replaces regex patterns."""
+        from src.services.intent_detector import intent_detector, IntentResult
+        result = await intent_detector.detect(message)
+        if not result.has_action:
+            return None
 
-    CANCEL_PATTERNS = [
-        r'cancel\s*(my\s*)?order', r'cancellation', r"don'?t\s*want",
-        r'stop\s*(the\s*)?order', r'cancel\s*it'
-    ]
+        action_map = {
+            "refund": "refund",
+            "cancel": "cancel_order",
+            "address_change": "change_address",
+            "reship": "reship",
+            "restore_order": "restore_order",
+        }
+        action_type = action_map.get(result.action_type)
+        if not action_type:
+            return None
 
-    ADDRESS_PATTERNS = [
-        r'change\s*(my\s*)?(shipping\s*)?address', r'update\s*(my\s*)?(shipping\s*)?address',
-        r'wrong\s*address', r'new\s*address', r'ship\s*to\s*different',
-        r'moved', r'change\s*delivery'
-    ]
+        confidence = min(0.5 + result.confidence * 0.45, 0.95)
+        extracted = {"order_id": result.order_id}
+        if result.raw_address:
+            extracted["new_address"] = {"raw": result.raw_address}
+        return {
+            "action_type": action_type,
+            "confidence": confidence,
+            "extracted_data": extracted,
+        }
 
-    def detect(self, message: str) -> Optional[Dict[str, Any]]:
-        """
-        Detect action type from message.
-
-        Returns:
-            Dict with action_type, confidence, extracted_data, or None
-        """
+    def detect(self, message: str):
+        """Sync shim — kept for compatibility. Use detect_async in async contexts."""
+        import re
         message_lower = message.lower()
+        # Broad fragment fallback
+        order_data = {"order_id": None}
+        m = re.search(r'(?:order\s*#?\s*|#)(\d{3,8})', message, re.IGNORECASE) or re.search(r'\b(\d{4,6})\b', message)
+        if m:
+            order_data["order_id"] = m.group(1)
 
-        # Check refund
-        refund_matches = sum(1 for p in self.REFUND_PATTERNS if re.search(p, message_lower))
-        if refund_matches > 0:
-            return {
-                "action_type": ActionType.REFUND.value,
-                "confidence": min(0.5 + (refund_matches * 0.15), 0.95),
-                "extracted_data": self._extract_refund_data(message)
-            }
-
-        # Check cancellation
-        cancel_matches = sum(1 for p in self.CANCEL_PATTERNS if re.search(p, message_lower))
-        if cancel_matches > 0:
-            return {
-                "action_type": ActionType.CANCEL_ORDER.value,
-                "confidence": min(0.5 + (cancel_matches * 0.15), 0.95),
-                "extracted_data": self._extract_order_data(message)
-            }
-
-        # Check address change
-        address_matches = sum(1 for p in self.ADDRESS_PATTERNS if re.search(p, message_lower))
-        if address_matches > 0:
-            return {
-                "action_type": ActionType.CHANGE_ADDRESS.value,
-                "confidence": min(0.5 + (address_matches * 0.15), 0.95),
-                "extracted_data": self._extract_address_data(message)
-            }
-
+        if any(f in message_lower for f in ['address', 'delivery address', 'shipping address']):
+            return {"action_type": "change_address", "confidence": 0.7, "extracted_data": order_data}
+        if any(f in message_lower for f in ['not received', 'never received', 'missing', 'lost', 'stolen', 'not delivered']):
+            return {"action_type": "reship", "confidence": 0.7, "extracted_data": order_data}
+        if any(f in message_lower for f in ['cancel', 'no longer want', "don't want"]):
+            return {"action_type": "cancel_order", "confidence": 0.7, "extracted_data": order_data}
+        if any(f in message_lower for f in ['refund', 'money back', 'return', 'exchange']):
+            return {"action_type": "refund", "confidence": 0.7, "extracted_data": order_data}
         return None
-
-    def _extract_order_data(self, message: str) -> Dict[str, Any]:
-        """Extract order ID from message."""
-        data = {"order_id": None}
-
-        patterns = [
-            r'order\s*#?\s*(\d{4,})',
-            r'#(\d{4,})',
-            r'\b(\d{4,6})\b'
-        ]
-
-        for pattern in patterns:
-            match = re.search(pattern, message, re.IGNORECASE)
-            if match:
-                data["order_id"] = match.group(1)
-                break
-
-        return data
-
-    def _extract_refund_data(self, message: str) -> Dict[str, Any]:
-        """Extract refund-specific data."""
-        data = self._extract_order_data(message)
-
-        # Extract amount
-        amount_match = re.search(r'\$(\d+(?:\.\d{2})?)', message)
-        if amount_match:
-            data["amount"] = float(amount_match.group(1))
-
-        # Refund type
-        if 'full' in message.lower():
-            data["refund_type"] = "full"
-        elif 'partial' in message.lower():
-            data["refund_type"] = "partial"
-        else:
-            data["refund_type"] = "full"
-
-        return data
-
-    def _extract_address_data(self, message: str) -> Dict[str, Any]:
-        """Extract address change data."""
-        data = self._extract_order_data(message)
-
-        address_parts = {}
-
-        # ZIP code
-        zip_match = re.search(r'\b(\d{5}(?:-\d{4})?)\b', message)
-        if zip_match:
-            address_parts["zip"] = zip_match.group(1)
-
-        # State abbreviation
-        state_match = re.search(r'\b([A-Z]{2})\b', message)
-        if state_match:
-            address_parts["state"] = state_match.group(1)
-
-        data["new_address"] = address_parts
-        return data
 
 
 class ActionsService:
@@ -161,7 +101,9 @@ class ActionsService:
         message: str = None,
         extracted_data: Dict = None,
         confidence: float = 0.8,
-        ai_reasoning: str = None
+        ai_reasoning: str = None,
+        brand_id: str = None,
+        ticket_id: str = None,
     ) -> Dict[str, Any]:
         """
         Create a new pending action for tenant.
@@ -191,6 +133,10 @@ class ActionsService:
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }
+            if ticket_id:
+                action_data["ticket_id"] = ticket_id
+            if brand_id:
+                action_data["brand_id"] = brand_id
 
             result = supabase_insert("actions", action_data)
             action_id = result.get("id")
@@ -221,21 +167,33 @@ class ActionsService:
         customer_email: str,
         customer_name: str,
         message: str,
-        ai_analysis: Dict = None
+        ai_analysis: Dict = None,
+        brand_id: str = None,
+        ticket_id: str = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Detect action from message and create if found.
-        Deduplicates: skips creation when a pending action already exists for the
-        same tenant + action_type + order_id to prevent duplicate escalations.
+        Deduplicates: skips creation when a pending or recently-executed action already
+        exists for the same tenant + action_type + order_id.
         """
-        detection = self.detector.detect(message)
+        detection = await self.detector.detect_async(message)
         if not detection:
+            return None
+
+        # restore_order is handled exclusively by return_actions_integration (primary agent path)
+        # which checks restocked status first. Never create it here.
+        if detection["action_type"] == "restore_order":
             return None
 
         order_id = detection["extracted_data"].get("order_id")
 
-        # Dedup: don't create a second pending action for the same order + type
+        # Don't create an action without an order number — the AI already asks for it.
+        if not order_id:
+            logger.info(f"[Actions] Skipping action creation — no order_id for {detection['action_type']}")
+            return None
+
         if order_id:
+            # Dedup: don't create a second pending action for the same order + type
             try:
                 existing = supabase_select("actions", {
                     "tenant_id": f"eq.{tenant_id}",
@@ -257,6 +215,28 @@ class ActionsService:
             except Exception as dedup_err:
                 logger.warning(f"[Actions] Dedup check failed (continuing): {dedup_err}")
 
+            # Also skip if the action was already executed (prevents re-creation after AI reply)
+            try:
+                executed = supabase_select("actions", {
+                    "tenant_id": f"eq.{tenant_id}",
+                    "action_type": f"eq.{detection['action_type']}",
+                    "order_id": f"eq.{order_id}",
+                    "status": f"in.(executed,approved)",
+                })
+                if executed:
+                    logger.info(
+                        f"[Actions] Duplicate skipped — {detection['action_type']} for order "
+                        f"{order_id} already executed ({executed[0]['id']})"
+                    )
+                    return {
+                        "success": True,
+                        "action_id": executed[0]["id"],
+                        "action_type": detection["action_type"],
+                        "status": "duplicate_skipped",
+                    }
+            except Exception as exec_dedup_err:
+                logger.warning(f"[Actions] Executed dedup check failed (continuing): {exec_dedup_err}")
+
         return await self.create_action(
             tenant_id=tenant_id,
             action_type=detection["action_type"],
@@ -266,7 +246,9 @@ class ActionsService:
             message=message,
             extracted_data=detection["extracted_data"],
             confidence=detection["confidence"],
-            ai_reasoning=ai_analysis.get("reasoning") if ai_analysis else None
+            ai_reasoning=ai_analysis.get("reasoning") if ai_analysis else None,
+            brand_id=brand_id,
+            ticket_id=ticket_id,
         )
 
     async def get_pending_actions(
@@ -386,15 +368,56 @@ class ActionsService:
                     )
 
                 elif action_type == ActionType.CHANGE_ADDRESS.value:
-                    new_address = action.get("extracted_data", {}).get("new_address", {})
+                    extracted_data = action.get("extracted_data", {})
+                    new_address = extracted_data.get("new_address", {})
                     if not new_address:
-                        await self._mark_failed(action_id, "New address not provided", "missing_address")
-                        return {"success": False, "error": "New address is required"}
+                        # No structured address — team needs to manually update in Shopify admin
+                        execution_result = {
+                            "success": True,
+                            "manual_action_required": True,
+                            "message": "Please update the shipping address manually in Shopify admin — see customer message for details.",
+                            "order_id": order_id,
+                            "order_name": f"#{order_id}",
+                            "new_address_text": extracted_data.get("new_address_text"),
+                        }
+                    else:
+                        execution_result = await shopify_client.update_shipping_address(
+                            order_id=order_id,
+                            new_address=new_address,
+                            customer_name=action.get("customer_name")
+                        )
 
-                    execution_result = await shopify_client.update_shipping_address(
-                        order_id=order_id,
-                        new_address=new_address
+                elif action_type == ActionType.RESHIP.value:
+                    # Reship is handled manually — team creates replacement shipment in Shopify admin
+                    execution_result = {
+                        "success": True,
+                        "manual_action_required": True,
+                        "message": "Please create a replacement shipment in Shopify admin for this order.",
+                        "order_id": order_id,
+                        "order_name": f"#{order_id}",
+                    }
+
+                elif action_type == ActionType.RESTORE_ORDER.value:
+                    # Check restocked status in real time, then try Shopify reopen.json
+                    order_resp = await shopify_client.get_order(order_id)
+                    if not order_resp.get("success") or not order_resp.get("order"):
+                        raise ShopifyError(f"Order #{order_id} not found in Shopify.", ShopifyErrorCode.ORDER_NOT_FOUND)
+                    order_raw = order_resp["order"]
+                    fulfillment_status = order_raw.get("fulfillment_status", "")
+                    line_items = order_raw.get("line_items", [])
+                    is_restocked = (
+                        fulfillment_status == "restocked" or
+                        any(item.get("fulfillment_status") == "restocked" for item in line_items)
                     )
+                    if is_restocked:
+                        raise ShopifyError(
+                            "Order inventory has been restocked — this order cannot be restored via Shopify. "
+                            "The customer will need to place a new order.",
+                            "restore_not_possible"
+                        )
+                    if not order_raw.get("cancelled_at"):
+                        raise ShopifyError("Order is not cancelled — nothing to restore.", ShopifyErrorCode.INVALID_REQUEST)
+                    execution_result = await shopify_client.reopen_order(order_id)
 
                 else:
                     await self._mark_failed(action_id, f"Unknown action type: {action_type}", "invalid_action_type")
@@ -412,7 +435,7 @@ class ActionsService:
                     "error_code": e.error_code
                 }
 
-            # Success - update status
+            # Success - update action status
             supabase_update("actions", {"id": f"eq.{action_id}"}, {
                 "status": ActionStatus.EXECUTED.value,
                 "execution_result": execution_result,
@@ -425,6 +448,9 @@ class ActionsService:
 
             logger.info(f"[Actions] Executed {action_type} action {action_id}")
 
+            # Post-execution: send branded confirmation email + resolve ticket
+            await self._post_execution_notify(action, action_type, execution_result)
+
             return {
                 "success": True,
                 "message": execution_result.get("message", f"{action_type} completed"),
@@ -435,6 +461,141 @@ class ActionsService:
             logger.error(f"[Actions] Approve error: {e}")
             await self._mark_failed(action_id, str(e), "unknown_error")
             return {"success": False, "error": str(e)}
+
+    async def _post_execution_notify(
+        self,
+        action: dict,
+        action_type: str,
+        execution_result: dict,
+    ) -> None:
+        """
+        After a successful Shopify execution:
+        1. Send a branded confirmation email via brand Gmail.
+        2. Resolve the linked ticket and append the sent message.
+        Fails silently — never blocks the approval response.
+        """
+        try:
+            customer_email = action.get("customer_email", "")
+            ticket_id = action.get("ticket_id")
+            brand_id = action.get("brand_id")
+
+            if not customer_email:
+                return
+
+            # Fetch ticket for context (subject, messages, customer_name)
+            ticket = None
+            if ticket_id:
+                rows = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
+                ticket = rows[0] if rows else None
+
+            # Fetch brand for Gmail credentials and name — fall back to tenant_id lookup
+            if brand_id:
+                brand_rows = supabase_select("brands", {
+                    "id": f"eq.{brand_id}",
+                    "gmail_connected": "is.true",
+                })
+            else:
+                tenant_id_lookup = action.get("tenant_id")
+                brand_rows = supabase_select("brands", {
+                    "tenant_id": f"eq.{tenant_id_lookup}",
+                    "gmail_connected": "is.true",
+                }) if tenant_id_lookup else []
+
+            if not brand_rows:
+                logger.info(f"[Actions] No Gmail-connected brand (brand_id={brand_id}) — skipping confirmation email")
+                return
+            brand = brand_rows[0]
+
+            customer_name = (
+                action.get("customer_name")
+                or (ticket.get("customer_name") if ticket else None)
+                or customer_email.split("@")[0]
+            ).capitalize()
+            brand_name = brand.get("name", "our team")
+            order_name = execution_result.get("order_name") or f"your order"
+
+            if action_type == ActionType.CANCEL_ORDER.value:
+                body = (
+                    f"Hey {customer_name},\n\n"
+                    f"Your cancellation request for order {order_name} has been processed.\n\n"
+                    f"Your order has been successfully cancelled. "
+                    f"If you paid by card, your refund will appear within 3–5 business days depending on your bank.\n\n"
+                    f"If you have any other questions, just reply to this email.\n\n"
+                    f"Luna\n{brand_name}"
+                )
+            elif action_type == ActionType.REFUND.value:
+                amount = execution_result.get("amount", "")
+                amount_str = f"PKR {amount:.2f}" if isinstance(amount, (int, float)) else str(amount)
+                body = (
+                    f"Hey {customer_name},\n\n"
+                    f"Your refund for order {order_name} has been processed.\n\n"
+                    f"{amount_str} will be returned to your original payment method "
+                    f"within 3–5 business days, depending on your bank.\n\n"
+                    f"If you have any questions, just reply to this email.\n\n"
+                    f"Luna\n{brand_name}"
+                )
+            elif action_type == ActionType.CHANGE_ADDRESS.value:
+                if execution_result.get("manual_action_required"):
+                    body = (
+                        f"Hey {customer_name},\n\n"
+                        f"We've received your address change request for order {order_name} "
+                        f"and our team is updating it right now.\n\n"
+                        f"You'll receive a shipping confirmation once the address is updated.\n\n"
+                        f"If you have any questions, just reply to this email.\n\n"
+                        f"Luna\n{brand_name}"
+                    )
+                else:
+                    body = (
+                        f"Hey {customer_name},\n\n"
+                        f"Your shipping address has been updated for order {order_name}.\n\n"
+                        f"If you have any questions, just reply to this email.\n\n"
+                        f"Luna\n{brand_name}"
+                    )
+            elif action_type == ActionType.RESHIP.value:
+                body = (
+                    f"Hey {customer_name},\n\n"
+                    f"We've looked into your delivery issue for order {order_name} and "
+                    f"arranged a replacement shipment for you.\n\n"
+                    f"You'll receive a tracking update once it ships.\n\n"
+                    f"Luna\n{brand_name}"
+                )
+            elif action_type == ActionType.RESTORE_ORDER.value:
+                body = (
+                    f"Hey {customer_name},\n\n"
+                    f"Great news! Your order {order_name} has been restored and is now active again.\n\n"
+                    f"You'll receive a shipping confirmation once your order processes.\n\n"
+                    f"If you have any questions, just reply to this email.\n\n"
+                    f"Luna\n{brand_name}"
+                )
+            else:
+                return  # no standard confirmation for other types
+
+            # Send via brand Gmail
+            from src.services.brand_gmail_service import brand_gmail_service
+            subject = (ticket.get("subject") if ticket else None) or f"Your {action_type.replace('_', ' ')}"
+            reply_subject = subject if subject.startswith("Re:") else f"Re: {subject}"
+            send_result = await brand_gmail_service.send_email(brand, customer_email, reply_subject, body)
+            email_sent = send_result.get("success", False)
+            logger.info(f"[Actions] Confirmation email sent={email_sent} for action {action.get('id')} → {customer_email}")
+
+            # Update ticket: append message, resolve status
+            if ticket_id and ticket:
+                existing_msgs = list(ticket.get("messages") or [])
+                existing_msgs.append({
+                    "from": "AI Agent",
+                    "body": body,
+                    "sent_at": datetime.now(timezone.utc).isoformat(),
+                    "direction": "outbound" if email_sent else "draft",
+                })
+                supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {
+                    "status": "resolved",
+                    "messages": existing_msgs,
+                    "email_sent": email_sent,
+                })
+                logger.info(f"[Actions] Ticket {ticket_id} resolved after {action_type} execution")
+
+        except Exception as e:
+            logger.warning(f"[Actions] _post_execution_notify failed (non-blocking): {e}")
 
     async def reject_action(
         self,

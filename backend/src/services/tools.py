@@ -124,8 +124,10 @@ class V3Tools:
                 return {"error": f"Order #{order_id} not found.", "order_number": order_id}
 
             o = shopify_orders[0]
-            tracking = o.get("fulfillments", [{}])[0].get("tracking_number") if o.get("fulfillments") else None
-            tracking_url = o.get("fulfillments", [{}])[0].get("tracking_url") if o.get("fulfillments") else None
+            _first_fulfillment = o.get("fulfillments", [{}])[0] if o.get("fulfillments") else {}
+            tracking = _first_fulfillment.get("tracking_number")
+            tracking_url = _first_fulfillment.get("tracking_url")
+            tracking_company = _first_fulfillment.get("tracking_company")
 
             result = {
                 "success": True,
@@ -133,8 +135,11 @@ class V3Tools:
                 "order_id": order_id,
                 "order_number": o.get("order_number"),
                 "status": o.get("fulfillment_status") or "unfulfilled",
+                "financial_status": o.get("financial_status"),
+                "cancelled_at": o.get("cancelled_at"),
                 "tracking_number": tracking,
                 "tracking_url": tracking_url,
+                "tracking_company": tracking_company,
                 "total_amount": o.get("total_price"),
                 "items": [
                     {

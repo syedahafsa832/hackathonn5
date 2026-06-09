@@ -21,6 +21,8 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 
+logging.getLogger('googleapiclient.discovery_cache').setLevel(logging.ERROR)
+
 from src.lib.supabase_client import supabase_select, supabase_update
 
 logger = logging.getLogger(__name__)
@@ -217,71 +219,101 @@ class BrandGmailService:
             logger.error(f"[BrandGmail] Failed to build service for brand {brand.get('id')}: {e}")
             return None
 
+    @staticmethod
+    def _decode_body(payload: dict) -> str:
+        """Decode full email body from Gmail API payload (base64url encoded)."""
+        import base64
+
+        def _decode(data: str) -> str:
+            try:
+                padded = data + "=" * (4 - len(data) % 4)
+                return base64.urlsafe_b64decode(padded).decode("utf-8", errors="replace")
+            except Exception:
+                return ""
+
+        parts = payload.get("parts", [])
+        if not parts:
+            return _decode(payload.get("body", {}).get("data", ""))
+
+        # Prefer text/plain; fall back to text/html
+        plain = ""
+        html = ""
+        for part in parts:
+            mime = part.get("mimeType", "")
+            if mime == "text/plain":
+                plain = _decode(part.get("body", {}).get("data", ""))
+            elif mime == "text/html":
+                html = _decode(part.get("body", {}).get("data", ""))
+            elif mime.startswith("multipart/"):
+                nested = BrandGmailService._decode_body(part)
+                if nested and not plain:
+                    plain = nested
+        return plain or html
+
     async def get_new_emails(self, brand: dict, max_results: int = 10, since_dt=None) -> List[Dict]:
-        """Fetch + mark-as-read emails for one brand received after since_dt (or unread if no timestamp)."""
+        """Fetch + mark-as-read emails for one brand received after since_dt (or unread if no timestamp).
+        Raises on network/API failure so the caller can skip updating last_polled_at."""
         svc = self._build_service(brand)
         if not svc:
             logger.warning(f"[BrandGmail] Could not build Gmail service for brand {brand.get('name')}")
             return []
 
-        try:
-            if since_dt:
-                # Use epoch seconds for Gmail after: filter (more reliable than date strings)
-                epoch = int(since_dt.timestamp())
-                q = f"in:inbox after:{epoch}"
-            else:
-                q = "is:unread in:inbox"
-            res = svc.users().messages().list(
-                userId="me", q=q, maxResults=max_results
-            ).execute()
-            messages = res.get("messages", [])
-            logger.info(f"[BrandGmail] {len(messages)} unread message(s) in {brand.get('name')} inbox")
+        if since_dt:
+            epoch = int(since_dt.timestamp())
+            q = f"after:{epoch} -in:spam -in:trash"
+        else:
+            q = "is:unread -in:spam -in:trash"
+        res = svc.users().messages().list(
+            userId="me", q=q, maxResults=max_results
+        ).execute()
+        messages = res.get("messages", [])
+        logger.info(f"[BrandGmail] {len(messages)} message(s) in {brand.get('name')} inbox")
 
-            emails = []
-            for msg in messages[:max_results]:
-                try:
-                    full = svc.users().messages().get(userId="me", id=msg["id"]).execute()
-                    headers = full["payload"]["headers"]
-                    subject = next((h["value"] for h in headers if h["name"] == "Subject"), "No Subject")
-                    sender  = next((h["value"] for h in headers if h["name"] == "From"), "Unknown")
+        emails = []
+        for msg in messages[:max_results]:
+            try:
+                full = svc.users().messages().get(userId="me", id=msg["id"]).execute()
+                headers = full["payload"]["headers"]
+                subject = next((h["value"] for h in headers if h["name"] == "Subject"), "No Subject")
+                sender  = next((h["value"] for h in headers if h["name"] == "From"), "Unknown")
 
-                    # Parse "Name <email>" format
-                    sender_name  = sender
-                    sender_email = sender
-                    if "<" in sender and ">" in sender:
-                        import re
-                        sender_name = sender.split("<")[0].strip()
-                        m = re.search(r"<(.+?)>", sender)
-                        if m:
-                            sender_email = m.group(1)
+                # Parse "Name <email>" format
+                sender_name  = sender
+                sender_email = sender
+                if "<" in sender and ">" in sender:
+                    import re
+                    sender_name = sender.split("<")[0].strip()
+                    m = re.search(r"<(.+?)>", sender)
+                    if m:
+                        sender_email = m.group(1)
 
-                    # Mark as read immediately
-                    svc.users().messages().batchModify(
-                        userId="me",
-                        body={"ids": [msg["id"]], "removeLabelIds": ["UNREAD"]},
-                    ).execute()
+                body = self._decode_body(full["payload"])
+                if not body:
+                    body = full.get("snippet", "")
 
-                    emails.append({
-                        "id":           msg["id"],
-                        "thread_id":    full.get("threadId"),
-                        "subject":      subject,
-                        "sender_name":  sender_name,
-                        "sender_email": sender_email,
-                        "body":         full.get("snippet", ""),
-                        "brand_id":     brand["id"],
-                        "brand_name":   brand.get("name", ""),
-                        # Fields used by email_filter_service
-                        "label_ids":    full.get("labelIds", []),
-                        "headers":      {h["name"].lower(): h["value"] for h in headers},
-                    })
-                except Exception as e:
-                    logger.error(f"[BrandGmail] Error reading message {msg['id']}: {e}")
+                # Mark as read immediately
+                svc.users().messages().batchModify(
+                    userId="me",
+                    body={"ids": [msg["id"]], "removeLabelIds": ["UNREAD"]},
+                ).execute()
 
-            return emails
+                emails.append({
+                    "id":           msg["id"],
+                    "thread_id":    full.get("threadId"),
+                    "subject":      subject,
+                    "sender_name":  sender_name,
+                    "sender_email": sender_email,
+                    "body":         body,
+                    "brand_id":     brand["id"],
+                    "brand_name":   brand.get("name", ""),
+                    # Fields used by email_filter_service
+                    "label_ids":    full.get("labelIds", []),
+                    "headers":      {h["name"].lower(): h["value"] for h in headers},
+                })
+            except Exception as e:
+                logger.error(f"[BrandGmail] Error reading message {msg['id']}: {e}")
 
-        except Exception as e:
-            logger.error(f"[BrandGmail] Error fetching emails for brand {brand.get('name')}: {e}")
-            return []
+        return emails
 
     async def send_email(self, brand: dict, to_email: str, subject: str, body: str) -> Dict[str, Any]:
         """Send an email from a brand's connected Gmail account."""
@@ -297,6 +329,25 @@ class BrandGmailService:
             return {"success": True, "id": sent.get("id")}
         except Exception as e:
             logger.error(f"[BrandGmail] Send error for brand {brand.get('name')}: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def send_reply_in_thread(self, brand: dict, to_email: str, subject: str, body: str, thread_id: str) -> Dict[str, Any]:
+        """Send a reply in an existing Gmail thread (e.g. CSAT follow-up)."""
+        svc = self._build_service(brand)
+        if not svc:
+            return {"success": False, "error": "Gmail not connected for this brand"}
+        try:
+            msg = MIMEText(body)
+            msg["to"]      = to_email
+            msg["subject"] = subject if subject.startswith("Re:") else f"Re: {subject}"
+            raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+            sent = svc.users().messages().send(
+                userId="me",
+                body={"raw": raw, "threadId": thread_id},
+            ).execute()
+            return {"success": True, "id": sent.get("id")}
+        except Exception as e:
+            logger.error(f"[BrandGmail] Thread reply error for brand {brand.get('name')}: {e}")
             return {"success": False, "error": str(e)}
 
     def get_connected_brands(self) -> List[dict]:
