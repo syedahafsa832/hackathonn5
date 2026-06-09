@@ -982,7 +982,7 @@ function ChatWidgetTab() {
   window.tResolvConfig = {
     brandId:    "${selectedBrand.id}",
     botName:    "Luna",
-    color:      "#6366F1",
+    color:      "#FFFFFF",
     brandLabel: "AI Support"
   };
 </script>

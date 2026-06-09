@@ -26,7 +26,7 @@
   var BRAND_ID    = _cfg.brandId    || scriptEl.getAttribute('data-brand');
   var API_BASE    = _cfg.apiBase    || scriptEl.getAttribute('data-api-base') ||
                     scriptEl.src.replace(/\/widget\.js(\?.*)?$/, '');
-  var ACCENT      = _cfg.color      || scriptEl.getAttribute('data-color') || '#6366F1';
+  var ACCENT      = _cfg.color      || scriptEl.getAttribute('data-color') || '#FFFFFF';
   var BOT_NAME    = _cfg.botName    || scriptEl.getAttribute('data-bot-name') || 'Luna';
   var BRAND_LABEL = _cfg.brandLabel || scriptEl.getAttribute('data-brand-label') || 'AI Support';
   var POSITION    = _cfg.position   || 'bottom-right';
@@ -563,7 +563,9 @@
 
     var title = document.createElement('div');
     title.className = 'resolv-order-title';
-    title.textContent = '🛒  Order #' + orderData.order_number;
+    // agent returns camelCase; accept both forms
+    var orderNum = orderData.orderNumber || orderData.order_number || '';
+    title.textContent = '🛒  Order #' + orderNum;
 
     var badge = document.createElement('span');
     badge.className = 'resolv-status-badge';
@@ -593,12 +595,14 @@
     if (status === 'cancelled') {
       var cancelInfo = document.createElement('div');
       cancelInfo.className = 'resolv-order-cancelled-info';
-      if (orderData.cancelled_at) {
+      var cancelledAt = orderData.cancelledAt || orderData.cancelled_at;
+      if (cancelledAt) {
         var d1 = document.createElement('div');
-        d1.innerHTML = '✕ Cancelled on ' + fmtDate(orderData.cancelled_at);
+        d1.innerHTML = '✕ Cancelled on ' + fmtDate(cancelledAt);
         cancelInfo.appendChild(d1);
       }
-      if (orderData.payment_status === 'paid') {
+      var payStatus = orderData.paymentStatus || orderData.payment_status;
+      if (payStatus === 'paid') {
         var d2 = document.createElement('div');
         d2.style.color = '#10B981';
         d2.innerHTML = '✓ Refund in progress';
