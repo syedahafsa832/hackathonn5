@@ -107,7 +107,10 @@
       "Bash(awk '{print $NF}')",
       "Bash(git mv *)",
       "PowerShell(Stop-Process *)",
-      "PowerShell(cmd /c \"move E:\\\\hack5\\\\hack5\\\\ai-ops-console E:\\\\hack5\\\\hack5\\\\dashboard\" 2>&1)"
+      "PowerShell(cmd /c \"move E:\\\\hack5\\\\hack5\\\\ai-ops-console E:\\\\hack5\\\\hack5\\\\dashboard\" 2>&1)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)"
     ]
   }
 }
