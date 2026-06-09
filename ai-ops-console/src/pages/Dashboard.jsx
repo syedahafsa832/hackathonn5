@@ -143,10 +143,10 @@ export default function Dashboard() {
           subtitle="Real-time open chats" 
         />
         <StatCard
-          label="AI Handled"
+          label="AI Responded"
           value={stats?.aiHandledPct != null ? `${stats?.aiHandledPct}%` : '—'}
           loading={loading}
-          subtitle="Resolution without human"
+          subtitle="Replies sent by AI automatically"
         />
         <StatCard 
           label="Escalated Chats" 
@@ -159,6 +159,17 @@ export default function Dashboard() {
           value={stats?.pendingApprovals ?? 0}
           loading={loading}
           subtitle="Actions awaiting review"
+        />
+        <StatCard
+          label="Avg Response Time"
+          value={(() => {
+            const s = stats?.avgResponseSeconds;
+            if (s == null) return '—';
+            if (s < 60) return `${s}s`;
+            return `${Math.floor(s / 60)}m ${s % 60}s`;
+          })()}
+          loading={loading}
+          subtitle="Time to first AI reply (7d)"
         />
       </div>
 
@@ -199,7 +210,11 @@ export default function Dashboard() {
                     onMouseLeave={e => e.currentTarget.style.background = i % 2 === 1 ? 'var(--bg-secondary)' : 'var(--bg-primary)'}
                   >
                     <td style={{ padding: '10px 16px', fontFamily: 'DM Mono, monospace', fontSize: '12px', color: 'var(--text-muted)' }}>#{String(c.id).slice(0, 8)}</td>
-                    <td style={{ padding: '10px 16px', textTransform: 'capitalize' }}>{c.channel}</td>
+                    <td style={{ padding: '10px 16px' }}>
+                      {c.channel === 'chat'
+                        ? <Badge status="chat" />
+                        : <span style={{ textTransform: 'capitalize', fontSize: '13px', color: 'var(--text-secondary)' }}>{c.channel || 'email'}</span>}
+                    </td>
                     <td style={{ padding: '10px 16px' }}>{c.customer_email || c.sender_id || '—'}</td>
                     <td style={{ padding: '10px 16px', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.last_message || '—'}</td>
                     <td style={{ padding: '10px 16px', color: 'var(--text-muted)', fontSize: '13px', fontFamily: 'DM Mono, monospace' }}>{formatDate(c.updated_at)}</td>

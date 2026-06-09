@@ -5,6 +5,7 @@ Shopify connection, account settings, knowledge base, and Gmail management.
 """
 import os
 import logging
+from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 from typing import Optional, List
@@ -429,6 +430,14 @@ async def _get_tenant_brand_async(tenant_id: str) -> Optional[dict]:
                 })
                 if brands:
                     return brands[0]
+
+        # Final fallback: any brand owned by this tenant, regardless of is_active or gmail_connected.
+        # Catches the case where gmail_connected was just set to False (token revoked) and the
+        # brand is technically inactive or has a null is_active column.
+        any_brand = supabase_select("brands", {"tenant_id": f"eq.{tenant_id}"})
+        if any_brand:
+            return any_brand[0]
+
     except Exception:
         pass
     return None  # NO global fallback — prevents cross-tenant data leak
@@ -556,6 +565,67 @@ async def get_gmail_queue_status(tenant: TenantContext = Depends(get_current_ten
     except Exception as e:
         logger.error(f"Queue status error: {e}")
         return {"queued_count": 0, "sent_24h": 0, "failed_count": 0, "hourly_count": 0, "last_polled_at": None}
+
+
+# ==================== Aftership Integration ====================
+
+class AftershipKeyRequest(BaseModel):
+    aftership_api_key: str
+
+
+@router.get("/aftership")
+async def get_aftership_status(tenant: TenantContext = Depends(get_current_tenant)):
+    """Return whether Aftership is configured for this brand."""
+    try:
+        brand = await _get_tenant_brand_async(tenant.tenant_id)
+        if not brand:
+            return {"connected": False}
+        key = brand.get("aftership_api_key") or ""
+        return {
+            "connected": bool(key),
+            "key_preview": f"...{key[-4:]}" if len(key) > 4 else ("set" if key else ""),
+        }
+    except Exception as e:
+        logger.error(f"Aftership status error: {e}")
+        return {"connected": False}
+
+
+@router.post("/aftership")
+async def save_aftership_key(body: AftershipKeyRequest, tenant: TenantContext = Depends(get_current_tenant)):
+    """Save (or clear) the Aftership API key for this brand."""
+    try:
+        brand = await _get_tenant_brand_async(tenant.tenant_id)
+        if not brand:
+            raise HTTPException(status_code=404, detail="No brand found for this account")
+        supabase_update("brands", {"id": f"eq.{brand['id']}"}, {
+            "aftership_api_key": body.aftership_api_key.strip() or None,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Aftership key save error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save Aftership key")
+
+
+@router.delete("/aftership")
+async def remove_aftership_key(tenant: TenantContext = Depends(get_current_tenant)):
+    """Remove the Aftership API key from this brand."""
+    try:
+        brand = await _get_tenant_brand_async(tenant.tenant_id)
+        if not brand:
+            raise HTTPException(status_code=404, detail="No brand found")
+        supabase_update("brands", {"id": f"eq.{brand['id']}"}, {
+            "aftership_api_key": None,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Aftership key remove error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to remove Aftership key")
 
 
 # ==================== Health Check ====================

@@ -220,8 +220,10 @@ class EmailGuardianService:
                 )
 
             # Unknown classification: allow through (fail-open).
-            # auto_reply_enabled=False so the AI doesn't blindly reply to ambiguous mail;
-            # the ticket will appear in the inbox for manual review.
+            # Defer to the brand's auto_reply_enabled setting — the processor's own
+            # confidence gate (default 65%) still prevents low-quality auto-replies.
+            # Hardcoding False here blocked legitimate short emails (e.g. "hii") where
+            # the guardian can't classify intent but the AI gets high reply confidence.
             if classification == "unknown":
                 return GuardianResult(
                     decision="allowed",
@@ -229,7 +231,7 @@ class EmailGuardianService:
                     confidence=confidence,
                     reason=None,
                     quarantine_id=None,
-                    auto_reply_enabled=False,
+                    auto_reply_enabled=auto_reply_enabled,
                 )
 
             return GuardianResult(

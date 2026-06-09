@@ -26,19 +26,22 @@ class ActionsManager:
     RETURN_WINDOW_DAYS = 30
 
     def __init__(self):
-        self.shop_name = os.getenv("SHOPIFY_SHOP_NAME")
-        self.shopify_token = os.getenv("SHOPIFY_ACCESS_TOKEN")
+        # Legacy single-store credentials — used only when tenant_id is not provided.
+        # Real tenants must have their Shopify creds stored in the brands/tenants table.
+        self._legacy_shop_name = os.getenv("SHOPIFY_SHOP_NAME")
+        self._legacy_token = os.getenv("SHOPIFY_ACCESS_TOKEN")
         self.api_version = os.getenv("SHOPIFY_API_VERSION", "2024-01")
 
     def _shopify_request(self, endpoint: str, params: dict = None) -> Optional[Dict]:
-        """Make authenticated request to Shopify Admin API."""
-        if not self.shop_name or not self.shopify_token:
-            logger.error("Shopify credentials not configured!")
+        """Legacy single-store Shopify request using global env vars.
+        Only used when no tenant_id is available (local dev / legacy fallback)."""
+        if not self._legacy_shop_name or not self._legacy_token:
+            logger.error("[ActionsManager] No legacy Shopify credentials — set SHOPIFY_SHOP_NAME + SHOPIFY_ACCESS_TOKEN or connect a brand")
             return None
 
-        url = f"https://{self.shop_name}.myshopify.com/admin/api/{self.api_version}/{endpoint}"
+        url = f"https://{self._legacy_shop_name}.myshopify.com/admin/api/{self.api_version}/{endpoint}"
         headers = {
-            "X-Shopify-Access-Token": self.shopify_token,
+            "X-Shopify-Access-Token": self._legacy_token,
             "Content-Type": "application/json"
         }
 
@@ -55,32 +58,26 @@ class ActionsManager:
             logger.error(f"Shopify request failed: {e}")
             return None
 
-    async def check_return_eligibility(self, order_id: str, email: str) -> Dict[str, Any]:
+    async def check_return_eligibility(
+        self,
+        order_id: str,
+        email: str,
+        tenant_id: Optional[str] = None,
+        brand_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Verify if an order is eligible for return.
-
-        Args:
-            order_id: The order number or ID
-            email: Customer email for verification
-
-        Returns:
-            Structured JSON:
-            {
-                "eligible": true/false,
-                "reason": "...",
-                "order": {...},
-                "items": [...]
-            }
+        When tenant_id is provided, fetches order using the tenant's own Shopify credentials.
         """
         try:
             # Step 1: Fetch order from Shopify
-            order = await self._get_order_from_shopify(order_id, email)
+            order = await self._get_order_from_shopify(order_id, email, tenant_id=tenant_id)
 
             if not order:
                 return {
                     "eligible": False,
                     "eligibility_verified": False,
-                    "reason": "Order #1002 was not found in our system. Our team will verify and process your request manually.",
+                    "reason": f"Order #{order_id} was not found in our system. Our team will verify and process your request manually.",
                     "order": None,
                     "items": [],
                     "requires_manual_review": True,
@@ -101,7 +98,10 @@ class ActionsManager:
                     "eligible": False,
                     "reason": "This order hasn't been delivered yet, so it's not eligible for return.",
                     "order": self._extract_order_summary(order),
-                    "items": self._extract_items(order)
+                    "items": self._extract_items(order),
+                    "staging_required": True,
+                    "action_hint": "cancel_order",
+                    "fulfillment_status": fulfillment_status,
                 }
 
             # Step 4: Check return window (30 days)
@@ -167,56 +167,58 @@ class ActionsManager:
                 "error": str(e)
             }
 
-    async def _get_order_from_shopify(self, order_id: str, email: str) -> Optional[Dict]:
-        """Fetch order from Shopify by ID or name, optionally filtered by email."""
+    async def _get_order_from_shopify(
+        self,
+        order_id: str,
+        email: str,
+        tenant_id: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Fetch order from Shopify by ID or name.
+        Uses per-tenant ShopifyClient when tenant_id is provided; falls back to legacy env vars."""
         logger.info(f"[Shopify] Looking up order: {order_id}, email: {email}")
 
-        # Method 1: Try searching by order name (Shopify uses # prefix)
-        data = self._shopify_request(f"orders.json?name=%23{order_id}&status=any")
+        # ── Per-tenant path (preferred): use stored brand/tenant credentials ──
+        if tenant_id:
+            try:
+                from src.services.shopify_service import shopify_service, ShopifyError
+                client = await shopify_service.get_client_for_tenant(tenant_id)
+                result = await client.get_order(order_id)
+                if result.get("success") and result.get("order"):
+                    order = result["order"]
+                    logger.info(f"[Shopify] Found order #{order.get('order_number')} via tenant client")
+                    return order
+            except Exception as e:
+                logger.warning(f"[Shopify] Per-tenant order lookup failed: {e}")
+            return None
 
+        # ── Legacy path: global env var credentials ──
+        data = self._shopify_request(f"orders.json?name=%23{order_id}&status=any")
         if data and data.get("orders"):
-            logger.info(f"[Shopify] Found {len(data['orders'])} orders with name #1002")
             orders = data["orders"]
-            # If email provided, try to match
             if email:
                 for order in orders:
                     if order.get("email", "").lower() == email.lower():
-                        logger.info(f"[Shopify] Matched order by email: {order.get('order_number')}")
                         return order
-                # Return first order if no email match but order found
-                logger.info(f"[Shopify] Using first order (no email match): {orders[0].get('order_number')}")
-                return orders[0]
-            return orders[0] if orders else None
+            return orders[0]
 
-        # Method 2: Try without the # prefix
         data = self._shopify_request(f"orders.json?name={order_id}&status=any")
         if data and data.get("orders"):
-            logger.info(f"[Shopify] Found orders without # prefix")
             return data["orders"][0]
 
-        # Method 3: Try searching by customer email to find their orders
         if email:
             data = self._shopify_request(f"orders.json?email={email}&status=any")
             if data and data.get("orders"):
-                logger.info(f"[Shopify] Found {len(data['orders'])} orders for email {email}")
-                # Look for matching order number
                 for order in data["orders"]:
                     if str(order.get("order_number")) == str(order_id):
-                        logger.info(f"[Shopify] Matched order by number from email search: {order_id}")
                         return order
-                # Return most recent order if exact match not found
                 return data["orders"][0]
 
-        # Method 4: Try direct order ID lookup (using the numeric order ID)
-        # First convert order_number to order ID if needed
         try:
-            # Try the order_id directly as it might be the Shopify order ID
             data = self._shopify_request(f"orders/{order_id}.json")
             if data and data.get("order"):
-                logger.info(f"[Shopify] Found order by direct ID lookup")
                 return data["order"]
         except Exception as e:
-            logger.info(f"[Shopify] Direct ID lookup failed: {e}")
+            logger.debug(f"[Shopify] Direct ID lookup failed: {e}")
 
         logger.warning(f"[Shopify] Order {order_id} not found with any method")
         return None
@@ -361,13 +363,11 @@ class ActionsManager:
         return None
 
     async def _get_available_sizes(self, sku: str, product_title: str) -> List[Dict]:
-        """Get available sizes for a product from Shopify."""
+        """Get available sizes for a product from Shopify (legacy env-var path only)."""
         try:
-            # Try to find product variants by title
             if not product_title:
                 return []
 
-            # Search for product
             data = self._shopify_request(f"products.json?title={product_title.replace(' ', '+')}&&status=active")
 
             if not data or not data.get("products"):
@@ -411,8 +411,8 @@ class ActionsManager:
             return None
 
         # Try smaller size first (often easier to upsell)
-        for direction, step in [(-1, "smaller"), (1, "larger")]:
-            new_idx = current_idx + step
+        for offset, label in [(-1, "smaller"), (1, "larger")]:
+            new_idx = current_idx + offset
             if 0 <= new_idx < len(size_order):
                 target_size = size_order[new_idx]
 
@@ -421,7 +421,7 @@ class ActionsManager:
                     if avail_size == target_size:
                         return {
                             "size": avail.get("size"),
-                            "direction": step,
+                            "direction": offset,
                             "variant_id": avail.get("variant_id"),
                             "price": avail.get("price")
                         }
@@ -688,24 +688,25 @@ async def reject_pending_action(
 
 
 async def _execute_refund(action: Dict) -> Dict[str, Any]:
-    """Execute a refund via Shopify API."""
+    """Execute a refund via Shopify API (legacy pending_actions path — uses global env vars).
+    New actions should go through actions_service.approve_action which uses per-tenant creds."""
     try:
         order_id = action.get("order_id")
         order_data = action.get("order_data", {})
 
-        # Get the actual Shopify numeric order ID from order_data JSONB
-        # order_data contains the full order from Shopify, including the numeric "id"
         shopify_order_id = order_data.get("id") if order_data else None
 
         if not shopify_order_id:
             logger.error(f"[PendingActions] No Shopify order ID found in order_data for order {order_id}")
             return {"success": False, "error": "Order data not found. Cannot process refund."}
 
-        # Get refund payment ID from Shopify
-        # First, get the order to find the transaction
         shop_name = os.getenv("SHOPIFY_SHOP_NAME")
         shopify_token = os.getenv("SHOPIFY_ACCESS_TOKEN")
         api_version = os.getenv("SHOPIFY_API_VERSION", "2024-01")
+
+        if not shop_name or not shopify_token:
+            logger.error("[PendingActions] Legacy Shopify env vars not set — cannot execute refund")
+            return {"success": False, "error": "Shopify not configured for legacy action path."}
 
         url = f"https://{shop_name}.myshopify.com/admin/api/{api_version}/orders/{shopify_order_id}/refunds.json"
         headers = {
@@ -744,9 +745,8 @@ async def _execute_refund(action: Dict) -> Dict[str, Any]:
 
 
 async def _execute_exchange(action: Dict) -> Dict[str, Any]:
-    """Execute an exchange via Shopify API."""
+    """Execute an exchange via Shopify API (legacy pending_actions path — uses global env vars)."""
     try:
-        # For exchanges, we create a new order with the suggested variant
         exchange_data = action.get("exchange_suggestion", {})
         customer_email = action.get("customer_email")
 
@@ -754,21 +754,21 @@ async def _execute_exchange(action: Dict) -> Dict[str, Any]:
             return {"success": False, "error": "No exchange data available. Cannot process exchange."}
 
         suggested_variant_id = exchange_data.get("variant_id")
-        original_item = exchange_data.get("original_item")
 
         if not suggested_variant_id:
             return {"success": False, "error": "No suggested variant ID found. Cannot process exchange."}
 
-        # Validate order_data exists
         order_data = action.get("order_data", {})
         if not order_data:
             return {"success": False, "error": "Order data not found. Cannot process exchange."}
 
-        # Create a new order for the exchange (customer pays for new item)
-        # Or create a draft order for the exchange
         shop_name = os.getenv("SHOPIFY_SHOP_NAME")
         shopify_token = os.getenv("SHOPIFY_ACCESS_TOKEN")
         api_version = os.getenv("SHOPIFY_API_VERSION", "2024-01")
+
+        if not shop_name or not shopify_token:
+            logger.error("[PendingActions] Legacy Shopify env vars not set — cannot execute exchange")
+            return {"success": False, "error": "Shopify not configured for legacy action path."}
 
         # Create draft order for exchange
         url = f"https://{shop_name}.myshopify.com/admin/api/{api_version}/draft_orders.json"

@@ -66,12 +66,12 @@ async def gmail_oauth_callback(code: str = None, state: str = None, error: str =
 
     if result["success"]:
         email = result.get("email", "")
-        return RedirectResponse(f"{frontend_url}/settings?gmail_connected=1&email={email}")
+        return RedirectResponse(f"{frontend_url}/brands?gmail_connected=1&email={email}")
 
     error_code = result.get("error", "callback_failed")
     if error_code == "invalid_or_expired_state":
         logger.warning("[BrandGmail] OAuth callback rejected — state invalid or expired")
-    return RedirectResponse(f"{frontend_url}/settings?gmail_error={error_code}")
+    return RedirectResponse(f"{frontend_url}/brands?gmail_error={error_code}")
 
 
 @router.post("/{brand_id}/gmail/disconnect")

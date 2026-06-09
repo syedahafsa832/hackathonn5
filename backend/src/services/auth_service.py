@@ -117,11 +117,12 @@ class AuthService:
             # This ensures _get_tenant_brand_ids() always returns a brand for
             # this tenant so their ticket view is isolated from day one.
             try:
-                brand_name = company_name or f"{email.split('@')[0]}'s Store"
+                brand_name = company_name or f"{email.split('@')[0].title()}'s Store"
                 supabase_insert("brands", {
                     "name": brand_name,
                     "is_active": True,
                     "tenant_id": tenant_id,
+                    "gmail_connected": False,
                 })
                 logger.info(f"[Auth] Default brand created for tenant {tenant_id}")
             except Exception as brand_err:
