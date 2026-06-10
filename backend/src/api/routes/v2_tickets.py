@@ -277,7 +277,7 @@ async def bulk_close_escalations_route(
 
         if request.close_all:
             escalated = supabase_select("tickets", {
-                "brand_id": brand_filter,
+                "store_id": brand_filter,
                 "status": "eq.escalated",
             }) or []
             ids_to_close = [t["id"] for t in escalated]
@@ -293,7 +293,7 @@ async def bulk_close_escalations_route(
                 if not rows:
                     continue
                 ticket = rows[0]
-                if ticket.get("brand_id") not in brand_ids:
+                if ticket.get("store_id") not in brand_ids:
                     continue
                 supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {
                     "status": "resolved",
