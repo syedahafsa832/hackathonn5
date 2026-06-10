@@ -273,7 +273,6 @@ async def bulk_close_escalations_route(
             return {"success": True, "closed": 0}
 
         brand_filter = f"in.({','.join(brand_ids)})"
-        now = datetime.now(timezone.utc).isoformat()
 
         if request.close_all:
             escalated = supabase_select("tickets", {
@@ -297,7 +296,6 @@ async def bulk_close_escalations_route(
                     continue
                 supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {
                     "status": "resolved",
-                    "resolved_at": now,
                 })
                 closed += 1
             except Exception as item_err:
