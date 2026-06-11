@@ -257,7 +257,15 @@ class BrandManager:
         access_token: str,
         return_details: bool = False
     ) -> Any:
-        """Validate Shopify credentials by making a test API call."""
+        """
+        Validate Shopify credentials by making a test API call.
+        Falls back to the global SHOPIFY_ACCESS_TOKEN env variable if the provided token is empty.
+        """
+        # Use fallback token from environment if none provided
+        if not access_token:
+            access_token = os.getenv("SHOPIFY_ACCESS_TOKEN", "")
+            if access_token:
+                logger.info("[BrandManager] Falling back to global SHOPIFY_ACCESS_TOKEN for validation.")
         try:
             api_version = os.getenv("SHOPIFY_API_VERSION", "2024-01")
             url = f"https://{shop_name}.myshopify.com/admin/api/{api_version}/shop.json"
