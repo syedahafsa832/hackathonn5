@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 
 const BRAND_NAME = "tResolv";
 const AGENT_NAME = "Luna";
-const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const API_BASE = import.meta.env.VITE_API_URL || "https://hackathonn5.onrender.com";
 
 const INITIAL_MESSAGE = {
   id: "init",
