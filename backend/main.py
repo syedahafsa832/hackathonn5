@@ -638,8 +638,24 @@ async def simple_message_submit(request: Request):
 # 7. Startup Event
 @app.on_event("startup")
 async def startup_event():
-    """API startup — email polling is handled by the dedicated email_poller container."""
-    logger.info("API startup complete. Email polling handled by email_poller container.")
+    """API startup — start UnifiedMessageProcessor and EmailPoller in background."""
+    # Ensure we only start once per process
+    global _poller_task, _processor_started
+    if not getattr(app.state, "started_background", False):
+        # Start MessageProcessor (it has its own internal loop if needed)
+        if message_processor is None:
+            logger.error("MessageProcessor not initialized; email polling will be disabled.")
+        else:
+            logger.info("UnifiedMessageProcessor ready.")
+        # Start EmailPoller attached to the processor
+        if EmailPoller is not None and message_processor is not None:
+            poller = EmailPoller(processor=message_processor)
+            _poller_task = asyncio.create_task(poller.start())
+            logger.info("EmailPoller background task started.")
+        else:
+            logger.error("EmailPoller or MessageProcessor missing; cannot start poller.")
+        app.state.started_background = True
+    logger.info("API startup complete.")
 
 # 8. Test Routes for Debugging
 @app.get("/auth/test")

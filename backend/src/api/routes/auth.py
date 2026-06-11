@@ -5,7 +5,6 @@ from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import RedirectResponse
 from google_auth_oauthlib.flow import Flow
 from src.lib.supabase_client import supabase_set_setting
-from production.channels.gmail_handler import gmail_handler
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
