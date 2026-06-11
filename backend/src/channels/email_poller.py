@@ -173,7 +173,9 @@ class EmailPoller:
                 since_dt = datetime.now(timezone.utc) - timedelta(hours=24)
                 logger.info(f"[Poller] Brand {brand.get('name')}: last_polled_at is NULL, falling back to 24h ago ({since_dt.isoformat()})")
 
-            gmail_query = f"in:inbox after:{int(since_dt.timestamp())}"
+            # Gmail search expects a date (YYYY/MM/DD) after which to search, not a Unix timestamp.
+            since_str = since_dt.strftime('%Y/%m/%d')
+            gmail_query = f"in:inbox after:{since_str}"
             logger.info(f"[POLL] Brand {brand.get('id')} ({brand.get('gmail_email')}): last_polled_at = {last_polled_at}")
             logger.info(f"[POLL] Gmail query: {gmail_query}")
 

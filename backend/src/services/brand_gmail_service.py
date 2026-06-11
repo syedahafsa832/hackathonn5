@@ -259,8 +259,9 @@ class BrandGmailService:
             return []
 
         if since_dt:
-            epoch = int(since_dt.timestamp())
-            q = f"after:{epoch} -in:spam -in:trash"
+            # Gmail 'after' expects a date in YYYY/MM/DD format
+            after_str = since_dt.strftime('%Y/%m/%d')
+            q = f"after:{after_str} -in:spam -in:trash"
         else:
             q = "is:unread -in:spam -in:trash"
         res = svc.users().messages().list(
