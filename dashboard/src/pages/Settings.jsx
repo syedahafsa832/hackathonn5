@@ -1366,7 +1366,7 @@ export default function Settings() {
   });
 
   return (
-    <div style={{ padding: '24px', maxWidth: '800px', margin: '0 auto', width: '100%' }}>
+    <div style={{ padding: '24px', maxWidth: '800px', margin: '0', width: '100%' }}>
       <div style={{ display: 'flex', borderBottom: '1px solid #E4E4E7', marginBottom: '28px', overflowX: 'auto' }}>
         {TABS.map(t => (
           <div key={t.id} style={tabStyle(t.id)} onClick={() => setActiveTab(t.id)}>{t.label}</div>
