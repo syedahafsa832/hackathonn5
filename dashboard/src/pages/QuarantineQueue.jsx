@@ -32,6 +32,10 @@ export default function QuarantineQueue() {
   const [error, setError] = useState(null);
   const [acting, setActing] = useState({});
 
+  useEffect(() => {
+    document.title = "Quarantine — tResolv";
+  }, []);
+
   const fetchQueue = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -187,7 +191,7 @@ export default function QuarantineQueue() {
                 disabled={!!busy}
                 onClick={() => promote(item.id)}
                 style={{
-                  background: busy === 'promoting' ? 'var(--text-muted, #888)' : 'var(--accent, #6366f1)',
+                  background: busy === 'promoting' ? 'var(--text-muted, #888)' : 'var(--accent, #06B6D4)',
                   color: '#fff',
                   border: 'none',
                   borderRadius: 6,

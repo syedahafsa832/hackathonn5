@@ -5,11 +5,11 @@ import ChatWidget from '../components/ChatWidget';
 const inputStyle = {
   width: '100%',
   padding: '9px 12px',
-  border: '1px solid var(--border-strong)',
-  borderRadius: '4px',
+  border: '1px solid #E4E4E7',
+  borderRadius: '6px',
   fontSize: '14px',
-  background: 'var(--bg-primary)',
-  color: 'var(--text-primary)',
+  background: 'white',
+  color: '#0F172A',
   boxSizing: 'border-box',
 };
 
@@ -126,42 +126,50 @@ function EmailTab() {
       )}
 
       {/* Gmail Connection */}
-      <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '20px' }}>
-        <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '14px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Gmail Connection</div>
+      <div style={{ background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', padding: '24px' }}>
+        <div style={{ fontSize: '16px', fontWeight: '600', color: '#1E293B', marginBottom: '16px' }}>Gmail Connection</div>
         {gmailStatus?.connected ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: 'var(--success)', flexShrink: 0 }} />
+              <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#10B981', flexShrink: 0 }} />
               <div>
-                <div style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)' }}>Connected</div>
-                <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>{gmailStatus.email}</div>
+                <div style={{ fontSize: '14px', fontWeight: '600', color: '#10B981' }}>Connected</div>
+                <div style={{ fontSize: '13px', color: '#475569' }}>{gmailStatus.email}</div>
               </div>
             </div>
             {gmailStatus.last_polled_at && (
-              <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+              <div style={{ fontSize: '12px', color: '#94A3B8' }}>
                 Inbox checked every 60 seconds
               </div>
             )}
             <button
               onClick={handleDisconnect}
               disabled={disconnecting}
-              style={{ alignSelf: 'flex-start', padding: '7px 14px', borderRadius: '4px', border: '1px solid var(--danger)', background: 'transparent', color: 'var(--danger)', fontSize: '13px', fontWeight: '500', cursor: disconnecting ? 'not-allowed' : 'pointer' }}
+              style={{ alignSelf: 'flex-start', padding: '7px 14px', borderRadius: '6px', border: '1px solid #FECACA', background: '#FEF2F2', color: '#EF4444', fontSize: '13px', fontWeight: '500', cursor: disconnecting ? 'not-allowed' : 'pointer' }}
+              onMouseEnter={e => { if(!disconnecting) e.target.style.background = '#FEE2E2'; }}
+              onMouseLeave={e => { if(!disconnecting) e.target.style.background = '#FEF2F2'; }}
             >
               {disconnecting ? 'Disconnecting...' : 'Disconnect'}
             </button>
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', alignItems: 'flex-start' }}>
-            <div style={{ fontSize: '14px', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
+              <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#94A3B8', flexShrink: 0 }} />
+              <div style={{ fontSize: '14px', fontWeight: '600', color: '#64748B' }}>Not Connected</div>
+            </div>
+            <div style={{ fontSize: '14px', color: '#475569', lineHeight: '1.5' }}>
               Resolv will monitor this inbox every 60 seconds for new customer emails and send replies from it — directly from your address.
             </div>
             <button
               onClick={handleConnect}
-              style={{ padding: '9px 18px', borderRadius: '4px', background: 'var(--accent)', color: 'white', fontWeight: '600', fontSize: '14px', cursor: 'pointer' }}
+              style={{ padding: '9px 18px', borderRadius: '6px', background: '#06B6D4', color: 'white', fontWeight: '600', fontSize: '14px', border: 'none', cursor: 'pointer', transition: 'background 0.15s' }}
+              onMouseEnter={e => e.target.style.background = '#0891B2'}
+              onMouseLeave={e => e.target.style.background = '#06B6D4'}
             >
               Connect Gmail →
             </button>
-            <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+            <div style={{ fontSize: '12px', color: '#94A3B8' }}>
               Google permissions required: read emails, send emails, mark as read
             </div>
           </div>
@@ -340,35 +348,36 @@ function ShopifyTab() {
       )}
 
       {isConnected ? (
-        <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+        <div style={{ background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', padding: '24px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          <div style={{ fontSize: '16px', fontWeight: '600', color: '#1E293B', marginBottom: '8px' }}>Shopify Connection</div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: 'var(--success)', flexShrink: 0 }} />
+            <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#10B981', flexShrink: 0 }} />
             <div>
-              <div style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)' }}>
-                {shopifyStatus?.shop_name || 'Shopify Store'}
+              <div style={{ fontSize: '14px', fontWeight: '600', color: '#10B981' }}>
+                Connected: {shopifyStatus?.shop_name || 'Shopify Store'}
               </div>
-              <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>{shopifyStatus?.shop_domain}</div>
+              <div style={{ fontSize: '13px', color: '#475569' }}>{shopifyStatus?.shop_domain}</div>
             </div>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             {['Order lookup by number', 'Refund processing', 'Order cancellation', 'Shipping address changes', 'Order reship', 'Inventory check'].map(cap => (
-              <div key={cap} style={{ fontSize: '13px', color: 'var(--text-secondary)', display: 'flex', gap: '8px' }}>
-                <span style={{ color: 'var(--success)' }}>✓</span>{cap}
+              <div key={cap} style={{ fontSize: '13px', color: '#475569', display: 'flex', gap: '8px' }}>
+                <span style={{ color: '#10B981' }}>✓</span>{cap}
               </div>
             ))}
           </div>
 
           {/* Update API Token */}
-          <div style={{ borderTop: '1px solid var(--border)', paddingTop: '14px' }}>
+          <div style={{ borderTop: '1px solid #E4E4E7', paddingTop: '14px' }}>
             <button
               onClick={() => { setShowUpdateToken(v => !v); setNewToken(''); setError(''); }}
-              style={{ fontSize: '13px', color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontWeight: '500' }}
+              style={{ fontSize: '13px', color: '#06B6D4', background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontWeight: '500' }}
             >
               {showUpdateToken ? '↑ Cancel token update' : '↓ Update API access token'}
             </button>
             {showUpdateToken && (
               <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                <div style={{ fontSize: '12px', color: 'var(--text-muted)', lineHeight: '1.5' }}>
+                <div style={{ fontSize: '12px', color: '#94A3B8', lineHeight: '1.5' }}>
                   Generate a new Admin API access token in Shopify → Settings → Apps → Develop apps, then paste it below.
                 </div>
                 <input
@@ -377,11 +386,13 @@ function ShopifyTab() {
                   onChange={e => setNewToken(e.target.value)}
                   placeholder="shpat_... or shpca_..."
                   style={inputStyle}
+                  onFocus={e => e.target.style.borderColor = '#06B6D4'}
+                  onBlur={e => e.target.style.borderColor = '#E4E4E7'}
                 />
                 <button
                   onClick={handleUpdateToken}
                   disabled={updatingToken}
-                  style={{ alignSelf: 'flex-start', padding: '7px 14px', borderRadius: '4px', background: updatingToken ? 'var(--bg-tertiary)' : 'var(--accent)', color: updatingToken ? 'var(--text-muted)' : 'white', fontSize: '13px', fontWeight: '500', cursor: updatingToken ? 'not-allowed' : 'pointer' }}
+                  style={{ alignSelf: 'flex-start', padding: '9px 18px', borderRadius: '6px', border: 'none', background: updatingToken ? '#E4E4E7' : '#06B6D4', color: updatingToken ? '#94A3B8' : 'white', fontSize: '14px', fontWeight: '600', cursor: updatingToken ? 'not-allowed' : 'pointer' }}
                 >
                   {updatingToken ? 'Updating...' : 'Update Token'}
                 </button>
@@ -392,44 +403,56 @@ function ShopifyTab() {
           <button
             onClick={handleDisconnect}
             disabled={disconnecting}
-            style={{ alignSelf: 'flex-start', padding: '7px 14px', borderRadius: '4px', border: '1px solid var(--danger)', background: 'transparent', color: 'var(--danger)', fontSize: '13px', fontWeight: '500', cursor: disconnecting ? 'not-allowed' : 'pointer' }}
+            style={{ alignSelf: 'flex-start', padding: '7px 14px', borderRadius: '6px', border: '1px solid #FECACA', background: '#FEF2F2', color: '#EF4444', fontSize: '13px', fontWeight: '500', cursor: disconnecting ? 'not-allowed' : 'pointer', transition: 'background 0.15s' }}
+            onMouseEnter={e => { if(!disconnecting) e.target.style.background = '#FEE2E2'; }}
+            onMouseLeave={e => { if(!disconnecting) e.target.style.background = '#FEF2F2'; }}
           >
             {disconnecting ? 'Disconnecting...' : 'Disconnect Shopify'}
           </button>
         </div>
       ) : (
-        <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          <div style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)' }}>Connect your Shopify store</div>
+        <div style={{ background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div style={{ fontSize: '16px', fontWeight: '600', color: '#1E293B' }}>Connect your Shopify store</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
+            <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#94A3B8', flexShrink: 0 }} />
+            <div style={{ fontSize: '14px', fontWeight: '600', color: '#64748B' }}>Not Connected</div>
+          </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px', fontSize: '13px', color: 'var(--text-secondary)', lineHeight: '1.7' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px', background: '#F8FAFC', borderRadius: '6px', fontSize: '13px', color: '#475569', lineHeight: '1.7' }}>
             <div><strong>Step 1:</strong> In Shopify, go to Settings → Apps → Develop apps</div>
-            <div><strong>Step 2:</strong> Create an app and configure Admin API scopes: <code style={{ fontSize: '12px', background: 'var(--bg-tertiary)', padding: '1px 4px', borderRadius: '3px' }}>read_orders, write_orders, read_customers, read_products, write_order_edits</code></div>
+            <div><strong>Step 2:</strong> Create an app and configure Admin API scopes: <code style={{ fontSize: '12px', background: '#E2E8F0', padding: '1px 4px', borderRadius: '3px' }}>read_orders, write_orders, read_customers, read_products, write_order_edits</code></div>
             <div><strong>Step 3:</strong> Install the app and copy your Admin API access token</div>
           </div>
 
           <div>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', marginBottom: '5px' }}>Store URL</label>
+            <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: '#475569', marginBottom: '5px' }}>Store URL</label>
             <input
               value={form.shopify_domain}
               onChange={e => setForm(f => ({ ...f, shopify_domain: e.target.value }))}
               placeholder="mystore.myshopify.com"
               style={inputStyle}
+              onFocus={e => e.target.style.borderColor = '#06B6D4'}
+              onBlur={e => e.target.style.borderColor = '#E4E4E7'}
             />
           </div>
           <div>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', marginBottom: '5px' }}>Admin API Access Token</label>
+            <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: '#475569', marginBottom: '5px' }}>Admin API Access Token</label>
             <input
               type="password"
               value={form.access_token}
               onChange={e => setForm(f => ({ ...f, access_token: e.target.value }))}
               placeholder="shpat_..."
               style={inputStyle}
+              onFocus={e => e.target.style.borderColor = '#06B6D4'}
+              onBlur={e => e.target.style.borderColor = '#E4E4E7'}
             />
           </div>
           <button
             onClick={handleConnect}
             disabled={connecting}
-            style={{ padding: '9px 18px', borderRadius: '4px', background: connecting ? 'var(--bg-tertiary)' : 'var(--accent)', color: connecting ? 'var(--text-muted)' : 'white', fontWeight: '600', fontSize: '14px', cursor: connecting ? 'not-allowed' : 'pointer', alignSelf: 'flex-start' }}
+            style={{ padding: '9px 18px', borderRadius: '6px', border: 'none', background: connecting ? '#E4E4E7' : '#06B6D4', color: connecting ? '#94A3B8' : 'white', fontWeight: '600', fontSize: '14px', cursor: connecting ? 'not-allowed' : 'pointer', alignSelf: 'flex-start', transition: 'background 0.15s' }}
+            onMouseEnter={e => { if(!connecting) e.target.style.background = '#0891B2'; }}
+            onMouseLeave={e => { if(!connecting) e.target.style.background = '#06B6D4'; }}
           >
             {connecting ? 'Connecting...' : 'Connect Shopify →'}
           </button>
@@ -965,7 +988,7 @@ function ChatWidgetTab() {
   const [brands, setBrands] = useState([]);
   const [selectedBrand, setSelectedBrand] = useState(null);
   const [copied, setCopied] = useState(false);
-  const [accentColor, setAccentColor] = useState('#6C63FF');
+  const [accentColor, setAccentColor] = useState('#06B6D4');
 
   useEffect(() => {
     client.get('/api/brands').then(res => {
@@ -1327,10 +1350,14 @@ const TABS = [
 export default function Settings() {
   const [activeTab, setActiveTab] = useState('email');
 
+  useEffect(() => {
+    document.title = "Settings — tResolv";
+  }, []);
+
   const tabStyle = (id) => ({
     padding: '10px 20px',
-    borderBottom: activeTab === id ? '2px solid var(--accent)' : '2px solid transparent',
-    color: activeTab === id ? 'var(--accent)' : 'var(--text-secondary)',
+    borderBottom: activeTab === id ? '2px solid #06B6D4' : '2px solid transparent',
+    color: activeTab === id ? '#06B6D4' : '#64748B',
     fontWeight: '600',
     fontSize: '14px',
     cursor: 'pointer',
@@ -1339,21 +1366,23 @@ export default function Settings() {
   });
 
   return (
-    <div style={{ padding: '24px' }}>
-      <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', marginBottom: '28px', overflowX: 'auto' }}>
+    <div style={{ padding: '24px', maxWidth: '800px', margin: '0 auto', width: '100%' }}>
+      <div style={{ display: 'flex', borderBottom: '1px solid #E4E4E7', marginBottom: '28px', overflowX: 'auto' }}>
         {TABS.map(t => (
           <div key={t.id} style={tabStyle(t.id)} onClick={() => setActiveTab(t.id)}>{t.label}</div>
         ))}
       </div>
 
-      {activeTab === 'email' && <EmailTab />}
-      {activeTab === 'filter' && <FilterTab />}
-      {activeTab === 'shopify' && <ShopifyTab />}
-      {activeTab === 'integrations' && <IntegrationsTab />}
-      {activeTab === 'kb' && <KnowledgeBaseTab />}
-      {activeTab === 'canned' && <CannedResponsesTab />}
-      {activeTab === 'widget' && <ChatWidgetTab />}
-      {activeTab === 'account' && <AccountTab />}
+      <div style={{ maxWidth: '800px' }}>
+        {activeTab === 'email' && <EmailTab />}
+        {activeTab === 'filter' && <FilterTab />}
+        {activeTab === 'shopify' && <ShopifyTab />}
+        {activeTab === 'integrations' && <IntegrationsTab />}
+        {activeTab === 'kb' && <KnowledgeBaseTab />}
+        {activeTab === 'canned' && <CannedResponsesTab />}
+        {activeTab === 'widget' && <ChatWidgetTab />}
+        {activeTab === 'account' && <AccountTab />}
+      </div>
     </div>
   );
 }

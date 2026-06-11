@@ -276,6 +276,10 @@ export default function TicketDetail() {
     }
   }, [messages]);
 
+  useEffect(() => {
+    document.title = `Ticket ${ticket_id} — tResolv`;
+  }, [ticket_id]);
+
   const handleSend = () => {
     if (!reply.trim()) return;
     sendMessage({ id: ticket_id, text: reply }, {

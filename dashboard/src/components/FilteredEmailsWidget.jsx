@@ -27,7 +27,6 @@ export default function FilteredEmailsWidget() {
       .then(res => { setData(res.data); setError(''); })
       .catch(err => {
         if (!controller.signal.aborted) {
-          // 404 = no brand yet; timeout/network = backend still warming up → show empty state, not an error
           if (!err.response || err.response?.status === 404) {
             setData({ total_blocked: 0, total_allowed: 0, total_quarantined: 0, by_reason: {}, prevented_loops: 0 });
           } else {
@@ -40,10 +39,10 @@ export default function FilteredEmailsWidget() {
   }, []);
 
   const cardStyle = {
-    background: 'var(--bg-primary)',
-    border: '1px solid var(--border)',
+    background: 'white',
+    border: '1px solid #E4E4E7',
     borderRadius: '8px',
-    padding: '20px',
+    padding: '20px 24px',
     minWidth: '260px',
     flex: '1',
   };
@@ -62,10 +61,10 @@ export default function FilteredEmailsWidget() {
   if (error) {
     return (
       <div style={cardStyle}>
-        <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '12px' }}>
+        <div style={{ fontSize: '13px', fontWeight: '600', color: '#475569', marginBottom: '12px' }}>
           Filtered Emails
         </div>
-        <div style={{ fontSize: '13px', color: 'var(--danger)' }}>{error}</div>
+        <div style={{ fontSize: '13px', color: '#EF4444' }}>{error}</div>
       </div>
     );
   }
@@ -78,35 +77,35 @@ export default function FilteredEmailsWidget() {
   return (
     <div style={cardStyle}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-        <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+        <div style={{ fontSize: '12px', fontWeight: '500', color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
           Filtered Emails
         </div>
-        <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Last 7 days</div>
+        <div style={{ fontSize: '12px', color: '#94A3B8' }}>Last 7 days</div>
       </div>
 
       {total === 0 && total_quarantined === 0 ? (
-        <div style={{ fontSize: '13px', color: 'var(--text-muted)', padding: '16px 0', textAlign: 'center' }}>
+        <div style={{ fontSize: '13px', color: '#94A3B8', padding: '16px 0', textAlign: 'center' }}>
           No emails processed yet
         </div>
       ) : (
         <>
           {/* Summary counts */}
           <div style={{ display: 'flex', gap: '16px', marginBottom: '16px', flexWrap: 'wrap' }}>
-            <div style={{ textAlign: 'center', flex: 1, padding: '10px', background: 'var(--bg-secondary)', borderRadius: '6px', minWidth: '60px' }}>
-              <div style={{ fontSize: '22px', fontWeight: '700', color: 'var(--danger)' }}>{total_blocked}</div>
-              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>Blocked</div>
+            <div style={{ textAlign: 'center', flex: 1, padding: '10px', background: '#F8FAFC', borderRadius: '6px', minWidth: '60px' }}>
+              <div style={{ fontSize: '22px', fontWeight: '700', color: '#64748B' }}>{total_blocked}</div>
+              <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '2px' }}>Blocked</div>
             </div>
-            <div style={{ textAlign: 'center', flex: 1, padding: '10px', background: 'var(--bg-secondary)', borderRadius: '6px', minWidth: '60px' }}>
-              <div style={{ fontSize: '22px', fontWeight: '700', color: 'var(--success)' }}>{total_allowed}</div>
-              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>Passed</div>
+            <div style={{ textAlign: 'center', flex: 1, padding: '10px', background: '#F8FAFC', borderRadius: '6px', minWidth: '60px' }}>
+              <div style={{ fontSize: '22px', fontWeight: '700', color: '#06B6D4' }}>{total_allowed}</div>
+              <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '2px' }}>Passed</div>
             </div>
-            <div style={{ textAlign: 'center', flex: 1, padding: '10px', background: 'var(--bg-secondary)', borderRadius: '6px', minWidth: '60px' }}>
-              <div style={{ fontSize: '22px', fontWeight: '700', color: 'var(--accent)' }}>{prevented_loops}</div>
-              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>Loops Stopped</div>
+            <div style={{ textAlign: 'center', flex: 1, padding: '10px', background: '#F8FAFC', borderRadius: '6px', minWidth: '60px' }}>
+              <div style={{ fontSize: '22px', fontWeight: '700', color: '#10B981' }}>{prevented_loops}</div>
+              <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '2px' }}>Loops Stopped</div>
             </div>
-            <div style={{ textAlign: 'center', flex: 1, padding: '10px', background: total_quarantined > 0 ? 'rgba(245,158,11,0.1)' : 'var(--bg-secondary)', borderRadius: '6px', minWidth: '60px', border: total_quarantined > 0 ? '1px solid rgba(245,158,11,0.3)' : '1px solid transparent' }}>
-              <div style={{ fontSize: '22px', fontWeight: '700', color: 'var(--warning, #f59e0b)' }}>{total_quarantined}</div>
-              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>Quarantined</div>
+            <div style={{ textAlign: 'center', flex: 1, padding: '10px', background: total_quarantined > 0 ? '#FFFBEB' : '#F8FAFC', borderRadius: '6px', minWidth: '60px', border: total_quarantined > 0 ? '1px solid #FDE68A' : '1px solid transparent' }}>
+              <div style={{ fontSize: '22px', fontWeight: '700', color: '#F59E0B' }}>{total_quarantined}</div>
+              <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '2px' }}>Quarantined</div>
             </div>
           </div>
 
@@ -116,16 +115,16 @@ export default function FilteredEmailsWidget() {
                 to="/quarantine"
                 style={{
                   fontSize: '13px',
-                  color: 'var(--warning, #f59e0b)',
+                  color: '#F59E0B',
                   textDecoration: 'none',
                   fontWeight: '600',
                   display: 'inline-flex',
                   alignItems: 'center',
                   gap: '4px',
                   padding: '6px 12px',
-                  background: 'rgba(245,158,11,0.1)',
+                  background: '#FFFBEB',
                   borderRadius: '6px',
-                  border: '1px solid rgba(245,158,11,0.3)',
+                  border: '1px solid #FDE68A',
                 }}
               >
                 Review Quarantine →
@@ -140,13 +139,13 @@ export default function FilteredEmailsWidget() {
                 .sort(([, a], [, b]) => b - a)
                 .map(([reason, count]) => (
                   <div key={reason} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12px' }}>
-                    <span style={{ color: 'var(--text-secondary)' }}>
+                    <span style={{ color: '#64748B' }}>
                       {REASON_LABELS[reason] || reason}
                     </span>
                     <span style={{
-                      fontWeight: '600',
-                      color: reason === 'loop_risk' ? 'var(--accent)' : 'var(--danger)',
-                      background: reason === 'loop_risk' ? 'var(--accent-light)' : 'var(--danger-light)',
+                      fontWeight: '500',
+                      color: '#64748B',
+                      background: '#F1F5F9',
                       padding: '1px 7px',
                       borderRadius: '10px',
                       fontSize: '11px',

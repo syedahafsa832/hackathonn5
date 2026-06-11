@@ -1,21 +1,71 @@
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
 :root {
-  --bg-primary: #FFFFFF;
-  --bg-secondary: #F7F7F8;
-  --bg-tertiary: #F0F0F2;
-  --border: #E4E4E7;
+  /* Backgrounds */
+  --bg-base: #FAFAFA;
+  --bg-surface: #FFFFFF;
+  --bg-elevated: #F4F4F5;
+  --bg-subtle: #F0FAFE;
+  
+  --bg-primary: var(--bg-surface);
+  --bg-secondary: var(--bg-base);
+  --bg-tertiary: var(--bg-elevated);
+
+  /* Borders */
+  --border-default: #E4E4E7;
   --border-strong: #D1D1D6;
-  --text-primary: #0A0A0B;
-  --text-secondary: #6B6B7B;
-  --text-muted: #9898A6;
-  --accent: #5B5BD6;
-  --accent-light: #EDEDFB;
-  --accent-hover: #4A4AC4;
-  --success: #18A94B;
-  --success-light: #EDFAF3;
-  --warning: #D97706;
-  --warning-light: #FFFBEB;
-  --danger: #DC2626;
-  --danger-light: #FEF2F2;
+  --border-subtle: #F0F0F0;
+  
+  --border: var(--border-default);
+
+  /* Cyan — Primary Brand */
+  --cyan-50: #ECFEFF;
+  --cyan-100: #CFFAFE;
+  --cyan-200: #A5F3FC;
+  --cyan-400: #22D3EE;
+  --cyan-500: #06B6D4;
+  --cyan-600: #0891B2;
+  --cyan-700: #0E7490;
+  
+  --accent: var(--cyan-500);
+  --accent-light: var(--cyan-50);
+  --accent-hover: var(--cyan-600);
+
+  /* Slate — Neutral */
+  --slate-50: #F8FAFC;
+  --slate-100: #F1F5F9;
+  --slate-200: #E2E8F0;
+  --slate-400: #94A3B8;
+  --slate-500: #64748B;
+  --slate-600: #475569;
+  --slate-700: #334155;
+  --slate-800: #1E293B;
+  --slate-900: #0F172A;
+
+  /* Semantic */
+  --success: #10B981;
+  --success-bg: #ECFDF5;
+  --success-border: #A7F3D0;
+  --success-light: var(--success-bg);
+
+  --warning: #F59E0B;
+  --warning-bg: #FFFBEB;
+  --warning-border: #FDE68A;
+  --warning-light: var(--warning-bg);
+
+  --danger: #EF4444;
+  --danger-bg: #FEF2F2;
+  --danger-border: #FECACA;
+  --danger-light: var(--danger-bg);
+
+  /* Text */
+  --text-primary: #0F172A;
+  --text-secondary: #475569;
+  --text-tertiary: #94A3B8;
+  --text-muted: var(--text-tertiary);
+
+  /* Layout */
   --sidebar-width: 220px;
   --topbar-height: 56px;
 }
@@ -28,10 +78,11 @@
 
 html, body, #root {
   height: 100%;
-  font-family: 'DM Sans', sans-serif;
+  font-family: 'Geist', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   font-size: 14px;
+  line-height: 1.5;
   color: var(--text-primary);
-  background: var(--bg-primary);
+  background: var(--bg-base);
   -webkit-font-smoothing: antialiased;
   text-align: left;
   width: 100%;

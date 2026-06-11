@@ -40,10 +40,10 @@ export default function Sidebar() {
 
   return (
     <aside style={{
-      width: 'var(--sidebar-width)',
+      width: '220px',
       flexShrink: 0,
-      background: 'var(--bg-secondary)',
-      borderRight: '1px solid var(--border)',
+      background: '#FAFAFA',
+      borderRight: '1px solid #E4E4E7',
       height: '100vh',
       position: 'fixed',
       top: 0,
@@ -53,19 +53,19 @@ export default function Sidebar() {
       zIndex: 100,
     }}>
       <div style={{
-        height: 'var(--topbar-height)',
+        height: '56px',
         display: 'flex',
         alignItems: 'center',
         padding: '0 20px',
-        borderBottom: '1px solid var(--border)',
+        borderBottom: '1px solid #E4E4E7',
         flexShrink: 0,
       }}>
-        <span style={{ fontWeight: '700', fontSize: '18px', color: 'var(--accent)', letterSpacing: '-0.3px' }}>
-          Resolv
+        <span style={{ fontWeight: '700', fontSize: '17px', letterSpacing: '-0.3px' }}>
+          <span style={{ color: '#06B6D4' }}>t</span><span style={{ color: '#0F172A' }}>Resolv</span>
         </span>
       </div>
 
-      <nav style={{ flex: 1, padding: '8px 8px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+      <nav style={{ flex: 1, padding: '8px 0', display: 'flex', flexDirection: 'column', gap: '2px' }}>
         {NAV.map(({ path, label, icon: Icon, badge, quarantineBadge }) => (
           <NavLink
             key={path}
@@ -74,29 +74,31 @@ export default function Sidebar() {
               display: 'flex',
               alignItems: 'center',
               gap: '10px',
-              padding: '9px 12px',
+              height: '36px',
+              padding: isActive ? '0 12px 0 10px' : '0 12px',
+              margin: '2px 8px',
               borderRadius: '6px',
               textDecoration: 'none',
-              fontWeight: isActive ? '600' : '400',
+              fontWeight: '500',
               fontSize: '14px',
-              color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
-              background: isActive ? 'var(--accent-light)' : 'transparent',
+              color: isActive ? '#0E7490' : '#475569',
+              background: isActive ? '#ECFEFF' : 'transparent',
+              borderLeft: isActive ? '2px solid #06B6D4' : 'none',
               transition: 'all 0.1s',
             })}
-            onMouseEnter={e => { if (!e.currentTarget.classList.contains('active')) e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
-            onMouseLeave={e => { if (!e.currentTarget.style.background?.includes('accent')) e.currentTarget.style.background = 'transparent'; }}
+            onMouseEnter={e => { if (!e.currentTarget.classList.contains('active')) { e.currentTarget.style.background = '#F1F5F9'; e.currentTarget.style.color = '#0F172A'; } }}
+            onMouseLeave={e => { if (!e.currentTarget.classList.contains('active')) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#475569'; } }}
           >
             <Icon size={16} />
             <span style={{ flex: 1 }}>{label}</span>
             {badge && pendingCount > 0 && (
               <span style={{
-                background: 'var(--danger)',
+                background: '#06B6D4',
                 color: 'white',
                 borderRadius: '10px',
                 fontSize: '11px',
                 fontWeight: '600',
                 padding: '1px 6px',
-                fontFamily: 'DM Mono, monospace',
                 minWidth: '18px',
                 textAlign: 'center',
               }}>
@@ -105,13 +107,12 @@ export default function Sidebar() {
             )}
             {quarantineBadge && quarantineCount > 0 && (
               <span style={{
-                background: 'var(--warning, #f59e0b)',
+                background: '#F59E0B',
                 color: 'white',
                 borderRadius: '10px',
                 fontSize: '11px',
                 fontWeight: '600',
                 padding: '1px 6px',
-                fontFamily: 'DM Mono, monospace',
                 minWidth: '18px',
                 textAlign: 'center',
               }}>
@@ -122,8 +123,8 @@ export default function Sidebar() {
         ))}
       </nav>
 
-      <div style={{ padding: '12px 20px', borderTop: '1px solid var(--border)', fontSize: '11px', color: 'var(--text-muted)' }}>
-        Resolv v1.0
+      <div style={{ padding: '12px 20px', borderTop: '1px solid #E4E4E7', fontSize: '11px', color: '#94A3B8' }}>
+        tResolv v1.0
       </div>
     </aside>
   );

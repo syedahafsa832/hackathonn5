@@ -49,7 +49,7 @@ export default function ChatWidget({
   brandId,
   orgId,
   agentName = AGENT_NAME,
-  accentColor = "#6C63FF",
+  accentColor = "#06B6D4",
 }) {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState([INITIAL_MESSAGE]);

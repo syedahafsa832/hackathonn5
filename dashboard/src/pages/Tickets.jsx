@@ -16,20 +16,19 @@ export default function Tickets() {
   const [statusFilter, setStatusFilter] = useState('active');
   const [search, setSearch] = useState('');
   const [tagFilter, setTagFilter] = useState('');
-  const [gmailConnected, setGmailConnected] = useState(null); // null = loading
+  const [gmailConnected, setGmailConnected] = useState(null);
 
   const { data: tickets = [], isLoading: loading, error: queryError, refetch } = useConversations(statusFilter || 'active', activeBrand?.id);
   const { mutate: markRead } = useMarkRead();
 
   useEffect(() => {
+    document.title = "Conversations — tResolv";
     client.get('/api/v1/settings/gmail/status')
       .then(res => setGmailConnected(!!res.data?.connected))
       .catch(() => setGmailConnected(false));
   }, []);
 
-  // Show all tickets regardless of Gmail connection status
   const visibleTickets = tickets;
-
   const SENTIMENT_ORDER = { angry: 0, frustrated: 1, positive: 3, neutral: 2 };
 
   const sortedAndFiltered = (() => {
@@ -45,7 +44,6 @@ export default function Tickets() {
       result = result.filter(t => (t.tags || []).includes(tagFilter));
     }
 
-    // Sort: angry first, frustrated second, then by date desc
     result.sort((a, b) => {
       const sa = SENTIMENT_ORDER[a.customer_sentiment] ?? 2;
       const sb = SENTIMENT_ORDER[b.customer_sentiment] ?? 2;
@@ -74,25 +72,33 @@ export default function Tickets() {
           onChange={e => setSearch(e.target.value)}
           style={{
             padding: '8px 12px',
-            border: '1px solid var(--border-strong)',
-            borderRadius: '4px',
+            border: '1px solid #E4E4E7',
+            borderRadius: '6px',
             fontSize: '14px',
-            background: 'var(--bg-primary)',
+            background: 'white',
             width: '240px',
+            transition: 'border-color 0.15s',
+            outline: 'none',
           }}
+          onFocus={e => e.target.style.borderColor = '#06B6D4'}
+          onBlur={e => e.target.style.borderColor = '#E4E4E7'}
         />
         <select
           value={statusFilter}
           onChange={e => setStatusFilter(e.target.value)}
           style={{
             padding: '8px 12px',
-            border: '1px solid var(--border-strong)',
-            borderRadius: '4px',
+            border: '1px solid #E4E4E7',
+            borderRadius: '6px',
             fontSize: '14px',
-            background: 'var(--bg-primary)',
-            color: 'var(--text-primary)',
+            background: 'white',
+            color: '#0F172A',
             cursor: 'pointer',
+            transition: 'border-color 0.15s',
+            outline: 'none',
           }}
+          onFocus={e => e.target.style.borderColor = '#06B6D4'}
+          onBlur={e => e.target.style.borderColor = '#E4E4E7'}
         >
           <option value="active">All</option>
           <option value="processing">Processing</option>
@@ -104,7 +110,19 @@ export default function Tickets() {
         <select
           value={tagFilter}
           onChange={e => setTagFilter(e.target.value)}
-          style={{ padding: '8px 12px', border: '1px solid var(--border-strong)', borderRadius: '4px', fontSize: '14px', background: 'var(--bg-primary)', color: 'var(--text-primary)', cursor: 'pointer' }}
+          style={{
+            padding: '8px 12px',
+            border: '1px solid #E4E4E7',
+            borderRadius: '6px',
+            fontSize: '14px',
+            background: 'white',
+            color: '#0F172A',
+            cursor: 'pointer',
+            transition: 'border-color 0.15s',
+            outline: 'none',
+          }}
+          onFocus={e => e.target.style.borderColor = '#06B6D4'}
+          onBlur={e => e.target.style.borderColor = '#E4E4E7'}
         >
           <option value="">All Tags</option>
           {['shipping', 'refund', 'cancel', 'exchange', 'damaged', 'complaint', 'question', 'compliment'].map(t => (
@@ -112,8 +130,8 @@ export default function Tickets() {
           ))}
         </select>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginLeft: 'auto' }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '12px', color: 'var(--success)' }}>
-            <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: 'var(--success)', display: 'inline-block', animation: 'pulse 2s ease-in-out infinite' }} />
+          <span style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '12px', color: '#10B981' }}>
+            <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#10B981', display: 'inline-block', animation: 'pulse 2s ease-in-out infinite' }} />
             Live
           </span>
           <button
@@ -121,11 +139,11 @@ export default function Tickets() {
             disabled={loading}
             style={{
               padding: '7px 14px',
-              borderRadius: '4px',
-              border: '1px solid var(--border)',
-              background: 'var(--bg-primary)',
+              borderRadius: '6px',
+              border: '1px solid #E4E4E7',
+              background: 'white',
               fontSize: '13px',
-              color: 'var(--text-secondary)',
+              color: '#475569',
               cursor: loading ? 'not-allowed' : 'pointer',
               display: 'flex',
               alignItems: 'center',
@@ -139,20 +157,20 @@ export default function Tickets() {
 
       {/* Gmail not connected banner */}
       {gmailConnected === false && (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: '6px', fontSize: '13px' }}>
-          <span style={{ color: 'var(--text-secondary)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', background: '#FAFAFA', border: '1px solid #E4E4E7', borderRadius: '6px', fontSize: '13px' }}>
+          <span style={{ color: '#475569' }}>
             Gmail not connected — new emails will not be polled until you connect.
           </span>
-          <Link to="/settings" style={{ padding: '5px 12px', borderRadius: '4px', background: 'var(--accent)', color: 'white', fontSize: '12px', fontWeight: '600', textDecoration: 'none' }}>
+          <Link to="/settings" style={{ padding: '5px 12px', borderRadius: '4px', background: '#06B6D4', color: 'white', fontSize: '12px', fontWeight: '600', textDecoration: 'none' }}>
             Connect Gmail →
           </Link>
         </div>
       )}
 
       {/* Table */}
-      <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '6px', overflow: 'hidden' }}>
+      <div style={{ background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', overflow: 'hidden' }}>
         {error && (
-          <div style={{ padding: '16px 20px', color: 'var(--danger)', background: 'var(--danger-light)', borderBottom: '1px solid var(--border)' }}>
+          <div style={{ padding: '16px 20px', color: '#EF4444', background: '#FEF2F2', borderBottom: '1px solid #E4E4E7' }}>
             {error}
           </div>
         )}
@@ -160,9 +178,9 @@ export default function Tickets() {
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
-              <tr style={{ background: 'var(--bg-secondary)', position: 'sticky', top: 0 }}>
+              <tr style={{ background: '#F8FAFC', position: 'sticky', top: 0 }}>
                 {['ID', 'Channel', 'Sender', 'Status', 'Sentiment', 'Tags', 'Updated'].map(h => (
-                  <th key={h} style={{ padding: '10px 16px', textAlign: 'left', fontSize: '12px', fontWeight: '600', color: 'var(--text-muted)', whiteSpace: 'nowrap', borderBottom: '1px solid var(--border)' }}>
+                  <th key={h} style={{ padding: '10px 16px', textAlign: 'left', fontSize: '11px', fontWeight: '600', color: '#64748B', whiteSpace: 'nowrap', borderBottom: '1px solid #E4E4E7', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                     {h}
                   </th>
                 ))}
@@ -171,9 +189,9 @@ export default function Tickets() {
             <tbody>
               {loading ? (
                 Array.from({ length: 8 }, (_, i) => (
-                  <tr key={i} style={{ background: i % 2 === 1 ? 'var(--bg-secondary)' : 'var(--bg-primary)' }}>
+                  <tr key={i} style={{ background: 'transparent' }}>
                     {[80, 80, 140, 80, 60, 200, 100].map((w, j) => (
-                      <td key={j} style={{ padding: '12px 16px' }}>
+                      <td key={j} style={{ padding: '12px 16px', borderBottom: '1px solid #F1F5F9', height: '48px' }}>
                         <div className="skeleton" style={{ height: '14px', width: `${w}px` }} />
                       </td>
                     ))}
@@ -181,7 +199,7 @@ export default function Tickets() {
                 ))
               ) : sortedAndFiltered.length === 0 ? (
                 <tr>
-                  <td colSpan={7} style={{ padding: '48px', textAlign: 'center', color: 'var(--text-muted)' }}>
+                  <td colSpan={7} style={{ padding: '48px', textAlign: 'center', color: '#94A3B8' }}>
                     No conversations found
                   </td>
                 </tr>
@@ -192,43 +210,45 @@ export default function Tickets() {
                     onClick={() => handleOpenConversation(c.id)}
                     style={{
                       cursor: 'pointer',
-                      background: c.unread_count > 0 ? 'var(--accent-light)' : (i % 2 === 1 ? 'var(--bg-secondary)' : 'var(--bg-primary)'),
-                      fontWeight: c.unread_count > 0 ? '600' : 'normal'
+                      background: c.unread_count > 0 ? '#F0FAFE' : 'transparent',
+                      fontWeight: c.unread_count > 0 ? '600' : 'normal',
+                      height: '48px',
+                      borderBottom: '1px solid #F1F5F9'
                     }}
-                    onMouseEnter={e => e.currentTarget.style.background = 'var(--accent-light)'}
-                    onMouseLeave={e => e.currentTarget.style.background = c.unread_count > 0 ? 'var(--accent-light)' : (i % 2 === 1 ? 'var(--bg-secondary)' : 'var(--bg-primary)')}
+                    onMouseEnter={e => e.currentTarget.style.background = '#F8FAFC'}
+                    onMouseLeave={e => e.currentTarget.style.background = c.unread_count > 0 ? '#F0FAFE' : 'transparent'}
                   >
-                    <td style={{ padding: '10px 16px', fontFamily: 'DM Mono, monospace', fontSize: '12px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                    <td style={{ padding: '0 16px', fontFamily: 'DM Mono, monospace', fontSize: '12px', color: '#64748B', whiteSpace: 'nowrap' }}>
                       #{String(c.id).slice(0, 8)}
                     </td>
-                    <td style={{ padding: '10px 16px', color: 'var(--text-primary)', textTransform: 'capitalize' }}>
+                    <td style={{ padding: '0 16px', color: '#1E293B', textTransform: 'capitalize' }}>
                       {c.channel}
                     </td>
-                    <td style={{ padding: '10px 16px', color: 'var(--text-primary)' }}>
+                    <td style={{ padding: '0 16px', color: '#1E293B' }}>
                       {c.customer_email || c.sender_id || '—'}
                     </td>
-                    <td style={{ padding: '10px 16px' }}>
+                    <td style={{ padding: '0 16px' }}>
                       <Badge status={c.status} />
                     </td>
-                    <td style={{ padding: '10px 16px' }}>
-                      {c.customer_sentiment === 'angry' && <span style={{ fontSize: '11px', padding: '2px 7px', borderRadius: '10px', background: '#fee2e2', color: '#dc2626', fontWeight: '600' }}>Angry</span>}
-                      {c.customer_sentiment === 'frustrated' && <span style={{ fontSize: '11px', padding: '2px 7px', borderRadius: '10px', background: '#fef3c7', color: '#d97706', fontWeight: '600' }}>Frustrated</span>}
-                      {c.customer_sentiment === 'positive' && <span style={{ fontSize: '11px', padding: '2px 7px', borderRadius: '10px', background: '#dcfce7', color: '#16a34a', fontWeight: '600' }}>Happy</span>}
+                    <td style={{ padding: '0 16px' }}>
+                      {c.customer_sentiment === 'angry' && <span style={{ fontSize: '11px', padding: '2px 7px', borderRadius: '10px', background: '#FEF2F2', color: '#EF4444', fontWeight: '600' }}>Angry</span>}
+                      {c.customer_sentiment === 'frustrated' && <span style={{ fontSize: '11px', padding: '2px 7px', borderRadius: '10px', background: '#FFFBEB', color: '#F59E0B', fontWeight: '600' }}>Frustrated</span>}
+                      {c.customer_sentiment === 'positive' && <span style={{ fontSize: '11px', padding: '2px 7px', borderRadius: '10px', background: '#ECFDF5', color: '#10B981', fontWeight: '600' }}>Happy</span>}
                     </td>
-                    <td style={{ padding: '10px 16px' }}>
+                    <td style={{ padding: '0 16px' }}>
                       <div style={{ display: 'flex', gap: '3px', flexWrap: 'wrap' }}>
                         {(c.tags || []).slice(0, 2).map(tag => {
-                          const tagColors = { refund: '#fee2e2', cancel: '#fee2e2', shipping: '#dbeafe', exchange: '#fef3c7', damaged: '#fce7f3', complaint: '#fed7aa', question: '#ede9fe', compliment: '#dcfce7' };
-                          const tagTextColors = { refund: '#dc2626', cancel: '#dc2626', shipping: '#1d4ed8', exchange: '#d97706', damaged: '#be185d', complaint: '#c2410c', question: '#7c3aed', compliment: '#16a34a' };
+                          const tagColors = { refund: '#FEF2F2', cancel: '#FEF2F2', shipping: '#EFF6FF', exchange: '#FFFBEB', damaged: '#FDF2F8', complaint: '#FFEDD5', question: '#F5F3FF', compliment: '#ECFDF5' };
+                          const tagTextColors = { refund: '#EF4444', cancel: '#EF4444', shipping: '#2563EB', exchange: '#F59E0B', damaged: '#DB2777', complaint: '#EA580C', question: '#8B5CF6', compliment: '#10B981' };
                           return (
-                            <span key={tag} style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '8px', background: tagColors[tag] || '#f3f4f6', color: tagTextColors[tag] || '#374151', fontWeight: '500' }}>
+                            <span key={tag} style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '8px', background: tagColors[tag] || '#F1F5F9', color: tagTextColors[tag] || '#475569', fontWeight: '500' }}>
                               {tag}
                             </span>
                           );
                         })}
                       </div>
                     </td>
-                    <td style={{ padding: '10px 16px', color: 'var(--text-muted)', fontSize: '12px', fontFamily: 'DM Mono, monospace', whiteSpace: 'nowrap' }}>
+                    <td style={{ padding: '0 16px', color: '#64748B', fontSize: '12px', fontFamily: 'DM Mono, monospace', whiteSpace: 'nowrap' }}>
                       {formatDate(c.updated_at)}
                     </td>
                   </tr>

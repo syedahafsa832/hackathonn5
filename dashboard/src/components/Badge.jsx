@@ -1,48 +1,69 @@
 const STATUS_MAP = {
   // Channel badges
-  chat:  { label: '💬 Chat', color: '#7C3AED', bg: '#F5F3FF' },
-  email: { label: '✉ Email', color: 'var(--accent)', bg: 'var(--accent-light)' },
-  processing: { label: '⟳ Processing…', color: 'var(--text-secondary)', bg: 'var(--bg-tertiary)' },
-  auto_resolved: { label: 'Auto-resolved', color: 'var(--success)', bg: 'var(--success-light)' },
-  resolved: { label: 'Resolved', color: 'var(--success)', bg: 'var(--success-light)' },
-  ai_suggested: { label: 'Draft ready', color: 'var(--accent)', bg: 'var(--accent-light)' },
-  human_managing: { label: 'Human managing', color: '#7C3AED', bg: '#F5F3FF' },
-  requires_human: { label: 'Needs human', color: 'var(--warning)', bg: 'var(--warning-light)' },
-  escalated: { label: 'Escalated', color: 'var(--warning)', bg: 'var(--warning-light)' },
-  auto_resolved_review: { label: 'Review needed', color: '#2563EB', bg: '#EFF6FF' },
-  pending: { label: 'Pending', color: 'var(--accent)', bg: 'var(--accent-light)' },
-  open: { label: 'Open', color: 'var(--accent)', bg: 'var(--accent-light)' },
-  closed: { label: 'Closed', color: 'var(--text-muted)', bg: 'var(--bg-tertiary)' },
-  REFUND: { label: 'Refund', color: 'var(--danger)', bg: 'var(--danger-light)' },
-  refund: { label: 'Refund', color: 'var(--danger)', bg: 'var(--danger-light)' },
-  CANCEL: { label: 'Cancel', color: 'var(--warning)', bg: 'var(--warning-light)' },
-  cancel_order: { label: 'Cancel', color: 'var(--warning)', bg: 'var(--warning-light)' },
-  EXCHANGE: { label: 'Exchange', color: '#2563EB', bg: '#EFF6FF' },
-  exchange: { label: 'Exchange', color: '#2563EB', bg: '#EFF6FF' },
-  RESPOND: { label: 'Respond', color: 'var(--success)', bg: 'var(--success-light)' },
-  discount: { label: 'Discount', color: '#7C3AED', bg: '#F5F3FF' },
-  change_address: { label: 'Address', color: 'var(--text-secondary)', bg: 'var(--bg-tertiary)' },
+  chat:  { label: '💬 Chat', color: '#0891B2', bg: '#ECFEFF', border: '1px solid #A5F3FC', isChannel: true },
+  email: { label: '✉ Email', color: '#64748B', bg: '#F8FAFC', border: '1px solid transparent', isChannel: true },
+  
+  // Status badges
+  processing: { label: '⟳ Processing…', color: '#06B6D4', bg: '#ECFEFF' },
+  auto_resolved: { label: 'Auto-resolved', color: '#10B981', bg: '#ECFDF5' },
+  resolved: { label: 'Resolved', color: '#64748B', bg: '#F8FAFC' },
+  escalated: { label: 'Escalated', color: '#F59E0B', bg: '#FFFBEB' },
+  
+  // Legacy / Other
+  ai_suggested: { label: 'Draft ready', color: '#06B6D4', bg: '#ECFEFF' },
+  human_managing: { label: 'Human managing', color: '#0891B2', bg: '#ECFEFF' },
+  requires_human: { label: 'Needs human', color: '#F59E0B', bg: '#FFFBEB' },
+  auto_resolved_review: { label: 'Review needed', color: '#F59E0B', bg: '#FFFBEB' },
+  pending: { label: 'Pending', color: '#06B6D4', bg: '#ECFEFF' },
+  open: { label: 'Open', color: '#06B6D4', bg: '#ECFEFF' },
+  closed: { label: 'Closed', color: '#64748B', bg: '#F8FAFC' },
+  
+  // Action tags
+  REFUND: { label: 'Refund', color: '#EF4444', bg: '#FEF2F2' },
+  refund: { label: 'Refund', color: '#EF4444', bg: '#FEF2F2' },
+  CANCEL: { label: 'Cancel', color: '#EF4444', bg: '#FEF2F2' },
+  cancel_order: { label: 'Cancel', color: '#EF4444', bg: '#FEF2F2' },
+  EXCHANGE: { label: 'Exchange', color: '#06B6D4', bg: '#ECFEFF' },
+  exchange: { label: 'Exchange', color: '#06B6D4', bg: '#ECFEFF' },
+  RESPOND: { label: 'Respond', color: '#10B981', bg: '#ECFDF5' },
+  discount: { label: 'Discount', color: '#06B6D4', bg: '#ECFEFF' },
+  change_address: { label: 'Address', color: '#64748B', bg: '#F8FAFC' },
 };
 
 export default function Badge({ status, size = 'sm' }) {
   const config = STATUS_MAP[status] || {
     label: status || 'Unknown',
-    color: 'var(--text-muted)',
-    bg: 'var(--bg-tertiary)',
+    color: '#64748B',
+    bg: '#F8FAFC',
+  };
+
+  const isChannel = config.isChannel;
+
+  const baseStyle = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontWeight: '500',
+    color: config.color,
+    background: config.bg,
+    whiteSpace: 'nowrap',
+    borderRadius: '100px',
+  };
+
+  const specificStyle = isChannel ? {
+    padding: '2px 8px',
+    fontSize: '11px',
+    border: config.border || '1px solid transparent',
+  } : {
+    padding: '3px 10px',
+    fontSize: '12px',
+    minWidth: '96px',
+    textAlign: 'center',
+    border: '1px solid transparent',
   };
 
   return (
-    <span style={{
-      display: 'inline-flex',
-      alignItems: 'center',
-      padding: size === 'sm' ? '2px 8px' : '4px 10px',
-      borderRadius: '4px',
-      fontSize: size === 'sm' ? '12px' : '13px',
-      fontWeight: '500',
-      color: config.color,
-      background: config.bg,
-      whiteSpace: 'nowrap',
-    }}>
+    <span style={{ ...baseStyle, ...specificStyle }}>
       {config.label}
     </span>
   );
