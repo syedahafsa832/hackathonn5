@@ -72,6 +72,12 @@ async def register(request: RegisterRequest):
     )
 
     if not result.get("success"):
+        if result.get("error") == "founding_cohort_full":
+            raise HTTPException(status_code=403, detail={
+                "error": "founding_cohort_full",
+                "message": result.get("message"),
+                "waitlist_url": result.get("waitlist_url"),
+            })
         raise HTTPException(status_code=400, detail=result.get("error", "Registration failed"))
 
     return AuthResponse(**result)

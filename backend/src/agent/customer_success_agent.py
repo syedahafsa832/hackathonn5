@@ -18,6 +18,7 @@ from ..services.size_engine import size_engine
 from ..services.tools import v3_tools
 from ..services.return_actions_integration import return_actions
 from ..lib.supabase_client import supabase_rpc, supabase_update
+from ..services.mistral_limiter import call_with_limit
 
 logger = logging.getLogger(__name__)
 
@@ -355,7 +356,7 @@ class CustomerSuccessAgent:
                 return self._get_fallback_response("OpenAI client not initialized")
 
             try:
-                response = self.openai_client.chat.completions.create(
+                response = await call_with_limit(lambda: self.openai_client.chat.completions.create(
                     model=self.model,
                     messages=[
                         {"role": "system", "content": system_prompt},
@@ -363,18 +364,18 @@ class CustomerSuccessAgent:
                     ],
                     temperature=0.1,
                     response_format={"type": "json_object"}
-                )
+                ))
             except TypeError as e:
                 # Mistral API may not support response_format parameter
                 logger.warning(f"response_format not supported, retrying without it: {e}")
-                response = self.openai_client.chat.completions.create(
+                response = await call_with_limit(lambda: self.openai_client.chat.completions.create(
                     model=self.model,
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": f"Customer: {query}"}
                     ],
                     temperature=0.1
-                )
+                ))
             except Exception as api_error:
                 if getattr(api_error, 'status_code', None) == 429 or "429" in str(api_error):
                     logger.warning("[Agent] Mistral rate limited — returning fallback immediately")

@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+import time
 from typing import List, Dict, Any, Optional
 
 # Set OPENAI_API_KEY for compatibility with Mistral's OpenAI-compatible API
@@ -9,8 +10,13 @@ if not os.getenv("OPENAI_API_KEY"):
 
 from openai import OpenAI
 from src.lib.supabase_client import supabase_rpc, supabase_select
+from src.services.mistral_limiter import call_with_limit
 
 logger = logging.getLogger(__name__)
+
+# Cache of tenant_id -> has_docs (bool), 5 min TTL, to avoid a DB roundtrip on every message
+_kb_doc_cache: Dict[str, tuple] = {}
+_KB_CACHE_TTL_SECONDS = 300
 
 class RAGEngine:
     """
@@ -46,6 +52,10 @@ class RAGEngine:
         try:
             if not self.ai_client:
                 logger.warning("AI client not initialized, returning empty context")
+                return ""
+
+            if not self._tenant_has_kb_docs(tenant_id):
+                logger.info(f"[RAG] Tenant {tenant_id} has no knowledge base documents — skipping embedding call")
                 return ""
 
             # Generate embedding for query
@@ -124,16 +134,35 @@ class RAGEngine:
             logger.error(f"RAG Retrieval Error: {e}")
             return ""
 
+    def _tenant_has_kb_docs(self, tenant_id: str) -> bool:
+        """Check (with a short-lived cache) whether this tenant has any knowledge base
+        sources at all — skips the Mistral embedding call entirely when there's nothing to search."""
+        now = time.time()
+        cached = _kb_doc_cache.get(tenant_id)
+        if cached and (now - cached[1]) < _KB_CACHE_TTL_SECONDS:
+            return cached[0]
+        try:
+            rows = supabase_select("knowledge_base_sources", {
+                "tenant_id": f"eq.{tenant_id}",
+                "limit": "1",
+            })
+            has_docs = bool(rows)
+        except Exception as e:
+            logger.warning(f"[RAG] KB doc count check failed for tenant {tenant_id}: {e} — assuming docs exist")
+            has_docs = True  # fail open so RAG isn't silently disabled on a transient error
+        _kb_doc_cache[tenant_id] = (has_docs, now)
+        return has_docs
+
     async def _get_embedding(self, text: str) -> Optional[List[float]]:
         """Mistral Embedding call."""
         if not self.ai_client:
             logger.warning("AI client not initialized, returning empty embedding")
             return None
         try:
-            response = self.ai_client.embeddings.create(
+            response = await call_with_limit(lambda: self.ai_client.embeddings.create(
                 input=[text],
                 model=self.embedding_model
-            )
+            ))
             return response.data[0].embedding
         except Exception as e:
             logger.error(f"Embedding error: {e}")

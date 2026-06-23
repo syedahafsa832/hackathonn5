@@ -183,6 +183,15 @@ class UnifiedMessageProcessor:
                 except Exception as tenant_error:
                     logger.warning(f"[PROCESSOR] Tenant lookup failed: {tenant_error}")
 
+            # ========== STAGE 2.6: FOUNDING COHORT DAILY LIMIT ==========
+            from src.services.auth_service import auth_service
+            if not await auth_service.check_daily_ticket_limit(tenant_id):
+                logger.info(f"[PROCESSOR] Daily ticket limit reached for tenant {tenant_id} — queuing without AI reply")
+                if early_ticket_id:
+                    supabase_update("tickets", {"id": f"eq.{early_ticket_id}"},
+                                    {"status": "requires_human"})
+                    return {"ticket_id": early_ticket_id, "status": "daily_limit_reached"}
+
             # ========== STAGE 3: RESOLVE CUSTOMER ==========
             customer = await supabase_service.get_or_create_customer(
                 email=customer_email,

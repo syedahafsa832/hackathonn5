@@ -174,6 +174,18 @@ async def chat(request: Request, body: ChatRequest):
     )
     ticket_id = ticket.get("id")
 
+    # ── Founding cohort daily limit ─────────────────────────────────────────
+    from src.services.auth_service import auth_service
+    brand_rows = supabase_select("brands", {"id": f"eq.{body.brand_id}"})
+    tenant_id = brand_rows[0].get("tenant_id") if brand_rows else None
+    if not await auth_service.check_daily_ticket_limit(tenant_id):
+        limit_reply = (
+            "We've hit today's free ticket limit on this plan — your message has been "
+            "saved and our team will follow up. Upgrade anytime to remove this limit."
+        )
+        supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {"status": "requires_human"})
+        return ChatResponse(reply=limit_reply, session_id=body.session_id, suggested_actions=[])
+
     # Parse stored messages
     stored_msgs = ticket.get("messages") or []
     if isinstance(stored_msgs, str):

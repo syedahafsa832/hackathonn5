@@ -24,6 +24,8 @@ JWT_SECRET = os.getenv("JWT_SECRET", os.getenv("SECRET_KEY", "change-this-in-pro
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 1440  # 24 hours
 REFRESH_TOKEN_EXPIRE_DAYS = 30
+FOUNDING_COHORT_CAP = 20
+FOUNDING_DAILY_TICKET_LIMIT = 5
 
 
 class AuthService:
@@ -68,6 +70,39 @@ class AuthService:
             logger.warning(f"Invalid token: {e}")
             return None
 
+    async def check_daily_ticket_limit(self, tenant_id: Optional[str]) -> bool:
+        """Founding-cohort orgs get FOUNDING_DAILY_TICKET_LIMIT new conversations/day.
+        Paid plans and unresolvable tenants are unlimited (fail open)."""
+        if not tenant_id:
+            return True
+        try:
+            tenants = supabase_select("tenants", {"id": f"eq.{tenant_id}"})
+            if not tenants or tenants[0].get("plan") != "founding_free":
+                return True
+
+            brands = supabase_select("brands", {"tenant_id": f"eq.{tenant_id}"}) or []
+            brand_ids = [b["id"] for b in brands]
+            if not brand_ids:
+                return True
+
+            today_start = datetime.now(timezone.utc).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            ).isoformat()
+
+            today_count = 0
+            for bid in brand_ids:
+                rows = supabase_select("tickets", {
+                    "store_id": f"eq.{bid}",
+                    "created_at": f"gte.{today_start}",
+                    "select": "id",
+                }) or []
+                today_count += len(rows)
+
+            return today_count < FOUNDING_DAILY_TICKET_LIMIT
+        except Exception as e:
+            logger.warning(f"[Auth] Daily limit check failed for tenant {tenant_id}: {e} — allowing")
+            return True
+
     async def register(
         self,
         email: str,
@@ -96,6 +131,21 @@ class AuthService:
                     "error": "Password must be at least 8 characters"
                 }
 
+            # Founding 20 hard cap — first 20 orgs get the free founding cohort plan,
+            # everyone after gets sent to the waitlist instead of silently overloading
+            # the free Mistral/Render tier.
+            founding_count = supabase_select("tenants", {
+                "founding_cohort": "eq.true",
+                "select": "id",
+            })
+            if len(founding_count or []) >= FOUNDING_COHORT_CAP:
+                return {
+                    "success": False,
+                    "error": "founding_cohort_full",
+                    "message": "Our Founding 20 program is full. Join the waitlist instead.",
+                    "waitlist_url": "https://tresolv.online/waitlist",
+                }
+
             # Create tenant
             tenant_data = {
                 "email": email.lower().strip(),
@@ -103,6 +153,8 @@ class AuthService:
                 "company_name": company_name,
                 "is_active": True,
                 "shopify_connected": False,
+                "plan": "founding_free",
+                "founding_cohort": True,
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }

@@ -14,6 +14,8 @@ from typing import Optional, Dict
 
 from openai import OpenAI
 
+from src.services.mistral_limiter import call_with_limit
+
 logger = logging.getLogger(__name__)
 
 ADDRESS_PARSE_PROMPT = """Parse this address text into structured fields. Respond with valid JSON only.
@@ -150,20 +152,20 @@ class IntentDetector:
 
         try:
             try:
-                response = client.chat.completions.create(
+                response = await call_with_limit(lambda: client.chat.completions.create(
                     model=model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.0,
                     max_tokens=120,
                     response_format={"type": "json_object"},
-                )
+                ))
             except Exception:
-                response = client.chat.completions.create(
+                response = await call_with_limit(lambda: client.chat.completions.create(
                     model=model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.0,
                     max_tokens=120,
-                )
+                ))
 
             raw = (response.choices[0].message.content or "").strip()
             data = json.loads(raw)
@@ -202,20 +204,20 @@ class IntentDetector:
 
         try:
             try:
-                response = client.chat.completions.create(
+                response = await call_with_limit(lambda: client.chat.completions.create(
                     model=model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.0,
                     max_tokens=150,
                     response_format={"type": "json_object"},
-                )
+                ))
             except Exception:
-                response = client.chat.completions.create(
+                response = await call_with_limit(lambda: client.chat.completions.create(
                     model=model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.0,
                     max_tokens=150,
-                )
+                ))
 
             raw = (response.choices[0].message.content or "").strip()
             data = json.loads(raw)

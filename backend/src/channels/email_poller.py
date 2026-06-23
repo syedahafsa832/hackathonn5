@@ -158,6 +158,19 @@ class EmailPoller:
 
     # ── Per-brand polling ──────────────────────────────────────────────────
 
+    async def _get_required_interval(self, brand: dict) -> int:
+        """Founding-cohort (free) brands poll at half the configured frequency."""
+        try:
+            tenant_id = brand.get("tenant_id")
+            if not tenant_id:
+                return self.poll_interval
+            tenants = supabase_select("tenants", {"id": f"eq.{tenant_id}"})
+            if tenants and tenants[0].get("plan") == "founding_free":
+                return self.poll_interval * 2
+        except Exception:
+            pass
+        return self.poll_interval
+
     async def _poll_brand_inbox(self, brand: dict, all_brand_emails: frozenset = frozenset()):
         try:
             from src.services.brand_gmail_service import brand_gmail_service
@@ -167,6 +180,19 @@ class EmailPoller:
 
             # Determine last_polled_at; fall back to 24h ago if NULL
             last_polled_at = brand.get("last_polled_at")
+
+            # Founding-cohort (free) brands poll at half frequency — they're capped at
+            # 5 tickets/day anyway, no need to burn Gmail quota at the paid-tier cadence.
+            required_interval = await self._get_required_interval(brand)
+            if last_polled_at:
+                try:
+                    last_dt = datetime.fromisoformat(last_polled_at.replace("Z", "+00:00"))
+                    elapsed = (datetime.now(timezone.utc) - last_dt).total_seconds()
+                    if elapsed < required_interval:
+                        return
+                except Exception:
+                    pass
+
             if last_polled_at:
                 since_dt = datetime.fromisoformat(last_polled_at.replace("Z", "+00:00"))
             else:
