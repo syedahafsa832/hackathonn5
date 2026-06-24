@@ -415,6 +415,14 @@ try:
     except Exception as e:
       logger.warning(f"Failed to register chat widget router: {e}")
 
+    # Public Live Feed (homepage widget — no auth, anonymized)
+    try:
+      from src.api.routes.public_feed import router as public_feed_router
+      register_router(public_feed_router)
+      logger.info("✓ Public Live Feed router registered")
+    except Exception as e:
+      logger.warning(f"Failed to register public live feed router: {e}")
+
     logger.info("✓ Routers processed (resilient registration).")
 except Exception as e:
     logger.error(f"Critical error in router setup block: {e}")
