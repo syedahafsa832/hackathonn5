@@ -128,6 +128,8 @@ class V3Tools:
             tracking = _first_fulfillment.get("tracking_number")
             tracking_url = _first_fulfillment.get("tracking_url")
             tracking_company = _first_fulfillment.get("tracking_company")
+            shipment_status = _first_fulfillment.get("shipment_status")
+            shipped_at = _first_fulfillment.get("created_at")
 
             result = {
                 "success": True,
@@ -140,6 +142,8 @@ class V3Tools:
                 "tracking_number": tracking,
                 "tracking_url": tracking_url,
                 "tracking_company": tracking_company,
+                "shipment_status": shipment_status,
+                "shipped_at": shipped_at,
                 "total_amount": o.get("total_price"),
                 "items": [
                     {

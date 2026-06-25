@@ -141,6 +141,23 @@ function BrandCard({ brand, highlightGmail }) {
     email: brand.gmail_email || null,
   });
   const [gmailLoading, setGmailLoading] = useState(false);
+  const [agentName, setAgentName] = useState(brand.agent_name || 'Luna');
+  const [brandName, setBrandName] = useState(brand.name || '');
+  const [savingIdentity, setSavingIdentity] = useState(false);
+  const [identityMsg, setIdentityMsg] = useState('');
+
+  const saveIdentity = async () => {
+    setSavingIdentity(true);
+    setIdentityMsg('');
+    try {
+      await client.put(`/api/brands/${brand.id}`, { name: brandName, agent_name: agentName });
+      setIdentityMsg('Saved!');
+    } catch (err) {
+      setIdentityMsg(err.response?.data?.detail || 'Failed to save.');
+    } finally {
+      setSavingIdentity(false);
+    }
+  };
 
   const testShopify = async () => {
     setConnecting(true);
@@ -219,6 +236,43 @@ function BrandCard({ brand, highlightGmail }) {
               </div>
             ))}
           </div>
+
+          <div style={{ display: 'flex', gap: '12px', marginBottom: '16px', flexWrap: 'wrap' }}>
+            <div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>AI Agent Name</div>
+              <input
+                value={agentName}
+                onChange={e => setAgentName(e.target.value)}
+                placeholder="Luna"
+                maxLength={20}
+                style={{ padding: '7px 10px', borderRadius: '4px', border: '1px solid var(--border)', fontSize: '13px', width: '160px' }}
+              />
+            </div>
+            <div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>Brand Display Name</div>
+              <input
+                value={brandName}
+                onChange={e => setBrandName(e.target.value)}
+                placeholder="My Store"
+                style={{ padding: '7px 10px', borderRadius: '4px', border: '1px solid var(--border)', fontSize: '13px', width: '200px' }}
+              />
+            </div>
+            <button
+              onClick={saveIdentity}
+              disabled={savingIdentity}
+              style={{ alignSelf: 'flex-end', padding: '7px 14px', borderRadius: '4px', background: 'var(--accent)', color: 'white', fontWeight: '500', fontSize: '13px', cursor: savingIdentity ? 'not-allowed' : 'pointer' }}
+            >
+              {savingIdentity ? 'Saving...' : 'Save'}
+            </button>
+            {identityMsg && (
+              <span style={{ alignSelf: 'center', fontSize: '12px', color: identityMsg === 'Saved!' ? 'var(--success)' : 'var(--danger)' }}>
+                {identityMsg}
+              </span>
+            )}
+          </div>
+          <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '-10px', marginBottom: '16px' }}>
+            This is the name your customers see in chat and email replies. Default: Luna
+          </p>
 
           {testResult?.shop && (
             <div style={{ padding: '8px 12px', background: 'var(--success-light)', borderRadius: '4px', fontSize: '12px', color: 'var(--success)', marginBottom: '12px' }}>

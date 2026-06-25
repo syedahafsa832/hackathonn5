@@ -2,6 +2,7 @@ import os
 import json
 import re
 import logging
+from datetime import datetime
 from typing import Dict, Any, Optional, List
 
 # Note: tenant_id parameter is used for multi-tenant RAG retrieval
@@ -55,6 +56,8 @@ def _build_order_context(order: dict, tracking_context: str = "") -> str:
     tracking = order.get("tracking_number", "")
     tracking_url = order.get("tracking_url", "")
     tracking_company = order.get("tracking_company", "")
+    shipment_status = order.get("shipment_status")
+    shipped_at = order.get("shipped_at")
 
     financial_status = order.get("financial_status", "")
     cancelled_at = order.get("cancelled_at")
@@ -77,23 +80,39 @@ def _build_order_context(order: dict, tracking_context: str = "") -> str:
     if tracking_context:
         # Live Aftership data or fallback instructions — injected by caller
         lines.append(tracking_context)
-    elif tracking:
+    elif tracking or shipment_status:
+        status_phrases = {
+            "in_transit": "in transit",
+            "out_for_delivery": "out for delivery today",
+            "delivered": "delivered",
+            "attempted_delivery": "delivery was attempted but failed",
+            "failure": "experiencing a delivery issue",
+        }
+        readable_status = status_phrases.get(shipment_status, "recently shipped, tracking should update within 24 hours")
+
         lines.append("")
         lines.append("SHIPPING INFO:")
         if tracking_company:
             lines.append(f"  Carrier: {tracking_company}")
-        lines.append(f"  Tracking Number: {tracking}")
+        if tracking:
+            lines.append(f"  Tracking Number: {tracking}")
         if tracking_url:
-            lines.append(f"  Track Here: {tracking_url}")
+            lines.append(f"  Tracking URL: {tracking_url}")
+        if shipped_at:
+            try:
+                shipped_day = datetime.fromisoformat(shipped_at.replace("Z", "+00:00")).strftime("%A")
+                lines.append(f"  Shipped: {shipped_day}")
+            except Exception:
+                pass
+        lines.append(f"  Current status: {readable_status}")
         lines.append("")
         lines.append("IF CUSTOMER ASKS WHERE THEIR ORDER IS:")
-        track_msg = f"Your tracking number is {tracking}"
-        if tracking_url:
-            track_msg += f" — track it here: {tracking_url}"
-        lines.append(f"  Tell them exactly: '{track_msg}'")
+        lines.append("  Answer in plain English using the shipped day + current status above (e.g. 'shipped Tuesday and it's in transit').")
+        lines.append("  Do NOT say 'check your email for tracking'. Do NOT paste the raw tracking URL as your main answer.")
+        lines.append("  You may offer the tracking URL as a secondary option AFTER the plain-English status.")
     elif status == "unfulfilled":
         lines.append("")
-        lines.append("Order has not shipped yet — if customer asks, tell them it hasn't been dispatched.")
+        lines.append("Order has not shipped yet — if customer asks, tell them it's being prepared and hasn't shipped.")
 
     # Derive what actions are sensible given current order state
     state_notes = []
@@ -152,12 +171,10 @@ class CustomerSuccessAgent:
         try:
             _is_chat = "[CHAT MODE" in query
 
-            # 1. RAG Retrieval - skip for chat widget (saves embedding API call when KB is likely empty)
-            if _is_chat:
-                rag_context = ""
-            else:
-                rag_context = await rag_engine.get_relevant_context(query, tenant_id=tenant_id)
-                logger.info(f"[Agent] RAG context retrieved: {len(rag_context)} chars")
+            # 1. RAG Retrieval - rag_engine itself skips the embedding call when this
+            # tenant has no KB docs uploaded, so chat no longer needs a blanket skip here.
+            rag_context = await rag_engine.get_relevant_context(query, tenant_id=tenant_id)
+            logger.info(f"[Agent] RAG context retrieved: {len(rag_context)} chars")
 
             # 2. Sizing Engine - Get actual recommendation if we have measurements
             sizing_context = ""
@@ -202,6 +219,7 @@ class CustomerSuccessAgent:
 
             # Resolve brand-specific Shopify + Aftership credentials
             _brand_name = "our store"
+            _agent_name = "Luna"
             _brand_shopify_domain = None
             _brand_shopify_token = None
             _brand_aftership_key = None
@@ -213,6 +231,7 @@ class CustomerSuccessAgent:
                     _b = _sel("brands", {"id": f"eq.{store_id}"})
                     if _b:
                         _brand_name = _b[0].get("name") or _b[0].get("brand_name") or "our store"
+                        _agent_name = _b[0].get("agent_name") or "Luna"
                         if _b[0].get("shopify_connected") or _b[0].get("shopify_access_token"):
                             _brand_shopify_domain = _b[0].get("shopify_domain")
                             _raw = _b[0].get("shopify_access_token") or ""
@@ -348,12 +367,12 @@ class CustomerSuccessAgent:
                 logger.info("[ReturnActions] Skipping intent detection for chat mode")
 
             # 5. Response Generation
-            system_prompt = self._construct_v3_prompt(customer_info, rag_context, sizing_context, tool_context, action_context, brand_name=_brand_name)
+            system_prompt = self._construct_v3_prompt(customer_info, rag_context, sizing_context, tool_context, action_context, brand_name=_brand_name, agent_name=_agent_name)
 
             # Defensive check - ensure OpenAI client is initialized
             if not self.openai_client:
                 logger.error("OpenAI client is not initialized - API key may be missing")
-                return self._get_fallback_response("OpenAI client not initialized")
+                return self._get_fallback_response("OpenAI client not initialized", brand_name=_brand_name, agent_name=_agent_name)
 
             try:
                 response = await call_with_limit(lambda: self.openai_client.chat.completions.create(
@@ -379,14 +398,14 @@ class CustomerSuccessAgent:
             except Exception as api_error:
                 if getattr(api_error, 'status_code', None) == 429 or "429" in str(api_error):
                     logger.warning("[Agent] Mistral rate limited — returning fallback immediately")
-                    return self._get_fallback_response("Rate limited", brand_name=_brand_name)
+                    return self._get_fallback_response("Rate limited", brand_name=_brand_name, agent_name=_agent_name)
                 logger.error(f"Mistral API call failed: {api_error}")
-                return self._get_fallback_response(f"API error: {str(api_error)}")
+                return self._get_fallback_response(f"API error: {str(api_error)}", brand_name=_brand_name, agent_name=_agent_name)
 
             raw_content = response.choices[0].message.content
             if not raw_content:
                 logger.error("Empty response from API")
-                return self._get_fallback_response("Empty API response")
+                return self._get_fallback_response("Empty API response", brand_name=_brand_name, agent_name=_agent_name)
 
             try:
                 # Clean up response - remove markdown code blocks if present
@@ -402,7 +421,7 @@ class CustomerSuccessAgent:
                 structured = json.loads(clean_content)
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse JSON response: {e}. Raw content: {raw_content[:500]}")
-                return self._get_fallback_response(f"JSON parse error: {str(e)}")
+                return self._get_fallback_response(f"JSON parse error: {str(e)}", brand_name=_brand_name, agent_name=_agent_name)
 
             # 4. Confidence Calculation - Be more lenient
             sentiment = sentiment_analyzer.analyze_sentiment_detailed(query)
@@ -455,8 +474,8 @@ class CustomerSuccessAgent:
                     structured["reply_body"] = f"Hey {name},\n\n{reply}"
 
             # Add casual sign-off instead of formal
-            if "Luna" not in structured["reply_body"]:
-                structured["reply_body"] += f"\n\n— Luna\n{_brand_name}"
+            if _agent_name not in structured["reply_body"]:
+                structured["reply_body"] += f"\n\n— {_agent_name}\n{_brand_name}"
 
             # Attach order_data for widget card display
             _os = tool_results.get("order_status", {})
@@ -489,16 +508,16 @@ class CustomerSuccessAgent:
             import traceback
             logger.error(f"V3 Agent Error: {e}")
             logger.error(f"Full traceback: {traceback.format_exc()}")
-            return self._get_fallback_response(str(e), brand_name=_brand_name)
+            return self._get_fallback_response(str(e), brand_name=_brand_name, agent_name=_agent_name)
 
-    def _construct_v3_prompt(self, customer_info: Dict[str, Any], rag_context: str, sizing_context: str, tool_context: str = "", action_context: str = "", brand_name: str = "our store") -> str:
+    def _construct_v3_prompt(self, customer_info: Dict[str, Any], rag_context: str, sizing_context: str, tool_context: str = "", action_context: str = "", brand_name: str = "our store", agent_name: str = "Luna") -> str:
         order_critical = (
             "\n⚠ LIVE DATA FROM SHOPIFY — USE ONLY THESE DETAILS:\n"
             "• Reference ONLY the product names, quantities, and totals listed below.\n"
             "• Do NOT invent or assume any product names, prices, or details not listed here.\n"
         ) if tool_context.strip() else "\n(No order data fetched — if the customer asks about an order, ask for their order number.)\n"
         return f"""
-        You are Luna, a friendly customer support agent for {brand_name}. You sound like a real person texting a friend - casual, warm, and helpful. NOT a corporate bot.
+        You are {agent_name}, a friendly customer support agent for {brand_name}. You sound like a real person texting a friend - casual, warm, and helpful. NOT a corporate bot.
 
         RULES:
         - Write like you're texting - short sentences, easy words
@@ -511,12 +530,11 @@ class CustomerSuccessAgent:
         - If ORDER INFO shows a lookup failure, apologize you can't see the order and ask the customer for their order confirmation email or contact details so someone can follow up
 
         TRACKING RULES (CRITICAL — follow exactly):
-        - If ORDER INFO contains a tracking URL, you MUST paste it directly in your reply. Do NOT say "check your email".
-        - WRONG: "Check your email for tracking details."
-        - WRONG: "Your tracking info has been sent to your email."
-        - RIGHT: "Your order has shipped! Here's your tracking link: https://track.aftership.com/..."
-        - If ORDER INFO has a tracking number but no URL, share the number directly: "Your tracking number is ABC123 via FedEx."
-        - If ORDER INFO shows "fulfilled" but no tracking number exists, say: "Your order has shipped but we don't have a live tracking link yet. It usually takes 24h to activate."
+        - If ORDER INFO gives you a shipped day + status, answer in plain English using both — e.g. "Your order shipped Tuesday and it's in transit, should arrive in a couple days."
+        - Do NOT say "check your email for tracking." Do NOT paste the raw tracking URL as your main answer.
+        - If a tracking URL is available, you MAY offer it as a secondary option AFTER the plain-English status: "You can also track it here: [url]"
+        - If status is unknown, say it was recently shipped and tracking should update within 24 hours.
+        - If the order hasn't shipped yet, say it's being prepared and hasn't shipped.
 
         FORMATTING RULES:
         - NEVER use em dashes (—) or en dashes (–) anywhere in your response
@@ -572,9 +590,9 @@ class CustomerSuccessAgent:
         95-100: definitive answer. 80-94: quite sure. 60-79: mostly sure. Below 60: escalate.
         """
 
-    def _get_fallback_response(self, error: str, brand_name: str = "") -> Dict[str, Any]:
+    def _get_fallback_response(self, error: str, brand_name: str = "", agent_name: str = "Luna") -> Dict[str, Any]:
         logger.error(f"Using fallback response due to error: {error}")
-        sign_off = f"— Luna\n{brand_name}" if brand_name else "— Luna"
+        sign_off = f"— {agent_name}\n{brand_name}" if brand_name else f"— {agent_name}"
         return {
             "intent": "general_inquiry",
             "sentiment": "neutral",

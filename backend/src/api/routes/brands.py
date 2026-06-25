@@ -32,6 +32,7 @@ class CreateBrandRequest(BaseModel):
 
 class UpdateBrandRequest(BaseModel):
     name: Optional[str] = None
+    agent_name: Optional[str] = None
     shopify_access_token: Optional[str] = None
     support_email: Optional[str] = None
     sender_name: Optional[str] = None
@@ -146,6 +147,7 @@ async def get_brand(brand_id: str):
         return {
             "id": brand.get("id"),
             "name": brand.get("name"),
+            "agent_name": brand.get("agent_name"),
             "shopify_shop_name": brand.get("shopify_shop_name"),
             "support_email": brand.get("support_email"),
             "sender_name": brand.get("sender_name"),

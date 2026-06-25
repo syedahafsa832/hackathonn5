@@ -138,14 +138,14 @@ def _get_or_create_session(session_id: str, brand_id: str, customer_email: Optio
     return ticket
 
 
-def _build_history_context(messages: list) -> str:
+def _build_history_context(messages: list, agent_name: str = "Luna") -> str:
     """Turn recent messages into a context string for the agent."""
     if not messages:
         return ""
     recent = messages[-6:]  # last 3 exchanges
     lines = ["[CHAT HISTORY — earlier in this conversation:]"]
     for m in recent:
-        role = "Customer" if m.get("direction") == "inbound" else "Luna"
+        role = "Customer" if m.get("direction") == "inbound" else agent_name
         lines.append(f"{role}: {m.get('body', '')}")
     lines.append("[END CHAT HISTORY]")
     return "\n".join(lines)
@@ -155,7 +155,7 @@ def _build_history_context(messages: list) -> str:
 
 @router.post("/widget/chat", response_model=ChatResponse)
 async def chat(request: Request, body: ChatRequest):
-    """Receive a chat message and return Luna's reply."""
+    """Receive a chat message and return the AI agent's reply."""
     ip = request.client.host if request.client else "unknown"
     if not _allow(ip):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Please wait a moment.")
@@ -166,6 +166,7 @@ async def chat(request: Request, body: ChatRequest):
 
     brand = _get_brand(body.brand_id)
     brand_name = brand.get("name", "our store")
+    agent_name = brand.get("agent_name") or "Luna"
 
     ticket = _get_or_create_session(
         body.session_id, body.brand_id,
@@ -176,8 +177,7 @@ async def chat(request: Request, body: ChatRequest):
 
     # ── Founding cohort daily limit ─────────────────────────────────────────
     from src.services.auth_service import auth_service
-    brand_rows = supabase_select("brands", {"id": f"eq.{body.brand_id}"})
-    tenant_id = brand_rows[0].get("tenant_id") if brand_rows else None
+    tenant_id = brand.get("tenant_id")
     if not await auth_service.check_daily_ticket_limit(tenant_id):
         limit_reply = (
             "We've hit today's free ticket limit on this plan — your message has been "
@@ -204,7 +204,7 @@ async def chat(request: Request, body: ChatRequest):
     })
 
     # Build query for the agent: history + current message
-    history_ctx = _build_history_context(stored_msgs[:-1])
+    history_ctx = _build_history_context(stored_msgs[:-1], agent_name=agent_name)
     full_query = f"{history_ctx}\n\nCustomer: {message}" if history_ctx else message
 
     result_confidence: Optional[int] = None
@@ -235,14 +235,16 @@ async def chat(request: Request, body: ChatRequest):
         result = await customer_success_agent.process_customer_query(
             query=chat_query,
             customer_info=customer_info,
+            tenant_id=tenant_id,
             store_id=body.brand_id,
             ticket_id=ticket_id,
         )
 
         reply_body = result.get("reply_body", "Hey! Let me look into that for you.")
         # Keep sign-off line if present
-        if "— Luna" in reply_body:
-            sign_idx = reply_body.find("— Luna")
+        sign_off_marker = f"— {agent_name}"
+        if sign_off_marker in reply_body:
+            sign_idx = reply_body.find(sign_off_marker)
             reply_clean = reply_body[:sign_idx].strip()
         else:
             reply_clean = reply_body
@@ -270,7 +272,7 @@ async def chat(request: Request, body: ChatRequest):
         ticket_escalate = True
         ticket_escalation_reason = f"Agent error: {e}"
 
-    # Append Luna's reply
+    # Append the agent's reply
     stored_msgs.append({
         "direction": "outbound",
         "body": reply_clean,
