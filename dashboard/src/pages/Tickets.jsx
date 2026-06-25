@@ -175,7 +175,41 @@ export default function Tickets() {
           </div>
         )}
 
-        <div style={{ overflowX: 'auto' }}>
+        {/* Mobile card list */}
+        <div className="table-mobile-cards">
+          {loading ? (
+            Array.from({ length: 5 }, (_, i) => (
+              <div key={i} className="skeleton" style={{ height: '70px', borderRadius: '6px' }} />
+            ))
+          ) : sortedAndFiltered.length === 0 ? (
+            <div style={{ padding: '32px', textAlign: 'center', color: '#94A3B8' }}>No conversations found</div>
+          ) : sortedAndFiltered.map(c => (
+            <div key={c.id} className="mobile-card" onClick={() => handleOpenConversation(c.id)}>
+              <div className="mobile-card-row">
+                <span style={{ fontFamily: 'DM Mono, monospace', fontSize: '12px', color: '#64748B' }}>#{String(c.id).slice(0, 8)}</span>
+                <span style={{ color: '#64748B' }}>{formatDate(c.updated_at)}</span>
+              </div>
+              <div style={{ fontWeight: c.unread_count > 0 ? '600' : '500', color: '#0F172A' }}>
+                {c.customer_email || c.sender_id || '—'}
+              </div>
+              <div className="mobile-card-row">
+                <span style={{ textTransform: 'capitalize' }}>{c.channel}</span>
+                <Badge status={c.status} />
+              </div>
+              {(c.tags || []).length > 0 && (
+                <div style={{ display: 'flex', gap: '3px', flexWrap: 'wrap' }}>
+                  {(c.tags || []).slice(0, 3).map(tag => (
+                    <span key={tag} style={{ fontSize: '10px', padding: '1px 6px', borderRadius: '8px', background: '#F1F5F9', color: '#475569', fontWeight: '500' }}>
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <div className="table-desktop-wrap" style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: '#F8FAFC', position: 'sticky', top: 0 }}>

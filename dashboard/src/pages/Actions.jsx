@@ -310,9 +310,9 @@ export default function Actions() {
       {/* Pending Financial Actions */}
       {actions.length > 0 && (
         <section>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+          <div className="header-row" style={{ marginBottom: '10px' }}>
             <h2 style={{ fontSize: '14px', fontWeight: '600', color: '#0F172A' }}>Pending Approvals</h2>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '13px', color: '#64748B', cursor: 'pointer' }}
                      onMouseEnter={e => e.target.style.color = '#0F172A'}
                      onMouseLeave={e => e.target.style.color = '#64748B'}>
@@ -363,10 +363,10 @@ export default function Actions() {
 
       {/* Escalated Conversations */}
       <section>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+        <div className="header-row" style={{ marginBottom: '12px' }}>
           <h2 style={{ fontSize: '14px', fontWeight: '600', color: '#0F172A' }}>Escalated Conversations</h2>
           {escalations.length > 0 && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '13px', color: '#64748B', cursor: 'pointer' }}
                      onMouseEnter={e => e.target.style.color = '#0F172A'}
                      onMouseLeave={e => e.target.style.color = '#64748B'}>
@@ -410,7 +410,25 @@ export default function Actions() {
             <div style={{ fontSize: '13px', color: '#94A3B8', textAlign: 'center' }}>No conversations require human intervention.</div>
           </div>
         ) : (
-          <div style={{ background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', overflow: 'hidden' }}>
+          <>
+            {/* Mobile card list */}
+            <div className="table-mobile-cards">
+              {escalations.map(c => (
+                <div key={c.id} className="mobile-card" onClick={() => navigate(`/tickets/${c.id}`)}>
+                  <div className="mobile-card-row">
+                    <span style={{ fontFamily: 'DM Mono, monospace', fontSize: '12px', color: '#64748B' }}>#{String(c.id).slice(0, 8)}</span>
+                    <span style={{ color: '#64748B' }}>{formatDate(c.updated_at)}</span>
+                  </div>
+                  <div style={{ fontWeight: '500', color: '#0F172A' }}>{c.customer_email || c.sender_id || '—'}</div>
+                  <div className="mobile-card-row">
+                    <span style={{ textTransform: 'capitalize' }}>{c.channel || 'email'}</span>
+                    <Badge status={c.status} />
+                  </div>
+                </div>
+              ))}
+            </div>
+
+          <div className="table-desktop-wrap" style={{ background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', overflow: 'hidden' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ background: '#F8FAFC' }}>
@@ -453,6 +471,7 @@ export default function Actions() {
               </tbody>
             </table>
           </div>
+          </>
         )}
       </section>
     </div>

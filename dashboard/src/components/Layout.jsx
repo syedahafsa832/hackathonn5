@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import { useAuth } from '../hooks/useAuth';
-import { LogOut, ChevronDown, Store } from 'lucide-react';
+import { LogOut, ChevronDown, Store, Menu } from 'lucide-react';
 
 const PAGE_TITLES = {
   '/dashboard': 'Dashboard Overview',
@@ -15,17 +15,21 @@ const PAGE_TITLES = {
 export default function Layout({ children }) {
   const location = useLocation();
   const { logout } = useAuth();
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const title = Object.entries(PAGE_TITLES).find(([path]) =>
     location.pathname.startsWith(path)
   )?.[1] || 'Resolv';
 
+  useEffect(() => {
+    setMobileMenuOpen(false);
+  }, [location.pathname]);
+
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
-      <Sidebar />
+      <Sidebar mobileOpen={mobileMenuOpen} onCloseMobile={() => setMobileMenuOpen(false)} />
 
-      <div style={{
-        marginLeft: 'var(--sidebar-width)',
+      <div className="layout-main" style={{
         flex: 1,
         display: 'flex',
         flexDirection: 'column',
@@ -42,9 +46,18 @@ export default function Layout({ children }) {
           flexShrink: 0,
           zIndex: 50,
         }}>
-          <h1 style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
-            {title}
-          </h1>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <button
+              className="mobile-menu-btn"
+              onClick={() => setMobileMenuOpen(true)}
+              aria-label="Open menu"
+            >
+              <Menu size={18} />
+            </button>
+            <h1 style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
+              {title}
+            </h1>
+          </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <button

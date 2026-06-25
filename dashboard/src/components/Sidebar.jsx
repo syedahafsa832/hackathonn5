@@ -11,7 +11,7 @@ const NAV = [
   { path: '/settings', label: 'Settings', icon: Settings },
 ];
 
-export default function Sidebar() {
+export default function Sidebar({ mobileOpen, onCloseMobile }) {
   const [pendingCount, setPendingCount] = useState(0);
   const [quarantineCount, setQuarantineCount] = useState(0);
 
@@ -38,20 +38,8 @@ export default function Sidebar() {
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
 
-  return (
-    <aside style={{
-      width: '220px',
-      flexShrink: 0,
-      background: '#FAFAFA',
-      borderRight: '1px solid #E4E4E7',
-      height: '100vh',
-      position: 'fixed',
-      top: 0,
-      left: 0,
-      display: 'flex',
-      flexDirection: 'column',
-      zIndex: 100,
-    }}>
+  const renderContent = (onLinkClick) => (
+    <>
       <div style={{
         height: '56px',
         display: 'flex',
@@ -70,6 +58,7 @@ export default function Sidebar() {
           <NavLink
             key={path}
             to={path}
+            onClick={onLinkClick}
             style={({ isActive }) => ({
               display: 'flex',
               alignItems: 'center',
@@ -126,6 +115,40 @@ export default function Sidebar() {
       <div style={{ padding: '12px 20px', borderTop: '1px solid #E4E4E7', fontSize: '11px', color: '#94A3B8' }}>
         tResolv v1.0
       </div>
-    </aside>
+    </>
+  );
+
+  const asideStyle = {
+    width: '220px',
+    flexShrink: 0,
+    background: '#FAFAFA',
+    borderRight: '1px solid #E4E4E7',
+    height: '100vh',
+    flexDirection: 'column',
+  };
+
+  return (
+    <>
+      {/* Desktop sidebar — hidden under 768px via .app-sidebar */}
+      <aside className="app-sidebar" style={{ ...asideStyle, position: 'fixed', top: 0, left: 0, zIndex: 100 }}>
+        {renderContent()}
+      </aside>
+
+      {/* Mobile overlay sidebar */}
+      {mobileOpen && (
+        <div
+          className="mobile-sidebar-overlay open"
+          style={{ position: 'fixed', inset: 0, zIndex: 200 }}
+        >
+          <div
+            style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.5)' }}
+            onClick={onCloseMobile}
+          />
+          <aside style={{ ...asideStyle, position: 'absolute', top: 0, left: 0, bottom: 0, height: '100%', display: 'flex' }}>
+            {renderContent(onCloseMobile)}
+          </aside>
+        </div>
+      )}
+    </>
   );
 }

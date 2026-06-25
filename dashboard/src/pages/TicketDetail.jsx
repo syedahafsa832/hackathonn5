@@ -377,7 +377,7 @@ export default function TicketDetail() {
   const isHumanHandled = ticket.handler && ticket.handler.startsWith('human');
 
   return (
-    <div style={{ padding: '24px', display: 'flex', gap: '24px', alignItems: 'flex-start' }}>
+    <div className="split-panel" style={{ padding: '24px', gap: '24px', alignItems: 'flex-start' }}>
 
       {/* Left panel — 60% */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '16px', minWidth: 0 }}>
@@ -464,7 +464,7 @@ export default function TicketDetail() {
       </div>
 
       {/* Right panel — 40% */}
-      <div style={{ width: '320px', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      <div className="split-panel-side" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
 
         {/* Lead Summary */}
         <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '6px', padding: '16px 20px' }}>
