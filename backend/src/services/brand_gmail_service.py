@@ -12,6 +12,7 @@ import hmac
 import hashlib
 import time
 import logging
+import asyncio
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from email.mime.text import MIMEText
@@ -252,7 +253,14 @@ class BrandGmailService:
 
     async def get_new_emails(self, brand: dict, max_results: int = 10, since_dt=None) -> List[Dict]:
         """Fetch + mark-as-read emails for one brand received after since_dt (or unread if no timestamp).
-        Raises on network/API failure so the caller can skip updating last_polled_at."""
+        Raises on network/API failure so the caller can skip updating last_polled_at.
+
+        The Google API client is fully synchronous, so the actual work runs in a thread —
+        this lets the poller's asyncio.gather() across brands achieve real concurrency
+        instead of each brand blocking the event loop in turn."""
+        return await asyncio.to_thread(self._get_new_emails_sync, brand, max_results, since_dt)
+
+    def _get_new_emails_sync(self, brand: dict, max_results: int = 10, since_dt=None) -> List[Dict]:
         svc = self._build_service(brand)
         if not svc:
             logger.warning(f"[BrandGmail] Could not build Gmail service for brand {brand.get('name')}")

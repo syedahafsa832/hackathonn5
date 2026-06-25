@@ -6,9 +6,21 @@ from src.api.middleware.tenant_auth import get_current_tenant, TenantContext
 from pydantic import BaseModel
 from datetime import datetime, timezone
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tickets", tags=["tickets"])
+
+# In-memory TTL cache for the list endpoint — this loops over every owned brand on
+# each call, and the dashboard hits it twice per load (stats + active list). A real
+# Redis cache isn't available on the free Render tier (single worker anyway, so an
+# in-process cache behaves the same), so this fills the same role.
+_TICKETS_CACHE_TTL = 15  # seconds — matches the dashboard's own refetch interval
+_tickets_cache: dict = {}
+
+
+def _invalidate_tickets_cache():
+    _tickets_cache.clear()
 
 class TicketUpdate(BaseModel):
     status: Optional[str] = None
@@ -46,6 +58,11 @@ async def list_tickets(
     tenant: TenantContext = Depends(get_current_tenant),
 ):
     """List tickets scoped to the current tenant's brands."""
+    cache_key = f"{tenant.tenant_id}:{status}:{store_id}"
+    cached = _tickets_cache.get(cache_key)
+    if cached and (time.time() - cached[1]) < _TICKETS_CACHE_TTL:
+        return cached[0]
+
     try:
         # If caller specifies a store_id, verify it belongs to this tenant
         if store_id:
@@ -71,6 +88,7 @@ async def list_tickets(
         for t in tickets:
             if not t.get("channel"):
                 t["channel"] = "email"
+        _tickets_cache[cache_key] = (tickets, time.time())
         return tickets
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -115,6 +133,7 @@ async def update_ticket(ticket_id: str, updates: TicketUpdate):
         if not update_data:
             raise HTTPException(status_code=400, detail="No updates provided")
         result = await supabase_service.update_ticket(ticket_id, update_data)
+        _invalidate_tickets_cache()
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -179,6 +198,7 @@ async def send_reply(ticket_id: str, req: SendReplyRequest):
             "direction": "outbound",
         })
         supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {"messages": existing_messages})
+        _invalidate_tickets_cache()
 
         return {"success": True, "message": "Reply sent successfully"}
 

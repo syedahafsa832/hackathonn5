@@ -34,6 +34,8 @@ export default function Dashboard() {
   const [lastRefreshed, setLastRefreshed] = useState(new Date());
   const [secondsAgo, setSecondsAgo] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+  const [slowLoad, setSlowLoad] = useState(false);
+  const [activeBrand, setActiveBrand] = useState(null);
   const prevTicketCount = useRef(0);
 
   const handleRefresh = useCallback(async () => {
@@ -63,11 +65,23 @@ export default function Dashboard() {
       const brands = res.data?.brands || (Array.isArray(res.data) ? res.data : []);
       if (brands.length === 0) {
         navigate('/onboarding');
+      } else {
+        setActiveBrand(brands[0]);
       }
     }).catch(() => {
       // brands check failed — stay on dashboard
     });
   }, []);
+
+  // Show a "waking up the server" message if loading takes more than 3s (Render free-tier cold start)
+  useEffect(() => {
+    if (!loading) {
+      setSlowLoad(false);
+      return;
+    }
+    const timer = setTimeout(() => setSlowLoad(true), 3000);
+    return () => clearTimeout(timer);
+  }, [loading]);
 
   // Update document title with pending count
   useEffect(() => {
@@ -85,8 +99,35 @@ export default function Dashboard() {
     prevTicketCount.current = count;
   }, [stats?.activeConversations]);
 
+  const gmailConnected = !!activeBrand?.gmail_connected;
+  const shopifyConnected = !!activeBrand?.shopify_connected || !!activeBrand?.shopify_domain;
+
   return (
     <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+
+      {/* Setup incomplete banner */}
+      {activeBrand && (!gmailConnected || !shopifyConnected) && (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: '6px', fontSize: '13px', flexWrap: 'wrap', gap: '8px' }}>
+          <div>
+            <span style={{ color: '#B45309', fontWeight: '600' }}>Setup incomplete.</span>
+            <span style={{ color: '#64748B', marginLeft: '6px' }}>
+              {!gmailConnected && 'Gmail not connected. '}
+              {!shopifyConnected && 'Shopify not connected. '}
+              Luna can't work until both are connected.
+            </span>
+          </div>
+          <Link to="/onboarding" style={{ color: '#B45309', fontSize: '13px', fontWeight: '600', textDecoration: 'none', flexShrink: 0 }}>
+            Complete setup →
+          </Link>
+        </div>
+      )}
+
+      {/* Cold-start notice */}
+      {loading && slowLoad && (
+        <div style={{ textAlign: 'center', fontSize: '13px', color: '#94A3B8', padding: '8px' }}>
+          Starting up the server — this takes about 20 seconds on first load. Hang tight...
+        </div>
+      )}
 
       {/* Notification permission banner */}
       {showNotifBanner && (
@@ -189,6 +230,18 @@ export default function Dashboard() {
           <Link to="/tickets" style={{ fontSize: '13px', color: '#06B6D4', fontWeight: '500', textDecoration: 'none' }} onMouseEnter={e => e.target.style.textDecoration = 'underline'} onMouseLeave={e => e.target.style.textDecoration = 'none'}>View all →</Link>
         </div>
 
+        {!loading && recentConversations.length === 0 && !gmailConnected ? (
+          <div style={{ padding: '48px 24px', textAlign: 'center' }}>
+            <div style={{ fontSize: '36px', marginBottom: '12px' }}>📭</div>
+            <div style={{ fontSize: '15px', fontWeight: '600', color: '#0F172A', marginBottom: '6px' }}>No conversations yet</div>
+            <p style={{ fontSize: '13px', color: '#94A3B8', marginBottom: '18px' }}>
+              Connect your Gmail to start receiving and resolving support emails.
+            </p>
+            <Link to="/onboarding" style={{ display: 'inline-block', padding: '8px 18px', background: '#06B6D4', color: 'white', borderRadius: '6px', textDecoration: 'none', fontSize: '13px', fontWeight: '600' }}>
+              Connect Gmail →
+            </Link>
+          </div>
+        ) : (
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
@@ -228,6 +281,7 @@ export default function Dashboard() {
             </tbody>
           </table>
         </div>
+        )}
       </section>
 
       {/* Escalations summary */}

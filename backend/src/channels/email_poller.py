@@ -107,8 +107,9 @@ class EmailPoller:
 
     async def _polling_loop(self):
         while self.running:
+            brand_count = 0
             try:
-                await self._poll_all_inboxes()
+                brand_count = await self._poll_all_inboxes()
             except Exception as e:
                 logger.error(f"Email polling error: {e}")
                 await asyncio.sleep(5)
@@ -121,14 +122,18 @@ class EmailPoller:
                 except Exception as e:
                     logger.error(f"[CSAT] Survey send failed: {e}")
 
-            await asyncio.sleep(self.poll_interval)
+            # Few brands (e.g. live testing) → poll faster since there's headroom
+            sleep_interval = 10 if 0 < brand_count <= 2 else self.poll_interval
+            await asyncio.sleep(sleep_interval)
 
     # ── Main dispatch ──────────────────────────────────────────────────────
 
-    async def _poll_all_inboxes(self):
+    async def _poll_all_inboxes(self) -> int:
         """
-        Poll every brand that has Gmail connected.
-        Falls back to the single global Gmail handler if none are set up.
+        Poll every brand that has Gmail connected, concurrently — Gmail API calls are
+        I/O-bound, so running them in parallel cuts worst-case per-brand latency without
+        adding real CPU load. Falls back to the single global Gmail handler if none are set up.
+        Returns the number of brands polled (used to pace the outer loop's sleep interval).
         """
         try:
             from src.services.brand_gmail_service import brand_gmail_service
@@ -147,14 +152,19 @@ class EmailPoller:
                 for b in brands
                 if b.get("gmail_email")
             )
-            for brand in brands:
+
+            async def _poll_one(brand):
                 try:
                     await self._poll_brand_inbox(brand, all_brand_emails)
                 except Exception as e:
                     logger.error(f"[Poller] Brand {brand.get('id')} poll failed: {e}")
+
+            await asyncio.gather(*[_poll_one(b) for b in brands])
+            return len(brands)
         else:
             # No brands with Gmail connected — use legacy global handler
             await self._poll_global_inbox()
+            return 0
 
     # ── Per-brand polling ──────────────────────────────────────────────────
 
