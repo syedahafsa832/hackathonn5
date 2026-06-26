@@ -1,7 +1,6 @@
-import { useEffect, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { LayoutDashboard, Inbox, ShieldAlert, Store, Settings, ShieldQuestion } from 'lucide-react';
-import client from '../api/client';
+import { useEscalations, useActions, useQuarantineCount } from '../hooks/useApi';
 
 const NAV = [
   { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -12,31 +11,10 @@ const NAV = [
 ];
 
 export default function Sidebar({ mobileOpen, onCloseMobile }) {
-  const [pendingCount, setPendingCount] = useState(0);
-  const [quarantineCount, setQuarantineCount] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!localStorage.getItem('resolv_token')) return;
-
-    const fetchCounts = () => {
-      Promise.all([
-        client.get('/api/v1/actions/pending').catch(() => ({ data: [] })),
-        client.get('/api/tickets', { params: { status: 'escalated' } }).catch(() => ({ data: [] })),
-        client.get('/api/v1/quarantine').catch(() => ({ data: { pending: 0 } })),
-      ]).then(([actionsRes, escalatedRes, quarantineRes]) => {
-        if (cancelled) return;
-        const actions = Array.isArray(actionsRes.data) ? actionsRes.data : actionsRes.data?.actions || [];
-        const escalated = Array.isArray(escalatedRes.data) ? escalatedRes.data : escalatedRes.data?.tickets || [];
-        setPendingCount(actions.length + escalated.length);
-        setQuarantineCount(quarantineRes.data?.pending || 0);
-      });
-    };
-
-    fetchCounts();
-    const interval = setInterval(fetchCounts, 15000);
-    return () => { cancelled = true; clearInterval(interval); };
-  }, []);
+  const { data: escalations = [] } = useEscalations();
+  const { data: actions = [] } = useActions('pending');
+  const { data: quarantineCount = 0 } = useQuarantineCount();
+  const pendingCount = actions.length + escalations.length;
 
   const renderContent = (onLinkClick) => (
     <>

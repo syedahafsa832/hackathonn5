@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '../api/services';
+import client from '../api/client';
 
 /**
  * Hook for fetching a single ticket by ID (direct fetch, not filtered by status)
@@ -148,6 +149,20 @@ export function useCancelOrder() {
       queryClient.invalidateQueries(['conversations']);
       queryClient.invalidateQueries(['actions']);
     },
+  });
+}
+
+/**
+ * Hook for quarantine pending count
+ */
+export function useQuarantineCount() {
+  return useQuery({
+    queryKey: ['quarantine', 'count'],
+    queryFn: async () => {
+      const res = await client.get('/api/v1/quarantine').catch(() => ({ data: { pending: 0 } }));
+      return res.data?.pending || 0;
+    },
+    refetchInterval: 15000,
   });
 }
 
