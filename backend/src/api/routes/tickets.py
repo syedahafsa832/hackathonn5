@@ -78,8 +78,8 @@ async def list_tickets(
                 for bid in brand_ids:
                     t = await supabase_service.get_tickets(store_id=bid, status=status)
                     all_tickets.extend(t)
-                # Sort by created_at descending
-                all_tickets.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+                # Sort by activity so active threads float to the top
+                all_tickets.sort(key=lambda x: x.get("updated_at") or x.get("last_message_at") or x.get("created_at") or "", reverse=True)
                 tickets = all_tickets
             else:
                 # Brand not linked to tenant yet — return empty rather than leaking all tickets
@@ -273,3 +273,4 @@ JSON only, no markdown."""
         except Exception:
             pass
         return {"success": True, "suggestions": {"short": draft_text, "detailed": draft_text, "empathetic": draft_text}}
+

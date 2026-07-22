@@ -113,7 +113,10 @@ class SupabaseService:
     async def get_tickets(self, store_id: Optional[str] = None, status: Optional[str] = None) -> List[Dict[str, Any]]:
         """Fetch tickets. If store_id is None or dummy UUID, return all tickets."""
         dummy = "00000000-0000-0000-0000-000000000000"
-        params = {"order": "created_at.desc"}
+        # Order by activity time so replied-to tickets float to the top.
+        # Current production does not expose a separate last_message_at column yet,
+        # so updated_at is the canonical fallback.
+        params = {"order": "updated_at.desc"}
         if store_id and store_id != dummy:
             params["store_id"] = f"eq.{store_id}"
         if status:
@@ -141,3 +144,4 @@ class SupabaseService:
         pass
 
 supabase_service = SupabaseService()
+

@@ -324,6 +324,7 @@ class UnifiedMessageProcessor:
                                  if k not in ("store_id", "customer_email", "customer_name",
                                               "subject", "message", "channel", "gmail_thread_id",
                                               "email_category", "sender_type", "customer_sentiment", "tags")}
+                update_fields["updated_at"] = datetime.now(timezone.utc).isoformat()
                 supabase_update("tickets", {"id": f"eq.{early_ticket_id}"}, update_fields)
                 ticket_id = early_ticket_id
                 logger.info(f"[PROCESSOR] ✓ Ticket updated: {ticket_id} → {ticket_payload.get('status')}")
@@ -407,14 +408,16 @@ class UnifiedMessageProcessor:
                     if ticket_rows:
                         current_count = ticket_rows[0].get("auto_reply_count") or 0
                         existing_messages = list(ticket_rows[0].get("messages") or [])
+                    now_iso = datetime.now(timezone.utc).isoformat()
                     msg_direction = "outbound" if email_actually_sent else "draft"
                     existing_messages.append({
                         "from": "AI Agent",
                         "body": reply_body,
-                        "sent_at": datetime.now(timezone.utc).isoformat(),
+                        "sent_at": now_iso,
                         "direction": msg_direction,
+                        "role": "assistant",
                     })
-                    update = {"messages": existing_messages}
+                    update = {"messages": existing_messages, "updated_at": now_iso}
                     if email_actually_sent:
                         new_count = current_count + 1
                         update["auto_reply_count"] = new_count
@@ -615,3 +618,5 @@ class UnifiedMessageProcessor:
 
 # Global instance
 message_processor = UnifiedMessageProcessor()
+
+

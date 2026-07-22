@@ -23,6 +23,66 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tickets", tags=["Tickets"])
 
 
+def _normalize_ticket_messages(ticket: dict) -> list:
+    """Return replay-safe messages from the existing ticket payload."""
+    raw_messages = ticket.get("messages") or []
+    if isinstance(raw_messages, str):
+        import json
+        try:
+            raw_messages = json.loads(raw_messages)
+        except Exception:
+            raw_messages = []
+
+    normalized = []
+    for msg in raw_messages:
+        if not isinstance(msg, dict):
+            continue
+
+        sender = msg.get("from") or msg.get("sender") or msg.get("author") or ""
+        direction = (msg.get("direction") or "").lower()
+        role = msg.get("role")
+        if not role:
+            if direction == "inbound":
+                role = "user"
+            elif direction in ("outbound", "draft"):
+                role = "assistant"
+            elif sender.lower() in ("support", "human", "agent"):
+                role = "assistant"
+            else:
+                role = "assistant" if msg.get("sender_type") in ("ai", "assistant") else "user"
+
+        normalized.append({
+            "role": role,
+            "sender": sender,
+            "direction": direction or ("inbound" if role == "user" else "outbound"),
+            "content": msg.get("body") or msg.get("content") or msg.get("text") or "",
+            "created_at": msg.get("created_at") or msg.get("sent_at") or msg.get("received_at") or msg.get("timestamp") or ticket.get("updated_at") or ticket.get("created_at") or "",
+        })
+
+    if not normalized:
+        customer_text = ticket.get("message") or ticket.get("body") or ""
+        if customer_text:
+            normalized.append({
+                "role": "user",
+                "sender": ticket.get("customer_email") or ticket.get("customer_name") or "Customer",
+                "direction": "inbound",
+                "content": customer_text,
+                "created_at": ticket.get("created_at") or ticket.get("updated_at") or "",
+            })
+
+        reply_text = ticket.get("human_response") or ticket.get("ai_reply") or ticket.get("ai_draft") or ""
+        if reply_text:
+            normalized.append({
+                "role": "assistant",
+                "sender": "Support" if ticket.get("human_response") else "AI Agent",
+                "direction": "outbound",
+                "content": reply_text,
+                "created_at": ticket.get("updated_at") or ticket.get("created_at") or "",
+            })
+
+    return normalized
+
+
 # ==================== Request/Response Models ====================
 
 class CreateTicketRequest(BaseModel):
@@ -127,7 +187,7 @@ async def list_tickets(
 
         filters = {
             "brand_id": brand_filter,
-            "order": "created_at.desc",
+            "order": "updated_at.desc",
             "limit": str(limit),
             "offset": str(offset)
         }
@@ -345,12 +405,10 @@ async def get_ticket(
         })
         ticket["actions"] = actions or []
 
-        # Get AI conversation history
-        conversations = supabase_select("ai_conversations", {
-            "ticket_id": f"eq.{ticket_id}",
-            "order": "created_at.asc"
-        })
-        ticket["ai_history"] = conversations or []
+        # Replay comes from the ticket thread JSON, which is the current source of truth.
+        messages = _normalize_ticket_messages(ticket)
+        ticket["messages"] = messages
+        ticket["ai_history"] = messages
 
         return {"ticket": ticket}
 
@@ -465,12 +523,14 @@ async def respond_to_ticket(
                 raise HTTPException(status_code=403, detail="Access denied")
 
         # Update ticket with response
+        now_iso = datetime.now(timezone.utc).isoformat()
         updates = {
             "human_response": request.response,
             "human_approved": True,
             "human_approved_by": context.user.user_id,
-            "human_approved_at": datetime.now(timezone.utc).isoformat(),
-            "status": "human_responded"
+            "human_approved_at": now_iso,
+            "status": "human_responded",
+            "updated_at": now_iso,
         }
 
         # If sending to customer
@@ -496,16 +556,19 @@ async def respond_to_ticket(
                     logger.error(f"Failed to send email: {email_error}")
                     # Don't fail the whole request
 
-        result = supabase_update("tickets", {"id": f"eq.{ticket_id}"}, updates)
-
-        # Log AI conversation
-        supabase_insert("ai_conversations", {
-            "brand_id": ticket["brand_id"],
-            "ticket_id": ticket_id,
+        # Append to the existing ticket thread so replay uses the current source of truth.
+        existing_messages = list(ticket.get("messages") or [])
+        existing_messages.append({
+            "from": context.user.email,
+            "sender_type": "human",
+            "body": request.response,
+            "sent_at": now_iso,
+            "direction": "outbound",
             "role": "assistant",
-            "content": request.response,
-            "metadata": {"source": "human", "user_id": context.user.user_id}
         })
+        updates["messages"] = existing_messages
+
+        result = supabase_update("tickets", {"id": f"eq.{ticket_id}"}, updates)
 
         logger.info(f"Human response sent: {ticket_id} by {context.user.email}")
 
@@ -548,11 +611,13 @@ async def approve_ai_response(
             raise HTTPException(status_code=400, detail="No AI response to approve")
 
         # Update ticket as approved
+        now_iso = datetime.now(timezone.utc).isoformat()
         updates = {
             "human_approved": True,
             "human_approved_by": context.user.user_id,
-            "human_approved_at": datetime.now(timezone.utc).isoformat(),
-            "status": "human_responded"
+            "human_approved_at": now_iso,
+            "status": "human_responded",
+            "updated_at": now_iso,
         }
 
         # Send via per-brand Gmail
@@ -586,8 +651,9 @@ async def approve_ai_response(
                         existing_msgs.append({
                             "from": "AI Agent",
                             "body": reply_body,
-                            "sent_at": datetime.now(timezone.utc).isoformat(),
+                            "sent_at": now_iso,
                             "direction": "outbound",
+                            "role": "assistant",
                         })
                         updates["messages"] = existing_msgs
                     else:
@@ -1014,5 +1080,6 @@ async def close_ticket(
     except Exception as e:
         logger.error(f"Error closing ticket: {e}")
         raise HTTPException(status_code=500, detail="Failed to close ticket")
+
 
 

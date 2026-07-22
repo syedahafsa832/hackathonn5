@@ -217,7 +217,7 @@ class BrandGmailService:
 
             return build("gmail", "v1", credentials=creds)
         except Exception as e:
-            logger.error(f"[BrandGmail] Failed to build service for brand {brand.get('id')}: {e}")
+            logger.exception(f"[BrandGmail] Failed to build service for brand {brand.get('id')}" )
             return None
 
     @staticmethod
@@ -320,7 +320,7 @@ class BrandGmailService:
                     "headers":      {h["name"].lower(): h["value"] for h in headers},
                 })
             except Exception as e:
-                logger.error(f"[BrandGmail] Error reading message {msg['id']}: {e}")
+                logger.exception(f"[BrandGmail] Error reading message {msg['id']}")
 
         return emails
 
@@ -373,3 +373,4 @@ class BrandGmailService:
 
 
 brand_gmail_service = BrandGmailService()
+

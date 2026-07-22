@@ -111,7 +111,7 @@ class EmailPoller:
             try:
                 brand_count = await self._poll_all_inboxes()
             except Exception as e:
-                logger.error(f"Email polling error: {e}")
+                logger.exception("Email polling error")
                 await asyncio.sleep(5)
 
             self._csat_loop_counter += 1
@@ -157,7 +157,7 @@ class EmailPoller:
                 try:
                     await self._poll_brand_inbox(brand, all_brand_emails)
                 except Exception as e:
-                    logger.error(f"[Poller] Brand {brand.get('id')} poll failed: {e}")
+                    logger.exception(f"[Poller] Brand {brand.get('id')} poll failed")
 
             await asyncio.gather(*[_poll_one(b) for b in brands])
             return len(brands)
@@ -221,6 +221,8 @@ class EmailPoller:
                 logger.error(f"[Poller] Gmail fetch failed for brand '{brand.get('name')}': {fetch_err} — skipping last_polled_at update to retry next cycle")
                 return
             logger.info(f"[POLL] Messages found: {len(emails)}")
+            processed_count = 0
+            failure_count = 0
 
             for email in emails:
                 sender = email["sender_email"].lower()
@@ -331,8 +333,19 @@ class EmailPoller:
                 }
 
                 if self.processor:
-                    await self.processor.process_message("email_incoming", payload)
-                    logger.info(f"[Poller] Processed email from {sender} → brand '{brand['name']}'")
+                    try:
+                        result = await self.processor.process_message("email_incoming", payload)
+                        if isinstance(result, dict) and result.get("status") == "error":
+                            failure_count += 1
+                            logger.error(f"[Poller] Processor error for brand {brand_id} message {gmail_msg_id}: {result.get('error')}")
+                        else:
+                            processed_count += 1
+                            logger.info(f"[Poller] Processed email from {sender} → brand '{brand['name']}'")
+                    except Exception:
+                        failure_count += 1
+                        logger.exception(f"[Poller] Processor exception for brand {brand_id} message {gmail_msg_id}")
+
+            logger.info(f"[POLL] Brand {brand_id} summary: fetched={len(emails)} processed={processed_count} failures={failure_count}")
 
             # Update last_polled_at after processing all emails in this batch
             try:
@@ -450,3 +463,8 @@ class EmailPoller:
 
         except Exception as e:
             logger.error(f"[Poller] Global inbox error: {e}")
+
+
+
+
+
