@@ -48,6 +48,16 @@ BUILT_IN_BLOCKED_DOMAINS = [
     "hubspot.com", "list.hubspot.com",
     "mailer-daemon.google.com",
     "accounts.google.com",
+    # SaaS/dev-tool platforms whose transactional emails (registrations, receipts,
+    # billing, notifications) can superficially read as "support" but are never a
+    # customer support request for THIS Shopify brand — block deterministically so
+    # this never depends on an AI classifier call succeeding or judging correctly.
+    "github.com",
+    "stripe.com",
+    "openai.com",
+    "anthropic.com", "mail.anthropic.com",
+    "vercel.com",
+    "railway.app",
 ]
 
 PROMOTIONAL_KEYWORDS = [
@@ -69,6 +79,24 @@ PROMOTIONAL_KEYWORDS = [
     r"\bspecial offer\b",
     r"\bfree trial\b",
     r"\bclick here\b",
+]
+
+# System/account notifications — receipts, invoices, login codes, password resets.
+# These are automated and never a customer support request, regardless of sender
+# domain (a legitimate SaaS tool not in BUILT_IN_BLOCKED_DOMAINS can still send one).
+SYSTEM_NOTIFICATION_KEYWORDS = [
+    r"\byour receipt\b",
+    r"\bpayment receipt\b",
+    r"\byour invoice\b",
+    r"\bverification code\b",
+    r"\blogin code\b",
+    r"\bone-time (?:code|password)\b",
+    r"\botp\b",
+    r"\breset your password\b",
+    r"\bpassword reset\b",
+    r"\bconfirm your email\b",
+    r"\bverify your email\b",
+    r"\byour registration for\b",
 ]
 
 
@@ -224,6 +252,21 @@ class EmailFilterService:
             )
         return None
 
+    def _check_system_notification(self, subject: str, body_text: str) -> Optional[FilterResult]:
+        """Keyword scan for system/account notifications (receipts, invoices, login
+        codes, password resets, registration confirmations). Always on — unlike the
+        promotional check, this cannot be disabled by promotion_filter_enabled,
+        since these are never a customer support request regardless of settings."""
+        text = f"{subject}\n{body_text}".lower()
+        if any(re.search(pattern, text) for pattern in SYSTEM_NOTIFICATION_KEYWORDS):
+            return FilterResult(
+                decision="blocked",
+                reason="system_notification",
+                email_category="automation",
+                sender_type="automated",
+            )
+        return None
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     def evaluate(self, email: dict, brand_id: str) -> FilterResult:
@@ -244,6 +287,7 @@ class EmailFilterService:
             label_ids = email.get("label_ids") or []
             headers = email.get("headers") or {}
             body = email.get("body") or ""
+            subject = email.get("subject") or ""
             support_email = (email.get("brand_support_email") or "").lower().strip()
 
             settings = self._load_settings(brand_id)
@@ -261,6 +305,9 @@ class EmailFilterService:
             if self._check_whitelist(sender_email, settings):
                 # Header and content checks are NOT bypassed (per spec decision 8)
                 result = self._check_auto_reply_headers(headers)
+                if result:
+                    return result
+                result = self._check_system_notification(subject, body)
                 if result:
                     return result
                 result = self._check_promotional_content(body, settings)
@@ -288,7 +335,14 @@ class EmailFilterService:
             if result:
                 return result
 
-            # Layer 6: Promotional content keywords
+            # Layer 6: System/account notifications (receipts, invoices, login codes,
+            # password resets, registration confirmations) — always on, not gated by
+            # promotion_filter_enabled, and runs before the promotional keyword scan.
+            result = self._check_system_notification(subject, body)
+            if result:
+                return result
+
+            # Layer 7: Promotional content keywords
             result = self._check_promotional_content(body, settings)
             if result:
                 return result

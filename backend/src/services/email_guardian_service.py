@@ -30,10 +30,20 @@ VALID_CLASSIFICATIONS = {
 # "unknown" is intentionally excluded — when the AI can't decide, we let it through.
 BLOCKED_CLASSIFICATIONS = {"promotion", "newsletter", "outreach", "spam", "automation"}
 
-CLASSIFIER_PROMPT = """Classify the following email into exactly one of these categories:
+CLASSIFIER_PROMPT = """You are screening inbound email for the support inbox of "{brand_name}", a Shopify store.
+
+Classify the email into exactly one of these categories:
 customer_support, promotion, newsletter, outreach, spam, automation, unknown
 
-Respond with valid JSON only: {{"classification": "<label>", "confidence": <0.0-1.0>}}
+Also decide: is this email actually addressed to "{brand_name}" as one of ITS customers
+(an order, product, shipping, refund, or account question about buying from {brand_name})?
+An email that merely contains the word "support" — e.g. a receipt, registration confirmation,
+or notification from a DIFFERENT company or service — is NOT relevant, even if it reads as
+formal/transactional. Only mark relevant=true if the email is genuinely about {brand_name}
+as a business the sender bought from or is asking to buy from.
+
+Respond with valid JSON only:
+{{"classification": "<label>", "confidence": <0.0-1.0>, "relevant": <true|false>}}
 
 Subject: {subject}
 
@@ -102,13 +112,17 @@ class EmailGuardianService:
 
     # ── T005: AI classifier ──────────────────────────────────────────────────
 
-    def _classify_email(self, subject: str, body: str) -> tuple[str, float]:
-        """Call Mistral to classify email intent. Returns (classification, confidence)."""
+    def _classify_email(self, subject: str, body: str, brand_name: str = "our store") -> tuple[str, float, bool]:
+        """Call Mistral to classify email intent. Returns (classification, confidence, relevant_to_brand)."""
         client = self._get_client()
         if not client:
-            return ("unknown", 0.0)
+            # No classifier available — genuinely uncertain. Per explicit product
+            # requirement: uncertain means quarantine, not auto-allow. relevant=False
+            # + confidence=0.0 routes this to the quarantine branch in evaluate().
+            return ("unknown", 0.0, False)
 
         prompt = CLASSIFIER_PROMPT.format(
+            brand_name=brand_name or "our store",
             subject=(subject or "")[:500],
             body=(body or "")[:2000],
         )
@@ -140,13 +154,18 @@ class EmailGuardianService:
             if classification not in VALID_CLASSIFICATIONS:
                 classification = "unknown"
             confidence = max(0.0, min(1.0, confidence))
+            # Default relevant=True when the model omits the field, so a missing
+            # key never turns into a silent false-positive block.
+            relevant = bool(data.get("relevant", True))
 
-            logger.info(f"[Guardian] Classifier → {classification} ({confidence:.2f})")
-            return (classification, confidence)
+            logger.info(f"[Guardian] Classifier → {classification} ({confidence:.2f}) relevant={relevant}")
+            return (classification, confidence, relevant)
 
         except Exception as e:
             logger.warning(f"[Guardian] Classifier error: {e}")
-            return ("unknown", 0.0)
+            # Classifier call failed (rate limit, timeout, bad response) — uncertain,
+            # so quarantine rather than auto-allow. See _get_client() branch above.
+            return ("unknown", 0.0, False)
 
     # ── T006: Quarantine record creation ─────────────────────────────────────
 
@@ -178,7 +197,7 @@ class EmailGuardianService:
 
     # ── T007: Main evaluate entry-point ──────────────────────────────────────
 
-    def evaluate(self, email: dict, brand_id: str) -> GuardianResult:
+    def evaluate(self, email: dict, brand_id: str, brand_name: str = "our store") -> GuardianResult:
         """
         Run Layers 4–5 on an email that passed Layers 1–3.
         Returns GUARDIAN_ALLOW on any unhandled exception (fail-open).
@@ -191,13 +210,43 @@ class EmailGuardianService:
 
             subject = email.get("subject", "")
             body    = email.get("body") or email.get("content", "")
+            sender  = email.get("sender_email", "")
 
-            classification, confidence = self._classify_email(subject, body)
+            classification, confidence, relevant = self._classify_email(subject, body, brand_name)
+
+            # Relevance gate: the email may look like customer support in shape
+            # (formal tone, "support" in the sender, a registration/transactional
+            # style) but be about a completely different company/product — e.g. a
+            # course registration receipt from an unrelated service landing in the
+            # brand's inbox. Confident "not relevant" is ignored outright; anything
+            # uncertain is quarantined rather than auto-replied to.
+            if not relevant:
+                if confidence >= confidence_threshold:
+                    logger.info(f"[email_filter] rejected sender={sender} reason=unrelated_to_brand classification={classification}")
+                    return GuardianResult(
+                        decision="blocked",
+                        classification=classification,
+                        confidence=confidence,
+                        reason="unrelated_to_brand",
+                        quarantine_id=None,
+                        auto_reply_enabled=auto_reply_enabled,
+                    )
+                qid = self._create_quarantine_record(brand_id, email, classification, confidence)
+                logger.info(f"[email_filter] quarantined sender={sender} reason=unrelated_to_brand_low_confidence classification={classification}")
+                return GuardianResult(
+                    decision="quarantined",
+                    classification=classification,
+                    confidence=confidence,
+                    reason="unrelated_to_brand_low_confidence",
+                    quarantine_id=qid,
+                    auto_reply_enabled=False,
+                )
 
             # Layer 4: intent gate — block known non-support categories.
             # "unknown" is intentionally NOT in BLOCKED_CLASSIFICATIONS: when the AI
             # can't decide, we fail-open so real customers aren't silently lost.
             if support_only_mode and classification in BLOCKED_CLASSIFICATIONS:
+                logger.info(f"[email_filter] rejected sender={sender} reason=ai_classification classification={classification}")
                 return GuardianResult(
                     decision="blocked",
                     classification=classification,
@@ -210,6 +259,7 @@ class EmailGuardianService:
             # Layer 5: confidence gate — quarantine low-confidence support emails
             if classification == "customer_support" and confidence < confidence_threshold:
                 qid = self._create_quarantine_record(brand_id, email, classification, confidence)
+                logger.info(f"[email_filter] quarantined sender={sender} reason=low_confidence classification={classification}")
                 return GuardianResult(
                     decision="quarantined",
                     classification=classification,
@@ -225,6 +275,7 @@ class EmailGuardianService:
             # Hardcoding False here blocked legitimate short emails (e.g. "hii") where
             # the guardian can't classify intent but the AI gets high reply confidence.
             if classification == "unknown":
+                logger.info(f"[email_filter] accepted sender={sender} reason=unknown_classification_fail_open")
                 return GuardianResult(
                     decision="allowed",
                     classification=classification,
@@ -234,6 +285,7 @@ class EmailGuardianService:
                     auto_reply_enabled=auto_reply_enabled,
                 )
 
+            logger.info(f"[email_filter] accepted sender={sender} reason=ai_classification classification={classification}")
             return GuardianResult(
                 decision="allowed",
                 classification=classification,

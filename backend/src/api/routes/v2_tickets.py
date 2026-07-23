@@ -51,13 +51,18 @@ def _normalize_ticket_messages(ticket: dict) -> list:
             else:
                 role = "assistant" if msg.get("sender_type") in ("ai", "assistant") else "user"
 
-        normalized.append({
+        entry = {
             "role": role,
             "sender": sender,
             "direction": direction or ("inbound" if role == "user" else "outbound"),
             "content": msg.get("body") or msg.get("content") or msg.get("text") or "",
             "created_at": msg.get("created_at") or msg.get("sent_at") or msg.get("received_at") or msg.get("timestamp") or ticket.get("updated_at") or ticket.get("created_at") or "",
-        })
+        }
+        # Safety-net dedup: skip if identical to the immediately preceding message
+        # (same role + content) — replay should never render the same reply twice.
+        if normalized and normalized[-1]["role"] == entry["role"] and normalized[-1]["content"] == entry["content"]:
+            continue
+        normalized.append(entry)
 
     if not normalized:
         customer_text = ticket.get("message") or ticket.get("body") or ""
@@ -791,6 +796,18 @@ async def execute_cancel_order(
         if not order_identifier:
             raise HTTPException(status_code=400, detail="No order number detected on this ticket")
 
+        # Atomically claim this ticket (conditioned on its status not having changed
+        # since we just read it) before calling Shopify. Closes the race where a
+        # double-click or a client retry on a slow Shopify call could run this twice
+        # and append the same cancellation confirmation to the thread twice.
+        claimed = supabase_update(
+            "tickets",
+            {"id": f"eq.{ticket_id}", "status": f"eq.{ticket.get('status')}"},
+            {"status": "processing"},
+        )
+        if not claimed:
+            raise HTTPException(status_code=409, detail="This ticket is already being processed or was already resolved.")
+
         # Execute cancel in Shopify
         try:
             from src.services.shopify_service import ShopifyClient, decrypt_token
@@ -805,6 +822,9 @@ async def execute_cancel_order(
                 restock=True
             )
         except Exception as shopify_err:
+            # Release the claim so the agent can retry instead of the ticket
+            # being stuck at "processing" with no cancellation ever completed.
+            supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {"status": ticket.get("status")})
             raise HTTPException(status_code=422, detail=str(shopify_err))
 
         order_name = result.get("order_name") or f"#{order_identifier}"
@@ -912,6 +932,16 @@ async def execute_refund(
         if not order_identifier:
             raise HTTPException(status_code=400, detail="No order number detected on this ticket")
 
+        # Atomically claim this ticket before calling Shopify — same double-click /
+        # retry protection as execute_cancel_order.
+        claimed = supabase_update(
+            "tickets",
+            {"id": f"eq.{ticket_id}", "status": f"eq.{ticket.get('status')}"},
+            {"status": "processing"},
+        )
+        if not claimed:
+            raise HTTPException(status_code=409, detail="This ticket is already being processed or was already resolved.")
+
         # Execute refund in Shopify
         try:
             from src.services.shopify_service import ShopifyClient, decrypt_token
@@ -927,6 +957,7 @@ async def execute_refund(
                 notify_customer=False,
             )
         except Exception as shopify_err:
+            supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {"status": ticket.get("status")})
             raise HTTPException(status_code=422, detail=str(shopify_err))
 
         order_name = result.get("order_name") or f"#{order_identifier}"

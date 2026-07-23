@@ -25,7 +25,10 @@ export default function Tickets() {
     document.title = "Conversations — tResolv";
     client.get('/api/v1/settings/gmail/status')
       .then(res => setGmailConnected(!!res.data?.connected))
-      .catch(() => setGmailConnected(false));
+      // A failed status check (cold start, transient network error) is not proof
+      // Gmail is disconnected — leave state as unknown rather than showing the
+      // "not connected" banner for a brand that's actually connected.
+      .catch(() => {});
   }, []);
 
   const visibleTickets = tickets;

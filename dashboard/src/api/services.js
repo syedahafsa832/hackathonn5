@@ -7,7 +7,10 @@ const api = {
     const query = {};
     if (params.status && params.status !== 'active') query.status = params.status;
     if (params.store_id) query.store_id = params.store_id;
-    const res = await client.get('/api/tickets', { params: query }).catch(() => ({ data: [] }));
+    // Let request failures propagate as real errors instead of swallowing them
+    // into an empty array — React Query then keeps the last good list on screen
+    // and exposes `error` separately, rather than the UI reading "no conversations".
+    const res = await client.get('/api/tickets', { params: query });
     const data = res.data;
     return Array.isArray(data) ? data : data?.tickets || [];
   },
@@ -53,7 +56,11 @@ const api = {
 
     // If the messages array has no AI/outbound message (older tickets where ai_reply
     // was stored as a flat field but never appended to the messages array), append it.
-    const hasAiMessage = thread.some(m => m.role === 'ai');
+    // Backend-appended entries are tagged role="assistant" (see message_processor.py /
+    // v2_tickets.py respond_to_ticket), never "ai" — checking only "ai" here made this
+    // always true-negative, so this fallback fired on every ticket and duplicated the
+    // reply that was already in `messages[]`.
+    const hasAiMessage = thread.some(m => m.role === 'ai' || m.role === 'assistant');
     if (!hasAiMessage) {
       const aiText = ticket.ai_reply || ticket.ai_draft || ticket.ai_response;
       if (aiText) {
@@ -66,7 +73,15 @@ const api = {
       }
     }
 
-    return thread;
+    // Safety-net dedup: collapse consecutive messages with the same role+content.
+    // Backend persistence should already guarantee one write per AI reply, but
+    // this protects replay rendering even if a duplicate ever slips through.
+    const deduped = thread.filter((m, i) => {
+      const prev = thread[i - 1];
+      return !prev || prev.role !== m.role || prev.content !== m.content;
+    });
+
+    return deduped;
   },
 
   updateTicket: async (id, updates) => {

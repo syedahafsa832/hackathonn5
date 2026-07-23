@@ -373,7 +373,15 @@ export default function TicketDetail() {
     setLoadingSuggestions(true);
     try {
       const res = await client.get(`/api/tickets/${ticket_id}/reply-suggestions`);
-      setSuggestions(res.data?.suggestions || null);
+      const raw = res.data?.suggestions;
+      // The AI can return non-string values (null, a number, a nested object) for
+      // any of these fields — normalize to strings here so nothing downstream
+      // (composer, .trim()/.replace()) ever receives a non-string.
+      setSuggestions(raw ? {
+        short: String(raw.short ?? ''),
+        detailed: String(raw.detailed ?? ''),
+        empathetic: String(raw.empathetic ?? ''),
+      } : null);
     } catch { setSuggestions(null); }
     finally { setLoadingSuggestions(false); }
   };
@@ -648,7 +656,7 @@ export default function TicketDetail() {
               {[['Short', suggestions.short], ['Detailed', suggestions.detailed], ['Empathetic', suggestions.empathetic]].map(([label, text]) => (
                 <button
                   key={label}
-                  onClick={() => setReply(text || '')}
+                  onClick={() => setReply(String(text ?? ''))}
                   style={{ padding: '5px 12px', fontSize: '12px', borderRadius: '12px', border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-secondary)', cursor: 'pointer', fontWeight: '500' }}
                 >
                   {label}

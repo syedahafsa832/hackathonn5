@@ -256,27 +256,33 @@ class EmailPoller:
                         pass  # column may not exist yet — safe to continue
 
                 # ── Filter evaluation (runs before any ticket or AI work) ──
+                logger.info(f"[email_filter] evaluating gmail_message_id={gmail_msg_id} sender={sender} brand={brand.get('name')}")
                 email["brand_support_email"] = support_email
                 filter_result = email_filter_service.evaluate(email, brand_id)
                 email_filter_service.log_decision(brand_id, sender, thread_id, filter_result)
 
                 if filter_result.decision == "blocked":
                     logger.info(
-                        f"[Poller] Blocked: {sender} → reason={filter_result.reason} "
-                        f"(brand: {brand['name']})"
+                        f"[email_filter] rejected gmail_message_id={gmail_msg_id} sender={sender} "
+                        f"reason={filter_result.reason} (brand: {brand['name']})"
                     )
                     continue
 
                 # ── Guardian evaluation (Layers 4–5: AI intent + confidence gate) ──
-                guardian_result = email_guardian_service.evaluate(email, brand_id)
+                guardian_result = email_guardian_service.evaluate(email, brand_id, brand_name=brand.get("name"))
                 email_guardian_service.log_guardian_decision(brand_id, sender, thread_id, guardian_result)
 
                 if guardian_result.decision in ("blocked", "quarantined"):
                     logger.info(
-                        f"[Poller] Guardian {guardian_result.decision}: {sender} "
+                        f"[email_filter] {guardian_result.decision} gmail_message_id={gmail_msg_id} sender={sender} "
                         f"reason={guardian_result.reason} classification={guardian_result.classification}"
                     )
                     continue
+
+                logger.info(
+                    f"[email_filter] accepted gmail_message_id={gmail_msg_id} sender={sender} "
+                    f"classification={guardian_result.classification} confidence={guardian_result.confidence:.2f}"
+                )
 
                 auto_reply_enabled = guardian_result.auto_reply_enabled
 
@@ -311,6 +317,7 @@ class EmailPoller:
                         "status":     "open",
                         "updated_at": datetime.now(timezone.utc).isoformat(),
                     })
+                    logger.info(f"[email_filter] ticket_updated ticket_id={existing_ticket['id']} gmail_message_id={gmail_msg_id}")
                     continue
 
                 # ── New ticket ───────────────────────────────────────────
@@ -340,7 +347,11 @@ class EmailPoller:
                             logger.error(f"[Poller] Processor error for brand {brand_id} message {gmail_msg_id}: {result.get('error')}")
                         else:
                             processed_count += 1
-                            logger.info(f"[Poller] Processed email from {sender} → brand '{brand['name']}'")
+                            ticket_id = result.get("ticket_id") if isinstance(result, dict) else None
+                            logger.info(
+                                f"[email_filter] ticket_created ticket_id={ticket_id} gmail_message_id={gmail_msg_id} "
+                                f"sender={sender} brand='{brand['name']}'"
+                            )
                     except Exception:
                         failure_count += 1
                         logger.exception(f"[Poller] Processor exception for brand {brand_id} message {gmail_msg_id}")
