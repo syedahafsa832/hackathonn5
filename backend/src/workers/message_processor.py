@@ -186,14 +186,27 @@ class UnifiedMessageProcessor:
                 except Exception as tenant_error:
                     logger.warning(f"[PROCESSOR] Tenant lookup failed: {tenant_error}")
 
-            # ========== STAGE 2.6: FOUNDING COHORT DAILY LIMIT ==========
-            from src.services.auth_service import auth_service
-            if not await auth_service.check_daily_ticket_limit(tenant_id):
-                logger.info(f"[PROCESSOR] Daily ticket limit reached for tenant {tenant_id} — queuing without AI reply")
+            # ========== STAGE 2.6: PLAN / TRIAL / DAILY LIMIT ==========
+            from src.services import plan_service
+            plan_service.record_email_processed(tenant_id)
+            limit_check = plan_service.can_process_ticket(tenant_id)
+            if not limit_check["allowed"]:
+                logger.info(
+                    f"[PROCESSOR] Daily ticket limit reached for tenant {tenant_id} "
+                    f"(plan={limit_check['plan']} used={limit_check['used']}/{limit_check['limit']}) — queuing without AI reply"
+                )
                 if early_ticket_id:
-                    supabase_update("tickets", {"id": f"eq.{early_ticket_id}"},
-                                    {"status": "requires_human"})
-                    return {"ticket_id": early_ticket_id, "status": "daily_limit_reached"}
+                    supabase_update("tickets", {"id": f"eq.{early_ticket_id}"}, {
+                        "status": "requires_human",
+                        "escalation_reason": "Daily ticket limit reached. Upgrade to Pro for unlimited AI support.",
+                    })
+                    return {
+                        "ticket_id": early_ticket_id,
+                        "status": "daily_limit_reached",
+                        "limit_info": limit_check,
+                    }
+            else:
+                plan_service.record_ticket_created(tenant_id)
 
             # ========== STAGE 3: RESOLVE CUSTOMER ==========
             customer = await supabase_service.get_or_create_customer(
@@ -225,6 +238,26 @@ class UnifiedMessageProcessor:
                 })
                 return {"ticket_id": ticket.get("id"), "status": "requires_human"}
 
+            # ========== STAGE 4.5: AI-REPLY DAILY LIMIT (trial-abuse protection) ==========
+            # Checked before the LLM call, not after — the point is to not spend
+            # the API call at all once a tenant is over its daily AI-reply cap.
+            ai_limit_check = plan_service.check_limit(tenant_id, "ai_replies")
+            if not ai_limit_check["allowed"]:
+                logger.info(
+                    f"[PROCESSOR] Daily AI-reply limit reached for tenant {tenant_id} "
+                    f"(plan={ai_limit_check['plan']} used={ai_limit_check['used']}/{ai_limit_check['limit']}) — routing to human"
+                )
+                if early_ticket_id:
+                    supabase_update("tickets", {"id": f"eq.{early_ticket_id}"}, {
+                        "status": "requires_human",
+                        "escalation_reason": "Daily AI reply limit reached. Upgrade to Pro for unlimited AI support.",
+                    })
+                    return {
+                        "ticket_id": early_ticket_id,
+                        "status": "ai_reply_limit_reached",
+                        "limit_info": ai_limit_check,
+                    }
+
             # ========== STAGE 5: AI ANALYSIS ==========
             t_ai_start = time.monotonic()
             logger.info(f"[PROCESSOR] Generating AI response (tenant_id={tenant_id})...")
@@ -233,6 +266,8 @@ class UnifiedMessageProcessor:
                 ticket_id=early_ticket_id,
             )
             logger.info(f"[TIMING] AI generation (RAG+LLM): {time.monotonic() - t_ai_start:.2f}s")
+            if ai_result.get("reply_body"):
+                plan_service.record_ai_reply(tenant_id)
 
             confidence = ai_result.get("confidence_score", 0) / 100.0
             intent = ai_result.get("intent", "unknown")

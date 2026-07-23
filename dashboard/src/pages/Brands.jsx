@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import client from '../api/client';
+import client, { extractErrorMessage } from '../api/client';
 
 function Dot({ connected }) {
   return (
@@ -39,7 +39,7 @@ function Drawer({ open, onClose, onCreated }) {
       onCreated(res.data?.brand || res.data);
       setName(''); setShopName(''); setAccessToken(''); setSupportEmail('');
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to create brand.');
+      setError(extractErrorMessage(err, 'Failed to create brand.'));
     } finally {
       setLoading(false);
     }
@@ -177,10 +177,14 @@ function BrandCard({ brand, highlightGmail }) {
 
   const connectGmail = async () => {
     setGmailLoading(true);
+    setConnectMsg('');
     try {
       const res = await client.get(`/api/brands/${brand.id}/gmail/auth-url`);
       window.location.href = res.data.auth_url;
     } catch (err) {
+      // A blocked limit (or any other failure) must tell the user why instead
+      // of the button just silently stopping — see extractErrorMessage.
+      setConnectMsg(extractErrorMessage(err, 'Could not start Gmail connection.'));
       setGmailLoading(false);
     }
   };

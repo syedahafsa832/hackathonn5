@@ -38,7 +38,16 @@ async def get_gmail_auth_url(
     tenant: TenantContext = Depends(get_current_tenant),
 ):
     """Return the Google OAuth consent URL for this brand (tenant-scoped)."""
-    _get_owned_brand(brand_id, tenant)
+    brand = _get_owned_brand(brand_id, tenant)
+
+    # Only gate NEW connections — reconnecting/refreshing an already-connected
+    # brand's Gmail must not be blocked by the cap.
+    if not brand.get("gmail_connected"):
+        from src.services.plan_service import check_limit, build_limit_error
+        gmail_limit = check_limit(tenant.tenant_id, "gmail_accounts", email=tenant.email)
+        if not gmail_limit["allowed"]:
+            raise HTTPException(status_code=402, detail=build_limit_error("gmail_accounts", gmail_limit))
+
     try:
         auth_url = brand_gmail_service.get_auth_url(brand_id)
         return {"auth_url": auth_url}

@@ -87,6 +87,11 @@ async def create_brand(
 ):
     """Create a new brand, owned by the current tenant."""
     try:
+        from src.services.plan_service import check_limit, build_limit_error
+        brand_limit = check_limit(tenant.tenant_id, "brands", email=tenant.email)
+        if not brand_limit["allowed"]:
+            raise HTTPException(status_code=402, detail=build_limit_error("brands", brand_limit))
+
         brand_data: dict = {
             "name": request.name,
             "is_active": True,
@@ -102,6 +107,8 @@ async def create_brand(
         result = supabase_insert("brands", brand_data)
         logger.info(f"[v2/brands] Created brand '{request.name}' for tenant {tenant.tenant_id}")
         return {"success": True, "brand": _strip_secrets(result) if result else brand_data}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error creating brand: {e}")
         raise HTTPException(status_code=500, detail=str(e))

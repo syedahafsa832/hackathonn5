@@ -13,6 +13,7 @@ import jwt
 from passlib.context import CryptContext
 
 from src.lib.supabase_client import supabase_select, supabase_insert, supabase_update
+from src.services.plan_service import TRIAL_DAYS
 
 logger = logging.getLogger(__name__)
 
@@ -71,37 +72,13 @@ class AuthService:
             return None
 
     async def check_daily_ticket_limit(self, tenant_id: Optional[str]) -> bool:
-        """Founding-cohort orgs get FOUNDING_DAILY_TICKET_LIMIT new conversations/day.
-        Paid plans and unresolvable tenants are unlimited (fail open)."""
-        if not tenant_id:
-            return True
-        try:
-            tenants = supabase_select("tenants", {"id": f"eq.{tenant_id}"})
-            if not tenants or tenants[0].get("plan") != "founding_free":
-                return True
-
-            brands = supabase_select("brands", {"tenant_id": f"eq.{tenant_id}"}) or []
-            brand_ids = [b["id"] for b in brands]
-            if not brand_ids:
-                return True
-
-            today_start = datetime.now(timezone.utc).replace(
-                hour=0, minute=0, second=0, microsecond=0
-            ).isoformat()
-
-            today_count = 0
-            for bid in brand_ids:
-                rows = supabase_select("tickets", {
-                    "store_id": f"eq.{bid}",
-                    "created_at": f"gte.{today_start}",
-                    "select": "id",
-                }) or []
-                today_count += len(rows)
-
-            return today_count < FOUNDING_DAILY_TICKET_LIMIT
-        except Exception as e:
-            logger.warning(f"[Auth] Daily limit check failed for tenant {tenant_id}: {e} — allowing")
-            return True
+        """Deprecated boolean wrapper — kept for existing callers.
+        Real logic now lives in plan_service.can_process_ticket(), which is
+        plan/trial/super-admin aware and tracks usage without a per-call
+        COUNT query across every brand. New call sites should use that
+        directly (it also returns remaining/limit/reset_at for API responses)."""
+        from src.services.plan_service import can_process_ticket
+        return can_process_ticket(tenant_id).get("allowed", True)
 
     async def register(
         self,
@@ -146,17 +123,22 @@ class AuthService:
                     "waitlist_url": "https://tresolv.online/waitlist",
                 }
 
-            # Create tenant
+            # Create tenant — every new tenant gets a 14-day trial with no feature
+            # restrictions. founding_cohort is tracked separately (signup-cap
+            # bookkeeping only) and no longer determines the plan/limits.
+            now = datetime.now(timezone.utc)
             tenant_data = {
                 "email": email.lower().strip(),
                 "password_hash": self.hash_password(password),
                 "company_name": company_name,
                 "is_active": True,
                 "shopify_connected": False,
-                "plan": "founding_free",
+                "plan": "trial",
+                "trial_start_at": now.isoformat(),
+                "trial_end_at": (now + timedelta(days=TRIAL_DAYS)).isoformat(),
                 "founding_cohort": True,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "updated_at": datetime.now(timezone.utc).isoformat()
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat()
             }
 
             result = supabase_insert("tenants", tenant_data)

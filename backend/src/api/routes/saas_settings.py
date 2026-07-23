@@ -20,6 +20,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/settings", tags=["Settings"])
 
 
+@router.get("/usage")
+async def get_usage(tenant: TenantContext = Depends(get_current_tenant)):
+    """Plan, trial status, and today's usage — powers the dashboard's plan/usage widget."""
+    from src.services.plan_service import get_usage_summary
+    return get_usage_summary(tenant.tenant_id)
+
+
 # ==================== Request/Response Models ====================
 
 class ConnectShopifyRequest(BaseModel):

@@ -796,6 +796,11 @@ async def execute_cancel_order(
         if not order_identifier:
             raise HTTPException(status_code=400, detail="No order number detected on this ticket")
 
+        from src.services.plan_service import check_limit, build_limit_error, record_shopify_action
+        shopify_limit = check_limit(brand.get("tenant_id"), "shopify_actions", email=context.user.email)
+        if not shopify_limit["allowed"]:
+            raise HTTPException(status_code=402, detail=build_limit_error("shopify_actions", shopify_limit))
+
         # Atomically claim this ticket (conditioned on its status not having changed
         # since we just read it) before calling Shopify. Closes the race where a
         # double-click or a client retry on a slow Shopify call could run this twice
@@ -826,6 +831,8 @@ async def execute_cancel_order(
             # being stuck at "processing" with no cancellation ever completed.
             supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {"status": ticket.get("status")})
             raise HTTPException(status_code=422, detail=str(shopify_err))
+
+        record_shopify_action(brand.get("tenant_id"))
 
         order_name = result.get("order_name") or f"#{order_identifier}"
 
@@ -932,6 +939,11 @@ async def execute_refund(
         if not order_identifier:
             raise HTTPException(status_code=400, detail="No order number detected on this ticket")
 
+        from src.services.plan_service import check_limit, build_limit_error, record_shopify_action
+        shopify_limit = check_limit(brand.get("tenant_id"), "shopify_actions", email=context.user.email)
+        if not shopify_limit["allowed"]:
+            raise HTTPException(status_code=402, detail=build_limit_error("shopify_actions", shopify_limit))
+
         # Atomically claim this ticket before calling Shopify — same double-click /
         # retry protection as execute_cancel_order.
         claimed = supabase_update(
@@ -959,6 +971,8 @@ async def execute_refund(
         except Exception as shopify_err:
             supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {"status": ticket.get("status")})
             raise HTTPException(status_code=422, detail=str(shopify_err))
+
+        record_shopify_action(brand.get("tenant_id"))
 
         order_name = result.get("order_name") or f"#{order_identifier}"
         refund_amount = result.get("amount", "")

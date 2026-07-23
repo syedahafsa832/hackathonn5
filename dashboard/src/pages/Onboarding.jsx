@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import client from '../api/client';
+import client, { extractErrorMessage } from '../api/client';
 
 function ProgressBar({ step }) {
   return (
@@ -70,7 +70,7 @@ function Step1({ onNext }) {
       }
       onNext(activeBrandId);
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to create brand. Try again.');
+      setError(extractErrorMessage(err, 'Failed to create brand. Try again.'));
     } finally {
       setLoading(false);
     }
@@ -133,15 +133,18 @@ function Step1({ onNext }) {
 
 function Step2({ brandId, onNext }) {
   const [polling, setPolling] = useState(false);
+  const [gmailError, setGmailError] = useState('');
   const pollRef = useRef(null);
 
   const connectGmail = async () => {
     setPolling(true);
+    setGmailError('');
     try {
       const res = await client.get(`/api/brands/${brandId}/gmail/auth-url`);
       const authUrl = res.data?.auth_url || res.data?.url;
       if (authUrl) window.location.href = authUrl;
-    } catch {
+    } catch (err) {
+      setGmailError(extractErrorMessage(err, 'Could not start Gmail connection.'));
       setPolling(false);
     }
   };
@@ -193,6 +196,9 @@ function Step2({ brandId, onNext }) {
           Skip for now
         </button>
       </div>
+      {gmailError && (
+        <div style={{ fontSize: '13px', color: 'var(--danger)' }}>{gmailError}</div>
+      )}
     </div>
   );
 }

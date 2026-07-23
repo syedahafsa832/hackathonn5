@@ -61,15 +61,28 @@ class BrandResponse(BaseModel):
 # ============== Endpoints ==============
 
 @router.post("", response_model=dict)
-async def create_brand(request: CreateBrandRequest):
+async def create_brand(
+    request: CreateBrandRequest,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
     """
     Create a new brand with Shopify integration.
     Validates credentials before saving.
+
+    Previously had no tenant auth and never wrote tenant_id, so brands created
+    here never showed up in GET /api/brands (which is tenant-scoped) — fixed
+    alongside adding the plan's brand-count limit, since enforcing that limit
+    requires knowing whose tenant is creating the brand in the first place.
     """
     try:
         from src.services.brand_manager import brand_manager
+        from src.services.plan_service import check_limit, build_limit_error
 
-        logger.info(f"[Brands API] Creating brand: {request.name}")
+        brand_limit = check_limit(tenant.tenant_id, "brands", email=tenant.email)
+        if not brand_limit["allowed"]:
+            raise HTTPException(status_code=402, detail=build_limit_error("brands", brand_limit))
+
+        logger.info(f"[Brands API] Creating brand: {request.name} for tenant {tenant.tenant_id}")
 
         result = await brand_manager.create_brand(
             name=request.name,
@@ -81,7 +94,8 @@ async def create_brand(request: CreateBrandRequest):
             logo_url=request.logo_url,
             primary_color=request.primary_color,
             return_policy_days=request.return_policy_days,
-            auto_approve_threshold=request.auto_approve_threshold
+            auto_approve_threshold=request.auto_approve_threshold,
+            tenant_id=tenant.tenant_id,
         )
 
         if result.get("success"):

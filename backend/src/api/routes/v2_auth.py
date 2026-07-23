@@ -300,21 +300,16 @@ async def invite_team_member(
 ):
     """Invite a new team member (Admin only)"""
     try:
-        # Check plan limits
-        if context.organization:
-            limits = context.organization.plan_limits
-            max_users = limits.get("users", 2)
-
-            current_users = supabase_select("users", {
-                "organization_id": f"eq.{context.user.organization_id}",
-                "is_active": "eq.true"
-            })
-
-            if len(current_users or []) >= max_users:
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Plan limit reached: {max_users} users allowed"
-                )
+        # Check plan limits. NOTE: context.organization is None for v1-tenant
+        # logins (the actual production auth path — see auth_middleware's v1
+        # fallback), so this used to silently no-op for every real user.
+        # plan_service.check_limit resolves the tenant directly from
+        # context.user.organization_id, which auth_middleware sets to the
+        # tenant_id itself for v1 fallback users, so this works either way.
+        from src.services.plan_service import check_limit, build_limit_error
+        user_limit = check_limit(context.user.organization_id, "users", email=context.user.email)
+        if not user_limit["allowed"]:
+            raise HTTPException(status_code=402, detail=build_limit_error("users", user_limit))
 
         # Check if user already exists
         existing = supabase_select("users", {

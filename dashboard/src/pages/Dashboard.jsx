@@ -5,6 +5,7 @@ import StatCard from '../components/StatCard';
 import Badge from '../components/Badge';
 import ActionCard from '../components/ActionCard';
 import FilteredEmailsWidget from '../components/FilteredEmailsWidget';
+import PlanUsageWidget from '../components/PlanUsageWidget';
 import { useNotifications } from '../hooks/useNotifications';
 import { useStats, useConversations } from '../hooks/useApi';
 
@@ -149,6 +150,8 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+
+      <PlanUsageWidget />
 
       {/* Stat cards header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>

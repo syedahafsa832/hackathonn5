@@ -31,4 +31,20 @@ client.interceptors.response.use(
   }
 );
 
+// Plan/usage-limit endpoints return a structured 402 body
+// ({error, resource, current, limit, upgrade_required}) instead of a plain
+// string `detail`. Rendering that object directly as JSX text crashes React
+// ("Objects are not valid as a React child") — always go through this to get
+// a safe, friendly string regardless of which shape the backend sent.
+export function extractErrorMessage(err, fallback = 'Something went wrong.') {
+  const detail = err?.response?.data?.detail;
+  if (!detail) return err?.response?.data?.error || fallback;
+  if (typeof detail === 'string') return detail;
+  if (detail.error === 'PLAN_LIMIT_REACHED') {
+    const resource = (detail.resource || 'this').replace(/_/g, ' ');
+    return `Your plan allows ${detail.limit} ${resource}. Upgrade to continue.`;
+  }
+  return detail.message || fallback;
+}
+
 export default client;

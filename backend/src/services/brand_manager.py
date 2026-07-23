@@ -65,7 +65,8 @@ class BrandManager:
         logo_url: str = None,
         primary_color: str = "#000000",
         return_policy_days: int = 30,
-        auto_approve_threshold: float = 50.0
+        auto_approve_threshold: float = 50.0,
+        tenant_id: str = None,
     ) -> Dict[str, Any]:
         """
         Create a new brand with Shopify integration.
@@ -112,6 +113,8 @@ class BrandManager:
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }
+            if tenant_id:
+                brand_data["tenant_id"] = tenant_id
 
             result = supabase_insert("brands", brand_data)
 
