@@ -20,6 +20,7 @@ from ..services.tools import v3_tools
 from ..services.return_actions_integration import return_actions
 from ..lib.supabase_client import supabase_rpc, supabase_update
 from ..services.mistral_limiter import call_with_limit
+from ..services.ai_provider_manager import ai_provider_manager, AllProvidersFailedError
 
 logger = logging.getLogger(__name__)
 
@@ -144,20 +145,11 @@ class CustomerSuccessAgent:
     """
 
     def __init__(self):
-        self.model = os.getenv("MISTRAL_MODEL", "mistral-large-latest")
-        api_key = os.getenv("MISTRAL_API_KEY") or os.getenv("OPENAI_API_KEY")
-        logger.info(f"Initializing V3 Agent with API key: {'set' if api_key else 'NOT SET'}, base_url: {os.getenv('MISTRAL_API_BASE_URL', 'https://api.mistral.ai/v1')}")
-        if not api_key:
-            logger.warning("No MISTRAL_API_KEY found, V3 Agent will use fallback mode")
-            self.openai_client = None
-        else:
-            self.openai_client = OpenAI(
-                api_key=api_key,
-                base_url=os.getenv("MISTRAL_API_BASE_URL", "https://api.mistral.ai/v1"),
-                max_retries=1,
-                timeout=15.0,
-            )
-            logger.info("V3 Agent OpenAI client initialized successfully")
+        # Chat completions go through ai_provider_manager, which owns key/model
+        # selection and failover across MISTRAL_API_KEY_PRIMARY + fallback keys.
+        logger.info(
+            f"Initializing V3 Agent — AI providers configured: {ai_provider_manager.has_providers}"
+        )
 
     async def process_customer_query(self, query: str, customer_info: Dict[str, Any], tenant_id: Optional[str] = None, store_id: Optional[str] = None, ticket_id: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -369,38 +361,26 @@ class CustomerSuccessAgent:
             # 5. Response Generation
             system_prompt = self._construct_v3_prompt(customer_info, rag_context, sizing_context, tool_context, action_context, brand_name=_brand_name, agent_name=_agent_name)
 
-            # Defensive check - ensure OpenAI client is initialized
-            if not self.openai_client:
-                logger.error("OpenAI client is not initialized - API key may be missing")
-                return self._get_fallback_response("OpenAI client not initialized", brand_name=_brand_name, agent_name=_agent_name)
+            # Defensive check - ensure at least one AI provider is configured
+            if not ai_provider_manager.has_providers:
+                logger.error("No AI providers configured - API key(s) may be missing")
+                return self._get_fallback_response("No AI providers configured", brand_name=_brand_name, agent_name=_agent_name)
 
+            same_prompt_messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Customer: {query}"}
+            ]
             try:
-                response = await call_with_limit(lambda: self.openai_client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"Customer: {query}"}
-                    ],
+                # Same prompt/context/temperature on every attempt — failover only
+                # changes which API key (and its paired model) serves the request.
+                response, provider_label, _model = await ai_provider_manager.create_chat_completion(
+                    messages=same_prompt_messages,
                     temperature=0.1,
-                    response_format={"type": "json_object"}
-                ))
-            except TypeError as e:
-                # Mistral API may not support response_format parameter
-                logger.warning(f"response_format not supported, retrying without it: {e}")
-                response = await call_with_limit(lambda: self.openai_client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"Customer: {query}"}
-                    ],
-                    temperature=0.1
-                ))
-            except Exception as api_error:
-                if getattr(api_error, 'status_code', None) == 429 or "429" in str(api_error):
-                    logger.warning("[Agent] Mistral rate limited — returning fallback immediately")
-                    return self._get_fallback_response("Rate limited", brand_name=_brand_name, agent_name=_agent_name)
-                logger.error(f"Mistral API call failed: {api_error}")
-                return self._get_fallback_response(f"API error: {str(api_error)}", brand_name=_brand_name, agent_name=_agent_name)
+                    response_format={"type": "json_object"},
+                )
+            except AllProvidersFailedError as api_error:
+                logger.error(f"[Agent] All AI providers failed: {api_error}")
+                return self._get_provider_failure_response(brand_name=_brand_name, agent_name=_agent_name)
 
             raw_content = response.choices[0].message.content
             if not raw_content:
@@ -600,6 +580,23 @@ class CustomerSuccessAgent:
             "confidence_score": 40,
             "escalate": True,
             "escalation_reason": f"System error: {error}",
+            "reply_body": f"Hey there!\n\nThanks for reaching out. I'm having a bit of trouble processing your message right now, but I've flagged this for my team to take a look.\n\nSomeone will get back to you shortly!\n\n{sign_off}",
+            "status": "escalated"
+        }
+
+    def _get_provider_failure_response(self, brand_name: str = "", agent_name: str = "Luna") -> Dict[str, Any]:
+        """Every configured Mistral key failed for this request. Distinct from
+        _get_fallback_response so the escalation card reads as an infrastructure
+        problem, not a generic "system error" — same customer-facing tone, but a
+        specific escalation_reason a human can act on immediately."""
+        sign_off = f"— {agent_name}\n{brand_name}" if brand_name else f"— {agent_name}"
+        return {
+            "intent": "general_inquiry",
+            "sentiment": "neutral",
+            "risk_level": "medium",
+            "confidence_score": 40,
+            "escalate": True,
+            "escalation_reason": "AI providers temporarily unavailable",
             "reply_body": f"Hey there!\n\nThanks for reaching out. I'm having a bit of trouble processing your message right now, but I've flagged this for my team to take a look.\n\nSomeone will get back to you shortly!\n\n{sign_off}",
             "status": "escalated"
         }

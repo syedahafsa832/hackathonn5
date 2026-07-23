@@ -274,8 +274,11 @@ function buildEscalationBrief(ticket) {
     : 'No order number detected in this conversation.';
 
   const tags = ticket.tags || [];
+  const isProviderOutage = ticket.escalation_reason === 'AI providers temporarily unavailable';
   let recommendedAction = 'Read the conversation below and reply manually.';
-  if (tags.includes('cancel') && ticket.detected_order_id) {
+  if (isProviderOutage) {
+    recommendedAction = 'Review conversation and reply manually.';
+  } else if (tags.includes('cancel') && ticket.detected_order_id) {
     recommendedAction = `Check order #${ticket.detected_order_id} in Shopify — cancel/restock if it hasn't shipped, otherwise explain why it can't be cancelled.`;
   } else if (tags.includes('refund') && ticket.detected_order_id) {
     recommendedAction = `Verify order #${ticket.detected_order_id} qualifies for a refund, then use the Refund action or explain the policy if it doesn't.`;

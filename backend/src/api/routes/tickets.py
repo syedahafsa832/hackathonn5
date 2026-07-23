@@ -246,8 +246,8 @@ async def get_reply_suggestions(
     tenant: TenantContext = Depends(get_current_tenant),
 ):
     """Generate 3 reply variations from the AI draft for quick human response."""
-    import os, json
-    from openai import OpenAI
+    import json
+    from src.services.ai_provider_manager import ai_provider_manager
 
     try:
         ticket = await _assert_ticket_access(ticket_id, tenant)
@@ -258,14 +258,8 @@ async def get_reply_suggestions(
         if not body and not draft:
             return {"success": True, "suggestions": {"short": "", "detailed": "", "empathetic": ""}}
 
-        api_key = os.getenv("MISTRAL_API_KEY") or os.getenv("OPENAI_API_KEY")
-        if not api_key:
+        if not ai_provider_manager.has_providers:
             return {"success": True, "suggestions": {"short": draft, "detailed": draft, "empathetic": draft}}
-
-        client_obj = OpenAI(
-            api_key=api_key,
-            base_url=os.getenv("MISTRAL_API_BASE_URL", "https://api.mistral.ai/v1")
-        )
 
         prompt = f"""Given this customer email:
 {body[:500]}
@@ -278,8 +272,7 @@ Write exactly 3 reply variations as JSON:
 
 JSON only, no markdown."""
 
-        resp = client_obj.chat.completions.create(
-            model=os.getenv("MISTRAL_MODEL", "mistral-large-latest"),
+        resp, _label, _model = await ai_provider_manager.create_chat_completion(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
         )
