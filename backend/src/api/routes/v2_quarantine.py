@@ -50,40 +50,47 @@ async def list_quarantine(
     offset: int = Query(0, ge=0),
 ):
     """List quarantined emails for the authenticated brand. Lazily expires stale records."""
-    brand = _get_brand_for_tenant(tenant.tenant_id)
-    if not brand:
-        raise HTTPException(status_code=404, detail="No brand found for this tenant")
-    brand_id = brand["id"]
-
-    # Lazy expiry: mark overdue pending records as expired before responding
-    now_iso = datetime.now(timezone.utc).isoformat()
     try:
-        supabase_update(
-            "email_quarantine",
-            {"brand_id": f"eq.{brand_id}", "status": "eq.pending", "expires_at": f"lt.{now_iso}"},
-            {"status": "expired"},
-        )
+        brand = _get_brand_for_tenant(tenant.tenant_id)
+        if not brand:
+            logger.warning(f"[Quarantine] No brand found for tenant {tenant.tenant_id}")
+            raise HTTPException(status_code=404, detail="No brand found for this tenant")
+        brand_id = brand["id"]
+
+        # Lazy expiry: mark overdue pending records as expired before responding
+        now_iso = datetime.now(timezone.utc).isoformat()
+        try:
+            supabase_update(
+                "email_quarantine",
+                {"brand_id": f"eq.{brand_id}", "status": "eq.pending", "expires_at": f"lt.{now_iso}"},
+                {"status": "expired"},
+            )
+        except Exception as e:
+            logger.warning(f"[Quarantine] Lazy expiry update failed (non-blocking): {e}")
+
+        params = {
+            "brand_id": f"eq.{brand_id}",
+            "status":   f"eq.{status}",
+            "order":    "created_at.desc",
+            "limit":    str(limit),
+            "offset":   str(offset),
+        }
+        items = supabase_select("email_quarantine", params)
+
+        # Count total pending for the badge
+        pending_items = supabase_select("email_quarantine", {"brand_id": f"eq.{brand_id}", "status": "eq.pending"})
+        pending_count = len(pending_items)
+
+        return {
+            "items":   items,
+            "total":   len(items),
+            "pending": pending_count,
+        }
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.warning(f"[Quarantine] Lazy expiry update failed (non-blocking): {e}")
-
-    params = {
-        "brand_id": f"eq.{brand_id}",
-        "status":   f"eq.{status}",
-        "order":    "created_at.desc",
-        "limit":    str(limit),
-        "offset":   str(offset),
-    }
-    items = supabase_select("email_quarantine", params)
-
-    # Count total pending for the badge
-    pending_items = supabase_select("email_quarantine", {"brand_id": f"eq.{brand_id}", "status": "eq.pending"})
-    pending_count = len(pending_items)
-
-    return {
-        "items":   items,
-        "total":   len(items),
-        "pending": pending_count,
-    }
+        logger.error(f"[Quarantine] list_quarantine failed for tenant {tenant.tenant_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to load quarantine queue")
 
 
 # ── T014: POST /quarantine/{id}/promote ───────────────────────────────────────
@@ -109,6 +116,18 @@ async def promote_quarantine(
 
     now_iso = datetime.now(timezone.utc).isoformat()
 
+    # Atomically claim the record (conditioned on it still being "pending") before
+    # doing any work. This closes the race where two concurrent promote calls
+    # (double-click, retry) could both pass the check above and each create a
+    # separate ticket for the same quarantined email.
+    claimed = supabase_update(
+        "email_quarantine",
+        {"id": f"eq.{quarantine_id}", "status": "eq.pending"},
+        {"status": "promoted", "actioned_by": tenant.email, "actioned_at": now_iso},
+    )
+    if not claimed:
+        raise HTTPException(status_code=404, detail="Email already actioned")
+
     # Run through the full message processor pipeline so the AI analysis
     # and email reply happen exactly as if the email had passed filtering normally.
     try:
@@ -129,14 +148,13 @@ async def promote_quarantine(
         ticket_id = result.get("ticket_id") if result else None
     except Exception as e:
         logger.error(f"[Quarantine] Message processing failed for {quarantine_id}: {e}")
+        # Release the claim so the item can be retried from the UI instead of
+        # being stuck in "promoted" with no ticket ever created.
+        try:
+            supabase_update("email_quarantine", {"id": f"eq.{quarantine_id}"}, {"status": "pending"})
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail="Failed to process promoted email")
-
-    # Mark quarantine record as promoted
-    supabase_update(
-        "email_quarantine",
-        {"id": f"eq.{quarantine_id}"},
-        {"status": "promoted", "actioned_by": tenant.email, "actioned_at": now_iso},
-    )
 
     logger.info(f"[Quarantine] Promoted {quarantine_id} → ticket {ticket_id} by {tenant.email}")
     return {"success": True, "ticket_id": ticket_id, "message": "Email promoted to ticket"}

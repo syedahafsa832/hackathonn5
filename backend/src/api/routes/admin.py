@@ -10,9 +10,24 @@ import logging
 
 from src.services.supabase_service import supabase_service
 from src.lib.supabase_client import supabase_update, supabase_select, supabase_insert
+from src.api.middleware.tenant_auth import get_current_tenant, TenantContext
+from src.api.routes.tickets import _get_tenant_brand_ids
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["admin"])
+
+DEFAULT_STORE_ID = "00000000-0000-0000-0000-000000000000"
+
+
+async def _assert_brand_access(store_id: str, tenant: TenantContext):
+    """Raise 404 if store_id isn't one of the authenticated tenant's brands.
+    The single-tenant default store_id is exempt (legacy/dev fallback)."""
+    if store_id == DEFAULT_STORE_ID:
+        return
+    brand_ids = await _get_tenant_brand_ids(tenant)
+    if brand_ids is not None and store_id not in brand_ids:
+        raise HTTPException(status_code=404, detail="Store not found")
+
 
 # 1. AI CONTROL CENTER (/api/ai-mode)
 @router.post("/ai-mode", operation_id="set_ai_mode_post")
@@ -21,12 +36,13 @@ router = APIRouter(tags=["admin"])
 async def update_ai_mode(
     request: Request,
     mode: Optional[str] = Query(None),
-    store_id: str = Query("00000000-0000-0000-0000-000000000000")
+    store_id: str = Query("00000000-0000-0000-0000-000000000000"),
+    tenant: TenantContext = Depends(get_current_tenant),
 ):
     """Update operational mode for the store (active, paused, manual)."""
     try:
         logger.info(f"AI Mode Update Request: {request.method}")
-        
+
         # Try to get data from JSON body first
         payload = {}
         try:
@@ -39,7 +55,9 @@ async def update_ai_mode(
         # Priority: JSON payload > Query Parameter > Default
         final_mode = payload.get("mode") or mode
         final_store_id = payload.get("store_id") or store_id
-        
+
+        await _assert_brand_access(final_store_id, tenant)
+
         VALID_MODES = {"active", "paused", "manual", "autopilot", "supervised"}
         if not final_mode or final_mode not in VALID_MODES:
             raise HTTPException(status_code=400, detail=f"Invalid or missing mode. Received: {final_mode}. Valid: {VALID_MODES}")
@@ -66,18 +84,28 @@ async def update_ai_mode(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/ai-mode")
-async def get_ai_mode(store_id: str = Query("00000000-0000-0000-0000-000000000000")):
+async def get_ai_mode(
+    store_id: str = Query("00000000-0000-0000-0000-000000000000"),
+    tenant: TenantContext = Depends(get_current_tenant),
+):
     """Get current AI mode for the store."""
     try:
+        await _assert_brand_access(store_id, tenant)
         settings = await supabase_service.get_system_settings(store_id)
         return {"mode": settings.get("ai_mode", "active"), "store_id": store_id}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching AI mode: {e}")
         return {"mode": "active", "store_id": store_id, "error": str(e)}
 
 # 2. TICKET TAKEOVER SYSTEM (/api/tickets/:id/takeover)
 @router.post("/tickets/{id}/takeover")
-async def takeover_ticket(id: str, request: Request):
+async def takeover_ticket(
+    id: str,
+    request: Request,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
     """Prevent further AI auto-replies for a specific ticket."""
     try:
         try:
@@ -85,13 +113,16 @@ async def takeover_ticket(id: str, request: Request):
             payload = await request.json() if body else {}
         except Exception:
             payload = {}
-        user_id = payload.get("user_id", "admin")
-        
+        user_id = payload.get("user_id") or tenant.email or "admin"
+
         ticket = await supabase_service.get_ticket_by_id(id)
         if not ticket:
             raise HTTPException(status_code=404, detail="Ticket not found")
-            
-        store_id = ticket.get("store_id")
+
+        store_id = ticket.get("brand_id") or ticket.get("store_id")
+        brand_ids = await _get_tenant_brand_ids(tenant)
+        if brand_ids is not None and store_id not in brand_ids:
+            raise HTTPException(status_code=404, detail="Ticket not found")
 
         supabase_insert("conversation_overrides", {
             "conversation_id": id,
@@ -103,20 +134,36 @@ async def takeover_ticket(id: str, request: Request):
         await supabase_service.log_audit(store_id, "takeover", user_id, {"ticket_id": id})
 
         return {"status": "success", "message": "Human takeover active. AI disabled for this ticket."}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/tickets/{id}/release")
-async def release_ticket(id: str):
+async def release_ticket(
+    id: str,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
     """Release human takeover and return to AI control."""
     try:
-        supabase_update("conversation_overrides", 
-            {"conversation_id": f"eq.{id}", "active": "eq.true"}, 
+        ticket = await supabase_service.get_ticket_by_id(id)
+        if not ticket:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+
+        store_id = ticket.get("brand_id") or ticket.get("store_id")
+        brand_ids = await _get_tenant_brand_ids(tenant)
+        if brand_ids is not None and store_id not in brand_ids:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+
+        supabase_update("conversation_overrides",
+            {"conversation_id": f"eq.{id}", "active": "eq.true"},
             {"active": False}
         )
         # Reset ticket status to open so AI can pick it up again
         await supabase_service.update_ticket(id, {"status": "open"})
         return {"status": "success", "message": "Ticket released back to AI control."}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

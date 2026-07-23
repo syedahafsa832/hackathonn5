@@ -1,5 +1,6 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import Layout from './components/Layout';
+import ErrorBoundary from './components/ErrorBoundary';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Tickets from './pages/Tickets';
@@ -13,8 +14,15 @@ import QuarantineQueue from './pages/QuarantineQueue';
 
 function ProtectedRoute({ children }) {
   const token = localStorage.getItem('resolv_token');
+  const location = useLocation();
   if (!token) return <Navigate to="/login" replace />;
-  return <Layout>{children}</Layout>;
+  return (
+    <Layout>
+      {/* key resets the boundary when navigating to a different page/ticket
+          instead of getting stuck showing a stale error */}
+      <ErrorBoundary key={location.pathname}>{children}</ErrorBoundary>
+    </Layout>
+  );
 }
 
 function OnboardingRoute({ children }) {

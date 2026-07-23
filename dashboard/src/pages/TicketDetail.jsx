@@ -180,9 +180,11 @@ function formatDate(iso) {
 }
 
 function cleanEmailBody(raw) {
-  if (!raw) return '';
-  // Decode common HTML entities
-  let text = raw
+  if (raw == null || raw === '') return '';
+  // Ticket message bodies are almost always strings, but a non-string value
+  // slipping through (e.g. a bare order number) must not crash the whole page —
+  // coerce defensively instead of assuming .replace() exists.
+  let text = String(raw)
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
     .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' ');
   // Strip Gmail/Outlook quoted-reply chain ("On [date] ... wrote:" and everything after)
@@ -248,6 +250,47 @@ function ConfidenceBar({ score }) {
       </div>
     </div>
   );
+}
+
+const RISK_COPY = {
+  high: { label: 'High risk', color: 'var(--danger, #EF4444)' },
+  medium: { label: 'Medium risk', color: 'var(--warning, #F59E0B)' },
+  low: { label: 'Low risk', color: 'var(--success, #10B981)' },
+};
+
+// Turns the raw fields already stored on the ticket into a plain-English brief for
+// a human agent, without changing how escalation is decided or stored.
+function buildEscalationBrief(ticket) {
+  const customerLine = (ticket.message || '').trim().slice(0, 220);
+  const sentiment = ticket.customer_sentiment;
+
+  const whyStopped = ticket.escalation_reason
+    || (ticket.risk_level === 'high' && 'The request carries financial/policy risk (e.g. refund, cancellation, or a legal/pricing concern) that needs a human decision.')
+    || (sentiment === 'angry' && 'The customer sounds angry or frustrated — routed to a human to avoid a scripted reply landing badly.')
+    || 'The AI was not confident enough in its answer to reply automatically.';
+
+  const orderContext = ticket.detected_order_id
+    ? `Order #${ticket.detected_order_id}`
+    : 'No order number detected in this conversation.';
+
+  const tags = ticket.tags || [];
+  let recommendedAction = 'Read the conversation below and reply manually.';
+  if (tags.includes('cancel') && ticket.detected_order_id) {
+    recommendedAction = `Check order #${ticket.detected_order_id} in Shopify — cancel/restock if it hasn't shipped, otherwise explain why it can't be cancelled.`;
+  } else if (tags.includes('refund') && ticket.detected_order_id) {
+    recommendedAction = `Verify order #${ticket.detected_order_id} qualifies for a refund, then use the Refund action or explain the policy if it doesn't.`;
+  } else if (tags.includes('damaged') || tags.includes('exchange')) {
+    recommendedAction = 'Confirm the issue with the customer and arrange a replacement/exchange or refund as appropriate.';
+  } else if (ticket.ai_draft) {
+    recommendedAction = "Review the AI's suggested draft below — edit and send it, or write your own reply.";
+  }
+
+  let confidencePct = null;
+  if (typeof ticket.confidence_score === 'number') {
+    confidencePct = ticket.confidence_score <= 1 ? ticket.confidence_score * 100 : ticket.confidence_score;
+  }
+
+  return { customerLine, whyStopped, orderContext, recommendedAction, confidencePct };
 }
 
 export default function TicketDetail() {
@@ -513,6 +556,48 @@ export default function TicketDetail() {
 
         {/* Order Context */}
         <OrderPanel ticketId={ticket_id} ticket={ticket} />
+
+        {/* Escalation Context — human-readable brief for why this needs a person */}
+        {ticket.status === 'escalated' && (() => {
+          const brief = buildEscalationBrief(ticket);
+          const risk = RISK_COPY[ticket.risk_level] || null;
+          return (
+            <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--warning, #F59E0B)', borderRadius: '6px', padding: '16px 20px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)' }}>⚠ Escalated — Needs Your Attention</div>
+                <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                  {risk && (
+                    <span style={{ fontSize: '11px', fontWeight: '600', color: risk.color }}>{risk.label}</span>
+                  )}
+                  {brief.confidencePct != null && (
+                    <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>· {Math.round(brief.confidencePct)}% confidence</span>
+                  )}
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '13px' }}>
+                {brief.customerLine && (
+                  <div>
+                    <div style={{ fontSize: '11px', fontWeight: '600', color: 'var(--text-muted)', marginBottom: '2px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Customer wants</div>
+                    <div style={{ color: 'var(--text-primary)' }}>{brief.customerLine}</div>
+                  </div>
+                )}
+                <div>
+                  <div style={{ fontSize: '11px', fontWeight: '600', color: 'var(--text-muted)', marginBottom: '2px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Why AI stopped</div>
+                  <div style={{ color: 'var(--text-primary)' }}>{brief.whyStopped}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: '11px', fontWeight: '600', color: 'var(--text-muted)', marginBottom: '2px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Order context</div>
+                  <div style={{ color: 'var(--text-primary)' }}>{brief.orderContext}</div>
+                </div>
+                <div style={{ padding: '10px', background: 'var(--bg-secondary)', borderRadius: '4px' }}>
+                  <div style={{ fontSize: '11px', fontWeight: '600', color: 'var(--text-muted)', marginBottom: '2px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Recommended action</div>
+                  <div style={{ color: 'var(--text-primary)' }}>{brief.recommendedAction}</div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* AI Draft Approval */}
         {(ticket.ai_draft || ticket.ai_response) && ticket.status !== 'resolved' && (

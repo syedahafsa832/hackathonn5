@@ -327,13 +327,22 @@ class ActionsService:
             if action["status"] != ActionStatus.PENDING.value:
                 return {"success": False, "error": f"Action already {action['status']}"}
 
-            # Mark as approved
-            supabase_update("actions", {"id": f"eq.{action_id}"}, {
-                "status": ActionStatus.APPROVED.value,
-                "approved_by": approved_by,
-                "approved_at": datetime.now(timezone.utc).isoformat(),
-                "updated_at": datetime.now(timezone.utc).isoformat()
-            })
+            # Atomically claim the action (conditioned on it still being "pending")
+            # before touching Shopify. Closes the race where two concurrent approve
+            # calls (double-click, retry) could both pass the check above and each
+            # execute a real refund/cancel against the same order.
+            claimed = supabase_update(
+                "actions",
+                {"id": f"eq.{action_id}", "status": f"eq.{ActionStatus.PENDING.value}"},
+                {
+                    "status": ActionStatus.APPROVED.value,
+                    "approved_by": approved_by,
+                    "approved_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }
+            )
+            if not claimed:
+                return {"success": False, "error": "Action already actioned"}
 
             # Get Shopify client
             try:

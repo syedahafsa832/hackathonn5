@@ -83,6 +83,32 @@ def _normalize_ticket_messages(ticket: dict) -> list:
     return normalized
 
 
+def _promote_or_append_ai_message(messages: list, body: str, sent_at: str) -> list:
+    """Record that an AI reply was sent, without duplicating it in replay.
+
+    message_processor.py already appends the AI reply as a direction="draft"
+    entry the moment it's generated (so replay is complete even if nothing was
+    sent yet). When a human later approves that same draft, we must promote the
+    existing entry to "outbound" instead of appending a second copy — otherwise
+    Conversation Replay shows the identical AI reply twice (once as draft, once
+    as outbound). Never used for genuinely new content, so no history is lost.
+    """
+    updated = list(messages)
+    for msg in updated:
+        if isinstance(msg, dict) and msg.get("body") == body and msg.get("direction") in ("draft", "outbound"):
+            msg["direction"] = "outbound"
+            msg["sent_at"] = sent_at
+            return updated
+    updated.append({
+        "from": "AI Agent",
+        "body": body,
+        "sent_at": sent_at,
+        "direction": "outbound",
+        "role": "assistant",
+    })
+    return updated
+
+
 # ==================== Request/Response Models ====================
 
 class CreateTicketRequest(BaseModel):
@@ -605,6 +631,17 @@ async def approve_ai_response(
             if not UserRole.is_admin(context.user.role):
                 raise HTTPException(status_code=403, detail="Access denied")
 
+        # Idempotency guard: already approved (e.g. double-click, retried request) —
+        # do not re-send the same email a second time.
+        if ticket.get("human_approved") or ticket.get("response_sent"):
+            logger.info(f"[v2_tickets] approve-ai no-op: ticket {ticket_id} already approved/sent")
+            return {
+                "success": True,
+                "ticket": ticket,
+                "email_sent": bool(ticket.get("response_sent")),
+                "message": "Already approved and sent"
+            }
+
         # Check if AI response exists (fall back to ai_draft)
         reply_body = ticket.get("ai_response") or ticket.get("ai_draft")
         if not reply_body:
@@ -646,16 +683,10 @@ async def approve_ai_response(
                         updates["response_method"] = "email"
                         updates["status"] = "resolved"
                         updates["email_sent"] = True
-                        # Append sent message to thread so conversation replay shows it
-                        existing_msgs = list(ticket.get("messages") or [])
-                        existing_msgs.append({
-                            "from": "AI Agent",
-                            "body": reply_body,
-                            "sent_at": now_iso,
-                            "direction": "outbound",
-                            "role": "assistant",
-                        })
-                        updates["messages"] = existing_msgs
+                        # Promote the existing draft message to outbound (never duplicate it)
+                        updates["messages"] = _promote_or_append_ai_message(
+                            ticket.get("messages") or [], reply_body, now_iso
+                        )
                     else:
                         logger.warning(f"[v2_tickets] Gmail send failed: {send_result.get('error')}")
                 else:

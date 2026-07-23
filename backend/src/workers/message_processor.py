@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 import uuid
@@ -47,6 +48,7 @@ class UnifiedMessageProcessor:
         Process incoming message with AI operational modes and human takeover logic.
         UNIFIED PIPELINE: Works for BOTH email and webform channels.
         """
+        t_start = time.monotonic()
         try:
             # ========== STAGE 1: EXTRACT & VALIDATE ==========
             channel = message.get('channel', 'web_form')
@@ -131,6 +133,7 @@ class UnifiedMessageProcessor:
                 logger.info(f"[PROCESSOR] ✓ Ticket created immediately: {early_ticket_id} (status=processing)")
             except Exception as early_err:
                 logger.warning(f"[PROCESSOR] Early ticket creation failed (non-blocking): {early_err}")
+            logger.info(f"[TIMING] Ticket intake: {time.monotonic() - t_start:.2f}s")
 
             # ========== STAGE 2: SYSTEM SETTINGS ==========
             settings = await supabase_service.get_system_settings(store_id)
@@ -223,11 +226,13 @@ class UnifiedMessageProcessor:
                 return {"ticket_id": ticket.get("id"), "status": "requires_human"}
 
             # ========== STAGE 5: AI ANALYSIS ==========
+            t_ai_start = time.monotonic()
             logger.info(f"[PROCESSOR] Generating AI response (tenant_id={tenant_id})...")
             ai_result = await customer_success_agent.generate_channel_appropriate_response(
                 query=content, customer_info=customer, channel=channel, tenant_id=tenant_id, store_id=store_id,
                 ticket_id=early_ticket_id,
             )
+            logger.info(f"[TIMING] AI generation (RAG+LLM): {time.monotonic() - t_ai_start:.2f}s")
 
             confidence = ai_result.get("confidence_score", 0) / 100.0
             intent = ai_result.get("intent", "unknown")
@@ -386,7 +391,9 @@ class UnifiedMessageProcessor:
             email_actually_sent = False
             if should_auto_reply and reply_body and auto_reply_enabled:
                 logger.info(f"[PROCESSOR] Sending email to {customer_email}...")
+                t_send_start = time.monotonic()
                 await self._send_email_with_logging(customer_email, subject, ai_result, ticket_id, store_id=store_id)
+                logger.info(f"[TIMING] Email send: {time.monotonic() - t_send_start:.2f}s")
                 email_actually_sent = True
             else:
                 logger.info(f"[PROCESSOR] Email NOT sent - should_auto_reply={should_auto_reply}, has_reply={bool(reply_body)}, auto_reply_enabled={auto_reply_enabled}")
@@ -434,10 +441,12 @@ class UnifiedMessageProcessor:
                 "email_sent": should_auto_reply and bool(reply_body) and auto_reply_enabled
             }
             logger.info(f"[PROCESSOR] ========== COMPLETE: {result} ==========")
+            logger.info(f"[TIMING] Total pipeline: {time.monotonic() - t_start:.2f}s")
             return result
 
         except Exception as e:
             logger.error(f"[PROCESSOR] ERROR: {str(e)}", exc_info=True)
+            logger.info(f"[TIMING] Total pipeline (errored): {time.monotonic() - t_start:.2f}s")
             return {"ticket_id": None, "status": "error", "error": str(e)}
 
     async def _check_thread_override(self, customer_email: str, subject: str) -> bool:

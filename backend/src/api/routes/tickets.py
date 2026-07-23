@@ -125,27 +125,49 @@ async def get_ticket(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+async def _assert_ticket_access(ticket_id: str, tenant: TenantContext) -> dict:
+    """Fetch a ticket and raise 404 if it doesn't belong to the authenticated tenant.
+    Mirrors the brand-ownership check already used by GET /{ticket_id}."""
+    ticket = await supabase_service.get_ticket_by_id(ticket_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket_brand_id = ticket.get("brand_id") or ticket.get("store_id")
+    brand_ids = await _get_tenant_brand_ids(tenant)
+    if brand_ids is not None and ticket_brand_id not in brand_ids:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    return ticket
+
+
 @router.patch("/{ticket_id}")
-async def update_ticket(ticket_id: str, updates: TicketUpdate):
+async def update_ticket(
+    ticket_id: str,
+    updates: TicketUpdate,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
     """Update a ticket status or metadata."""
     try:
+        await _assert_ticket_access(ticket_id, tenant)
         update_data = updates.dict(exclude_unset=True)
         if not update_data:
             raise HTTPException(status_code=400, detail="No updates provided")
         result = await supabase_service.update_ticket(ticket_id, update_data)
         _invalidate_tickets_cache()
         return result
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/{ticket_id}/send-reply")
-async def send_reply(ticket_id: str, req: SendReplyRequest):
+async def send_reply(
+    ticket_id: str,
+    req: SendReplyRequest,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
     """Send a reply email for a ticket — manual text or approve pending AI draft."""
     try:
-        ticket = await supabase_service.get_ticket_by_id(ticket_id)
-        if not ticket:
-            raise HTTPException(status_code=404, detail="Ticket not found")
+        ticket = await _assert_ticket_access(ticket_id, tenant)
 
         reply_body = req.body or ticket.get("ai_draft") or ticket.get("ai_reply")
         if not reply_body:
@@ -210,21 +232,25 @@ async def send_reply(ticket_id: str, req: SendReplyRequest):
 
 
 @router.post("/{ticket_id}/approve-ai")
-async def approve_ai(ticket_id: str):
+async def approve_ai(
+    ticket_id: str,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
     """Approve and send the AI-generated draft — alias for send-reply with no body."""
-    return await send_reply(ticket_id, SendReplyRequest())
+    return await send_reply(ticket_id, SendReplyRequest(), tenant)
 
 
 @router.get("/{ticket_id}/reply-suggestions")
-async def get_reply_suggestions(ticket_id: str):
+async def get_reply_suggestions(
+    ticket_id: str,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
     """Generate 3 reply variations from the AI draft for quick human response."""
     import os, json
     from openai import OpenAI
 
     try:
-        ticket = await supabase_service.get_ticket_by_id(ticket_id)
-        if not ticket:
-            raise HTTPException(status_code=404, detail="Ticket not found")
+        ticket = await _assert_ticket_access(ticket_id, tenant)
 
         body = ticket.get("message", "")
         draft = ticket.get("ai_draft") or ticket.get("ai_reply", "")
