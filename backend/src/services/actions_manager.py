@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import requests
 import uuid as uuid_lib
 from src.lib.supabase_client import supabase_select, supabase_insert, supabase_update
+from src.config import SHOPIFY_API_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,59 @@ class ActionsManager:
         # Real tenants must have their Shopify creds stored in the brands/tenants table.
         self._legacy_shop_name = os.getenv("SHOPIFY_SHOP_NAME")
         self._legacy_token = os.getenv("SHOPIFY_ACCESS_TOKEN")
-        self.api_version = os.getenv("SHOPIFY_API_VERSION", "2024-01")
+        self.api_version = SHOPIFY_API_VERSION
+
+    async def _get_refund_policy(self, brand_id: Optional[str]) -> Dict[str, Any]:
+        """Loads the merchant's configured refund policy, falling back to
+        today's hardcoded defaults when brand_id is absent or the brand has
+        no policy configured — so a default-configured brand behaves exactly
+        as it does today. This is the single place eligibility-check policy
+        values come from; nothing else in this file reads brand config."""
+        policy = {
+            "window_days": self.RETURN_WINDOW_DAYS,
+            "final_sale_tags": list(self.NON_RETURNABLE_TAGS),
+            "exclude_digital_products": False,
+            "excluded_product_ids": [],
+            "excluded_collection_ids": [],
+            "notes": "",
+        }
+        if not brand_id:
+            return policy
+        try:
+            from src.services.brand_manager import brand_manager
+            brand = await brand_manager.get_brand(brand_id)
+            if not brand:
+                return policy
+            policy["window_days"] = brand.get("return_policy_days") or self.RETURN_WINDOW_DAYS
+            policy["final_sale_tags"] = brand.get("final_sale_tags") or list(self.NON_RETURNABLE_TAGS)
+            policy["exclude_digital_products"] = bool(brand.get("exclude_digital_products"))
+            policy["notes"] = brand.get("refund_notes") or ""
+
+            excluded_products = supabase_select("refund_policy_excluded_products", {"brand_id": f"eq.{brand_id}"})
+            policy["excluded_product_ids"] = [r["shopify_product_id"] for r in excluded_products]
+            excluded_collections = supabase_select("refund_policy_excluded_collections", {"brand_id": f"eq.{brand_id}"})
+            policy["excluded_collection_ids"] = [r["shopify_collection_id"] for r in excluded_collections]
+        except Exception as e:
+            logger.warning(f"[ActionsManager] Failed to load refund policy for brand {brand_id}, using defaults: {e}")
+        return policy
+
+    async def _get_product_collection_ids(self, tenant_id: Optional[str], product_id) -> List[int]:
+        """Which collections a product belongs to. Shopify's order line items
+        don't carry collection membership, so this is a small extra lookup
+        per distinct product on the order — bounded by line-item count, not
+        unbounded. Fails open (empty list) on any error so a lookup problem
+        degrades to 'not excluded' rather than blocking staging entirely."""
+        if not tenant_id or not product_id:
+            return []
+        try:
+            from src.services.shopify_service import shopify_service
+            client = await shopify_service.get_client_for_tenant(tenant_id)
+            result = client._request("GET", "collects.json", params={"product_id": product_id})
+            collects = result.get("data", {}).get("collects", [])
+            return [c.get("collection_id") for c in collects if c.get("collection_id")]
+        except Exception as e:
+            logger.warning(f"[ActionsManager] Collection lookup failed for product {product_id} (treating as not excluded): {e}")
+            return []
 
     def _shopify_request(self, endpoint: str, params: dict = None) -> Optional[Dict]:
         """Legacy single-store Shopify request using global env vars.
@@ -84,12 +137,48 @@ class ActionsManager:
                     "staging_required": True
                 }
 
-            # Step 2: Verify email matches (be lenient - if order has no email, allow it)
+            # Step 1.5: Already refunded / already cancelled — checked here,
+            # at staging time, not just at approval-execution time, so a
+            # human is never shown an action guaranteed to fail. Shares the
+            # exact same check process_refund() uses at execution.
+            from src.services.shopify_service import ShopifyClient
+            refund_status = ShopifyClient.check_refund_status(order)
+            if refund_status["already_cancelled"]:
+                return {
+                    "eligible": False,
+                    "reason": "This order has already been cancelled.",
+                    "order": self._extract_order_summary(order),
+                    "items": self._extract_items(order),
+                }
+            if refund_status["already_refunded"]:
+                return {
+                    "eligible": False,
+                    "reason": "This order has already been refunded in full.",
+                    "order": self._extract_order_summary(order),
+                    "items": self._extract_items(order),
+                }
+
+            # Step 2: Verify the sender's email matches the order's customer email on
+            # file in Shopify. If the order has no email at all, be lenient (nothing
+            # to compare against). A mismatch does NOT silently continue as eligible
+            # — that would let anyone claiming an order number by email trigger a
+            # cancel/refund for an order that isn't theirs. Instead it's staged for
+            # manual review with an explicit reason, same as "order not found" above.
             order_email = order.get("email", "").lower()
             if order_email and order_email != email.lower():
-                # Don't block - just note it and continue (for manual review if needed)
-                logger.info(f"[ReturnActions] Email mismatch - Order has {order_email}, customer has {email}. Allowing with note.")
-                # Continue with the return - will stage for manual review anyway
+                logger.warning(
+                    f"[ReturnActions] Sender email mismatch for order #{order_id} — "
+                    f"order has {order_email}, sender is {email}. Flagging for manual review, not auto-staging."
+                )
+                return {
+                    "eligible": False,
+                    "eligibility_verified": False,
+                    "reason": "sender email does not match order email on file",
+                    "order": self._extract_order_summary(order),
+                    "items": self._extract_items(order),
+                    "requires_manual_review": True,
+                    "staging_required": True,
+                }
 
             # Step 3: Check fulfillment status
             fulfillment_status = order.get("fulfillment_status")
@@ -104,29 +193,38 @@ class ActionsManager:
                     "fulfillment_status": fulfillment_status,
                 }
 
-            # Step 4: Check return window (30 days)
+            # Merchant refund policy — falls back to the hardcoded defaults
+            # above when brand_id is absent or the brand has no policy set,
+            # so a default-configured brand behaves exactly as it does today.
+            policy = await self._get_refund_policy(brand_id)
+            window_days = policy["window_days"]
+            final_sale_tags = policy["final_sale_tags"]
+
+            # Step 4: Check return window (merchant-configured, default 30 days)
             created_at = order.get("created_at")
             if created_at:
                 order_date = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
                 days_since_order = (datetime.now(order_date.tzinfo) - order_date).days
 
-                if days_since_order > self.RETURN_WINDOW_DAYS:
+                if days_since_order > window_days:
                     return {
                         "eligible": False,
-                        "reason": f"Returns must be initiated within {self.RETURN_WINDOW_DAYS} days of delivery. This order is {days_since_order} days old.",
+                        "reason": f"Returns must be initiated within {window_days} days of delivery. This order is {days_since_order} days old.",
                         "order": self._extract_order_summary(order),
-                        "items": self._extract_items(order)
+                        "items": self._extract_items(order),
+                        "policy_snapshot": policy,
                     }
 
-            # Step 5: Check for non-returnable tags
+            # Step 5: Check for non-returnable (final sale) tags
             tags = order.get("tags", "").lower()
-            for non_returnable_tag in self.NON_RETURNABLE_TAGS:
-                if non_returnable_tag in tags:
+            for non_returnable_tag in final_sale_tags:
+                if non_returnable_tag.lower() in tags:
                     return {
                         "eligible": False,
                         "reason": "This order contains items marked as Final Sale and cannot be returned.",
                         "order": self._extract_order_summary(order),
-                        "items": self._extract_items(order)
+                        "items": self._extract_items(order),
+                        "policy_snapshot": policy,
                     }
 
             # Step 6: Check line items for non-returnable products
@@ -137,8 +235,8 @@ class ActionsManager:
                 # Check if any item has non-returnable tags (would need product lookup)
                 # For now, we check the order tags which may include per-item info
                 item_title = item.get("title", "").lower()
-                for tag in self.NON_RETURNABLE_TAGS:
-                    if tag in item_title or tag in tags:
+                for tag in final_sale_tags:
+                    if tag.lower() in item_title or tag.lower() in tags:
                         non_returnable_items.append(item.get("title"))
 
             if non_returnable_items:
@@ -146,15 +244,52 @@ class ActionsManager:
                     "eligible": False,
                     "reason": f"The following items are Final Sale and cannot be returned: {', '.join(non_returnable_items)}",
                     "order": self._extract_order_summary(order),
-                    "items": items
+                    "items": items,
+                    "policy_snapshot": policy,
                 }
+
+            # Step 7: Excluded products / collections / digital products —
+            # reads raw line_items (product_id, requires_shipping) since
+            # _extract_items() above strips those fields for display purposes.
+            raw_line_items = order.get("line_items", [])
+            if policy["excluded_product_ids"] or policy["excluded_collection_ids"] or policy["exclude_digital_products"]:
+                excluded_products = set(policy["excluded_product_ids"])
+                excluded_collections = set(policy["excluded_collection_ids"])
+                blocked_titles = []
+
+                for li in raw_line_items:
+                    product_id = li.get("product_id")
+                    title = li.get("title", "item")
+
+                    if policy["exclude_digital_products"] and li.get("requires_shipping") is False:
+                        blocked_titles.append(title)
+                        continue
+
+                    if product_id and product_id in excluded_products:
+                        blocked_titles.append(title)
+                        continue
+
+                    if product_id and excluded_collections:
+                        collection_ids = await self._get_product_collection_ids(tenant_id, product_id)
+                        if excluded_collections.intersection(collection_ids):
+                            blocked_titles.append(title)
+
+                if blocked_titles:
+                    return {
+                        "eligible": False,
+                        "reason": f"The following items are excluded from returns by store policy: {', '.join(blocked_titles)}.",
+                        "order": self._extract_order_summary(order),
+                        "items": items,
+                        "policy_snapshot": policy,
+                    }
 
             # All checks passed - eligible for return
             return {
                 "eligible": True,
                 "reason": "Great news! Your order is eligible for return. Would you like to process a refund or an exchange?",
                 "order": self._extract_order_summary(order),
-                "items": items
+                "items": items,
+                "policy_snapshot": policy,
             }
 
         except Exception as e:
@@ -702,7 +837,7 @@ async def _execute_refund(action: Dict) -> Dict[str, Any]:
 
         shop_name = os.getenv("SHOPIFY_SHOP_NAME")
         shopify_token = os.getenv("SHOPIFY_ACCESS_TOKEN")
-        api_version = os.getenv("SHOPIFY_API_VERSION", "2024-01")
+        api_version = SHOPIFY_API_VERSION
 
         if not shop_name or not shopify_token:
             logger.error("[PendingActions] Legacy Shopify env vars not set — cannot execute refund")
@@ -764,7 +899,7 @@ async def _execute_exchange(action: Dict) -> Dict[str, Any]:
 
         shop_name = os.getenv("SHOPIFY_SHOP_NAME")
         shopify_token = os.getenv("SHOPIFY_ACCESS_TOKEN")
-        api_version = os.getenv("SHOPIFY_API_VERSION", "2024-01")
+        api_version = SHOPIFY_API_VERSION
 
         if not shop_name or not shopify_token:
             logger.error("[PendingActions] Legacy Shopify env vars not set — cannot execute exchange")

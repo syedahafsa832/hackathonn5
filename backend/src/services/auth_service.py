@@ -149,19 +149,36 @@ class AuthService:
 
             # Create a default brand for this tenant immediately on registration.
             # This ensures _get_tenant_brand_ids() always returns a brand for
-            # this tenant so their ticket view is isolated from day one.
+            # this tenant, and that Gmail/Shopify connect (which both 400 with
+            # "No brand found" if none exists) work immediately after signup.
+            #
+            # brands' original schema (migration 002) has shopify_shop_name,
+            # shopify_access_token, and support_email as NOT NULL — this insert
+            # deliberately doesn't set the first two (a placeholder value would
+            # make Shopify-connection checks elsewhere read as falsely
+            # "connected"), so it depends on migration 026 having relaxed those
+            # constraints. support_email defaults to the tenant's own email —
+            # a reasonable default until they configure a dedicated one.
             try:
                 brand_name = company_name or f"{email.split('@')[0].title()}'s Store"
-                supabase_insert("brands", {
+                created_brand = supabase_insert("brands", {
                     "name": brand_name,
                     "is_active": True,
                     "tenant_id": tenant_id,
                     "gmail_connected": False,
+                    "support_email": email.lower().strip(),
                 })
-                logger.info(f"[Auth] Default brand created for tenant {tenant_id}")
+                logger.info(f"[Auth] Default brand '{brand_name}' ({created_brand.get('id')}) created for tenant {tenant_id}")
             except Exception as brand_err:
-                # Non-fatal — brand can be created later via Shopify connect
-                logger.warning(f"[Auth] Could not create default brand: {brand_err}")
+                # Registration itself still succeeds — a tenant with no brand is
+                # recoverable, a fully-failed signup isn't. But this must NOT be
+                # silent: without a brand, Gmail/Shopify connect will 400 for this
+                # tenant until someone notices and fixes it manually.
+                logger.error(
+                    f"[Auth] REGISTRATION SUCCEEDED BUT DEFAULT BRAND CREATION FAILED for "
+                    f"tenant {tenant_id} ({email}) — Gmail/Shopify connect will fail until a "
+                    f"brand is created manually. Error: {brand_err}"
+                )
 
             # Generate tokens
             access_token = self.create_access_token(tenant_id, email)

@@ -15,6 +15,7 @@ import base64
 from email.mime.text import MIMEText
 
 from src.lib.supabase_client import supabase_get_setting
+from src.services.brand_gmail_service import BrandGmailService
 
 logger = logging.getLogger(__name__)
 
@@ -212,12 +213,21 @@ class GmailHandler:
                     headers = full_msg['payload']['headers']
                     subject = next((h['value'] for h in headers if h['name'] == 'Subject'), "No Subject")
                     sender = next((h['value'] for h in headers if h['name'] == 'From'), "Unknown Sender")
-                    
+
+                    # Full MIME body (plain text preferred, HTML fallback) — reuses the
+                    # same decoder as the per-brand Gmail path. Gmail's 'snippet' field
+                    # is only a short preview (~100-200 chars), not the real body, and
+                    # is used here only if full decode genuinely fails.
+                    body = BrandGmailService._decode_body(full_msg['payload'])
+                    if not body:
+                        logger.warning(f"[GlobalGmail] Full body decode failed for message {msg['id']} — falling back to snippet")
+                        body = full_msg.get('snippet', '')
+
                     email_data.append({
                         'id': msg['id'],
                         'subject': subject,
                         'sender_email': sender,
-                        'body': full_msg.get('snippet', '')
+                        'body': body
                     })
                 except Exception as e:
                     logger.error(f"Error fetching individual email {msg['id']}: {e}")

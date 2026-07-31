@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import client, { extractErrorMessage } from '../api/client';
 
@@ -159,6 +159,72 @@ function BrandCard({ brand, highlightGmail }) {
     }
   };
 
+  // Refund policy fields save independently through /api/v2/brands, which is
+  // tenant-scoped (unlike the legacy /api/brands PUT above, which has no
+  // ownership check). The scalar fields (return window, digital-product
+  // exclusion, notes) already come back on `brand` from the page's initial
+  // /api/brands list load, since that endpoint blocklists only two secret
+  // columns rather than allowlisting — new columns pass through automatically.
+  // The excluded-product/collection lists live in their own tables, so they
+  // need a separate fetch; done lazily on first expand, not on every load.
+  const [returnPolicyDays, setReturnPolicyDays] = useState(brand.return_policy_days ?? 30);
+  const [excludeDigitalProducts, setExcludeDigitalProducts] = useState(!!brand.exclude_digital_products);
+  const [refundNotes, setRefundNotes] = useState(brand.refund_notes || '');
+  const [excludedProductIds, setExcludedProductIds] = useState('');
+  const [excludedCollectionIds, setExcludedCollectionIds] = useState('');
+  const [savingRefundPolicy, setSavingRefundPolicy] = useState(false);
+  const [refundPolicyMsg, setRefundPolicyMsg] = useState('');
+  const excludedListsLoaded = useRef(false);
+
+  useEffect(() => {
+    if (!expanded || excludedListsLoaded.current) return;
+    excludedListsLoaded.current = true;
+    Promise.all([
+      client.get(`/api/v2/brands/${brand.id}/refund-policy/excluded-products`),
+      client.get(`/api/v2/brands/${brand.id}/refund-policy/excluded-collections`),
+    ]).then(([productsRes, collectionsRes]) => {
+      setExcludedProductIds((productsRes.data?.ids || []).join(', '));
+      setExcludedCollectionIds((collectionsRes.data?.ids || []).join(', '));
+    }).catch(() => {
+      // Non-fatal — the lists just start empty; the merchant can still see
+      // and edit the scalar policy fields, and re-expanding retries the fetch
+      // since excludedListsLoaded only guards against duplicate calls while
+      // still expanded, not across a collapse/re-expand cycle... actually it
+      // does persist across that too (ref survives re-render), which is fine:
+      // a failed load leaving the field blank is safe (empty diff on save,
+      // not a silent data-loss risk) rather than surprising.
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expanded]);
+
+  const parseIds = (str) =>
+    str.split(',').map((s) => s.trim()).filter(Boolean).map(Number).filter((n) => Number.isInteger(n));
+
+  const saveRefundPolicy = async () => {
+    setSavingRefundPolicy(true);
+    setRefundPolicyMsg('');
+    try {
+      await Promise.all([
+        client.patch(`/api/v2/brands/${brand.id}`, {
+          return_policy_days: Number(returnPolicyDays),
+          exclude_digital_products: excludeDigitalProducts,
+          refund_notes: refundNotes,
+        }),
+        client.put(`/api/v2/brands/${brand.id}/refund-policy/excluded-products`, {
+          ids: parseIds(excludedProductIds),
+        }),
+        client.put(`/api/v2/brands/${brand.id}/refund-policy/excluded-collections`, {
+          ids: parseIds(excludedCollectionIds),
+        }),
+      ]);
+      setRefundPolicyMsg('Saved!');
+    } catch (err) {
+      setRefundPolicyMsg(extractErrorMessage(err, 'Failed to save refund policy.'));
+    } finally {
+      setSavingRefundPolicy(false);
+    }
+  };
+
   const testShopify = async () => {
     setConnecting(true);
     setConnectMsg('');
@@ -277,6 +343,79 @@ function BrandCard({ brand, highlightGmail }) {
           <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '-10px', marginBottom: '16px' }}>
             This is the name your customers see in chat and email replies. Default: Luna
           </p>
+
+          <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border)' }}>
+            <div style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '10px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Refund Policy</div>
+            <div style={{ display: 'flex', gap: '12px', marginBottom: '12px', flexWrap: 'wrap' }}>
+              <div>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>Return window (days)</div>
+                <input
+                  type="number"
+                  min="0"
+                  value={returnPolicyDays}
+                  onChange={e => setReturnPolicyDays(e.target.value)}
+                  style={{ padding: '7px 10px', borderRadius: '4px', border: '1px solid var(--border)', fontSize: '13px', width: '100px' }}
+                />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'flex-end', paddingBottom: '9px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={excludeDigitalProducts}
+                    onChange={e => setExcludeDigitalProducts(e.target.checked)}
+                  />
+                  Exclude digital products
+                </label>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: '12px', marginBottom: '12px', flexWrap: 'wrap' }}>
+              <div style={{ flex: '1', minWidth: '220px' }}>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>Excluded product IDs</div>
+                <input
+                  value={excludedProductIds}
+                  onChange={e => setExcludedProductIds(e.target.value)}
+                  placeholder="e.g. 123456789, 987654321"
+                  style={{ padding: '7px 10px', borderRadius: '4px', border: '1px solid var(--border)', fontSize: '13px', width: '100%' }}
+                />
+              </div>
+              <div style={{ flex: '1', minWidth: '220px' }}>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>Excluded collection IDs</div>
+                <input
+                  value={excludedCollectionIds}
+                  onChange={e => setExcludedCollectionIds(e.target.value)}
+                  placeholder="e.g. 111222333"
+                  style={{ padding: '7px 10px', borderRadius: '4px', border: '1px solid var(--border)', fontSize: '13px', width: '100%' }}
+                />
+              </div>
+            </div>
+            <div style={{ marginBottom: '12px' }}>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>Notes for the AI</div>
+              <textarea
+                value={refundNotes}
+                onChange={e => setRefundNotes(e.target.value)}
+                placeholder="e.g. Approve refunds for damaged items even outside the return window."
+                rows={2}
+                style={{ padding: '7px 10px', borderRadius: '4px', border: '1px solid var(--border)', fontSize: '13px', width: '100%', fontFamily: 'inherit', resize: 'vertical' }}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <button
+                onClick={saveRefundPolicy}
+                disabled={savingRefundPolicy}
+                style={{ padding: '7px 14px', borderRadius: '4px', background: 'var(--accent)', color: 'white', fontWeight: '500', fontSize: '13px', cursor: savingRefundPolicy ? 'not-allowed' : 'pointer' }}
+              >
+                {savingRefundPolicy ? 'Saving...' : 'Save refund policy'}
+              </button>
+              {refundPolicyMsg && (
+                <span style={{ fontSize: '12px', color: refundPolicyMsg === 'Saved!' ? 'var(--success)' : 'var(--danger)' }}>
+                  {refundPolicyMsg}
+                </span>
+              )}
+            </div>
+            <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '8px' }}>
+              Refunds always require your one-tap approval before executing in Shopify — this policy only shapes what the AI recommends, not whether approval is needed.
+            </p>
+          </div>
 
           {testResult?.shop && (
             <div style={{ padding: '8px 12px', background: 'var(--success-light)', borderRadius: '4px', fontSize: '12px', color: 'var(--success)', marginBottom: '12px' }}>

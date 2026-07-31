@@ -1338,21 +1338,33 @@ function IntegrationsTab() {
 
 const TABS = [
   { id: 'email', label: 'Email' },
-  { id: 'filter', label: 'Email Filters' },
   { id: 'shopify', label: 'Shopify' },
-  { id: 'integrations', label: 'Integrations' },
   { id: 'kb', label: 'Knowledge Base' },
-  { id: 'canned', label: 'Canned Responses' },
   { id: 'widget', label: 'Chat Widget' },
   { id: 'account', label: 'Account' },
 ];
 
+// Moved under the collapsible "Advanced" section — same tabs, same
+// components, just regrouped in the nav so the top-level bar isn't 8 wide.
+const ADVANCED_TABS = [
+  { id: 'filter', label: 'Email Filters' },
+  { id: 'integrations', label: 'Integrations' },
+  { id: 'canned', label: 'Canned Responses' },
+];
+
 export default function Settings() {
   const [activeTab, setActiveTab] = useState('email');
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   useEffect(() => {
     document.title = "Settings — tResolv";
   }, []);
+
+  // If a deep link or prior session lands on an Advanced tab, keep the
+  // section expanded so the active tab isn't hidden.
+  useEffect(() => {
+    if (ADVANCED_TABS.some(t => t.id === activeTab)) setAdvancedOpen(true);
+  }, [activeTab]);
 
   const tabStyle = (id) => ({
     padding: '10px 20px',
@@ -1365,15 +1377,47 @@ export default function Settings() {
     whiteSpace: 'nowrap',
   });
 
+  const isAdvancedActive = ADVANCED_TABS.some(t => t.id === activeTab);
+
   return (
     <div style={{ padding: '24px', maxWidth: '800px', margin: '0', width: '100%' }}>
-      <div style={{ display: 'flex', borderBottom: '1px solid #E4E4E7', marginBottom: '28px', overflowX: 'auto' }}>
+      <div style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid #E4E4E7', overflowX: 'auto' }}>
         {TABS.map(t => (
           <div key={t.id} style={tabStyle(t.id)} onClick={() => setActiveTab(t.id)}>{t.label}</div>
         ))}
+        <div
+          style={{ ...tabStyle('__advanced__'), color: isAdvancedActive ? '#06B6D4' : '#94A3B8', display: 'flex', alignItems: 'center', gap: '4px' }}
+          onClick={() => setAdvancedOpen(o => !o)}
+        >
+          Advanced
+          <span style={{ fontSize: '10px', transform: advancedOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }}>▾</span>
+        </div>
       </div>
 
-      <div style={{ maxWidth: '800px' }}>
+      {advancedOpen && (
+        <div style={{ display: 'flex', gap: '4px', padding: '10px 0', marginBottom: '4px', flexWrap: 'wrap' }}>
+          {ADVANCED_TABS.map(t => (
+            <div
+              key={t.id}
+              onClick={() => setActiveTab(t.id)}
+              style={{
+                padding: '6px 14px',
+                borderRadius: '6px',
+                fontSize: '13px',
+                fontWeight: '600',
+                cursor: 'pointer',
+                background: activeTab === t.id ? '#ECFEFF' : '#F8FAFC',
+                color: activeTab === t.id ? '#0E7490' : '#64748B',
+                border: '1px solid ' + (activeTab === t.id ? '#A5F3FC' : '#E4E4E7'),
+              }}
+            >
+              {t.label}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ maxWidth: '800px', marginTop: '20px' }}>
         {activeTab === 'email' && <EmailTab />}
         {activeTab === 'filter' && <FilterTab />}
         {activeTab === 'shopify' && <ShopifyTab />}

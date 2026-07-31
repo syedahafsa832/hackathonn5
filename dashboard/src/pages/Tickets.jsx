@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import client from '../api/client';
 import { useBrand } from '../context/BrandContext';
@@ -20,6 +20,18 @@ export default function Tickets() {
 
   const { data: tickets = [], isLoading: loading, error: queryError, refetch } = useConversations(statusFilter || 'active', activeBrand?.id);
   const { mutate: markRead } = useMarkRead();
+  const [refreshing, setRefreshing] = useState(false);
+
+  // isLoading only reflects the *first* fetch — once data exists, a manual
+  // refetch() only flips isFetching, which this page didn't track, so the
+  // button gave zero visual feedback and looked broken even though it was
+  // actually refetching. Track our own refreshing state instead, same
+  // pattern as the working refresh button on the Dashboard overview page.
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await refetch();
+    setRefreshing(false);
+  }, [refetch]);
 
   useEffect(() => {
     document.title = "Conversations — tResolv";
@@ -32,7 +44,6 @@ export default function Tickets() {
   }, []);
 
   const visibleTickets = tickets;
-  const SENTIMENT_ORDER = { angry: 0, frustrated: 1, positive: 3, neutral: 2 };
 
   const sortedAndFiltered = (() => {
     let result = search
@@ -47,12 +58,11 @@ export default function Tickets() {
       result = result.filter(t => (t.tags || []).includes(tagFilter));
     }
 
-    result.sort((a, b) => {
-      const sa = SENTIMENT_ORDER[a.customer_sentiment] ?? 2;
-      const sb = SENTIMENT_ORDER[b.customer_sentiment] ?? 2;
-      if (sa !== sb) return sa - sb;
-      return new Date(b.updated_at || 0) - new Date(a.updated_at || 0);
-    });
+    // Newest-first by updated_at, same as the Dashboard's Recent Conversations
+    // widget — this used to sort by sentiment first (angry/frustrated ahead of
+    // everything else), which is why two tickets updated seconds apart could
+    // appear far apart in the list depending on sentiment.
+    result.sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0));
 
     return result;
   })();
@@ -138,8 +148,8 @@ export default function Tickets() {
             Live
           </span>
           <button
-            onClick={() => refetch()}
-            disabled={loading}
+            onClick={handleRefresh}
+            disabled={refreshing}
             style={{
               padding: '7px 14px',
               borderRadius: '6px',
@@ -147,13 +157,15 @@ export default function Tickets() {
               background: 'white',
               fontSize: '13px',
               color: '#475569',
-              cursor: loading ? 'not-allowed' : 'pointer',
+              cursor: refreshing ? 'not-allowed' : 'pointer',
               display: 'flex',
               alignItems: 'center',
               gap: '6px',
+              opacity: refreshing ? 0.6 : 1,
             }}
           >
-            {loading ? '↻' : '↻'} Refresh
+            <span style={{ display: 'inline-block', animation: refreshing ? 'spin 0.8s linear infinite' : 'none' }}>↻</span>
+            {refreshing ? 'Refreshing…' : 'Refresh'}
           </button>
         </div>
       </div>
@@ -195,6 +207,9 @@ export default function Tickets() {
               <div style={{ fontWeight: c.unread_count > 0 ? '600' : '500', color: '#0F172A' }}>
                 {c.customer_email || c.sender_id || '—'}
               </div>
+              <div style={{ fontSize: '12.5px', color: '#64748B', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {c.last_message || '—'}
+              </div>
               <div className="mobile-card-row">
                 <span style={{ textTransform: 'capitalize' }}>{c.channel}</span>
                 <Badge status={c.status} />
@@ -216,7 +231,7 @@ export default function Tickets() {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: '#F8FAFC', position: 'sticky', top: 0 }}>
-                {['ID', 'Channel', 'Sender', 'Status', 'Sentiment', 'Tags', 'Updated'].map(h => (
+                {['ID', 'Channel', 'Sender', 'Last Message', 'Status', 'Sentiment', 'Tags', 'Updated'].map(h => (
                   <th key={h} style={{ padding: '10px 16px', textAlign: 'left', fontSize: '11px', fontWeight: '600', color: '#64748B', whiteSpace: 'nowrap', borderBottom: '1px solid #E4E4E7', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                     {h}
                   </th>
@@ -227,7 +242,7 @@ export default function Tickets() {
               {loading ? (
                 Array.from({ length: 8 }, (_, i) => (
                   <tr key={i} style={{ background: 'transparent' }}>
-                    {[80, 80, 140, 80, 60, 200, 100].map((w, j) => (
+                    {[80, 80, 140, 160, 80, 60, 200, 100].map((w, j) => (
                       <td key={j} style={{ padding: '12px 16px', borderBottom: '1px solid #F1F5F9', height: '48px' }}>
                         <div className="skeleton" style={{ height: '14px', width: `${w}px` }} />
                       </td>
@@ -236,7 +251,7 @@ export default function Tickets() {
                 ))
               ) : sortedAndFiltered.length === 0 ? (
                 <tr>
-                  <td colSpan={7} style={{ padding: '48px', textAlign: 'center', color: '#94A3B8' }}>
+                  <td colSpan={8} style={{ padding: '48px', textAlign: 'center', color: '#94A3B8' }}>
                     No conversations found
                   </td>
                 </tr>
@@ -263,6 +278,9 @@ export default function Tickets() {
                     </td>
                     <td style={{ padding: '0 16px', color: '#1E293B' }}>
                       {c.customer_email || c.sender_id || '—'}
+                    </td>
+                    <td style={{ padding: '0 16px', color: '#64748B', fontSize: '13px', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {c.last_message || '—'}
                     </td>
                     <td style={{ padding: '0 16px' }}>
                       <Badge status={c.status} />

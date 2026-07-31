@@ -85,9 +85,18 @@ async def list_tickets(
                 # Brand not linked to tenant yet — return empty rather than leaking all tickets
                 tickets = []
 
+        from src.api.routes.v2_tickets import _normalize_ticket_messages
         for t in tickets:
             if not t.get("channel"):
                 t["channel"] = "email"
+            # last_message has no backing DB column (confirmed via schema check) —
+            # nothing ever populated it, so the dashboard's Recent Conversations
+            # widget (which already reads c.last_message) silently showed "—" for
+            # every ticket. Derive it from the same normalized-message list the
+            # ticket detail view already trusts, so it's never a second, divergent
+            # parse of the thread.
+            normalized = _normalize_ticket_messages(t)
+            t["last_message"] = normalized[-1]["content"] if normalized else ""
         _tickets_cache[cache_key] = (tickets, time.time())
         return tickets
     except Exception as e:

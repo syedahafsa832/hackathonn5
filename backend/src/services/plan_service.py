@@ -39,7 +39,7 @@ TRIAL_DAYS = 14
 # billing state. Overridable via env for adding more without a code change;
 # this email is always included so it can never be accidentally removed.
 _env_admins = {e.strip().lower() for e in os.getenv("SUPER_ADMIN_EMAILS", "").split(",") if e.strip()}
-SUPER_ADMIN_EMAILS = {"syedahafsa772@gmail.com"} | _env_admins
+SUPER_ADMIN_EMAILS = {"syedahafsa772@gmail.com", "syedahafsa1983@gmail.com"} | _env_admins
 
 # Daily-counter resources (tracked via tenants.usage_*_today, reset per day)
 # vs. point-in-time count resources (brands/users/gmail — counted live from

@@ -206,6 +206,35 @@ const api = {
       })(),
     };
   },
+
+  // --- PLATFORM ADMIN ---
+
+  getAdminTenants: async () => {
+    const res = await client.get('/api/v2/admin/tenants');
+    return res.data;
+  },
+
+  getAdminUpgradeRequests: async () => {
+    const res = await client.get('/api/v2/admin/upgrade-requests');
+    return res.data;
+  },
+
+  activateUpgradeRequest: async (id) => {
+    const res = await client.post(`/api/v2/admin/upgrade-requests/${id}/activate`);
+    return res.data;
+  },
+
+  // --- ACCOUNT / UPGRADE ---
+
+  getMe: async () => {
+    const res = await client.get('/api/v1/auth/me');
+    return res.data;
+  },
+
+  requestUpgrade: async (payload) => {
+    const res = await client.post('/api/v2/upgrade-requests', payload);
+    return res.data;
+  },
 };
 
 export default api;

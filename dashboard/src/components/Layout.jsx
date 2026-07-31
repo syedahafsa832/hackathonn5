@@ -1,7 +1,9 @@
 import { useState, useRef, useEffect } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import Sidebar from './Sidebar';
+import Avatar from './Avatar';
 import { useAuth } from '../hooks/useAuth';
+import { useMe } from '../hooks/useApi';
 import { LogOut, ChevronDown, Store, Menu } from 'lucide-react';
 
 const PAGE_TITLES = {
@@ -10,11 +12,16 @@ const PAGE_TITLES = {
   '/actions': 'Escalations',
   '/quarantine': 'Quarantine Queue',
   '/settings': 'Settings',
+  '/admin': 'Admin',
+  '/upgrade': 'Upgrade',
+  '/profile': 'Profile',
 };
 
 export default function Layout({ children }) {
   const location = useLocation();
+  const navigate = useNavigate();
   const { logout } = useAuth();
+  const { data: me } = useMe();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const title = Object.entries(PAGE_TITLES).find(([path]) =>
@@ -60,6 +67,14 @@ export default function Layout({ children }) {
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <button
+              onClick={() => navigate('/profile')}
+              aria-label="Profile"
+              title="Profile"
+              style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', display: 'flex' }}
+            >
+              <Avatar name={me?.company_name} email={me?.email} size={30} />
+            </button>
             <button
               onClick={logout}
               style={{

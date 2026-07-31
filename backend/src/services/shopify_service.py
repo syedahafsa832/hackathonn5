@@ -15,8 +15,10 @@ from enum import Enum
 import hashlib
 import base64
 from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from src.lib.supabase_client import supabase_select, supabase_update
+from src.config import SHOPIFY_API_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -45,30 +47,77 @@ class ShopifyErrorCode(str, Enum):
     INVALID_REQUEST = "invalid_request"
 
 
-def _get_encryption_key() -> bytes:
-    """Get or derive encryption key for API credentials."""
-    secret = os.getenv("ENCRYPTION_SECRET", os.getenv("SECRET_KEY", "default-dev-key-change-in-prod"))
-    key = hashlib.sha256(secret.encode()).digest()
-    return base64.urlsafe_b64encode(key)
+def _get_encryption_secret() -> str:
+    """The one place a credential-encryption key is ever read from — an env
+    var, never the database. Warns loudly (not silently) if operators never
+    set a real one, since the fallback is a literal string visible in this
+    file and provides no real protection."""
+    secret = os.getenv("ENCRYPTION_SECRET") or os.getenv("SECRET_KEY")
+    if not secret:
+        logger.error(
+            "ENCRYPTION_SECRET (or SECRET_KEY) is not set — Shopify access tokens are being "
+            "encrypted with a well-known default key, which provides no real protection. "
+            "Set ENCRYPTION_SECRET in the deployment environment."
+        )
+        secret = "default-dev-key-change-in-prod"
+    return secret
+
+
+def _get_aes256_key() -> bytes:
+    """Derive a 256-bit AES key from the encryption secret (SHA-256 of the
+    secret is exactly 32 bytes — the key size AES-256 requires)."""
+    return hashlib.sha256(_get_encryption_secret().encode()).digest()
+
+
+def _get_fernet_key() -> bytes:
+    """Legacy key derivation, kept only so decrypt_token() can still read
+    tokens written before the AES-256-GCM migration (Fernet is AES-128-CBC
+    + HMAC-SHA256, not AES-256 — this is why it was replaced)."""
+    return base64.urlsafe_b64encode(hashlib.sha256(_get_encryption_secret().encode()).digest())
+
+
+_AES256_PREFIX = "aes256gcm:"  # tags new-format ciphertext so decrypt can tell it apart from legacy Fernet
 
 
 def encrypt_token(value: str) -> str:
-    """Encrypt sensitive data."""
+    """Encrypt sensitive data (e.g. a Shopify access token) with AES-256-GCM
+    before it is ever written to the database. Called at write time only —
+    the database never sees plaintext."""
     if not value:
         return ""
-    f = Fernet(_get_encryption_key())
-    return f.encrypt(value.encode()).decode()
+    key = _get_aes256_key()
+    nonce = os.urandom(12)  # 96-bit nonce, standard for GCM; unique per encryption
+    ciphertext = AESGCM(key).encrypt(nonce, value.encode(), None)
+    return _AES256_PREFIX + base64.urlsafe_b64encode(nonce + ciphertext).decode()
 
 
 def decrypt_token(value: str) -> str:
-    """Decrypt sensitive data."""
+    """Decrypt a token stored via encrypt_token(). Only ever called at the
+    moment a value is actually needed (e.g. immediately before a Shopify API
+    call) — never held decrypted longer than that.
+
+    Handles three formats that can legitimately exist in this database:
+      1. AES-256-GCM (the _AES256_PREFIX tag) — everything encrypt_token()
+         produces from now on.
+      2. Legacy Fernet — tokens encrypted before this migration; decryptable
+         so existing connected brands don't break.
+      3. Legacy plaintext — rows saved before encryption existed at all.
+    """
     if not value:
         return ""
+    if value.startswith(_AES256_PREFIX):
+        try:
+            raw = base64.urlsafe_b64decode(value[len(_AES256_PREFIX):].encode())
+            nonce, ciphertext = raw[:12], raw[12:]
+            return AESGCM(_get_aes256_key()).decrypt(nonce, ciphertext, None).decode()
+        except Exception as e:
+            logger.error(f"AES-256-GCM token decryption failed (check ENCRYPTION_SECRET matches what encrypted it): {e}")
+            return value
     try:
-        f = Fernet(_get_encryption_key())
+        f = Fernet(_get_fernet_key())
         return f.decrypt(value.encode()).decode()
     except Exception:
-        # If decryption fails, return as-is (might be unencrypted)
+        # Not AES-256-GCM, not Fernet — legacy plaintext row from before encryption existed.
         return value
 
 
@@ -81,7 +130,7 @@ class ShopifyClient:
         self,
         shop_domain: str,
         access_token: str,
-        api_version: str = "2024-01"
+        api_version: str = SHOPIFY_API_VERSION
     ):
         # Normalize domain
         self.shop_domain = self._normalize_domain(shop_domain)
@@ -295,6 +344,27 @@ class ShopifyClient:
                 "error_code": e.error_code
             }
 
+    @staticmethod
+    def check_refund_status(order: Dict[str, Any]) -> Dict[str, Any]:
+        """Already-cancelled / already-refunded check on an already-fetched order.
+        Shared by process_refund() (execution time) and the staging-time
+        eligibility check in actions_manager.py, so a human is never shown an
+        action that's guaranteed to fail on approval, and the two checks can
+        never drift apart since they're the same code."""
+        if order.get("cancelled_at"):
+            return {"already_cancelled": True, "already_refunded": False, "refundable_amount": 0.0}
+        total_price = float(order.get("total_price", 0))
+        refunded = sum(
+            float(r.get("transactions", [{}])[0].get("amount", 0))
+            for r in order.get("refunds", [])
+        )
+        refundable_amount = total_price - refunded
+        return {
+            "already_cancelled": False,
+            "already_refunded": refundable_amount <= 0,
+            "refundable_amount": refundable_amount,
+        }
+
     async def get_order(self, order_identifier: str) -> Dict[str, Any]:
         """
         Get order by ID or order number.
@@ -385,7 +455,8 @@ class ShopifyClient:
         shopify_order_id = order.get("id")
 
         # Check order status
-        if order.get("cancelled_at"):
+        status = self.check_refund_status(order)
+        if status["already_cancelled"]:
             raise ShopifyError(
                 "Cannot refund a cancelled order.",
                 ShopifyErrorCode.ORDER_ALREADY_CANCELLED
@@ -394,12 +465,7 @@ class ShopifyClient:
         # Calculate refund amount
         if amount is None:
             # Full refund - get total minus existing refunds
-            total_price = float(order.get("total_price", 0))
-            refunded = sum(
-                float(r.get("transactions", [{}])[0].get("amount", 0))
-                for r in order.get("refunds", [])
-            )
-            amount = total_price - refunded
+            amount = status["refundable_amount"]
 
         if amount <= 0:
             raise ShopifyError(
@@ -741,7 +807,7 @@ class ShopifyService:
                 return ShopifyClient(
                     domain,
                     access_token,
-                    brand.get("shopify_api_version", "2024-01")
+                    brand.get("shopify_api_version") or SHOPIFY_API_VERSION
                 )
 
         # --- Fall back to tenants table (legacy single-store setup) ---
@@ -768,7 +834,7 @@ class ShopifyService:
         return ShopifyClient(
             tenant.get("shopify_domain"),
             access_token,
-            tenant.get("shopify_api_version", "2024-01")
+            tenant.get("shopify_api_version") or SHOPIFY_API_VERSION
         )
 
 

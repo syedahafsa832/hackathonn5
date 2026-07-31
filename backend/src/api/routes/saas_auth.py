@@ -137,9 +137,11 @@ async def get_current_user(tenant: TenantContext = Depends(get_current_tenant)):
     if not tenant_data:
         raise HTTPException(status_code=404, detail="Account not found")
 
+    from src.services.plan_service import is_super_admin
     return {
         "success": True,
-        **tenant_data
+        **tenant_data,
+        "is_super_admin": is_super_admin(tenant_data.get("email")),
     }
 
 

@@ -11,6 +11,9 @@ import Settings from './pages/Settings';
 import Signup from './pages/Signup';
 import Onboarding from './pages/Onboarding';
 import QuarantineQueue from './pages/QuarantineQueue';
+import Admin from './pages/Admin';
+import Profile from './pages/Profile';
+import Upgrade from './pages/Upgrade';
 
 function ProtectedRoute({ children }) {
   const token = localStorage.getItem('resolv_token');
@@ -45,6 +48,9 @@ export default function App() {
         <Route path="/quarantine" element={<ProtectedRoute><QuarantineQueue /></ProtectedRoute>} />
         <Route path="/brands" element={<ProtectedRoute><Brands /></ProtectedRoute>} />
         <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+        <Route path="/admin" element={<ProtectedRoute><Admin /></ProtectedRoute>} />
+        <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
+        <Route path="/upgrade" element={<ProtectedRoute><Upgrade /></ProtectedRoute>} />
         <Route path="/onboarding" element={<OnboardingRoute><Onboarding /></OnboardingRoute>} />
       </Routes>
     </BrowserRouter>

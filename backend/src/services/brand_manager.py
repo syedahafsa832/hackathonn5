@@ -9,41 +9,12 @@ import logging
 import requests
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timezone
-from cryptography.fernet import Fernet
-import base64
-import hashlib
 
 from src.lib.supabase_client import supabase_select, supabase_insert, supabase_update
+from src.services.shopify_service import encrypt_token as _encrypt, decrypt_token as _decrypt
+from src.config import SHOPIFY_API_VERSION
 
 logger = logging.getLogger(__name__)
-
-
-def _get_encryption_key() -> bytes:
-    """Get or derive encryption key for API credentials."""
-    secret = os.getenv("ENCRYPTION_SECRET", os.getenv("SECRET_KEY", "default-dev-key-change-in-prod"))
-    # Derive a valid Fernet key from the secret
-    key = hashlib.sha256(secret.encode()).digest()
-    return base64.urlsafe_b64encode(key)
-
-
-def _encrypt(value: str) -> str:
-    """Encrypt sensitive data."""
-    if not value:
-        return ""
-    f = Fernet(_get_encryption_key())
-    return f.encrypt(value.encode()).decode()
-
-
-def _decrypt(value: str) -> str:
-    """Decrypt sensitive data."""
-    if not value:
-        return ""
-    try:
-        f = Fernet(_get_encryption_key())
-        return f.decrypt(value.encode()).decode()
-    except Exception:
-        # If decryption fails, return as-is (might be unencrypted)
-        return value
 
 
 class BrandManager:
@@ -101,7 +72,7 @@ class BrandManager:
                 "name": name,
                 "shopify_shop_name": shopify_shop_name,
                 "shopify_access_token": encrypted_token,
-                "shopify_api_version": os.getenv("SHOPIFY_API_VERSION", "2024-01"),
+                "shopify_api_version": SHOPIFY_API_VERSION,
                 "support_email": support_email,
                 "sender_name": sender_name or name,
                 "email_signature": email_signature or f"— The {name} Team",
@@ -270,7 +241,7 @@ class BrandManager:
             if access_token:
                 logger.info("[BrandManager] Falling back to global SHOPIFY_ACCESS_TOKEN for validation.")
         try:
-            api_version = os.getenv("SHOPIFY_API_VERSION", "2024-01")
+            api_version = SHOPIFY_API_VERSION
             url = f"https://{shop_name}.myshopify.com/admin/api/{api_version}/shop.json"
             headers = {
                 "X-Shopify-Access-Token": access_token,
@@ -307,7 +278,7 @@ class BrandManager:
         return BrandShopifyClient(
             shop_name=brand.get("shopify_shop_name"),
             access_token=brand.get("_decrypted_token"),
-            api_version=brand.get("shopify_api_version", "2024-01")
+            api_version=brand.get("shopify_api_version") or SHOPIFY_API_VERSION
         )
 
 
@@ -317,7 +288,7 @@ class BrandShopifyClient:
     Used for executing actions (refunds, cancellations, address changes).
     """
 
-    def __init__(self, shop_name: str, access_token: str, api_version: str = "2024-01"):
+    def __init__(self, shop_name: str, access_token: str, api_version: str = SHOPIFY_API_VERSION):
         self.shop_name = shop_name
         self.access_token = access_token
         self.api_version = api_version

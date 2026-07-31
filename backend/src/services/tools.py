@@ -4,6 +4,7 @@ import logging
 import asyncio
 from typing import Dict, Any, List, Optional
 from src.lib.supabase_client import supabase_select, supabase_insert, supabase_update
+from src.config import SHOPIFY_API_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,7 @@ class V3Tools:
     def __init__(self):
         self.shop_name = os.getenv("SHOPIFY_SHOP_NAME")
         self.shopify_token = os.getenv("SHOPIFY_ACCESS_TOKEN")
-        self.api_version = os.getenv("SHOPIFY_API_VERSION", "2024-01")
+        self.api_version = SHOPIFY_API_VERSION
         self.aftership_key = os.getenv("AFTERSHIP_API_KEY")
 
     async def get_product_details(self, sku: str) -> Dict[str, Any]:
@@ -208,6 +209,7 @@ class V3Tools:
 
     async def get_shipping_status(self, tracking_number: str) -> Dict[str, Any]:
         """Query AfterShip API for real-time tracking updates."""
+        logger.warning("V3Tools.get_shipping_status called — deprecated path, use tracking_service instead")
         if not self.aftership_key:
             return {"error": "AfterShip integration not configured."}
             

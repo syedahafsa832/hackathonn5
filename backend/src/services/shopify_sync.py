@@ -6,6 +6,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
 from openai import OpenAI
 from src.lib.supabase_client import supabase_select, supabase_insert, supabase_update, supabase_set_setting, supabase_get_setting
+from src.config import SHOPIFY_API_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +16,7 @@ class ShopifySyncService:
     def __init__(self):
         self.shop_name = os.getenv("SHOPIFY_SHOP_NAME")
         self.access_token = os.getenv("SHOPIFY_ACCESS_TOKEN")
-        self.api_version = os.getenv("SHOPIFY_API_VERSION", "2024-01")
+        self.api_version = SHOPIFY_API_VERSION
         self.base_url = f"https://{self.shop_name}.myshopify.com/admin/api/{self.api_version}"
         self.headers = {
             "X-Shopify-Access-Token": self.access_token,

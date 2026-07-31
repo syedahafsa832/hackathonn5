@@ -178,3 +178,16 @@ export function useSendMessage() {
     },
   });
 }
+
+/**
+ * Current tenant's own profile (email, plan, is_super_admin, ...). Used to
+ * gate the Admin nav link and populate the Profile page.
+ */
+export function useMe() {
+  return useQuery({
+    queryKey: ['me'],
+    queryFn: () => api.getMe(),
+    staleTime: 5 * 60 * 1000,
+    retry: 1,
+  });
+}

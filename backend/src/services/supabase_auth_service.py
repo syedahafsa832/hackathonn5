@@ -420,13 +420,23 @@ class SupabaseAuthService:
                 logger.warning(f"No tenant found for id: {tenant_id}")
                 return None
             tenant = tenants[0]
+
+            # v1 tenants own brands via brands.tenant_id — organization_id belongs
+            # to the older, superseded org-based model and doesn't apply here.
+            # Without this, every brand_ids-based ownership check downstream (see
+            # v2_tickets.py) would see an empty list and reject access to the
+            # tenant's own tickets/actions, even though role=ADMIN — the specific
+            # bug this closes.
+            brands = supabase_select("brands", {"tenant_id": f"eq.{tenant_id}"})
+            brand_ids = [b["id"] for b in brands] if brands else []
+
             return UserContext(
                 user_id=tenant["id"],
                 supabase_auth_id=tenant["id"],
                 organization_id=tenant["id"],
                 email=tenant.get("email", ""),
                 role=UserRole.ADMIN,
-                brands=[]
+                brands=brand_ids
             )
         except Exception as e:
             logger.error(f"Error getting tenant context: {e}")

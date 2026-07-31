@@ -1,0 +1,147 @@
+-- CRITICAL: repo-wide audit found 30 tables with RLS disabled AND both
+-- anon and authenticated Supabase roles holding SELECT/INSERT/UPDATE/DELETE
+-- via default public-schema grants. This means the entire multi-tenant
+-- database (tenants, users, sessions/refresh-tokens, brands with encrypted
+-- Shopify tokens, tickets, customers, orders...) was directly readable and
+-- writable by anyone with the project's public anon key via PostgREST/
+-- GraphQL, completely bypassing every FastAPI-layer tenant-isolation check
+-- (H3) this project already fixed. The backend exclusively uses
+-- SUPABASE_SERVICE_ROLE_KEY (confirmed in src/lib/supabase_client.py),
+-- which bypasses RLS by design — so this lockdown cannot break the app.
+
+ALTER TABLE action_logs ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON action_logs FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON action_logs FROM authenticated;
+
+ALTER TABLE actions ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON actions FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON actions FROM authenticated;
+
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON audit_logs FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON audit_logs FROM authenticated;
+
+ALTER TABLE brand_approvers ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON brand_approvers FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON brand_approvers FROM authenticated;
+
+ALTER TABLE brands ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON brands FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON brands FROM authenticated;
+
+ALTER TABLE canned_responses ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON canned_responses FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON canned_responses FROM authenticated;
+
+ALTER TABLE chat_feedback ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON chat_feedback FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON chat_feedback FROM authenticated;
+
+ALTER TABLE conversation_overrides ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON conversation_overrides FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON conversation_overrides FROM authenticated;
+
+ALTER TABLE customers ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON customers FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON customers FROM authenticated;
+
+ALTER TABLE email_filter_log ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON email_filter_log FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON email_filter_log FROM authenticated;
+
+ALTER TABLE email_quarantine ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON email_quarantine FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON email_quarantine FROM authenticated;
+
+ALTER TABLE inventory ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON inventory FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON inventory FROM authenticated;
+
+ALTER TABLE knowledge_base ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON knowledge_base FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON knowledge_base FROM authenticated;
+
+ALTER TABLE knowledge_base_sources ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON knowledge_base_sources FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON knowledge_base_sources FROM authenticated;
+
+ALTER TABLE order_items ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON order_items FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON order_items FROM authenticated;
+
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON orders FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON orders FROM authenticated;
+
+ALTER TABLE organizations ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON organizations FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON organizations FROM authenticated;
+
+ALTER TABLE products ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON products FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON products FROM authenticated;
+
+ALTER TABLE rag_chunks ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON rag_chunks FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON rag_chunks FROM authenticated;
+
+ALTER TABLE send_log ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON send_log FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON send_log FROM authenticated;
+
+ALTER TABLE send_tasks ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON send_tasks FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON send_tasks FROM authenticated;
+
+ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON sessions FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON sessions FROM authenticated;
+
+ALTER TABLE settings ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON settings FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON settings FROM authenticated;
+
+ALTER TABLE shops ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON shops FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON shops FROM authenticated;
+
+ALTER TABLE system_settings ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON system_settings FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON system_settings FROM authenticated;
+
+ALTER TABLE tenants ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON tenants FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON tenants FROM authenticated;
+
+ALTER TABLE tickets ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON tickets FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON tickets FROM authenticated;
+
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON users FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON users FROM authenticated;
+
+ALTER TABLE variants ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON variants FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON variants FROM authenticated;
+
+ALTER TABLE webhook_events ENABLE ROW LEVEL SECURITY;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON webhook_events FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON webhook_events FROM authenticated;
+
+-- These 6 already had RLS enabled but still carried default anon/authenticated
+-- grants. Two (refund_policy_excluded_products/collections) are tables this
+-- project created earlier this session (024_refund_policy.sql) without
+-- locking down grants at the time — an oversight, closed here.
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON brand_actions FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON brand_actions FROM authenticated;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON pending_actions FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON pending_actions FROM authenticated;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON product_variants FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON product_variants FROM authenticated;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON refund_policy_excluded_collections FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON refund_policy_excluded_collections FROM authenticated;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON refund_policy_excluded_products FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON refund_policy_excluded_products FROM authenticated;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON subscriptions FROM anon;
+REVOKE SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON subscriptions FROM authenticated;

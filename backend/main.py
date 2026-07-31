@@ -124,7 +124,6 @@ try:
     from src.api.routes.auth import router as auth_router
     from src.api.routes.shopify_auth import router as shopify_auth_router
     from src.api.routes.webhooks.shopify import router as shopify_webhook_router
-    from src.api.routes.webhooks.aftership import router as aftership_webhook_router
     from src.api.routes.returns import router as returns_router
     from src.api.routes.actions import router as actions_router
     from src.api.routes.agentic import router as agentic_router
@@ -272,7 +271,8 @@ try:
     try:
       from src.api.routes.webhooks.aftership import router as aftership_webhook_router
       register_router(aftership_webhook_router, prefix="/api/webhooks/aftership")
-    except: pass
+    except Exception as _e:
+      logger.error(f"Failed to register AfterShip webhook router: {_e}")
 
     try:
       from src.api.routes.returns import router as returns_router
@@ -344,6 +344,20 @@ try:
       logger.info("✓ V2 Auth router registered")
     except Exception as e:
       logger.warning(f"Failed to register V2 auth router: {e}")
+
+    try:
+      from src.api.routes.platform_admin import router as platform_admin_router
+      register_router(platform_admin_router, prefix="/api/v2")
+      logger.info("✓ Platform admin router registered")
+    except Exception as e:
+      logger.warning(f"Failed to register platform admin router: {e}")
+
+    try:
+      from src.api.routes.upgrade_requests import router as upgrade_requests_router
+      register_router(upgrade_requests_router, prefix="/api/v2")
+      logger.info("✓ Upgrade requests router registered")
+    except Exception as e:
+      logger.warning(f"Failed to register upgrade requests router: {e}")
 
     try:
       from src.api.routes.v2_brands import router as v2_brands_router

@@ -245,6 +245,17 @@ class EmailPoller:
                     logger.info(f"[Poller] Skipping deep reply chain (Re: count={re_count}): {subject[:60]}")
                     continue
 
+                # Skip emails containing our own reply signature — third, independent
+                # line of loop defence. Catches cases the sender-address and Re:-count
+                # guards above both miss: an auto-forwarder, ticketing tool, or
+                # third-party integration that echoes our own reply back to us without
+                # preserving the original sender address or bumping the Re: count.
+                agent_name = brand.get("agent_name") or "Luna"
+                signature_marker = f"— {agent_name}"
+                if signature_marker in (email.get("body") or ""):
+                    logger.info(f"[Poller] Skipping email containing our own reply signature ('{signature_marker}') — loop prevention")
+                    continue
+
                 # Skip if this exact Gmail message was already stored (survives restarts)
                 if gmail_msg_id:
                     try:

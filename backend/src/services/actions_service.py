@@ -237,6 +237,36 @@ class ActionsService:
             except Exception as exec_dedup_err:
                 logger.warning(f"[Actions] Executed dedup check failed (continuing): {exec_dedup_err}")
 
+        extracted_data = detection["extracted_data"]
+
+        # Refund/cancel eligibility gate — uses the exact same shared
+        # function return_actions_integration.py uses (actions_manager.
+        # check_return_eligibility), so there is one source of truth for
+        # policy no matter which channel (chat/email vs WhatsApp/web-form)
+        # a request came in through. This only affects whether an action is
+        # staged for human review; it never bypasses approval — every path
+        # that stages an action still requires an explicit approve call.
+        if detection["action_type"] in ("refund", "cancel_order"):
+            try:
+                from src.services.actions_manager import actions_manager
+                eligibility = await actions_manager.check_return_eligibility(
+                    order_id, customer_email, tenant_id=tenant_id, brand_id=brand_id
+                )
+                if not eligibility.get("eligible") and not (
+                    eligibility.get("staging_required") or eligibility.get("requires_manual_review")
+                ):
+                    logger.info(
+                        f"[Actions] Not staging {detection['action_type']} for order {order_id}: "
+                        f"{eligibility.get('reason')}"
+                    )
+                    return None
+                extracted_data = {**extracted_data, "eligibility": eligibility}
+            except Exception as elig_err:
+                # Fail open to manual review rather than silently skipping —
+                # an eligibility-check failure shouldn't hide a real refund
+                # request from staff, it should just skip the pre-filter.
+                logger.warning(f"[Actions] Eligibility check failed (continuing without it): {elig_err}")
+
         return await self.create_action(
             tenant_id=tenant_id,
             action_type=detection["action_type"],
@@ -244,7 +274,7 @@ class ActionsService:
             customer_name=customer_name,
             order_id=order_id,
             message=message,
-            extracted_data=detection["extracted_data"],
+            extracted_data=extracted_data,
             confidence=detection["confidence"],
             ai_reasoning=ai_analysis.get("reasoning") if ai_analysis else None,
             brand_id=brand_id,

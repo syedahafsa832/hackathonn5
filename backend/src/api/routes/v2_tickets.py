@@ -7,7 +7,7 @@ Multi-tenant ticket management with brand scoping.
 import logging
 from typing import Optional, List
 from datetime import datetime, timezone
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, Request
 from pydantic import BaseModel, Field
 
 from src.api.middleware.auth_middleware import (
@@ -18,6 +18,7 @@ from src.api.middleware.auth_middleware import (
 )
 from src.services.supabase_auth_service import UserRole
 from src.lib.supabase_client import supabase_select, supabase_insert, supabase_update
+from src.services.financial_audit import get_cached_result, record_financial_action, check_org_rate_limit
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tickets", tags=["Tickets"])
@@ -416,18 +417,16 @@ async def get_ticket(
 
         ticket = tickets[0]
 
-        # Verify access
+        # Verify access. 404 (not 403) on denial — an unauthorized caller
+        # shouldn't be able to distinguish "not yours" from "doesn't exist".
+        #
+        # No is_admin bypass: get_user_context() already scopes context.brand_ids
+        # to every brand in the caller's own org/tenant regardless of role, so
+        # "brand not in brand_ids" already means "not mine" for admins too. An
+        # unconditional admin bypass here would let an admin from ANY org reach
+        # ANY other org's ticket — that was the actual bug this replaced.
         if ticket["brand_id"] not in context.brand_ids:
-            if not UserRole.is_admin(context.user.role):
-                raise HTTPException(status_code=403, detail="Access denied")
-
-            # Admin check - verify brand is in their org
-            brands = supabase_select("brands", {
-                "id": f"eq.{ticket['brand_id']}",
-                "organization_id": f"eq.{context.user.organization_id}"
-            })
-            if not brands:
-                raise HTTPException(status_code=403, detail="Access denied")
+            raise HTTPException(status_code=404, detail="Ticket not found")
 
         # Get related actions
         actions = supabase_select("actions", {
@@ -457,10 +456,9 @@ async def create_ticket(
 ):
     """Create a new ticket manually"""
     try:
-        # Verify brand access
+        # Verify brand access — no is_admin bypass (see get_ticket for why)
         if request.brand_id not in context.brand_ids:
-            if not UserRole.is_admin(context.user.role):
-                raise HTTPException(status_code=403, detail="Access denied to this brand")
+            raise HTTPException(status_code=403, detail="Access denied to this brand")
 
         ticket_data = {
             "brand_id": request.brand_id,
@@ -507,10 +505,9 @@ async def update_ticket(
 
         ticket = tickets[0]
 
-        # Verify brand access
+        # Verify brand access — no is_admin bypass (see get_ticket for why)
         if ticket["brand_id"] not in context.brand_ids:
-            if not UserRole.is_admin(context.user.role):
-                raise HTTPException(status_code=403, detail="Access denied")
+            raise HTTPException(status_code=404, detail="Ticket not found")
 
         updates = request.model_dump(exclude_none=True)
         if not updates:
@@ -548,10 +545,9 @@ async def respond_to_ticket(
 
         ticket = tickets[0]
 
-        # Verify brand access
+        # Verify brand access — no is_admin bypass (see get_ticket for why)
         if ticket["brand_id"] not in context.brand_ids:
-            if not UserRole.is_admin(context.user.role):
-                raise HTTPException(status_code=403, detail="Access denied")
+            raise HTTPException(status_code=404, detail="Ticket not found")
 
         # Update ticket with response
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -631,10 +627,9 @@ async def approve_ai_response(
 
         ticket = tickets[0]
 
-        # Verify brand access
+        # Verify brand access — no is_admin bypass (see get_ticket for why)
         if ticket["brand_id"] not in context.brand_ids:
-            if not UserRole.is_admin(context.user.role):
-                raise HTTPException(status_code=403, detail="Access denied")
+            raise HTTPException(status_code=404, detail="Ticket not found")
 
         # Idempotency guard: already approved (e.g. double-click, retried request) —
         # do not re-send the same email a second time.
@@ -737,6 +732,12 @@ async def get_ticket_order(
 
         ticket = tickets[0]
 
+        # Verify brand access — this endpoint had no ownership check at all before;
+        # any authenticated user could pull any tenant's Shopify order data by
+        # ticket_id. No is_admin bypass (see get_ticket for why).
+        if ticket["brand_id"] not in context.brand_ids:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+
         order_number = ticket.get("detected_order_number") or ticket.get("detected_order_id")
         if not order_number:
             return {"order": None, "message": "No order number detected for this ticket"}
@@ -770,19 +771,36 @@ async def get_ticket_order(
 @router.post("/{ticket_id}/actions/cancel")
 async def execute_cancel_order(
     ticket_id: str,
+    request: Request,
     context: AuthenticatedContext = Depends(require_agent_or_admin)
 ):
-    """Cancel the Shopify order attached to this ticket and send confirmation email."""
+    """Cancel the Shopify order attached to this ticket and send confirmation email.
+
+    Supports an optional `Idempotency-Key` request header: a retry using the
+    same key returns the original result instead of re-executing the cancel.
+    """
     try:
+        org_id = context.user.organization_id
+        if org_id and not check_org_rate_limit(org_id):
+            raise HTTPException(status_code=429, detail="Too many financial action requests. Please wait a minute and try again.")
+
         tickets = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
         if not tickets:
             raise HTTPException(status_code=404, detail="Ticket not found")
         ticket = tickets[0]
 
+        # No is_admin bypass (see get_ticket for why)
         brand_id = ticket.get("brand_id") or ticket.get("store_id")
         if brand_id not in context.brand_ids:
-            if not UserRole.is_admin(context.user.role):
-                raise HTTPException(status_code=403, detail="Access denied")
+            raise HTTPException(status_code=404, detail="Ticket not found")
+
+        idempotency_key = request.headers.get("Idempotency-Key")
+        if idempotency_key:
+            cached = get_cached_result(ticket_id, "cancel_order", idempotency_key)
+            if cached:
+                if cached["status"] == "success":
+                    return cached["result"]
+                raise HTTPException(status_code=422, detail=cached.get("error_detail") or "Cancel failed on the original attempt.")
 
         brands = supabase_select("brands", {"id": f"eq.{brand_id}"})
         if not brands:
@@ -804,7 +822,9 @@ async def execute_cancel_order(
         # Atomically claim this ticket (conditioned on its status not having changed
         # since we just read it) before calling Shopify. Closes the race where a
         # double-click or a client retry on a slow Shopify call could run this twice
-        # and append the same cancellation confirmation to the thread twice.
+        # and append the same cancellation confirmation to the thread twice. The
+        # idempotency-key check above handles the "client retried after already
+        # getting a result" case; this claim handles true concurrent duplicates.
         claimed = supabase_update(
             "tickets",
             {"id": f"eq.{ticket_id}", "status": f"eq.{ticket.get('status')}"},
@@ -830,6 +850,13 @@ async def execute_cancel_order(
             # Release the claim so the agent can retry instead of the ticket
             # being stuck at "processing" with no cancellation ever completed.
             supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {"status": ticket.get("status")})
+            record_financial_action(
+                ticket_id=ticket_id, tenant_id=brand.get("tenant_id"), brand_id=brand_id,
+                action_type="cancel_order", idempotency_key=idempotency_key,
+                user_id=context.user.user_id, user_email=context.user.email,
+                ip_address=request.client.host if request.client else None,
+                status="failed", error_detail=str(shopify_err),
+            )
             raise HTTPException(status_code=422, detail=str(shopify_err))
 
         record_shopify_action(brand.get("tenant_id"))
@@ -896,12 +923,20 @@ async def execute_cancel_order(
 
         logger.info(f"[cancel] Order {order_name} cancelled, ticket {ticket_id} resolved by {context.user.email}")
 
-        return {
+        final_result = {
             "success": True,
             "message": f"Order {order_name} cancelled.",
             "email_sent": email_sent,
             "confirmation": confirmation,
         }
+        record_financial_action(
+            ticket_id=ticket_id, tenant_id=brand.get("tenant_id"), brand_id=brand_id,
+            action_type="cancel_order", idempotency_key=idempotency_key,
+            user_id=context.user.user_id, user_email=context.user.email,
+            ip_address=request.client.host if request.client else None,
+            status="success", result=final_result,
+        )
+        return final_result
 
     except HTTPException:
         raise
@@ -913,19 +948,36 @@ async def execute_cancel_order(
 @router.post("/{ticket_id}/actions/refund")
 async def execute_refund(
     ticket_id: str,
+    request: Request,
     context: AuthenticatedContext = Depends(require_agent_or_admin)
 ):
-    """Issue a full Shopify refund for the order attached to this ticket and send confirmation."""
+    """Issue a full Shopify refund for the order attached to this ticket and send confirmation.
+
+    Supports an optional `Idempotency-Key` request header: a retry using the
+    same key returns the original result instead of re-executing the refund.
+    """
     try:
+        org_id = context.user.organization_id
+        if org_id and not check_org_rate_limit(org_id):
+            raise HTTPException(status_code=429, detail="Too many financial action requests. Please wait a minute and try again.")
+
         tickets = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
         if not tickets:
             raise HTTPException(status_code=404, detail="Ticket not found")
         ticket = tickets[0]
 
+        # No is_admin bypass (see get_ticket for why)
         brand_id = ticket.get("brand_id") or ticket.get("store_id")
         if brand_id not in context.brand_ids:
-            if not UserRole.is_admin(context.user.role):
-                raise HTTPException(status_code=403, detail="Access denied")
+            raise HTTPException(status_code=404, detail="Ticket not found")
+
+        idempotency_key = request.headers.get("Idempotency-Key")
+        if idempotency_key:
+            cached = get_cached_result(ticket_id, "refund", idempotency_key)
+            if cached:
+                if cached["status"] == "success":
+                    return cached["result"]
+                raise HTTPException(status_code=422, detail=cached.get("error_detail") or "Refund failed on the original attempt.")
 
         brands = supabase_select("brands", {"id": f"eq.{brand_id}"})
         if not brands:
@@ -970,6 +1022,13 @@ async def execute_refund(
             )
         except Exception as shopify_err:
             supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {"status": ticket.get("status")})
+            record_financial_action(
+                ticket_id=ticket_id, tenant_id=brand.get("tenant_id"), brand_id=brand_id,
+                action_type="refund", idempotency_key=idempotency_key,
+                user_id=context.user.user_id, user_email=context.user.email,
+                ip_address=request.client.host if request.client else None,
+                status="failed", error_detail=str(shopify_err),
+            )
             raise HTTPException(status_code=422, detail=str(shopify_err))
 
         record_shopify_action(brand.get("tenant_id"))
@@ -1050,12 +1109,20 @@ async def execute_refund(
 
         logger.info(f"[refund] {refund_display} refunded, ticket {ticket_id} resolved by {context.user.email}")
 
-        return {
+        final_result = {
             "success": True,
             "message": f"Refund of {refund_display} issued for order {order_name}.",
             "email_sent": email_sent,
             "confirmation": confirmation,
         }
+        record_financial_action(
+            ticket_id=ticket_id, tenant_id=brand.get("tenant_id"), brand_id=brand_id,
+            action_type="refund", idempotency_key=idempotency_key,
+            user_id=context.user.user_id, user_email=context.user.email,
+            ip_address=request.client.host if request.client else None,
+            status="success", result=final_result,
+        )
+        return final_result
 
     except HTTPException:
         raise
@@ -1079,10 +1146,9 @@ async def escalate_ticket(
 
         ticket = tickets[0]
 
-        # Verify brand access
+        # Verify brand access — no is_admin bypass (see get_ticket for why)
         if ticket["brand_id"] not in context.brand_ids:
-            if not UserRole.is_admin(context.user.role):
-                raise HTTPException(status_code=403, detail="Access denied")
+            raise HTTPException(status_code=404, detail="Ticket not found")
 
         # Update ticket
         current_metadata = ticket.get("metadata", {}) or {}
@@ -1126,10 +1192,9 @@ async def close_ticket(
 
         ticket = tickets[0]
 
-        # Verify brand access
+        # Verify brand access — no is_admin bypass (see get_ticket for why)
         if ticket["brand_id"] not in context.brand_ids:
-            if not UserRole.is_admin(context.user.role):
-                raise HTTPException(status_code=403, detail="Access denied")
+            raise HTTPException(status_code=404, detail="Ticket not found")
 
         updates = {
             "status": "closed",

@@ -1,13 +1,27 @@
 """
 Pending Actions API Routes
 Human-in-the-Loop Approval Queue Endpoints
+
+Legacy: operates on the pre-multi-tenant `pending_actions` table, which has
+no brand_id/tenant_id column at all — the canonical, tenant-scoped path for
+this functionality is v2_actions.py (used by the dashboard; this router has
+no live caller there). These endpoints previously had NO authentication
+whatsoever, exposing every tenant's pending refund/exchange actions
+(customer emails, order data, revenue amounts) to unauthenticated callers
+and allowing anyone to approve/reject/delete them. Now requires login as a
+stopgap. This does not achieve full per-tenant isolation — the underlying
+table structurally can't support it without a schema change — so this is
+scoped to "authenticated users only" rather than "only this action's owner",
+same limitation documented, not silently left open.
 """
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Depends
 from typing import Optional, List
 from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 import uuid
+
+from src.api.middleware.auth_middleware import get_current_user, AuthenticatedContext
 
 router = APIRouter(prefix="/actions", tags=["actions"])
 
@@ -30,7 +44,7 @@ class RejectRequest(BaseModel):
 
 @router.get("/stats")
 @limiter.limit("60/minute")
-async def get_actions_stats(request: Request):
+async def get_actions_stats(request: Request, context: AuthenticatedContext = Depends(get_current_user)):
     """
     Get summary statistics of all actions.
     """
@@ -67,7 +81,8 @@ async def get_actions_stats(request: Request):
 @router.get("/executed")
 @limiter.limit("60/minute")
 async def get_executed_actions(request: Request,
-    limit: int = Query(10, description="Number of records to return")):
+    limit: int = Query(10, description="Number of records to return"),
+    context: AuthenticatedContext = Depends(get_current_user)):
     """
     Get executed actions for the Live Recovery feed.
     """
@@ -101,7 +116,8 @@ async def get_executed_actions(request: Request,
 async def list_pending_actions(request: Request,
     status: Optional[str] = Query(None, description="Filter by status: Pending, Approved, Rejected, Executed"),
     risk_score: Optional[str] = Query(None, description="Filter by risk: Low, Medium, High"),
-    limit: int = Query(20, description="Number of records to return")
+    limit: int = Query(20, description="Number of records to return"),
+    context: AuthenticatedContext = Depends(get_current_user)
 ):
     """
     List all pending actions for the approval queue.
@@ -153,7 +169,7 @@ async def list_pending_actions(request: Request,
 
 @router.get("/{action_id}")
 @limiter.limit("60/minute")
-async def get_action(request: Request, action_id: str):
+async def get_action(request: Request, action_id: str, context: AuthenticatedContext = Depends(get_current_user)):
     """
     Get a specific pending action by ID.
     """
@@ -200,7 +216,7 @@ async def get_action(request: Request, action_id: str):
 
 @router.post("/approve/{action_id}")
 @limiter.limit("30/minute")
-async def approve_action(request: Request, action_id: str, request_data: ApproveRequest = None):
+async def approve_action(request: Request, action_id: str, request_data: ApproveRequest = None, context: AuthenticatedContext = Depends(get_current_user)):
     """
     Approve and execute a pending action (Refund or Exchange).
     Triggers Shopify API to process the action.
@@ -235,7 +251,7 @@ async def approve_action(request: Request, action_id: str, request_data: Approve
 
 @router.post("/reject/{action_id}")
 @limiter.limit("30/minute")
-async def reject_action(request: Request, action_id: str, request_data: RejectRequest):
+async def reject_action(request: Request, action_id: str, request_data: RejectRequest, context: AuthenticatedContext = Depends(get_current_user)):
     """
     Reject a pending action.
     """
@@ -271,7 +287,7 @@ async def reject_action(request: Request, action_id: str, request_data: RejectRe
 
 @router.delete("/{action_id}")
 @limiter.limit("30/minute")
-async def delete_action(request: Request, action_id: str):
+async def delete_action(request: Request, action_id: str, context: AuthenticatedContext = Depends(get_current_user)):
     """
     Delete a pending action (only if still pending).
     """

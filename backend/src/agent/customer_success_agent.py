@@ -245,12 +245,6 @@ class CustomerSuccessAgent:
                         access_token=_brand_shopify_token,
                     )
 
-                # Check for tracking number in query
-                tracking_match = re.search(r'([A-Z]{2}\d{9,10}[A-Z]{0,2})', query.upper())
-                if tracking_match:
-                    tracking_num = tracking_match.group(1)
-                    tool_results["shipping_status"] = await v3_tools.get_shipping_status(tracking_num)
-
                 # Also try to look up by customer email if provided in query
                 email_match = re.search(r'[\w.-]+@[\w.-]+\.\w+', query)
                 customer_email = None
@@ -308,7 +302,8 @@ class CustomerSuccessAgent:
                                 tracking_url=order.get("tracking_url"),
                                 tracking_company=order.get("tracking_company"),
                             )
-                        except Exception:
+                        except Exception as _tce:
+                            logger.warning(f"[Agent] Tracking context build failed (non-blocking): {_tce}")
                             _tracking_ctx = ""
                         order_block = _build_order_context(order, tracking_context=_tracking_ctx)
                         tool_context += order_block + "\n"
@@ -323,11 +318,6 @@ class CustomerSuccessAgent:
                     if orders.get("success") and orders.get("orders"):
                         order_list = [f"#{o.get('order_number')} ({o.get('status')})" for o in orders.get("orders", [])]
                         tool_context += f"Customer's orders: {', '.join(order_list)}\n"
-
-                if "shipping_status" in tool_results:
-                    tracking = tool_results["shipping_status"]
-                    if tracking.get("success"):
-                        tool_context += f"Package status: {tracking.get('status')}\n"
 
                 if "inventory" in tool_results:
                     inv = tool_results["inventory"]

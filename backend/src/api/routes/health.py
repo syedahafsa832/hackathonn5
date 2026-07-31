@@ -41,14 +41,11 @@ async def health_check():
     except Exception:
         services_status["shopify"] = "error"
 
-    # Check if AfterShip is configured
-    try:
-        if os.getenv("AFTERSHIP_API_KEY"):
-            services_status["aftership"] = "ok"
-        else:
-            services_status["aftership"] = "warning"
-    except Exception:
-        services_status["aftership"] = "error"
+    # AfterShip is configured per-brand in the database, not via a single global
+    # API key, so this lightweight check can't cheaply verify any specific brand's
+    # configuration. Report the architecture instead of a misleading ok/warning
+    # derived from an env var that no longer controls availability.
+    services_status["aftership"] = "tenant-managed"
 
     # Overall status based on critical services
     critical_services_down = [
@@ -111,6 +108,14 @@ async def detailed_health_check():
         services_status["kafka"] = {"status": "ok" if kafka_brokers else "warning", "configured": bool(kafka_brokers)}
     except Exception as e:
         services_status["kafka"] = {"status": "error", "configured": True, "error": str(e)}
+
+    # Aftership tracking stats — in-process counters, no metrics stack required.
+    # Reset on every restart; reflects this process's uptime only.
+    try:
+        from src.services.tracking_service import get_tracking_stats
+        services_status["aftership_tracking"] = {"status": "ok", "stats": get_tracking_stats()}
+    except Exception as e:
+        services_status["aftership_tracking"] = {"status": "error", "error": str(e)}
 
     return {
         "status": "healthy",
