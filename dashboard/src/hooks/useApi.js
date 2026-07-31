@@ -119,7 +119,14 @@ export function useApproveAction() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id) => api.approveAction(id),
-    onSuccess: () => {
+    // onSettled (not onSuccess) — a failed approve (e.g. 409 "already
+    // cancelled") still changes the action's status server-side (moves it
+    // out of "pending"), so the list must refresh on error too. Without
+    // this, a failed approve left the stale card on screen looking exactly
+    // as actionable as before, even though the backend had already
+    // resolved it — the next click would just fail again with no visible
+    // change until a manual page refresh.
+    onSettled: () => {
       queryClient.invalidateQueries(['actions']);
     },
   });
@@ -132,7 +139,7 @@ export function useRejectAction() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, reason }) => api.rejectAction(id, reason),
-    onSuccess: () => {
+    onSettled: () => {
       queryClient.invalidateQueries(['actions']);
     },
   });

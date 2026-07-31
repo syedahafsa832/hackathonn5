@@ -11,8 +11,14 @@ from enum import Enum
 
 from src.lib.supabase_client import supabase_select, supabase_insert, supabase_update
 from src.services.shopify_service import shopify_service, ShopifyError, ShopifyErrorCode
+from src.services.financial_audit import get_cached_result, record_financial_action
 
 logger = logging.getLogger(__name__)
+
+# financial_action_audit_log's action_type CHECK constraint only allows these
+# two — change_address/reship/restore_order don't move money, so they're
+# outside the "financial action" audit/idempotency system by design.
+_AUDITED_ACTION_TYPES = {"refund", "cancel_order"}
 
 
 class ActionType(str, Enum):
@@ -336,7 +342,9 @@ class ActionsService:
         self,
         tenant_id: str,
         action_id: str,
-        approved_by: str = "admin"
+        approved_by: str = "admin",
+        idempotency_key: Optional[str] = None,
+        ip_address: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Approve and execute an action.
@@ -347,12 +355,31 @@ class ActionsService:
         3. Execute the action
         4. Update status
         5. Log result
+
+        For refund/cancel_order (the two real "financial actions"): a
+        retried request with the same Idempotency-Key header replays the
+        original result instead of re-executing against Shopify, and every
+        execution attempt is recorded in financial_action_audit_log — same
+        protections v2_tickets.py's execute_refund/execute_cancel_order
+        already have, applied here since this is a second, equally-live
+        path to the same Shopify calls.
         """
         try:
             # Get action (tenant-scoped)
             action = await self.get_action(tenant_id, action_id)
             if not action:
                 return {"success": False, "error": "Action not found"}
+
+            action_type = action["action_type"]
+            is_audited = action_type in _AUDITED_ACTION_TYPES
+            ticket_id = action.get("ticket_id")
+
+            if is_audited and idempotency_key and ticket_id:
+                cached = get_cached_result(ticket_id, action_type, idempotency_key)
+                if cached:
+                    if cached["status"] == "success":
+                        return cached["result"]
+                    return {"success": False, "error": cached.get("error_detail") or "Action failed on the original attempt."}
 
             if action["status"] != ActionStatus.PENDING.value:
                 return {"success": False, "error": f"Action already {action['status']}"}
@@ -379,6 +406,8 @@ class ActionsService:
                 shopify_client = await shopify_service.get_client_for_tenant(tenant_id)
             except ShopifyError as e:
                 await self._mark_failed(action_id, e.message, e.error_code)
+                self._record_financial_audit(action, idempotency_key, ip_address, approved_by,
+                                              status="failed", error_detail=e.message)
                 return {"success": False, "error": e.message, "error_code": e.error_code}
 
             # Execute based on type
@@ -386,6 +415,8 @@ class ActionsService:
 
             if not order_id:
                 await self._mark_failed(action_id, "Order ID is required", "missing_order_id")
+                self._record_financial_audit(action, idempotency_key, ip_address, approved_by,
+                                              status="failed", error_detail="Order ID is required")
                 return {"success": False, "error": "Order ID is required for this action"}
 
             execution_result = None
@@ -468,6 +499,8 @@ class ActionsService:
                     "error": e.message,
                     "error_code": e.error_code
                 }, e.error_code, e.message)
+                self._record_financial_audit(action, idempotency_key, ip_address, approved_by,
+                                              status="failed", error_detail=e.message)
                 return {
                     "success": False,
                     "error": e.message,
@@ -490,15 +523,21 @@ class ActionsService:
             # Post-execution: send branded confirmation email + resolve ticket
             await self._post_execution_notify(action, action_type, execution_result)
 
-            return {
+            final_result = {
                 "success": True,
                 "message": execution_result.get("message", f"{action_type} completed"),
                 "execution_result": execution_result
             }
+            self._record_financial_audit(action, idempotency_key, ip_address, approved_by,
+                                          status="success", result=final_result)
+            return final_result
 
         except Exception as e:
             logger.error(f"[Actions] Approve error: {e}")
             await self._mark_failed(action_id, str(e), "unknown_error")
+            if 'action' in locals():
+                self._record_financial_audit(action, idempotency_key, ip_address, approved_by,
+                                              status="failed", error_detail=str(e))
             return {"success": False, "error": str(e)}
 
     async def _post_execution_notify(
@@ -741,6 +780,40 @@ class ActionsService:
             level = "low"
 
         return level, factors
+
+    def _record_financial_audit(
+        self,
+        action: Dict[str, Any],
+        idempotency_key: Optional[str],
+        ip_address: Optional[str],
+        approved_by: str,
+        status: str,
+        result: Optional[Dict[str, Any]] = None,
+        error_detail: Optional[str] = None,
+    ) -> None:
+        """No-op for action types outside _AUDITED_ACTION_TYPES, or when there's
+        no ticket_id to key the record on. Never raises — audit recording must
+        not be the reason a real approve/reject response fails to return."""
+        action_type = action.get("action_type")
+        ticket_id = action.get("ticket_id")
+        if action_type not in _AUDITED_ACTION_TYPES or not ticket_id:
+            return
+        try:
+            record_financial_action(
+                ticket_id=ticket_id,
+                tenant_id=action.get("tenant_id"),
+                brand_id=action.get("brand_id"),
+                action_type=action_type,
+                idempotency_key=idempotency_key,
+                user_id=None,
+                user_email=approved_by,
+                ip_address=ip_address,
+                status=status,
+                result=result,
+                error_detail=error_detail,
+            )
+        except Exception as e:
+            logger.warning(f"[Actions] Failed to record financial audit for action {action.get('id')}: {e}")
 
     async def _mark_failed(self, action_id: str, error_message: str, error_code: str = None):
         """Mark an action as failed."""

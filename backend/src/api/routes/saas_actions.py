@@ -5,12 +5,13 @@ Action queue management with tenant isolation.
 Core product endpoints for approve/reject workflow.
 """
 import logging
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, Field
 from typing import Optional, List, Any
 
 from src.services.actions_service import actions_service
 from src.api.middleware.tenant_auth import get_current_tenant, TenantContext
+from src.services.financial_audit import check_org_rate_limit
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/actions", tags=["Actions"])
@@ -152,6 +153,7 @@ async def get_action(
 @router.post("/{action_id}/approve")
 async def approve_action(
     action_id: str,
+    request: Request,
     tenant: TenantContext = Depends(get_current_tenant)
 ):
     """
@@ -163,12 +165,19 @@ async def approve_action(
     3. Executes the action (refund/cancel/address change)
     4. Updates status and logs result
 
-    Returns execution result or error details.
+    Returns execution result or error details. Supports an optional
+    `Idempotency-Key` header for refund/cancel_order actions — a retry with
+    the same key replays the original result instead of re-executing.
     """
+    if not check_org_rate_limit(tenant.tenant_id):
+        raise HTTPException(status_code=429, detail="Too many action requests. Please wait a minute and try again.")
+
     result = await actions_service.approve_action(
         tenant_id=tenant.tenant_id,
         action_id=action_id,
-        approved_by=tenant.email
+        approved_by=tenant.email,
+        idempotency_key=request.headers.get("Idempotency-Key"),
+        ip_address=request.client.host if request.client else None,
     )
 
     if not result.get("success"):
