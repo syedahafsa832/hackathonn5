@@ -2,28 +2,15 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import client from '../api/client';
 import StatCard from '../components/StatCard';
-import Badge from '../components/Badge';
 import ActionCard from '../components/ActionCard';
 import FilteredEmailsWidget from '../components/FilteredEmailsWidget';
 import PlanUsageWidget from '../components/PlanUsageWidget';
 import { useNotifications } from '../hooks/useNotifications';
 import { useStats, useConversations } from '../hooks/useApi';
 
-function formatDate(iso) {
+function formatTime(iso) {
   if (!iso) return '—';
-  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
-
-function SkeletonRow() {
-  return (
-    <tr>
-      {[1,2,3,4,5].map(i => (
-        <td key={i} style={{ padding: '12px 16px', borderBottom: '1px solid #F1F5F9', height: '48px' }}>
-          <div className="skeleton" style={{ height: '14px', width: i === 3 ? '140px' : '80px' }} />
-        </td>
-      ))}
-    </tr>
-  );
+  return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 }
 
 export default function Dashboard() {
@@ -55,7 +42,7 @@ export default function Dashboard() {
   }, [lastRefreshed]);
 
   const loading = statsLoading || convsLoading;
-  const recentConversations = conversations?.slice(0, 5) || [];
+  const recentConversations = conversations?.slice(0, 3) || [];
 
   // Request notification permission on mount and check brands for onboarding
   useEffect(() => {
@@ -104,7 +91,7 @@ export default function Dashboard() {
   const shopifyConnected = !!activeBrand?.shopify_connected || !!activeBrand?.shopify_domain;
 
   return (
-    <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+    <div style={{ padding: '28px 32px', display: 'flex', flexDirection: 'column', gap: '28px' }}>
 
       {/* Setup incomplete banner */}
       {activeBrand && (!gmailConnected || !shopifyConnected) && (
@@ -153,32 +140,28 @@ export default function Dashboard() {
 
       <PlanUsageWidget />
 
-      {/* Stat cards header */}
+      {/* Content header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <h1 style={{ fontSize: '18px', fontWeight: '600', color: '#0F172A' }}>Dashboard</h1>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <span style={{ fontSize: '12px', color: '#94A3B8' }}>
-            {secondsAgo === 0 ? 'Just updated' : `Updated ${secondsAgo < 60 ? `${secondsAgo}s` : `${Math.floor(secondsAgo / 60)}m ${secondsAgo % 60}s`} ago`}
-          </span>
+        <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '600', color: '#0F172A' }}>Overview</h2>
+        <span style={{ fontSize: '13px', color: '#94A3B8' }}>
+          {secondsAgo === 0 ? 'Just updated' : `Updated ${secondsAgo < 60 ? `${secondsAgo}s` : `${Math.floor(secondsAgo / 60)}m ${secondsAgo % 60}s`} ago`}
+          {' · '}
           <button
             onClick={handleRefresh}
             disabled={refreshing}
             style={{
-              display: 'flex', alignItems: 'center', gap: '5px',
-              padding: '5px 12px', borderRadius: '5px',
-              background: 'transparent', border: 'none',
+              display: 'inline-flex', alignItems: 'center', gap: '4px',
+              padding: 0, background: 'transparent', border: 'none',
               cursor: refreshing ? 'not-allowed' : 'pointer',
-              fontSize: '13px', fontWeight: '500', color: '#64748B',
+              fontSize: '13px', fontWeight: '500', color: '#06B6D4',
               opacity: refreshing ? 0.6 : 1,
-              transition: 'color 0.1s'
+              fontFamily: 'inherit',
             }}
-            onMouseEnter={e => { if (!refreshing) e.target.style.color = '#06B6D4'; }}
-            onMouseLeave={e => { if (!refreshing) e.target.style.color = '#64748B'; }}
           >
             <span style={{ display: 'inline-block', animation: refreshing ? 'spin 0.8s linear infinite' : 'none' }}>↻</span>
             {refreshing ? 'Refreshing…' : 'Refresh'}
           </button>
-        </div>
+        </span>
       </div>
 
       {/* Stat cards */}
@@ -221,76 +204,65 @@ export default function Dashboard() {
         />
       </div>
 
-      {/* Filtered Emails widget */}
-      <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+      {/* Recent Conversations + Filtered Emails — side by side */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: '20px' }}>
+        <section style={{ border: '1px solid #E4E4E7', borderRadius: '8px', background: 'white', padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h2 style={{ margin: 0, fontSize: '15px', fontWeight: '600', color: '#0F172A' }}>Recent Conversations</h2>
+            <Link to="/tickets" style={{ fontSize: '13px', color: '#06B6D4', fontWeight: '500', textDecoration: 'none' }} onMouseEnter={e => e.target.style.textDecoration = 'underline'} onMouseLeave={e => e.target.style.textDecoration = 'none'}>View all →</Link>
+          </div>
+
+          {!loading && recentConversations.length === 0 && !gmailConnected ? (
+            <div style={{ padding: '32px 8px', textAlign: 'center' }}>
+              <div style={{ fontSize: '32px', marginBottom: '10px' }}>📭</div>
+              <div style={{ fontSize: '14px', fontWeight: '600', color: '#0F172A', marginBottom: '6px' }}>No conversations yet</div>
+              <p style={{ fontSize: '13px', color: '#94A3B8', marginBottom: '14px' }}>
+                Connect your Gmail to start receiving and resolving support emails.
+              </p>
+              <Link to="/onboarding" style={{ display: 'inline-block', padding: '8px 18px', background: '#06B6D4', color: 'white', borderRadius: '6px', textDecoration: 'none', fontSize: '13px', fontWeight: '600' }}>
+                Connect Gmail →
+              </Link>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {loading ? (
+                [1, 2, 3].map(i => (
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 14px', border: '1px solid #F1F5F9', borderRadius: '6px' }}>
+                    <div style={{ flex: 1 }}>
+                      <div className="skeleton" style={{ height: '13px', width: '140px', marginBottom: '6px' }} />
+                      <div className="skeleton" style={{ height: '12px', width: '200px' }} />
+                    </div>
+                    <div className="skeleton" style={{ height: '12px', width: '50px' }} />
+                  </div>
+                ))
+              ) : recentConversations.length === 0 ? (
+                <div style={{ padding: '24px', textAlign: 'center', color: '#94A3B8', fontSize: '13px' }}>No conversations yet</div>
+              ) : recentConversations.map(c => (
+                <div
+                  key={c.id}
+                  onClick={() => navigate(`/tickets/${c.id}`)}
+                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 14px', border: '1px solid #F1F5F9', borderRadius: '6px', cursor: 'pointer' }}
+                  onMouseEnter={e => e.currentTarget.style.background = '#F8FAFC'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                >
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: '13px', fontWeight: '500', color: '#0F172A' }}>{c.customer_email || c.sender_id || '—'}</div>
+                    <div style={{ fontSize: '12px', color: '#94A3B8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.last_message || '—'}</div>
+                  </div>
+                  <span style={{ fontFamily: 'DM Mono, monospace', fontSize: '12px', color: '#64748B', flexShrink: 0, marginLeft: '12px' }}>{formatTime(c.updated_at)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
         <FilteredEmailsWidget />
       </div>
 
-      {/* Recent conversations */}
-      <section style={{ background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', overflow: 'hidden' }}>
-        <div style={{ padding: '16px 20px', borderBottom: '1px solid #E4E4E7', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h2 style={{ fontSize: '14px', fontWeight: '600', color: '#0F172A' }}>Recent Conversations</h2>
-          <Link to="/tickets" style={{ fontSize: '13px', color: '#06B6D4', fontWeight: '500', textDecoration: 'none' }} onMouseEnter={e => e.target.style.textDecoration = 'underline'} onMouseLeave={e => e.target.style.textDecoration = 'none'}>View all →</Link>
-        </div>
-
-        {!loading && recentConversations.length === 0 && !gmailConnected ? (
-          <div style={{ padding: '48px 24px', textAlign: 'center' }}>
-            <div style={{ fontSize: '36px', marginBottom: '12px' }}>📭</div>
-            <div style={{ fontSize: '15px', fontWeight: '600', color: '#0F172A', marginBottom: '6px' }}>No conversations yet</div>
-            <p style={{ fontSize: '13px', color: '#94A3B8', marginBottom: '18px' }}>
-              Connect your Gmail to start receiving and resolving support emails.
-            </p>
-            <Link to="/onboarding" style={{ display: 'inline-block', padding: '8px 18px', background: '#06B6D4', color: 'white', borderRadius: '6px', textDecoration: 'none', fontSize: '13px', fontWeight: '600' }}>
-              Connect Gmail →
-            </Link>
-          </div>
-        ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ background: '#F8FAFC', position: 'sticky', top: 0 }}>
-                {['ID', 'Channel', 'Sender', 'Last Message', 'Updated'].map(h => (
-                  <th key={h} style={{ padding: '10px 16px', textAlign: 'left', fontSize: '11px', fontWeight: '600', color: '#64748B', whiteSpace: 'nowrap', borderBottom: '1px solid #E4E4E7', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                [1,2,3,4,5].map(i => <SkeletonRow key={i} />)
-              ) : recentConversations.length === 0 ? (
-                <tr><td colSpan={5} style={{ padding: '32px', textAlign: 'center', color: '#94A3B8' }}>No conversations yet</td></tr>
-              ) : recentConversations.map((c, i) => {
-                return (
-                  <tr key={c.id}
-                    onClick={() => navigate(`/tickets/${c.id}`)}
-                    style={{ cursor: 'pointer', background: 'transparent', height: '48px', borderBottom: '1px solid #F1F5F9' }}
-                    onMouseEnter={e => e.currentTarget.style.background = '#F8FAFC'}
-                    onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-                  >
-                    <td style={{ padding: '0 16px', fontFamily: 'DM Mono, monospace', fontSize: '12px', color: '#64748B' }}>#{String(c.id).slice(0, 8)}</td>
-                    <td style={{ padding: '0 16px' }}>
-                      {c.channel === 'chat'
-                        ? <Badge status="chat" />
-                        : <Badge status="email" />}
-                    </td>
-                    <td style={{ padding: '0 16px', fontSize: '13px', color: '#1E293B' }}>{c.customer_email || c.sender_id || '—'}</td>
-                    <td style={{ padding: '0 16px', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '13px', color: '#1E293B' }}>{c.last_message || '—'}</td>
-                    <td style={{ padding: '0 16px', color: '#64748B', fontSize: '13px', fontFamily: 'DM Mono, monospace' }}>{formatDate(c.updated_at)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-        )}
-      </section>
-
-      {/* Escalations summary */}
+      {/* Escalation Queue */}
       <section>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-          <h2 style={{ fontSize: '14px', fontWeight: '600', color: '#0F172A' }}>Escalation Queue</h2>
+          <h2 style={{ margin: 0, fontSize: '15px', fontWeight: '600', color: '#0F172A' }}>Escalation Queue</h2>
           <Link to="/actions" style={{ fontSize: '13px', color: '#06B6D4', fontWeight: '500', textDecoration: 'none' }} onMouseEnter={e => e.target.style.textDecoration = 'underline'} onMouseLeave={e => e.target.style.textDecoration = 'none'}>View queue →</Link>
         </div>
 
@@ -303,13 +275,11 @@ export default function Dashboard() {
             Escalation queue is empty ✓
           </div>
         ) : (
-          <div style={{ padding: '20px', background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', textAlign: 'center' }}>
+          <div style={{ padding: '32px', background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
             <span style={{ fontSize: '14px', color: '#475569' }}>
               There are <strong>{stats.escalatedChats}</strong> conversations awaiting human intervention.
             </span>
-            <div style={{ marginTop: '12px' }}>
-              <Link to="/actions" style={{ padding: '8px 16px', background: '#06B6D4', color: 'white', borderRadius: '6px', textDecoration: 'none', fontSize: '13px', fontWeight: '500' }}>Review Escalations</Link>
-            </div>
+            <Link to="/actions" style={{ padding: '10px 20px', background: '#06B6D4', color: 'white', borderRadius: '6px', textDecoration: 'none', fontSize: '14px', fontWeight: '600' }}>Review Escalations</Link>
           </div>
         )}
       </section>
