@@ -78,41 +78,42 @@ export default function QuarantineQueue() {
   };
 
   return (
-    <div style={{ padding: '2rem', maxWidth: 900 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1.5rem' }}>
-        <h1 style={{ margin: 0, fontSize: '1.5rem', fontWeight: 700 }}>Quarantine Queue</h1>
+    <div style={{ padding: '28px 32px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '600', color: '#0F172A' }}>Quarantine Queue</h2>
         {pending > 0 && (
           <span style={{
-            background: 'var(--warning, #f59e0b)',
+            background: '#F59E0B',
             color: '#fff',
-            borderRadius: 999,
+            borderRadius: '10px',
             padding: '2px 10px',
-            fontSize: '0.8rem',
-            fontWeight: 700,
+            fontSize: '12px',
+            fontWeight: '700',
+            fontFamily: 'DM Mono, monospace',
           }}>
             {pending} pending
           </span>
         )}
       </div>
-      <p style={{ color: 'var(--text-muted, #888)', marginBottom: '1.5rem', marginTop: 0 }}>
+      <p style={{ color: '#64748B', fontSize: '13px', margin: 0, maxWidth: '640px' }}>
         Emails the AI classified as <strong>customer_support</strong> but with confidence below your threshold.
         Review each email and either promote it to a ticket or discard it.
       </p>
 
       {loading && (
-        <div style={{ color: 'var(--text-muted, #888)', padding: '3rem', textAlign: 'center' }}>
-          Loading…
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          {[1, 2, 3].map(i => <div key={i} className="skeleton" style={{ height: '110px', borderRadius: '8px' }} />)}
         </div>
       )}
 
       {error && (
         <div style={{
-          background: 'rgba(239,68,68,0.1)',
-          border: '1px solid rgba(239,68,68,0.3)',
-          borderRadius: 8,
-          padding: '1rem',
-          color: 'var(--danger, #ef4444)',
-          marginBottom: '1rem',
+          background: '#FEF2F2',
+          border: '1px solid #FECACA',
+          borderRadius: '8px',
+          padding: '16px 20px',
+          color: '#EF4444',
+          fontSize: '13px',
         }}>
           {error}
         </div>
@@ -120,111 +121,111 @@ export default function QuarantineQueue() {
 
       {!loading && !error && items.length === 0 && (
         <div style={{
-          textAlign: 'center',
-          padding: '4rem 2rem',
-          color: 'var(--text-muted, #888)',
-          border: '1px dashed var(--border, #333)',
-          borderRadius: 12,
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          padding: '60px 24px', border: '1px solid #E4E4E7', borderRadius: '8px', background: 'white', gap: '12px',
         }}>
-          <div style={{ fontSize: '2.5rem', marginBottom: '0.75rem' }}>✓</div>
-          <div style={{ fontWeight: 600, marginBottom: '0.25rem' }}>No emails in quarantine</div>
-          <div style={{ fontSize: '0.875rem' }}>All inbound emails have been reviewed or cleared.</div>
+          <div style={{ width: '48px', height: '48px', borderRadius: '50%', background: '#ECFEFF', color: '#06B6D4', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px' }}>✓</div>
+          <div style={{ fontSize: '16px', fontWeight: '600', color: '#1E293B' }}>No emails in quarantine</div>
+          <div style={{ fontSize: '13px', color: '#94A3B8', textAlign: 'center' }}>All inbound emails have been reviewed or cleared.</div>
         </div>
       )}
 
-      {items.map((item) => {
-        const busy = acting[item.id];
-        return (
-          <div
-            key={item.id}
-            style={{
-              background: 'var(--surface, #1a1a2e)',
-              border: '1px solid var(--border, #333)',
-              borderRadius: 10,
-              padding: '1.25rem 1.5rem',
-              marginBottom: '1rem',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '0.5rem',
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.5rem' }}>
-              <div>
-                <div style={{ fontWeight: 600, marginBottom: '0.2rem' }}>
-                  {item.subject || '(no subject)'}
-                </div>
-                <div style={{ fontSize: '0.85rem', color: 'var(--text-muted, #888)' }}>
-                  From: <strong>{item.sender_email}</strong> &nbsp;·&nbsp; {formatAge(item.created_at)}
-                </div>
-              </div>
-              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
-                <span style={{
-                  background: 'rgba(245,158,11,0.15)',
-                  color: 'var(--warning, #f59e0b)',
-                  borderRadius: 6,
-                  padding: '2px 8px',
-                  fontSize: '0.78rem',
-                  fontWeight: 600,
-                }}>
-                  {CLASSIFICATION_LABELS[item.ai_classification] || item.ai_classification || '—'} · {pct(item.ai_confidence)}
-                </span>
-              </div>
-            </div>
-
-            {item.body_preview && (
-              <div style={{
-                fontSize: '0.85rem',
-                color: 'var(--text-secondary, #aaa)',
-                background: 'rgba(255,255,255,0.03)',
-                borderRadius: 6,
-                padding: '0.5rem 0.75rem',
-                maxHeight: 80,
-                overflow: 'hidden',
-                position: 'relative',
-              }}>
-                {item.body_preview}
-              </div>
-            )}
-
-            <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.25rem' }}>
-              <button
-                disabled={!!busy}
-                onClick={() => promote(item.id)}
+      {!loading && !error && items.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          {items.map((item) => {
+            const busy = acting[item.id];
+            return (
+              <div
+                key={item.id}
                 style={{
-                  background: busy === 'promoting' ? 'var(--text-muted, #888)' : 'var(--accent, #06B6D4)',
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: 6,
-                  padding: '0.45rem 1rem',
-                  fontSize: '0.85rem',
-                  fontWeight: 600,
-                  cursor: busy ? 'wait' : 'pointer',
-                  opacity: busy ? 0.7 : 1,
+                  background: 'white',
+                  border: '1px solid #E4E4E7',
+                  borderRadius: '8px',
+                  padding: '20px 24px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '10px',
                 }}
               >
-                {busy === 'promoting' ? 'Promoting…' : '✓ Promote to Ticket'}
-              </button>
-              <button
-                disabled={!!busy}
-                onClick={() => discard(item.id)}
-                style={{
-                  background: 'transparent',
-                  color: 'var(--danger, #ef4444)',
-                  border: '1px solid var(--danger, #ef4444)',
-                  borderRadius: 6,
-                  padding: '0.45rem 1rem',
-                  fontSize: '0.85rem',
-                  fontWeight: 600,
-                  cursor: busy ? 'wait' : 'pointer',
-                  opacity: busy ? 0.7 : 1,
-                }}
-              >
-                {busy === 'discarding' ? 'Discarding…' : '✕ Discard'}
-              </button>
-            </div>
-          </div>
-        );
-      })}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '8px' }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: '14px', fontWeight: '600', color: '#0F172A', marginBottom: '2px' }}>
+                      {item.subject || '(no subject)'}
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#64748B' }}>
+                      From: <strong style={{ color: '#475569' }}>{item.sender_email}</strong>
+                      <span style={{ color: '#CBD5E1' }}> · </span>
+                      <span style={{ fontFamily: 'DM Mono, monospace' }}>{formatAge(item.created_at)}</span>
+                    </div>
+                  </div>
+                  <span style={{
+                    background: '#FFFBEB',
+                    border: '1px solid #FDE68A',
+                    color: '#B45309',
+                    borderRadius: '10px',
+                    padding: '2px 9px',
+                    fontSize: '11px',
+                    fontWeight: '600',
+                    flexShrink: 0,
+                  }}>
+                    {CLASSIFICATION_LABELS[item.ai_classification] || item.ai_classification || '—'} · {pct(item.ai_confidence)}
+                  </span>
+                </div>
+
+                {item.body_preview && (
+                  <div style={{
+                    fontSize: '13px',
+                    color: '#475569',
+                    background: '#F8FAFC',
+                    borderRadius: '6px',
+                    padding: '10px 12px',
+                    lineHeight: '1.5',
+                  }}>
+                    {item.body_preview}
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: '8px', marginTop: '2px' }}>
+                  <button
+                    disabled={!!busy}
+                    onClick={() => promote(item.id)}
+                    style={{
+                      padding: '7px 16px',
+                      borderRadius: '4px',
+                      border: '1px solid transparent',
+                      background: '#06B6D4',
+                      color: 'white',
+                      fontSize: '13px',
+                      fontWeight: '600',
+                      cursor: busy ? 'not-allowed' : 'pointer',
+                      opacity: busy ? 0.6 : 1,
+                    }}
+                  >
+                    {busy === 'promoting' ? 'Promoting…' : '✓ Promote to Ticket'}
+                  </button>
+                  <button
+                    disabled={!!busy}
+                    onClick={() => discard(item.id)}
+                    style={{
+                      padding: '7px 16px',
+                      borderRadius: '4px',
+                      background: 'white',
+                      color: '#EF4444',
+                      border: '1px solid #FECACA',
+                      fontSize: '13px',
+                      fontWeight: '600',
+                      cursor: busy ? 'not-allowed' : 'pointer',
+                      opacity: busy ? 0.6 : 1,
+                    }}
+                  >
+                    {busy === 'discarding' ? 'Discarding…' : '✕ Discard'}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

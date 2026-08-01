@@ -555,12 +555,19 @@ async def get_gmail_queue_status(tenant: TenantContext = Depends(get_current_ten
         since_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
         from_1h   = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
 
-        queued   = _safe_select("send_tasks", {"status": "eq.queued"})
-        failed   = _safe_select("send_tasks", {"status": "eq.failed"})
-        sent_24h = _safe_select("send_tasks", {"status": "eq.sent", "sent_at": f"gte.{since_24h}"})
-        hourly   = _safe_select("send_log",   {"sent_at": f"gte.{from_1h}"})
-
         brand = await _get_tenant_brand_async(tenant.tenant_id)
+        if not brand:
+            return {"queued_count": 0, "sent_24h": 0, "failed_count": 0, "hourly_count": 0, "last_polled_at": None}
+        brand_id = brand["id"]
+
+        # brand_id filter is required here — send_tasks/send_log have no RLS
+        # and this endpoint was previously querying them completely unscoped,
+        # so every tenant saw platform-wide counts (including other tenants')
+        # instead of their own brand's.
+        queued   = _safe_select("send_tasks", {"brand_id": f"eq.{brand_id}", "status": "eq.queued"})
+        failed   = _safe_select("send_tasks", {"brand_id": f"eq.{brand_id}", "status": "eq.failed"})
+        sent_24h = _safe_select("send_tasks", {"brand_id": f"eq.{brand_id}", "status": "eq.sent", "sent_at": f"gte.{since_24h}"})
+        hourly   = _safe_select("send_log",   {"brand_id": f"eq.{brand_id}", "sent_at": f"gte.{from_1h}"})
 
         return {
             "queued_count": len(queued),

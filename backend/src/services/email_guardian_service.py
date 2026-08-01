@@ -10,9 +10,11 @@ Fail-open: any exception in evaluate() returns GUARDIAN_ALLOW so a real customer
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Optional
 
+from bs4 import BeautifulSoup, Comment
 from openai import OpenAI
 
 from src.lib.supabase_client import supabase_insert, supabase_select
@@ -20,6 +22,31 @@ from src.lib.supabase_client import supabase_insert, supabase_select
 logger = logging.getLogger(__name__)
 
 DEFAULT_STORE = "00000000-0000-0000-0000-000000000000"
+
+
+def _html_to_preview_text(raw: str, max_len: int = 200) -> str:
+    """Reduce a raw email body (often full HTML — DOCTYPE, <style>, Outlook VML
+    conditional comments, etc.) to a short, readable plain-text preview.
+    Safe to call on already-plain-text input too — BeautifulSoup just returns
+    it unchanged (aside from whitespace collapsing) when there's no markup."""
+    if not raw:
+        return ""
+    try:
+        soup = BeautifulSoup(raw, "html.parser")
+        for tag in soup(["style", "script", "head"]):
+            tag.decompose()
+        # get_text() includes HTML comments (Comment is a NavigableString
+        # subclass) — without this, Outlook's <!--[if mso]>...VML...<![endif]-->
+        # conditional-comment blocks leak straight into the "clean" preview.
+        for comment in soup.find_all(string=lambda s: isinstance(s, Comment)):
+            comment.extract()
+        text = soup.get_text(separator=" ")
+    except Exception:
+        # Malformed markup BeautifulSoup can't parse — fall back to a blunt
+        # tag strip rather than showing raw markup.
+        text = re.sub(r"<[^>]+>", " ", raw)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:max_len]
 
 VALID_CLASSIFICATIONS = {
     "customer_support", "promotion", "newsletter",
@@ -182,7 +209,7 @@ class EmailGuardianService:
                 "brand_id":          brand_id,
                 "sender_email":      email.get("sender_email") or email.get("customer_email", ""),
                 "subject":           email.get("subject", ""),
-                "body_preview":      (email.get("body") or email.get("content", ""))[:500],
+                "body_preview":      _html_to_preview_text(email.get("body") or email.get("content", "")),
                 "thread_id":         email.get("thread_id"),
                 "ai_classification": classification,
                 "ai_confidence":     confidence,
