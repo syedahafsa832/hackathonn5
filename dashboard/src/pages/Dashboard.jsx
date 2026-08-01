@@ -204,8 +204,8 @@ export default function Dashboard() {
         />
       </div>
 
-      {/* Recent Conversations + Filtered Emails — side by side */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: '20px' }}>
+      {/* Recent Conversations + Filtered Emails — side by side, stacks below 768px */}
+      <div className="dashboard-two-col">
         <section style={{ border: '1px solid #E4E4E7', borderRadius: '8px', background: 'white', padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <h2 style={{ margin: 0, fontSize: '15px', fontWeight: '600', color: '#0F172A' }}>Recent Conversations</h2>

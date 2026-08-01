@@ -302,3 +302,18 @@ strong, b, h1, h2, h3, h4, h5, h6, th {
     width: 100%;
   }
 }
+
+/* Dashboard Overview's Recent Conversations + Filtered Emails pairing —
+   the 1.3fr/1fr grid never collapsed on narrow screens, so FilteredEmailsWidget's
+   own minWidth:260px fought the narrowed grid track and got clipped instead
+   of the layout reflowing. */
+.dashboard-two-col {
+  display: grid;
+  grid-template-columns: 1.3fr 1fr;
+  gap: 20px;
+}
+@media (max-width: 768px) {
+  .dashboard-two-col {
+    grid-template-columns: 1fr;
+  }
+}
