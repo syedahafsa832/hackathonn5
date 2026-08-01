@@ -518,6 +518,13 @@ class ActionsService:
             # Log success
             await self._log_event(tenant_id, action_id, "executed", approved_by, execution_result)
 
+            # Invalidate the Order Context panel's cache (see fetch_shopify_order)
+            # so a ticket reopened right after this action shows the new order
+            # state instead of the pre-execution cached snapshot.
+            if action_type in (ActionType.REFUND.value, ActionType.CANCEL_ORDER.value, ActionType.RESTORE_ORDER.value):
+                from src.services.shopify_service import invalidate_order_cache
+                invalidate_order_cache(action.get("brand_id"), order_id)
+
             logger.info(f"[Actions] Executed {action_type} action {action_id}")
 
             # Post-execution: send branded confirmation email + resolve ticket

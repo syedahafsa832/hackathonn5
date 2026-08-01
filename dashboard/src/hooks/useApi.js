@@ -12,6 +12,11 @@ export function useTicket(id) {
     enabled: !!id,
     retry: 2,
     retryDelay: 1500,
+    // Poll while a ticket detail view is open so the reply thread updates
+    // live — this used to be useMessages' job, but that hook re-fetched and
+    // re-normalized the exact same /api/tickets/:id payload useTicket already
+    // fetches. Polling here instead of running both queries in parallel.
+    refetchInterval: 5000,
   });
 }
 
@@ -139,6 +144,24 @@ export function useRejectAction() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, reason }) => api.rejectAction(id, reason),
+    // Optimistic removal — actions_service.reject_action() does 3 sequential
+    // Supabase round trips (get_action, update, log_event) on a backend with
+    // no async DB client, so the real request can take a few seconds. Without
+    // this, the Reject button just sat there doing nothing visible until the
+    // request finished AND the subsequent list refetch (from onSettled below)
+    // came back — two round trips before any feedback. Pull the card out of
+    // the pending list immediately; roll back if the request actually fails.
+    onMutate: async ({ id }) => {
+      await queryClient.cancelQueries(['actions', 'pending']);
+      const previous = queryClient.getQueryData(['actions', 'pending']);
+      queryClient.setQueryData(['actions', 'pending'], (old = []) => old.filter(a => a.id !== id));
+      return { previous };
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(['actions', 'pending'], context.previous);
+      }
+    },
     onSettled: () => {
       queryClient.invalidateQueries(['actions']);
     },

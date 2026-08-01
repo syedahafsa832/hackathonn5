@@ -92,6 +92,11 @@ function ActionCard({ action, onApprove, onReject }) {
   const handleReject = async () => {
     if (!reason.trim()) return;
     setApproving(true);
+    // No local error state here — onReject optimistically removes this card
+    // from the pending list the instant the mutation starts (see
+    // useRejectAction), so by the time a failure comes back this component
+    // is usually already unmounted and a local error state would never be
+    // seen. onReject surfaces failures itself (see Actions() below).
     try { await onReject(action.id, reason); } finally { setApproving(false); }
   };
 
@@ -158,9 +163,9 @@ function ActionCard({ action, onApprove, onReject }) {
             <button
               onClick={handleReject}
               disabled={!reason.trim() || approving}
-              style={{ padding: '7px 14px', borderRadius: '4px', background: '#EF4444', color: 'white', fontSize: '12px', fontWeight: '600', cursor: 'pointer', border: 'none' }}
+              style={{ padding: '7px 14px', borderRadius: '4px', background: '#EF4444', color: 'white', fontSize: '12px', fontWeight: '600', cursor: approving ? 'not-allowed' : 'pointer', border: 'none', opacity: approving ? 0.6 : 1 }}
             >
-              Confirm
+              {approving ? 'Rejecting…' : 'Confirm'}
             </button>
             <button
               onClick={() => setRejecting(false)}
@@ -216,6 +221,8 @@ export default function Actions() {
   const navigate = useNavigate();
   const { data: escalations = [], isLoading: loadingEscalations, refetch: refetchEscalations } = useEscalations();
   const { data: actions = [], isLoading: loadingActions, refetch: refetchActions } = useActions('pending');
+  const { data: history = [], isLoading: loadingHistory } = useActions('history');
+  const rejectedActions = history.filter(a => a.status === 'rejected');
   const { data: stats } = useStats();
   const { mutateAsync: approveAction } = useApproveAction();
   const { mutateAsync: rejectAction } = useRejectAction();
@@ -223,6 +230,21 @@ export default function Actions() {
   const [bulkWorking, setBulkWorking] = useState(false);
   const [selectedEscalationIds, setSelectedEscalationIds] = useState(new Set());
   const [bulkEscalWorking, setBulkEscalWorking] = useState(false);
+  const [showRejected, setShowRejected] = useState(false);
+
+  // ActionCard's own onReject already awaits this and shows its own working
+  // state — but the card optimistically disappears from the pending list the
+  // instant the mutation starts (see useRejectAction), so by the time a
+  // failure comes back the card is already unmounted and any error state on
+  // it would never render. Surface failures here instead, at the level that
+  // survives the optimistic remove/rollback cycle.
+  const handleReject = async (id, reason) => {
+    try {
+      await rejectAction({ id, reason });
+    } catch (err) {
+      window.alert(err?.response?.data?.detail || 'Failed to reject action — it has been restored to the list.');
+    }
+  };
 
   useEffect(() => {
     document.title = "Escalations — tResolv";
@@ -352,12 +374,59 @@ export default function Actions() {
                   <ActionCard
                     action={action}
                     onApprove={approveAction}
-                    onReject={(id, reason) => rejectAction({ id, reason })}
+                    onReject={handleReject}
                   />
                 </div>
               </div>
             ))}
           </div>
+        </section>
+      )}
+
+      {/* Rejected Approvals */}
+      {!loadingHistory && rejectedActions.length > 0 && (
+        <section>
+          <div className="header-row" style={{ marginBottom: '10px' }}>
+            <button
+              onClick={() => setShowRejected(s => !s)}
+              style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: '14px', fontWeight: '600', color: '#0F172A' }}
+            >
+              <span style={{ display: 'inline-block', transition: 'transform 0.15s', transform: showRejected ? 'rotate(90deg)' : 'none' }}>▸</span>
+              Rejected ({rejectedActions.length})
+            </button>
+          </div>
+          {showRejected && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {rejectedActions.map(action => {
+                const meta = ACTION_LABELS[action.action_type] || { label: action.action_type, color: '#0E7490' };
+                return (
+                  <div key={action.id} style={{ background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: '8px', opacity: 0.75 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <span style={{ fontSize: '14px', fontWeight: '600', color: meta.color }}>{meta.label}</span>
+                        {(action.order_id || action.order_number) && (
+                          <span style={{ fontSize: '12px', background: '#F8FAFC', color: '#475569', padding: '2px 8px', borderRadius: '4px' }}>
+                            Order #{action.order_id || action.order_number}
+                          </span>
+                        )}
+                        <span style={{ fontSize: '11px', background: '#F1F5F9', color: '#64748B', padding: '2px 8px', borderRadius: '10px', fontWeight: '600' }}>Rejected</span>
+                      </div>
+                      <span style={{ fontSize: '11px', color: '#94A3B8', fontFamily: 'DM Mono, monospace' }}>{formatDate(action.approved_at || action.updated_at)}</span>
+                    </div>
+                    <div style={{ fontSize: '13px', color: '#64748B' }}>
+                      <strong style={{ fontSize: '14px', fontWeight: '500', color: '#0F172A' }}>{action.customer_name || action.customer_email}</strong>
+                    </div>
+                    {action.rejection_reason && (
+                      <div style={{ fontSize: '13px', color: '#64748B' }}>
+                        <strong style={{ color: '#475569' }}>Reason:</strong> {action.rejection_reason}
+                        {action.approved_by && <span style={{ color: '#94A3B8' }}> — by {action.approved_by}</span>}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </section>
       )}
 

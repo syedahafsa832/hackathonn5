@@ -838,6 +838,27 @@ class ShopifyService:
         )
 
 
+# The Conversation Detail view's "Order Context" panel calls fetch_shopify_order
+# on every page load — a single live Shopify API round trip, no caching, so
+# every time a ticket is opened (or reopened) it re-fetches the same order.
+# Short-TTL cache, same pattern as tracking_service.py's Aftership cache.
+# Explicitly invalidated after cancel/refund (see invalidate_order_cache) so a
+# post-action reload never shows stale pre-action order status.
+_ORDER_CACHE_TTL_SECONDS = 30
+_order_cache: dict = {}  # (brand_id, order_num) -> (expires_at_monotonic, order_data)
+
+
+def _order_cache_key(brand: dict, order_identifier: str) -> tuple:
+    order_num = str(order_identifier).replace('#', '').replace('ORD-', '').strip()
+    return (brand.get("id"), order_num)
+
+
+def invalidate_order_cache(brand_id: str, order_identifier: str) -> None:
+    """Call after a cancel/refund so the next fetch reflects the new order state."""
+    order_num = str(order_identifier).replace('#', '').replace('ORD-', '').strip()
+    _order_cache.pop((brand_id, order_num), None)
+
+
 async def fetch_shopify_order(brand: dict, order_identifier: str) -> Optional[Dict[str, Any]]:
     """
     Look up a Shopify order by number for a given brand dict.
@@ -848,6 +869,12 @@ async def fetch_shopify_order(brand: dict, order_identifier: str) -> Optional[Di
         raw_token = brand.get("shopify_access_token", "")
         if not domain or not raw_token:
             return None
+
+        cache_key = _order_cache_key(brand, order_identifier)
+        now = time.monotonic()
+        cached = _order_cache.get(cache_key)
+        if cached and cached[0] > now:
+            return cached[1]
 
         token = decrypt_token(raw_token) if raw_token else raw_token
         client = ShopifyClient(domain, token)
@@ -871,7 +898,7 @@ async def fetch_shopify_order(brand: dict, order_identifier: str) -> Optional[Di
         last = customer.get("last_name", "")
         customer_name = f"{first} {last}".strip() or order.get("email", "")
 
-        return {
+        order_data = {
             "id": str(order["id"]),
             "order_number": order["order_number"],
             "order_name": order.get("name"),
@@ -911,6 +938,8 @@ async def fetch_shopify_order(brand: dict, order_identifier: str) -> Optional[Di
             "cancel_reason": order.get("cancel_reason"),
             "cancelled_at": order.get("cancelled_at"),
         }
+        _order_cache[cache_key] = (time.monotonic() + _ORDER_CACHE_TTL_SECONDS, order_data)
+        return order_data
     except Exception as e:
         logger.error(f"[fetch_shopify_order] Error for order {order_identifier}: {e}")
         return None

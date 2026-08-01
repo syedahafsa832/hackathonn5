@@ -861,6 +861,9 @@ async def execute_cancel_order(
 
         record_shopify_action(brand.get("tenant_id"))
 
+        from src.services.shopify_service import invalidate_order_cache
+        invalidate_order_cache(brand_id, order_identifier)
+
         order_name = result.get("order_name") or f"#{order_identifier}"
 
         # Build and send confirmation email
@@ -1032,6 +1035,9 @@ async def execute_refund(
             raise HTTPException(status_code=422, detail=str(shopify_err))
 
         record_shopify_action(brand.get("tenant_id"))
+
+        from src.services.shopify_service import invalidate_order_cache
+        invalidate_order_cache(brand_id, order_identifier)
 
         order_name = result.get("order_name") or f"#{order_identifier}"
         refund_amount = result.get("amount", "")
