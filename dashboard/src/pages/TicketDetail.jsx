@@ -3,7 +3,69 @@ import { useParams, useNavigate } from 'react-router-dom';
 import client from '../api/client';
 import Badge from '../components/Badge';
 import ActionCard from '../components/ActionCard';
-import { useMessages, useSendMessage, useTakeover, useRelease, useConversations, useTicket, useMarkRead } from '../hooks/useApi';
+import { useSendMessage, useTakeover, useRelease, useTicket, useMarkRead } from '../hooks/useApi';
+
+// Mirrors api.getConversationMessages()'s merge logic, but runs on a ticket
+// object we already have in memory instead of firing a second network
+// request for the same /api/tickets/:id payload useTicket just fetched.
+function normalizeTicketMessages(ticket) {
+  if (!ticket) return [];
+
+  let msgs = ticket.messages || [];
+  if (typeof msgs === 'string') {
+    try { msgs = JSON.parse(msgs); } catch { msgs = []; }
+  }
+
+  const thread = msgs.map(m => ({
+    ...m,
+    role: m.direction === 'inbound' ? 'user' : m.role || 'ai',
+    content: m.body || m.content || '',
+    isDraft: m.direction === 'draft',
+  }));
+
+  const hasInbound = thread.some(m => m.role === 'user');
+  if (!hasInbound) {
+    const customerBody = ticket.message || ticket.content || ticket.body || ticket.email_body;
+    if (customerBody) {
+      thread.unshift({ role: 'user', content: customerBody, created_at: ticket.created_at });
+    }
+  }
+
+  const hasAiMessage = thread.some(m => m.role === 'ai' || m.role === 'assistant');
+  if (!hasAiMessage) {
+    const aiText = ticket.ai_reply || ticket.ai_draft || ticket.ai_response;
+    if (aiText) {
+      thread.push({
+        role: 'ai',
+        content: aiText,
+        created_at: ticket.updated_at,
+        isDraft: !ticket.ai_reply,
+      });
+    }
+  }
+
+  return thread.filter((m, i) => {
+    const prev = thread[i - 1];
+    return !prev || prev.role !== m.role || prev.content !== m.content;
+  });
+}
+
+// The reply-suggestions AI call is prompted to return {short, detailed,
+// empathetic} as flat strings, but doesn't always comply — occasionally one
+// field comes back as a nested object instead (e.g. { text: "...", tone:
+// "brief" }). Pull a usable string out of that shape rather than letting it
+// fall through to a bare String(value), which stringifies any object to the
+// literal text "[object Object]".
+function extractReplyText(value) {
+  if (typeof value === 'string') return value;
+  if (value == null) return '';
+  if (typeof value === 'object') {
+    const nested = value.text ?? value.content ?? value.value ?? value.reply ?? value.message;
+    if (typeof nested === 'string') return nested;
+    return '';
+  }
+  return String(value);
+}
 
 const ACTION_TYPE_MAP = {
   CANCEL: 'cancel_order',
@@ -301,12 +363,11 @@ export default function TicketDetail() {
   const navigate = useNavigate();
   const scrollRef = useRef(null);
   
-  const { data: messages = [], isLoading, error: queryError } = useMessages(ticket_id);
-  const { data: ticketDirect, isLoading: ticketLoading, error: ticketError } = useTicket(ticket_id);
-  const { data: conversations, isLoading: convLoading } = useConversations('active');
-  // Prefer direct fetch; fall back to conversations list (covers non-active statuses)
-  const ticket = ticketDirect || conversations?.find(c => String(c.id) === String(ticket_id));
-  
+  const { data: ticket, isLoading: ticketLoading, error: ticketError } = useTicket(ticket_id);
+  // Derived from the same ticket fetch above — no separate request, so there's
+  // no window where the ticket has loaded but messages haven't (or vice versa).
+  const messages = normalizeTicketMessages(ticket);
+
   const { mutate: sendMessage, isLoading: sending } = useSendMessage();
   const { mutate: takeover } = useTakeover();
   const { mutate: release } = useRelease();
@@ -374,19 +435,22 @@ export default function TicketDetail() {
     try {
       const res = await client.get(`/api/tickets/${ticket_id}/reply-suggestions`);
       const raw = res.data?.suggestions;
-      // The AI can return non-string values (null, a number, a nested object) for
-      // any of these fields — normalize to strings here so nothing downstream
-      // (composer, .trim()/.replace()) ever receives a non-string.
+      // The AI can return non-string values (null, a number, or occasionally a
+      // nested object like { text: "...", tone: "brief" } instead of a flat
+      // string) for any of these fields. String(someObject) does NOT extract
+      // its text — it silently stringifies to the literal "[object Object]",
+      // which is what was landing in the reply box. Pull out a nested string
+      // field if there is one before falling back to plain coercion.
       setSuggestions(raw ? {
-        short: String(raw.short ?? ''),
-        detailed: String(raw.detailed ?? ''),
-        empathetic: String(raw.empathetic ?? ''),
+        short: extractReplyText(raw.short),
+        detailed: extractReplyText(raw.detailed),
+        empathetic: extractReplyText(raw.empathetic),
       } : null);
     } catch { setSuggestions(null); }
     finally { setLoadingSuggestions(false); }
   };
 
-  const anyLoading = isLoading || ticketLoading || convLoading;
+  const anyLoading = ticketLoading;
 
   if (anyLoading && !ticket) {
     return (
@@ -411,19 +475,6 @@ export default function TicketDetail() {
         >
           ← Back to Conversations
         </button>
-      </div>
-    );
-  }
-
-  if (queryError && !messages.length) {
-    return (
-      <div style={{ padding: '48px', textAlign: 'center', color: 'var(--danger)' }}>
-        Failed to load conversation history.
-        <div style={{ marginTop: '12px' }}>
-          <button onClick={() => navigate('/tickets')} style={{ padding: '8px 16px', borderRadius: '4px', border: '1px solid var(--border)', background: 'var(--bg-primary)', cursor: 'pointer' }}>
-            ← Back to Conversations
-          </button>
-        </div>
       </div>
     );
   }

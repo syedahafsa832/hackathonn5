@@ -21,7 +21,7 @@ export default function Layout({ children }) {
   const location = useLocation();
   const navigate = useNavigate();
   const { logout } = useAuth();
-  const { data: me } = useMe();
+  const { data: me, isLoading: meLoading } = useMe();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const title = Object.entries(PAGE_TITLES).find(([path]) =>
@@ -73,7 +73,11 @@ export default function Layout({ children }) {
               title="Profile"
               style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', display: 'flex' }}
             >
-              <Avatar name={me?.company_name} email={me?.email} size={30} />
+              {meLoading ? (
+                <div className="skeleton" style={{ width: 30, height: 30, borderRadius: '50%', flexShrink: 0 }} />
+              ) : (
+                <Avatar name={me?.company_name} email={me?.email} size={30} />
+              )}
             </button>
             <button
               onClick={logout}

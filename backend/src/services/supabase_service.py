@@ -71,6 +71,7 @@ class SupabaseService:
                 "email_category": ticket_data.get("email_category"),
                 "sender_type": ticket_data.get("sender_type"),
                 "customer_sentiment": ticket_data.get("customer_sentiment"),
+                "tags": ticket_data.get("tags") or [],
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }
