@@ -29,6 +29,7 @@ class UpgradeRequestBody(BaseModel):
     email: EmailStr
     brand: Optional[str] = Field(None, max_length=200)
     plan: str
+    transaction_reference: Optional[str] = Field(None, max_length=200)
 
 
 @router.get("/plans")
@@ -57,6 +58,7 @@ async def submit_upgrade_request(
             "email": body.email,
             "brand": body.brand,
             "requested_plan": body.plan,
+            "transaction_reference": body.transaction_reference,
             "status": "pending",
         })
         return {"success": True, "request": result}

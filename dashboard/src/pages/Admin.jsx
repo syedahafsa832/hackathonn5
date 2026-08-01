@@ -1,5 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Crown } from 'lucide-react';
 import api from '../api/services';
+
+const PAID_PLANS = ['starter', 'growth', 'enterprise'];
 
 function formatDate(iso) {
   if (!iso) return '—';
@@ -102,7 +105,8 @@ export default function Admin() {
               {tenants.map(t => (
                 <tr key={t.id} style={{ borderBottom: '1px solid #F1F5F9', height: '52px' }}>
                   <td style={{ padding: '0 16px' }}>
-                    <div style={{ fontWeight: '500', color: '#0F172A' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontWeight: '500', color: '#0F172A' }}>
+                      {PAID_PLANS.includes(t.plan) && <Crown size={13} color="#D97706" />}
                       {t.company_name || '—'} {t.is_super_admin && <span style={{ fontSize: '10px', color: '#06B6D4', fontWeight: '600', marginLeft: '4px' }}>ADMIN</span>}
                     </div>
                     <div style={{ fontSize: '12px', color: '#64748B' }}>{t.email}</div>
@@ -137,7 +141,7 @@ export default function Admin() {
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ background: '#F8FAFC' }}>
-                  {['Name', 'Email', 'Brand', 'Requested Plan', 'Status', 'Submitted', ''].map(h => (
+                  {['Name', 'Email', 'Brand', 'Requested Plan', 'Transaction Ref', 'Status', 'Submitted', ''].map(h => (
                     <th key={h} style={{ padding: '10px 16px', textAlign: 'left', fontSize: '11px', fontWeight: '600', color: '#64748B', borderBottom: '1px solid #E4E4E7', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                       {h}
                     </th>
@@ -151,6 +155,9 @@ export default function Admin() {
                     <td style={{ padding: '0 16px', color: '#1E293B' }}>{r.email}</td>
                     <td style={{ padding: '0 16px', color: '#1E293B' }}>{r.brand || '—'}</td>
                     <td style={{ padding: '0 16px', color: '#1E293B', textTransform: 'capitalize' }}>{r.requested_plan}</td>
+                    <td style={{ padding: '0 16px', color: r.transaction_reference ? '#1E293B' : '#CBD5E1', fontFamily: 'DM Mono, monospace', fontSize: '12px', maxWidth: '160px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.transaction_reference || ''}>
+                      {r.transaction_reference || '—'}
+                    </td>
                     <td style={{ padding: '0 16px' }}>
                       <span style={{
                         fontSize: '11px', fontWeight: '600', padding: '2px 8px', borderRadius: '10px',

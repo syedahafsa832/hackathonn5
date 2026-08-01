@@ -1,9 +1,14 @@
 import { useState, useEffect } from 'react';
+import { Crown } from 'lucide-react';
 import client from '../api/client';
 import Avatar from '../components/Avatar';
 
+const PAID_PLANS = ['starter', 'growth', 'enterprise'];
+
 export default function Profile() {
   const [profile, setProfile] = useState({ full_name: '', email: '', created_at: null });
+  const [plan, setPlan] = useState(null);
+  const [planLabel, setPlanLabel] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
@@ -21,6 +26,16 @@ export default function Profile() {
         created_at: s.created_at || null,
       });
     }).catch(() => {}).finally(() => setLoading(false));
+
+    // Same endpoint PlanUsageWidget already uses on the Dashboard — reusing it
+    // here instead of adding a new one keeps plan_label computed in exactly
+    // one place (plan_service.PLAN_LIMITS).
+    client.get('/api/v1/settings/usage')
+      .then(res => {
+        setPlanLabel(res.data?.plan_label || null);
+        setPlan(res.data?.plan || null);
+      })
+      .catch(() => {});
   }, []);
 
   const save = async () => {
@@ -50,8 +65,20 @@ export default function Profile() {
       <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '28px' }}>
         <Avatar name={profile.full_name} email={profile.email} size={64} />
         <div>
-          <div style={{ fontSize: '17px', fontWeight: '700', color: '#0F172A' }}>
-            {profile.full_name || 'Unnamed account'}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{ fontSize: '17px', fontWeight: '700', color: '#0F172A' }}>
+              {profile.full_name || 'Unnamed account'}
+            </div>
+            {planLabel && (
+              <span style={{
+                display: 'inline-flex', alignItems: 'center', gap: '4px',
+                fontSize: '11px', fontWeight: '600', color: '#0E7490', background: '#ECFEFF',
+                border: '1px solid #A5F3FC', borderRadius: '10px', padding: '2px 9px',
+              }}>
+                {PAID_PLANS.includes(plan) && <Crown size={11} color="#D97706" />}
+                {planLabel}
+              </span>
+            )}
           </div>
           <div style={{ fontSize: '13px', color: '#64748B' }}>{profile.email}</div>
         </div>

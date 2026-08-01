@@ -87,6 +87,72 @@ def test_expired_trial_auto_downgrades_and_enforces_free_limit():
     assert tenant["plan"] == "free"
 
 
+def test_active_paid_plan_within_30_days_is_not_downgraded():
+    tenant = {"id": "t6", "email": "user@example.com", "plan": "starter",
+              "plan_activated_at": (datetime.now(timezone.utc) - timedelta(days=10)).isoformat(),
+              "usage_date": TODAY, "usage_tickets_today": 0}
+    p1, p2 = _mocked(tenant)
+    with p1, p2:
+        result = ps.can_process_ticket("t6")
+    assert result["plan"] == "starter"
+    assert tenant["plan"] == "starter"
+
+
+def test_paid_plan_past_30_days_is_downgraded_to_free_and_persisted():
+    tenant = {"id": "t7", "email": "user@example.com", "plan": "starter",
+              "plan_activated_at": (datetime.now(timezone.utc) - timedelta(days=31)).isoformat(),
+              "usage_date": TODAY, "usage_tickets_today": 0}
+    p1, p2 = _mocked(tenant)
+    with p1, p2:
+        result = ps.can_process_ticket("t7")
+    assert result["plan"] == "free"
+    assert tenant["plan"] == "free"
+    # plan_activated_at must survive the downgrade — it's how the frontend
+    # tells "this tenant's paid plan lapsed" apart from "never paid".
+    assert tenant["plan_activated_at"] is not None
+
+
+def test_paid_plan_with_no_activation_date_never_expires():
+    """Legacy rows (plan set directly, no plan_activated_at) shouldn't get
+    silently downgraded just because the column is empty."""
+    tenant = {"id": "t8", "email": "user@example.com", "plan": "enterprise",
+              "usage_date": TODAY, "usage_tickets_today": 0}
+    p1, p2 = _mocked(tenant)
+    with p1, p2:
+        result = ps.can_process_ticket("t8")
+    assert result["plan"] == "enterprise"
+
+
+def test_usage_summary_flags_previously_paid_tenant_whose_plan_lapsed():
+    tenant = {"id": "t9", "email": "user@example.com", "plan": "growth",
+              "plan_activated_at": (datetime.now(timezone.utc) - timedelta(days=45)).isoformat(),
+              "usage_date": TODAY}
+    p1, p2 = _mocked(tenant)
+    with p1, p2:
+        summary = ps.get_usage_summary("t9")
+    assert summary["plan"] == "free"
+    assert summary["was_previously_paid"] is True
+
+
+def test_usage_summary_does_not_flag_a_tenant_who_never_paid():
+    tenant = {"id": "t10", "email": "user@example.com", "plan": "free", "usage_date": TODAY}
+    p1, p2 = _mocked(tenant)
+    with p1, p2:
+        summary = ps.get_usage_summary("t10")
+    assert summary["was_previously_paid"] is False
+
+
+def test_usage_summary_reports_days_remaining_for_active_paid_plan():
+    tenant = {"id": "t11", "email": "user@example.com", "plan": "starter",
+              "plan_activated_at": (datetime.now(timezone.utc) - timedelta(days=5)).isoformat(),
+              "usage_date": TODAY}
+    p1, p2 = _mocked(tenant)
+    with p1, p2:
+        summary = ps.get_usage_summary("t11")
+    assert summary["plan"] == "starter"
+    assert summary["plan_days_remaining"] == 25
+
+
 def test_usage_resets_lazily_on_a_new_day():
     tenant = {"id": "t5", "email": "user@example.com", "plan": "free",
               "usage_date": "2000-01-01", "usage_tickets_today": 10}

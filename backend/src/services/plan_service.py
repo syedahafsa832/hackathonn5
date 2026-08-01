@@ -35,6 +35,20 @@ logger = logging.getLogger(__name__)
 
 TRIAL_DAYS = 14
 
+# Plans that require manual (bank-transfer) payment and therefore expire —
+# unlike free/trial/founding_free, which never need a renewal check.
+PAID_PLANS = {"starter", "growth", "enterprise"}
+PAID_PLAN_DURATION_DAYS = 30
+
+
+def _parse_dt(v) -> Optional[datetime]:
+    if not v:
+        return None
+    try:
+        return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
 # Platform-level super admin(s) — always unlimited, regardless of plan/trial/
 # billing state. Overridable via env for adding more without a code change;
 # this email is always included so it can never be accidentally removed.
@@ -146,33 +160,54 @@ def is_super_admin(email: Optional[str]) -> bool:
 
 
 def get_trial_dates(tenant: dict) -> tuple[Optional[datetime], Optional[datetime]]:
-    def _parse(v):
-        if not v:
-            return None
-        try:
-            return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
-        except Exception:
-            return None
-    return _parse(tenant.get("trial_start_at")), _parse(tenant.get("trial_end_at"))
+    return _parse_dt(tenant.get("trial_start_at")), _parse_dt(tenant.get("trial_end_at"))
+
+
+def get_paid_plan_expiry(tenant: dict) -> Optional[datetime]:
+    """When this tenant's current paid-plan activation expires, or None if
+    plan_activated_at was never set (e.g. legacy rows from before this)."""
+    activated_at = _parse_dt(tenant.get("plan_activated_at"))
+    if not activated_at:
+        return None
+    return activated_at + timedelta(days=PAID_PLAN_DURATION_DAYS)
 
 
 def _resolve_plan(tenant: dict) -> str:
     """Effective plan for this tenant right now. If the tenant is on 'trial'
-    and the trial has expired, this also persists the downgrade to 'free' —
-    the one place trial expiration is actually enforced."""
-    plan = (tenant.get("plan") or DEFAULT_PLAN).lower()
-    if plan != "trial":
-        return plan if plan in PLAN_LIMITS else DEFAULT_PLAN
+    and the trial has expired, or on a paid plan more than 30 days past its
+    plan_activated_at, this also persists the downgrade to 'free' — the one
+    place expiration is actually enforced for either case.
 
-    _, trial_end = get_trial_dates(tenant)
-    if trial_end and datetime.now(timezone.utc) >= trial_end:
-        try:
-            supabase_update("tenants", {"id": f"eq.{tenant['id']}"}, {"plan": DEFAULT_PLAN})
-            logger.info(f"[Plan] Tenant {tenant['id']} trial expired — moved to {DEFAULT_PLAN}")
-        except Exception as e:
-            logger.warning(f"[Plan] Failed to downgrade expired trial for {tenant.get('id')}: {e}")
-        return DEFAULT_PLAN
-    return "trial"
+    plan_activated_at is deliberately left in place after a paid-plan
+    downgrade (not cleared) so callers can tell "this tenant's plan just
+    lapsed" apart from "this tenant has never paid" — see get_usage_summary's
+    was_previously_paid.
+    """
+    plan = (tenant.get("plan") or DEFAULT_PLAN).lower()
+
+    if plan == "trial":
+        _, trial_end = get_trial_dates(tenant)
+        if trial_end and datetime.now(timezone.utc) >= trial_end:
+            try:
+                supabase_update("tenants", {"id": f"eq.{tenant['id']}"}, {"plan": DEFAULT_PLAN})
+                logger.info(f"[Plan] Tenant {tenant['id']} trial expired — moved to {DEFAULT_PLAN}")
+            except Exception as e:
+                logger.warning(f"[Plan] Failed to downgrade expired trial for {tenant.get('id')}: {e}")
+            return DEFAULT_PLAN
+        return "trial"
+
+    if plan in PAID_PLANS:
+        expires_at = get_paid_plan_expiry(tenant)
+        if expires_at and datetime.now(timezone.utc) >= expires_at:
+            try:
+                supabase_update("tenants", {"id": f"eq.{tenant['id']}"}, {"plan": DEFAULT_PLAN})
+                logger.info(f"[Plan] Tenant {tenant['id']} paid plan '{plan}' expired 30 days after activation — reverted to {DEFAULT_PLAN}")
+            except Exception as e:
+                logger.warning(f"[Plan] Failed to revert expired paid plan for {tenant.get('id')}: {e}")
+            return DEFAULT_PLAN
+        return plan
+
+    return plan if plan in PLAN_LIMITS else DEFAULT_PLAN
 
 
 def _reset_usage_if_new_day(tenant: dict) -> dict:
@@ -382,6 +417,18 @@ def get_usage_summary(tenant_id: str) -> Dict[str, Any]:
         if plan == "trial" and trial_end:
             trial_days_remaining = max(0, (trial_end - datetime.now(timezone.utc)).days)
 
+        plan_days_remaining = None
+        if plan in PAID_PLANS:
+            expires_at = get_paid_plan_expiry(tenant)
+            if expires_at:
+                plan_days_remaining = max(0, (expires_at - datetime.now(timezone.utc)).days)
+
+        # plan_activated_at survives a paid-plan revert (see _resolve_plan), so
+        # its presence on a tenant now sitting on the free plan means their
+        # paid plan lapsed — distinct from a tenant that has never paid, so
+        # the frontend can show "resubscribe" instead of a generic upgrade nag.
+        was_previously_paid = (not admin) and plan == DEFAULT_PLAN and bool(tenant.get("plan_activated_at"))
+
         tickets_limit = limits.get("tickets_per_day")
         ai_limit = limits.get("ai_replies_per_day")
         emails_limit = limits.get("emails_per_day")
@@ -390,6 +437,9 @@ def get_usage_summary(tenant_id: str) -> Dict[str, Any]:
             "plan_label": limits.get("label", plan.title()),
             "is_super_admin": admin,
             "trial_days_remaining": trial_days_remaining,
+            "plan_activated_at": tenant.get("plan_activated_at"),
+            "plan_days_remaining": plan_days_remaining,
+            "was_previously_paid": was_previously_paid,
             "usage_today": usage,
             "limits": limits,
             "tickets_remaining_today": None if tickets_limit is None else max(0, tickets_limit - usage["tickets"]),

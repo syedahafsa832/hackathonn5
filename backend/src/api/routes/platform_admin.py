@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Depends
 
 from src.api.middleware.tenant_auth import get_current_tenant, TenantContext
 from src.lib.supabase_client import supabase_select, supabase_insert
-from src.services.plan_service import is_super_admin, PLAN_LIMITS
+from src.services.plan_service import is_super_admin, PLAN_LIMITS, PAID_PLANS
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["Platform Admin"])
@@ -108,7 +108,13 @@ async def activate_upgrade_request(request_id: str, tenant: TenantContext = Depe
         target_tenant_id = req.get("tenant_id")
         plan = req.get("requested_plan")
         if target_tenant_id and plan in PLAN_LIMITS:
-            supabase_update("tenants", {"id": f"eq.{target_tenant_id}"}, {"plan": plan})
+            from datetime import datetime, timezone
+            update = {"plan": plan}
+            # Paid plans expire 30 days after activation (plan_service._resolve_plan);
+            # free/trial/founding_free don't, so no activation timestamp needed for those.
+            if plan in PAID_PLANS:
+                update["plan_activated_at"] = datetime.now(timezone.utc).isoformat()
+            supabase_update("tenants", {"id": f"eq.{target_tenant_id}"}, update)
 
         supabase_update("upgrade_requests", {"id": f"eq.{request_id}"}, {
             "status": "activated",
