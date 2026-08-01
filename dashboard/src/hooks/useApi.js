@@ -18,10 +18,10 @@ export function useTicket(id) {
 /**
  * Hook for fetching conversation list
  */
-export function useConversations(status = 'active', channel = null) {
+export function useConversations(status = 'active', storeId = null) {
   return useQuery({
-    queryKey: ['conversations', status, channel],
-    queryFn: () => api.getConversations({ status, channel }),
+    queryKey: ['conversations', status, storeId],
+    queryFn: () => api.getConversations({ status, store_id: storeId }),
     refetchInterval: 10000,
   });
 }

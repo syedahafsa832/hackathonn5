@@ -339,13 +339,6 @@ try:
     # ==================== V2 Multi-Tenant Routes (Supabase Auth) ====================
     # New production-ready routes with organization/brand hierarchy
     try:
-      from src.api.routes.v2_auth import router as v2_auth_router
-      register_router(v2_auth_router, prefix="/api/v2")
-      logger.info("✓ V2 Auth router registered")
-    except Exception as e:
-      logger.warning(f"Failed to register V2 auth router: {e}")
-
-    try:
       from src.api.routes.platform_admin import router as platform_admin_router
       register_router(platform_admin_router, prefix="/api/v2")
       logger.info("✓ Platform admin router registered")
