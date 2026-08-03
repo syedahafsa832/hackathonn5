@@ -373,6 +373,7 @@ export default function TicketDetail() {
   const { mutate: release } = useRelease();
   const [reply, setReply] = useState('');
   const [actionStatus, setActionStatus] = useState('');
+  const [sendStatus, setSendStatus] = useState('');
   const [approving, setApproving] = useState(false);
   const [suggestions, setSuggestions] = useState(null);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
@@ -389,12 +390,18 @@ export default function TicketDetail() {
 
   const handleSend = () => {
     if (!reply.trim()) return;
+    setSendStatus('');
     sendMessage({ id: ticket_id, text: reply }, {
       onSuccess: () => {
         setReply('');
-        setActionStatus('Message sent.');
+        setSendStatus('Message sent.');
       },
-      onError: (err) => setActionStatus(err.response?.data?.detail || 'Failed to send message.')
+      // This used to only ever set actionStatus, which renders in the
+      // Operational Control card in the right panel — nowhere near the
+      // compose box or Send button the user is actually looking at. A
+      // failure (e.g. "No Gmail connected for this brand") was real but
+      // invisible, which looked identical to the button doing nothing.
+      onError: (err) => setSendStatus(err.response?.data?.detail || 'Failed to send message.')
     });
   };
 
@@ -565,6 +572,18 @@ export default function TicketDetail() {
               {sending ? 'Sending...' : 'Send'}
             </button>
           </div>
+          {sendStatus && (
+            <div style={{
+              margin: '0 20px 16px',
+              fontSize: '12px',
+              padding: '8px 10px',
+              borderRadius: '4px',
+              color: sendStatus.includes('fail') || sendStatus.includes('No Gmail') ? 'var(--danger)' : 'var(--success)',
+              background: sendStatus.includes('fail') || sendStatus.includes('No Gmail') ? 'var(--danger-light)' : 'var(--success-light)',
+            }}>
+              {sendStatus}
+            </div>
+          )}
         </div>
       </div>
 

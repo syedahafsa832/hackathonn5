@@ -67,7 +67,11 @@ export default function Tickets() {
     return result;
   })();
 
-  const error = queryError ? 'Failed to load conversations. Please try again.' : '';
+  // useConversations polls every 10s in the background — a single transient
+  // failure (cold start, network blip) shouldn't blank out a page that's
+  // still showing perfectly good cached data underneath. Only surface the
+  // error when there's nothing on screen to fall back on.
+  const error = queryError && tickets.length === 0 ? 'Failed to load conversations. Please try again.' : '';
 
   const handleOpenConversation = (id) => {
     markRead(id);
