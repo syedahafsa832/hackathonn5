@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import client from '../api/client';
+import Alert from '../components/Alert';
 
 export default function Login() {
   const navigate = useNavigate();
@@ -38,35 +39,33 @@ export default function Login() {
   return (
     <div style={{
       minHeight: '100vh',
-      background: '#09090B',
-      backgroundImage: 'radial-gradient(circle, rgba(51,65,85,0.4) 1px, transparent 1px)',
-      backgroundSize: '24px 24px',
+      background: 'var(--bg-secondary)',
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
       padding: '24px',
     }}>
       <div style={{
-        background: '#111113',
-        border: '1px solid rgba(255,255,255,0.08)',
+        background: 'var(--bg-primary)',
+        border: '1px solid var(--border)',
         borderRadius: '12px',
         padding: '40px',
         width: '100%',
         maxWidth: '400px',
-        boxShadow: '0 0 0 1px rgba(0,0,0,0.5), 0 24px 48px rgba(0,0,0,0.4)',
+        boxShadow: '0 4px 24px rgba(0,0,0,0.06)',
       }}>
         <div style={{ textAlign: 'center', marginBottom: '32px' }}>
           <div style={{ fontSize: '24px', fontWeight: '700', letterSpacing: '-0.5px', marginBottom: '6px' }}>
-            <span style={{ color: '#06B6D4' }}>t</span><span style={{ color: 'white' }}>Resolv</span>
+            <span style={{ color: 'var(--accent)' }}>t</span><span style={{ color: 'var(--text-primary)' }}>Resolv</span>
           </div>
-          <div style={{ fontSize: '14px', color: '#64748B' }}>
+          <div style={{ fontSize: '14px', color: 'var(--text-secondary)' }}>
             Your AI support employee
           </div>
         </div>
 
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           <div>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: '#94A3B8', marginBottom: '6px' }}>
+            <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', marginBottom: '6px' }}>
               Email
             </label>
             <input
@@ -79,26 +78,20 @@ export default function Login() {
               style={{
                 width: '100%',
                 padding: '10px 12px',
-                border: '1px solid rgba(255,255,255,0.1)',
+                border: '1px solid var(--border-strong)',
                 borderRadius: '6px',
                 fontSize: '14px',
-                background: '#18181B',
-                color: 'white',
-                transition: 'all 0.15s',
+                background: 'var(--bg-primary)',
+                color: 'var(--text-primary)',
+                transition: 'border-color 0.15s',
               }}
-              onFocus={e => {
-                e.target.style.borderColor = '#06B6D4';
-                e.target.style.boxShadow = '0 0 0 3px rgba(6,182,212,0.15)';
-              }}
-              onBlur={e => {
-                e.target.style.borderColor = 'rgba(255,255,255,0.1)';
-                e.target.style.boxShadow = 'none';
-              }}
+              onFocus={e => { e.target.style.borderColor = 'var(--accent)'; }}
+              onBlur={e => { e.target.style.borderColor = 'var(--border-strong)'; }}
             />
           </div>
 
           <div>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: '#94A3B8', marginBottom: '6px' }}>
+            <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', marginBottom: '6px' }}>
               Password
             </label>
             <input
@@ -111,36 +104,19 @@ export default function Login() {
               style={{
                 width: '100%',
                 padding: '10px 12px',
-                border: '1px solid rgba(255,255,255,0.1)',
+                border: '1px solid var(--border-strong)',
                 borderRadius: '6px',
                 fontSize: '14px',
-                background: '#18181B',
-                color: 'white',
-                transition: 'all 0.15s',
+                background: 'var(--bg-primary)',
+                color: 'var(--text-primary)',
+                transition: 'border-color 0.15s',
               }}
-              onFocus={e => {
-                e.target.style.borderColor = '#06B6D4';
-                e.target.style.boxShadow = '0 0 0 3px rgba(6,182,212,0.15)';
-              }}
-              onBlur={e => {
-                e.target.style.borderColor = 'rgba(255,255,255,0.1)';
-                e.target.style.boxShadow = 'none';
-              }}
+              onFocus={e => { e.target.style.borderColor = 'var(--accent)'; }}
+              onBlur={e => { e.target.style.borderColor = 'var(--border-strong)'; }}
             />
           </div>
 
-          {error && (
-            <div style={{
-              padding: '10px 12px',
-              background: 'var(--danger-light)',
-              border: '1px solid #FCA5A5',
-              borderRadius: '4px',
-              color: 'var(--danger)',
-              fontSize: '13px',
-            }}>
-              {error}
-            </div>
-          )}
+          <Alert variant="error">{error}</Alert>
 
           <button
             type="submit"
@@ -149,7 +125,7 @@ export default function Login() {
               width: '100%',
               height: '40px',
               borderRadius: '6px',
-              background: loading ? '#475569' : '#06B6D4',
+              background: loading ? 'var(--text-muted)' : 'var(--accent)',
               color: 'white',
               fontWeight: '500',
               fontSize: '14px',
@@ -158,16 +134,16 @@ export default function Login() {
               marginTop: '8px',
               border: 'none'
             }}
-            onMouseEnter={e => { if (!loading) e.target.style.background = '#0891B2'; }}
-            onMouseLeave={e => { if (!loading) e.target.style.background = '#06B6D4'; }}
+            onMouseEnter={e => { if (!loading) e.target.style.background = 'var(--accent-hover)'; }}
+            onMouseLeave={e => { if (!loading) e.target.style.background = 'var(--accent)'; }}
           >
             {loading ? 'Signing in...' : 'Sign in'}
           </button>
         </form>
 
-        <div style={{ textAlign: 'center', marginTop: '20px', fontSize: '13px', color: '#94A3B8' }}>
+        <div style={{ textAlign: 'center', marginTop: '20px', fontSize: '13px', color: 'var(--text-muted)' }}>
           Don't have an account?{' '}
-          <Link to="/signup" style={{ color: '#06B6D4', fontWeight: '500', textDecoration: 'none' }} onMouseEnter={e => e.target.style.textDecoration = 'underline'} onMouseLeave={e => e.target.style.textDecoration = 'none'}>
+          <Link to="/signup" style={{ color: 'var(--accent)', fontWeight: '500', textDecoration: 'none' }} onMouseEnter={e => e.target.style.textDecoration = 'underline'} onMouseLeave={e => e.target.style.textDecoration = 'none'}>
             Sign up
           </Link>
         </div>

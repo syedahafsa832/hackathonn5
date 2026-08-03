@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Crown } from 'lucide-react';
 import client from '../api/client';
 import Avatar from '../components/Avatar';
+import Alert from '../components/Alert';
 
 const PAID_PLANS = ['starter', 'growth', 'enterprise'];
 
@@ -48,7 +49,6 @@ export default function Profile() {
       setMsg('Failed to save.');
     } finally {
       setSaving(false);
-      setTimeout(() => setMsg(''), 2500);
     }
   };
 
@@ -135,7 +135,13 @@ export default function Profile() {
           >
             {saving ? 'Saving…' : 'Save changes'}
           </button>
-          {msg && <span style={{ fontSize: '13px', color: msg === 'Saved.' ? '#16A34A' : '#DC2626' }}>{msg}</span>}
+          <Alert
+            variant={msg === 'Saved.' ? 'success' : 'error'}
+            onDismiss={() => setMsg('')}
+            autoDismissMs={2500}
+          >
+            {msg}
+          </Alert>
         </div>
       </div>
     </div>

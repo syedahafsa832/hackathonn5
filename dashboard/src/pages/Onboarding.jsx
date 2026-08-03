@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import client, { extractErrorMessage } from '../api/client';
+import Alert from '../components/Alert';
 
 function ProgressBar({ step }) {
   return (
@@ -108,11 +109,7 @@ function Step1({ onNext }) {
         </div>
       </div>
 
-      {error && (
-        <div style={{ padding: '10px 14px', background: 'var(--danger-light)', borderRadius: '4px', fontSize: '13px', color: 'var(--danger)' }}>
-          {error}
-        </div>
-      )}
+      <Alert variant="error">{error}</Alert>
 
       <button
         onClick={handleNext}
@@ -196,9 +193,7 @@ function Step2({ brandId, onNext }) {
           Skip for now
         </button>
       </div>
-      {gmailError && (
-        <div style={{ fontSize: '13px', color: 'var(--danger)' }}>{gmailError}</div>
-      )}
+      <Alert variant="error">{gmailError}</Alert>
     </div>
   );
 }
@@ -254,7 +249,10 @@ export default function Onboarding() {
     <div style={{ minHeight: '100vh', background: 'var(--bg-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
       <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '40px', width: '100%', maxWidth: '520px' }}>
         <div style={{ marginBottom: '32px' }}>
-          <div style={{ fontWeight: '800', fontSize: '20px', color: 'var(--accent)', letterSpacing: '-0.5px', marginBottom: '24px' }}>Resolv</div>
+          <div style={{ fontWeight: '800', fontSize: '20px', letterSpacing: '-0.5px', marginBottom: '24px' }}>
+            <span style={{ color: 'var(--accent)' }}>t</span>
+            <span style={{ color: 'var(--text-primary)' }}>Resolv</span>
+          </div>
           <ProgressBar step={step} />
         </div>
 

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import client from '../api/client';
+import Alert from '../components/Alert';
 
 export default function Signup() {
   const navigate = useNavigate();
@@ -134,18 +135,7 @@ export default function Signup() {
             />
           </div>
 
-          {error && (
-            <div style={{
-              padding: '10px 12px',
-              background: 'var(--danger-light)',
-              border: '1px solid #FCA5A5',
-              borderRadius: '4px',
-              color: 'var(--danger)',
-              fontSize: '13px',
-            }}>
-              {error}
-            </div>
-          )}
+          <Alert variant="error">{error}</Alert>
 
           <button
             type="submit"

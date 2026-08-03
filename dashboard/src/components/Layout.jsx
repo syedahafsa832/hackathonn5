@@ -26,7 +26,12 @@ export default function Layout({ children }) {
 
   const title = Object.entries(PAGE_TITLES).find(([path]) =>
     location.pathname.startsWith(path)
-  )?.[1] || 'Resolv';
+  )?.[1] || (
+    <>
+      <span style={{ color: '#06B6D4' }}>t</span>
+      <span style={{ color: 'var(--text-primary)' }}>Resolv</span>
+    </>
+  );
 
   useEffect(() => {
     setMobileMenuOpen(false);

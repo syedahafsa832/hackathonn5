@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Badge from '../components/Badge';
 import StatCard from '../components/StatCard';
+import Alert from '../components/Alert';
 import { useEscalations, useStats, useActions, useApproveAction, useRejectAction } from '../hooks/useApi';
 import api from '../api/services';
 
@@ -43,21 +44,22 @@ const ACTION_EXECUTE_LABELS = {
   RESTORE_ORDER: 'Restore in Shopify',
 };
 
+// Text only — Alert supplies its own ✓/✗ icon, so these no longer carry one.
 const EXECUTION_MESSAGES = {
-  refund: (r) => `✓ $${r?.amount ?? ''} refunded via Shopify. Customer will receive Shopify's confirmation email.`,
-  cancel_order: (r) => `✓ Order ${r?.order_name ?? ''} cancelled. Stock restocked. Customer notified by Shopify.`,
+  refund: (r) => `$${r?.amount ?? ''} refunded via Shopify. Customer will receive Shopify's confirmation email.`,
+  cancel_order: (r) => `Order ${r?.order_name ?? ''} cancelled. Stock restocked. Customer notified by Shopify.`,
   change_address: (r) => r?.manual_action_required
-    ? `✓ Queued — update address manually in Shopify admin.${r?.new_address_text ? ' New address: ' + r.new_address_text : ''}`
-    : `✓ Shipping address updated automatically in Shopify.`,
-  reship: () => `✓ Queued — please create a replacement shipment in Shopify admin.`,
-  restore_order: (r) => `✓ Order ${r?.order_name ?? ''} has been restored and is active again. Customer has been notified.`,
-  REFUND: (r) => `✓ $${r?.amount ?? ''} refunded via Shopify. Customer will receive Shopify's confirmation email.`,
-  CANCEL: (r) => `✓ Order ${r?.order_name ?? ''} cancelled.`,
+    ? `Queued — update address manually in Shopify admin.${r?.new_address_text ? ' New address: ' + r.new_address_text : ''}`
+    : `Shipping address updated automatically in Shopify.`,
+  reship: () => `Queued — please create a replacement shipment in Shopify admin.`,
+  restore_order: (r) => `Order ${r?.order_name ?? ''} has been restored and is active again. Customer has been notified.`,
+  REFUND: (r) => `$${r?.amount ?? ''} refunded via Shopify. Customer will receive Shopify's confirmation email.`,
+  CANCEL: (r) => `Order ${r?.order_name ?? ''} cancelled.`,
   ADDRESS_CHANGE: (r) => r?.manual_action_required
-    ? `✓ Queued — update address manually in Shopify admin.${r?.new_address_text ? ' New address: ' + r.new_address_text : ''}`
-    : `✓ Shipping address updated automatically in Shopify.`,
-  RESHIP: () => `✓ Queued — please create a replacement shipment in Shopify admin.`,
-  RESTORE_ORDER: (r) => `✓ Order ${r?.order_name ?? ''} has been restored and is active again. Customer has been notified.`,
+    ? `Queued — update address manually in Shopify admin.${r?.new_address_text ? ' New address: ' + r.new_address_text : ''}`
+    : `Shipping address updated automatically in Shopify.`,
+  RESHIP: () => `Queued — please create a replacement shipment in Shopify admin.`,
+  RESTORE_ORDER: (r) => `Order ${r?.order_name ?? ''} has been restored and is active again. Customer has been notified.`,
 };
 
 function ActionCard({ action, onApprove, onReject }) {
@@ -72,7 +74,7 @@ function ActionCard({ action, onApprove, onReject }) {
     ? (EXECUTION_MESSAGES[action.action_type]?.(action.execution_result) || JSON.stringify(action.execution_result))
     : null;
   const failMsg = action.error_message
-    ? `✗ Action failed: ${action.error_message}. Marked for manual review.`
+    ? `Action failed: ${action.error_message}. Marked for manual review.`
     : null;
 
   const handleApprove = async () => {
@@ -130,23 +132,9 @@ function ActionCard({ action, onApprove, onReject }) {
       </div>
 
       {/* Execution result (after approval) */}
-      {execMsg && (
-        <div style={{ padding: '8px 12px', background: '#ECFDF5', borderRadius: '4px', fontSize: '13px', color: '#10B981' }}>
-          {execMsg}
-        </div>
-      )}
-      {failMsg && (
-        <div style={{ padding: '8px 12px', background: '#FEF2F2', borderRadius: '4px', fontSize: '13px', color: '#EF4444' }}>
-          {failMsg}
-        </div>
-      )}
-
-      {/* Approve error */}
-      {approveError && (
-        <div style={{ padding: '8px 12px', background: '#FEF2F2', borderRadius: '4px', fontSize: '12px', color: '#EF4444' }}>
-          ✗ {approveError}
-        </div>
-      )}
+      <Alert variant="success">{execMsg}</Alert>
+      <Alert variant="error">{failMsg}</Alert>
+      <Alert variant="error">{approveError}</Alert>
 
       {/* Action buttons for pending */}
       {action.status === 'pending' && !execMsg && !failMsg && (
@@ -231,6 +219,7 @@ export default function Actions() {
   const [selectedEscalationIds, setSelectedEscalationIds] = useState(new Set());
   const [bulkEscalWorking, setBulkEscalWorking] = useState(false);
   const [showRejected, setShowRejected] = useState(false);
+  const [pageError, setPageError] = useState('');
 
   // ActionCard's own onReject already awaits this and shows its own working
   // state — but the card optimistically disappears from the pending list the
@@ -242,7 +231,7 @@ export default function Actions() {
     try {
       await rejectAction({ id, reason });
     } catch (err) {
-      window.alert(err?.response?.data?.detail || 'Failed to reject action — it has been restored to the list.');
+      setPageError(err?.response?.data?.detail || 'Failed to reject action — it has been restored to the list.');
     }
   };
 
@@ -301,7 +290,7 @@ export default function Actions() {
       await api.bulkCloseEscalations({ ticket_ids: Array.from(selectedEscalationIds) });
       setSelectedEscalationIds(new Set());
       await refetchEscalations();
-    } catch { window.alert('Failed to close escalations'); }
+    } catch { setPageError('Failed to close escalations'); }
     finally { setBulkEscalWorking(false); }
   };
 
@@ -312,7 +301,7 @@ export default function Actions() {
       await api.bulkCloseEscalations({ close_all: true });
       setSelectedEscalationIds(new Set());
       await refetchEscalations();
-    } catch { window.alert('Failed to close escalations'); }
+    } catch { setPageError('Failed to close escalations'); }
     finally { setBulkEscalWorking(false); }
   };
 
@@ -323,6 +312,8 @@ export default function Actions() {
   return (
     <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
 
+      <Alert variant="error" onDismiss={() => setPageError('')} autoDismissMs={5000}>{pageError}</Alert>
+
       {/* Stats */}
       <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
         <StatCard label="Pending Approvals" value={loading ? null : actions.length} loading={loading} subtitle="Financial actions awaiting review" labelColor={pendingColor} valueSize="48px" />
@@ -330,7 +321,16 @@ export default function Actions() {
       </div>
 
       {/* Pending Financial Actions */}
-      {actions.length > 0 && (
+      {loadingActions ? (
+        <section>
+          <div className="header-row" style={{ marginBottom: '10px' }}>
+            <h2 style={{ fontSize: '14px', fontWeight: '600', color: '#0F172A' }}>Pending Approvals</h2>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {[1, 2, 3].map(i => <div key={i} className="skeleton" style={{ height: '140px', borderRadius: '8px' }} />)}
+          </div>
+        </section>
+      ) : actions.length > 0 && (
         <section>
           <div className="header-row" style={{ marginBottom: '10px' }}>
             <h2 style={{ fontSize: '14px', fontWeight: '600', color: '#0F172A' }}>Pending Approvals</h2>
@@ -384,7 +384,11 @@ export default function Actions() {
       )}
 
       {/* Rejected Approvals */}
-      {!loadingHistory && rejectedActions.length > 0 && (
+      {loadingHistory ? (
+        <section>
+          <div className="skeleton" style={{ height: '20px', width: '140px', borderRadius: '4px' }} />
+        </section>
+      ) : rejectedActions.length > 0 && (
         <section>
           <div className="header-row" style={{ marginBottom: '10px' }}>
             <button

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import client from '../api/client';
+import Alert from '../components/Alert';
 
 function formatAge(iso) {
   if (!iso) return '—';
@@ -31,6 +32,7 @@ export default function QuarantineQueue() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [acting, setActing] = useState({});
+  const [actionError, setActionError] = useState('');
 
   useEffect(() => {
     document.title = "Quarantine — tResolv";
@@ -62,12 +64,13 @@ export default function QuarantineQueue() {
   // re-fetching to find that out.
   const promote = async (id) => {
     setActing((a) => ({ ...a, [id]: 'promoting' }));
+    setActionError('');
     try {
       await client.post(`/api/v1/quarantine/${id}/promote`);
       setItems((prev) => prev.filter((it) => it.id !== id));
       setPending((p) => Math.max(0, p - 1));
     } catch (e) {
-      alert(e.response?.data?.detail || 'Failed to promote email');
+      setActionError(e.response?.data?.detail || 'Failed to promote email');
     } finally {
       setActing((a) => { const n = { ...a }; delete n[id]; return n; });
     }
@@ -76,12 +79,13 @@ export default function QuarantineQueue() {
   const discard = async (id) => {
     if (!window.confirm('Discard this email? This cannot be undone.')) return;
     setActing((a) => ({ ...a, [id]: 'discarding' }));
+    setActionError('');
     try {
       await client.post(`/api/v1/quarantine/${id}/discard`);
       setItems((prev) => prev.filter((it) => it.id !== id));
       setPending((p) => Math.max(0, p - 1));
     } catch (e) {
-      alert(e.response?.data?.detail || 'Failed to discard email');
+      setActionError(e.response?.data?.detail || 'Failed to discard email');
     } finally {
       setActing((a) => { const n = { ...a }; delete n[id]; return n; });
     }
@@ -116,18 +120,8 @@ export default function QuarantineQueue() {
         </div>
       )}
 
-      {error && (
-        <div style={{
-          background: '#FEF2F2',
-          border: '1px solid #FECACA',
-          borderRadius: '8px',
-          padding: '16px 20px',
-          color: '#EF4444',
-          fontSize: '13px',
-        }}>
-          {error}
-        </div>
-      )}
+      <Alert variant="error">{error}</Alert>
+      <Alert variant="error" onDismiss={() => setActionError('')} autoDismissMs={5000}>{actionError}</Alert>
 
       {!loading && !error && items.length === 0 && (
         <div style={{

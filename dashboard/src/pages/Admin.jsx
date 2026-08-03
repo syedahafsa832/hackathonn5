@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { Crown } from 'lucide-react';
 import api from '../api/services';
+import Alert from '../components/Alert';
 
 const PAID_PLANS = ['starter', 'growth', 'enterprise'];
 
@@ -24,6 +26,7 @@ export default function Admin() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [activating, setActivating] = useState(null);
+  const [activateError, setActivateError] = useState('');
 
   useEffect(() => {
     document.title = 'Admin — tResolv';
@@ -52,11 +55,12 @@ export default function Admin() {
 
   const activate = async (id) => {
     setActivating(id);
+    setActivateError('');
     try {
       await api.activateUpgradeRequest(id);
       await load();
     } catch (e) {
-      alert(e.response?.data?.detail || 'Failed to activate upgrade');
+      setActivateError(e.response?.data?.detail || 'Failed to activate upgrade');
     } finally {
       setActivating(null);
     }
@@ -72,8 +76,18 @@ export default function Admin() {
 
   if (error) {
     return (
-      <div style={{ padding: '48px 24px', textAlign: 'center' }}>
-        <div style={{ fontSize: '15px', fontWeight: '600', color: '#1E293B', marginBottom: '4px' }}>{error}</div>
+      <div style={{ padding: '24px' }}>
+        <div style={{
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          padding: '60px 24px', border: '1px solid #E4E4E7', borderRadius: '8px', background: 'white', gap: '12px',
+        }}>
+          <div style={{ width: '48px', height: '48px', borderRadius: '50%', background: '#FFFBEB', color: '#F59E0B', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px' }}>🔒</div>
+          <div style={{ fontSize: '16px', fontWeight: '600', color: '#1E293B' }}>{error}</div>
+          <div style={{ fontSize: '13px', color: '#94A3B8', textAlign: 'center' }}>You may not have the required permissions, or something went wrong loading this page.</div>
+          <Link to="/dashboard" style={{ marginTop: '4px', padding: '8px 18px', background: '#06B6D4', color: 'white', borderRadius: '6px', textDecoration: 'none', fontSize: '13px', fontWeight: '600' }}>
+            ← Back to Dashboard
+          </Link>
+        </div>
       </div>
     );
   }
@@ -131,6 +145,9 @@ export default function Admin() {
         <p style={{ fontSize: '13px', color: '#64748B', marginBottom: '16px' }}>
           Manually activate after confirming payment (bank transfer) — no automatic billing.
         </p>
+        <div style={{ marginBottom: activateError ? '16px' : 0 }}>
+          <Alert variant="error" onDismiss={() => setActivateError('')} autoDismissMs={5000}>{activateError}</Alert>
+        </div>
 
         {upgradeRequests.length === 0 ? (
           <div style={{ padding: '32px', textAlign: 'center', color: '#94A3B8', fontSize: '13px', background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px' }}>
