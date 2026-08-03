@@ -71,39 +71,63 @@ export default function Upgrade() {
       {loading ? (
         <div className="skeleton" style={{ height: '200px', borderRadius: '8px' }} />
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
-          {plans.map(p => (
-            <div
-              key={p.id}
-              onClick={() => pickPlan(p.id)}
-              style={{
-                border: '1px solid ' + (form.plan === p.id ? '#06B6D4' : '#E4E4E7'),
-                boxShadow: form.plan === p.id ? '0 0 0 2px #ECFEFF' : 'none',
-                borderRadius: '8px',
-                padding: '20px',
-                cursor: 'pointer',
-                background: 'white',
-                transition: 'border-color 0.15s, box-shadow 0.15s',
-              }}
-            >
-              <div style={{ fontSize: '14px', fontWeight: '600', color: '#0F172A', marginBottom: '12px' }}>{p.label}</div>
-              <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px', color: '#64748B' }}>
-                <li>{fmt(p.tickets_per_day)} tickets/day</li>
-                <li>{fmt(p.ai_replies_per_day)} AI replies/day</li>
-                <li>{fmt(p.brands)} brand(s)</li>
-                <li>{fmt(p.users)} user(s)</li>
-              </ul>
-              <div style={{
-                marginTop: '14px', textAlign: 'center', padding: '7px', borderRadius: '6px',
-                fontSize: '13px', fontWeight: '600',
-                background: form.plan === p.id ? '#06B6D4' : '#F8FAFC',
-                color: form.plan === p.id ? 'white' : '#64748B',
-              }}>
-                {form.plan === p.id ? 'Selected' : 'Select'}
-              </div>
-            </div>
-          ))}
-        </div>
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
+            {plans.map(p => {
+              const isEnterprise = p.id === 'enterprise';
+              const priceLabel = p.price_monthly === 0 ? 'Free'
+                : p.price_monthly == null ? 'Contact us'
+                : `$${p.price_monthly}/mo`;
+              // brands/users are only worth showing once a tier actually
+              // offers more than the solo-brand/solo-user default every
+              // plan has today — otherwise it's a number the product can't
+              // back up yet (see the note below the grid).
+              const showBrandUserLine = !isEnterprise && !(p.brands === 1 && p.users === 1);
+              return (
+                <div
+                  key={p.id}
+                  onClick={() => pickPlan(p.id)}
+                  style={{
+                    border: '1px solid ' + (form.plan === p.id ? '#06B6D4' : '#E4E4E7'),
+                    boxShadow: form.plan === p.id ? '0 0 0 2px #ECFEFF' : 'none',
+                    borderRadius: '8px',
+                    padding: '20px',
+                    cursor: 'pointer',
+                    background: 'white',
+                    transition: 'border-color 0.15s, box-shadow 0.15s',
+                  }}
+                >
+                  <div style={{ fontSize: '14px', fontWeight: '600', color: '#0F172A', marginBottom: '4px' }}>{p.label}</div>
+                  <div style={{ fontSize: '20px', fontWeight: '700', color: '#0F172A', marginBottom: '12px', fontFamily: 'DM Mono, monospace' }}>{priceLabel}</div>
+                  <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '13px', color: '#64748B' }}>
+                    {isEnterprise ? (
+                      <li>Custom limits — tailored to your needs</li>
+                    ) : (
+                      <li>{fmt(p.tickets_per_day)} tickets/day</li>
+                    )}
+                    {showBrandUserLine && (
+                      <>
+                        <li>{fmt(p.brands)} brand(s)</li>
+                        <li>{fmt(p.users)} user(s)</li>
+                      </>
+                    )}
+                  </ul>
+                  <div style={{
+                    marginTop: '14px', textAlign: 'center', padding: '7px', borderRadius: '6px',
+                    fontSize: '13px', fontWeight: '600',
+                    background: form.plan === p.id ? '#06B6D4' : '#F8FAFC',
+                    color: form.plan === p.id ? 'white' : '#64748B',
+                  }}>
+                    {isEnterprise ? 'Contact us' : (form.plan === p.id ? 'Selected' : 'Select')}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <p style={{ fontSize: '12px', color: '#94A3B8', margin: 0 }}>
+            Multi-brand and team accounts are coming soon — reach out if you need this today.
+          </p>
+        </>
       )}
 
       <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', alignItems: 'flex-start' }}>

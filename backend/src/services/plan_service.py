@@ -96,32 +96,44 @@ PLAN_LIMITS: Dict[str, Dict[str, Optional[int]]] = {
     },
     "free": {
         "tickets_per_day": 10,
+        # Mirrors tickets_per_day, not a separate customer-facing cap — the
+        # tickets check runs first in message_processor.py and always trips
+        # before this one, so it's never the effective bottleneck. Kept equal
+        # so the pricing page can show a single "tickets/day" number without
+        # that number being inaccurate for AI-handled tickets specifically.
         "ai_replies_per_day": 10,
         "emails_per_day": 50,
         "shopify_actions_per_day": 5,
         "brands": 1,
         "users": 1,
         "gmail_accounts": 1,
+        "price_monthly": 0,
         "label": "Free",
     },
     "starter": {
-        "tickets_per_day": 500,
-        "ai_replies_per_day": 500,
+        "tickets_per_day": 300,
+        "ai_replies_per_day": 300,
         "emails_per_day": 2000,
         "shopify_actions_per_day": 200,
-        "brands": 3,
-        "users": 5,
-        "gmail_accounts": 3,
+        "brands": 1,
+        "users": 1,
+        "gmail_accounts": 1,
+        "price_monthly": 149,
         "label": "Starter",
     },
     "growth": {
-        "tickets_per_day": 5000,
-        "ai_replies_per_day": 5000,
+        "tickets_per_day": 1000,
+        "ai_replies_per_day": 1000,
         "emails_per_day": 20000,
         "shopify_actions_per_day": 2000,
-        "brands": 10,
-        "users": 25,
-        "gmail_accounts": 10,
+        # Multi-brand isn't built yet — capped at 1 like every other plan
+        # until it ships. The pricing page shows a "coming soon" note here
+        # instead of a brand count, rather than advertising a number the
+        # product can't back up.
+        "brands": 1,
+        "users": 1,
+        "gmail_accounts": 1,
+        "price_monthly": 349,
         "label": "Growth",
     },
     "enterprise": {
@@ -132,6 +144,10 @@ PLAN_LIMITS: Dict[str, Dict[str, Optional[int]]] = {
         "brands": None,
         "users": None,
         "gmail_accounts": None,
+        # None here means "custom / contact us", same convention as the
+        # other None values on this plan meaning "uncapped" — the pricing
+        # page renders this plan with no fixed numbers at all.
+        "price_monthly": None,
         "label": "Enterprise",
     },
     # Legacy plan predating this system (migration 021) — kept so existing
