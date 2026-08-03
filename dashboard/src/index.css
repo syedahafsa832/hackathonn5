@@ -200,7 +200,16 @@ strong, b, h1, h2, h3, h4, h5, h6, th {
   display: flex;
 }
 .layout-main {
+  /* .app-sidebar is position:fixed, so it contributes no width to this flex
+     row — flex:1 alone gives .layout-main the full viewport width, and this
+     margin then pushes that already-full-width box further right, causing
+     it to overflow past the viewport by exactly the sidebar's width (the
+     source of the unwanted horizontal scrollbar). Explicitly sizing to the
+     remaining width fixes it, and transitions alongside the sidebar's own
+     collapse/expand animation. */
   margin-left: var(--sidebar-width);
+  width: calc(100% - var(--sidebar-width));
+  transition: margin-left 0.15s ease, width 0.15s ease;
 }
 .mobile-menu-btn {
   display: none;
@@ -222,6 +231,7 @@ strong, b, h1, h2, h3, h4, h5, h6, th {
   }
   .layout-main {
     margin-left: 0;
+    width: 100%;
   }
   .mobile-menu-btn {
     display: flex;
@@ -311,6 +321,18 @@ strong, b, h1, h2, h3, h4, h5, h6, th {
   display: grid;
   grid-template-columns: 1.3fr 1fr;
   gap: 20px;
+}
+/* Grid items default to min-width:auto, so even with min-width:0 set two
+   levels deep on the truncated-text row inside Recent Conversations, the
+   <section> itself (the actual grid item) still sized to its content's
+   intrinsic min-content width and overflowed the 1.3fr track — this was
+   the real source of the page-wide horizontal scrollbar. Confirmed via a
+   DOM measurement harness: without this rule the grid's scrollWidth
+   exceeded its clientWidth; with it, they're equal. FilteredEmailsWidget's
+   own inline minWidth:260px still wins (inline beats this class rule) so
+   its real minimum is untouched. */
+.dashboard-two-col > * {
+  min-width: 0;
 }
 @media (max-width: 768px) {
   .dashboard-two-col {
