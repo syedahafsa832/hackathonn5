@@ -40,6 +40,14 @@ TRIAL_DAYS = 14
 PAID_PLANS = {"starter", "growth", "enterprise"}
 PAID_PLAN_DURATION_DAYS = 30
 
+# Landing page: "Founding Launch Pricing... Locked in for our first 20
+# brands." Separate from FOUNDING_COHORT_CAP in auth_service.py, which caps
+# free signups onto the legacy founding_free plan — this cap is about the
+# discounted Starter/Growth price, tracked via tenants.founding_pricing_claimed_at
+# (set once, kept forever, even if the plan later lapses — a claimed slot
+# stays claimed). Scale has no founding price, so it never sets this.
+FOUNDING_PAID_CAP = 20
+
 
 def _parse_dt(v) -> Optional[datetime]:
     if not v:
@@ -111,29 +119,39 @@ PLAN_LIMITS: Dict[str, Dict[str, Optional[int]]] = {
         "label": "Free",
     },
     "starter": {
-        "tickets_per_day": 300,
-        "ai_replies_per_day": 300,
+        # Landing page: "500 conversations per month" — a real monthly cap,
+        # not daily. tickets_per_month (not tickets_per_day) is what tells
+        # check_limit()/record_usage() to use the monthly counter instead of
+        # the daily one; see usage_month/usage_tickets_this_month (migration
+        # 034). ai_replies_per_day is uncapped so it can never become a
+        # surprise second bottleneck undercutting the advertised number —
+        # the monthly conversation cap is the only real constraint.
+        "tickets_per_month": 500,
+        "ai_replies_per_day": None,
         "emails_per_day": 2000,
         "shopify_actions_per_day": 200,
         "brands": 1,
         "users": 1,
         "gmail_accounts": 1,
-        "price_monthly": 149,
+        "price_monthly": 99,
+        "price_monthly_original": 149,
         "label": "Starter",
     },
     "growth": {
-        "tickets_per_day": 1000,
-        "ai_replies_per_day": 1000,
+        # Landing page: "unlimited conversations".
+        "tickets_per_month": None,
+        "ai_replies_per_day": None,
         "emails_per_day": 20000,
         "shopify_actions_per_day": 2000,
-        # Multi-brand isn't built yet — capped at 1 like every other plan
-        # until it ships. The pricing page shows a "coming soon" note here
-        # instead of a brand count, rather than advertising a number the
-        # product can't back up.
-        "brands": 1,
+        # Landing page: "Up to 3 brands." Multi-brand is a manual,
+        # onboarding-time setup (see the note on the Upgrade page) — there's
+        # no self-serve brand switcher yet, but the cap itself is real and
+        # enforced the same way as every other plan's brand limit.
+        "brands": 3,
         "users": 1,
-        "gmail_accounts": 1,
-        "price_monthly": 349,
+        "gmail_accounts": 3,
+        "price_monthly": 249,
+        "price_monthly_original": 349,
         "label": "Growth",
     },
     "enterprise": {
@@ -146,9 +164,12 @@ PLAN_LIMITS: Dict[str, Dict[str, Optional[int]]] = {
         "gmail_accounts": None,
         # None here means "custom / contact us", same convention as the
         # other None values on this plan meaning "uncapped" — the pricing
-        # page renders this plan with no fixed numbers at all.
+        # page renders this plan with no fixed numbers at all. Internal plan
+        # id kept as "enterprise" (DB rows, PAID_PLANS, etc. all reference
+        # this string) — only the customer-facing label changed to match
+        # the landing page's rename to "Scale".
         "price_monthly": None,
-        "label": "Enterprise",
+        "label": "Scale",
     },
     # Legacy plan predating this system (migration 021) — kept so existing
     # founding-cohort tenants don't change behavior; new signups never get it.
@@ -258,6 +279,48 @@ def _next_reset_at() -> str:
     return tomorrow.isoformat()
 
 
+def _reset_monthly_tickets_if_new_month(tenant: dict) -> int:
+    """Returns this tenant's tickets-this-month count, zeroed (and
+    persisted) if the stored usage_month isn't the current calendar month.
+    Mirrors _reset_usage_if_new_day, but for plans whose PLAN_LIMITS entry
+    defines tickets_per_month instead of tickets_per_day (currently just
+    starter's 500-conversations-per-month cap)."""
+    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    if tenant.get("usage_month") == current_month:
+        return tenant.get("usage_tickets_this_month") or 0
+    try:
+        supabase_update("tenants", {"id": f"eq.{tenant['id']}"}, {
+            "usage_month": current_month,
+            "usage_tickets_this_month": 0,
+        })
+    except Exception as e:
+        logger.warning(f"[Plan] Failed to reset monthly ticket usage for {tenant.get('id')}: {e}")
+    return 0
+
+
+def _next_month_reset_at() -> str:
+    now = datetime.now(timezone.utc)
+    first_of_next_month = (now.replace(day=1) + timedelta(days=32)).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+    return first_of_next_month.isoformat()
+
+
+def get_founding_slots_remaining() -> int:
+    """How many of the first FOUNDING_PAID_CAP founding-priced Starter/Growth
+    slots are still unclaimed. Used by the pricing page to decide whether to
+    show the founding (struck-through) price or the regular price."""
+    try:
+        claimed = supabase_select("tenants", {
+            "founding_pricing_claimed_at": "not.is.null",
+            "select": "id",
+        }) or []
+        return max(0, FOUNDING_PAID_CAP - len(claimed))
+    except Exception as e:
+        logger.warning(f"[Plan] get_founding_slots_remaining failed: {e} — assuming slots remain")
+        return FOUNDING_PAID_CAP
+
+
 def _count_resource(tenant_id: str, resource: str) -> int:
     """Live row count for count-based resources. Kept to single, cheap,
     already-filtered selects — no joins, no aggregation."""
@@ -315,7 +378,19 @@ def check_limit(tenant_id: Optional[str], resource: str, email: Optional[str] = 
         limits = PLAN_LIMITS.get(plan, PLAN_LIMITS[DEFAULT_PLAN])
         base["plan"] = plan
 
-        if resource in _DAILY_RESOURCES:
+        # Starter's conversation cap is monthly, not daily (landing page:
+        # "500 conversations per month") — a plan signals this by defining
+        # tickets_per_month instead of tickets_per_day. Everything else
+        # (free/trial/founding_free, plus growth/enterprise's unlimited
+        # tickets_per_day) goes through the existing daily path unchanged.
+        is_monthly_tickets = resource == "tickets" and "tickets_per_month" in limits
+        if is_monthly_tickets:
+            limit = limits["tickets_per_month"]
+            if limit is None:
+                return base
+            used = _reset_monthly_tickets_if_new_month(tenant)
+            base["reset_at"] = _next_month_reset_at()
+        elif resource in _DAILY_RESOURCES:
             limit = limits.get(_DAILY_LIMIT_KEY[resource])
             if limit is None:
                 return base
@@ -338,7 +413,11 @@ def check_limit(tenant_id: Optional[str], resource: str, email: Optional[str] = 
             "upgrade_required": used >= limit,
         })
         if used >= limit:
-            base["reason"] = "daily_limit_reached" if resource in _DAILY_RESOURCES else "plan_limit_reached"
+            base["reason"] = (
+                "monthly_limit_reached" if is_monthly_tickets
+                else "daily_limit_reached" if resource in _DAILY_RESOURCES
+                else "plan_limit_reached"
+            )
         return base
 
     except Exception as e:
@@ -347,9 +426,10 @@ def check_limit(tenant_id: Optional[str], resource: str, email: Optional[str] = 
 
 
 def record_usage(tenant_id: Optional[str], resource: str) -> None:
-    """Increment today's usage counter for a daily resource. No-op for
-    count-based resources (brands/users/gmail_accounts are counted live from
-    their own tables, nothing to increment)."""
+    """Increment the usage counter for a daily (or, for tickets on a
+    tickets_per_month plan, monthly) resource. No-op for count-based
+    resources (brands/users/gmail_accounts are counted live from their own
+    tables, nothing to increment)."""
     if not tenant_id or resource not in _DAILY_RESOURCES:
         return
     try:
@@ -357,6 +437,15 @@ def record_usage(tenant_id: Optional[str], resource: str) -> None:
         if not tenants:
             return
         tenant = tenants[0]
+
+        if resource == "tickets":
+            plan = _resolve_plan(tenant)
+            limits = PLAN_LIMITS.get(plan, PLAN_LIMITS[DEFAULT_PLAN])
+            if "tickets_per_month" in limits:
+                used = _reset_monthly_tickets_if_new_month(tenant)
+                supabase_update("tenants", {"id": f"eq.{tenant_id}"}, {"usage_tickets_this_month": used + 1})
+                return
+
         usage = _reset_usage_if_new_day(tenant)
         column = _DAILY_USAGE_COLUMN[resource]
         supabase_update("tenants", {"id": f"eq.{tenant_id}"}, {column: usage[resource] + 1})
@@ -428,6 +517,19 @@ def get_usage_summary(tenant_id: str) -> Dict[str, Any]:
         limits = PLAN_LIMITS["enterprise"] if admin else PLAN_LIMITS.get(plan, PLAN_LIMITS[DEFAULT_PLAN])
         usage = _reset_usage_if_new_day(tenant)
 
+        # Starter tracks tickets monthly (see check_limit/record_usage) — the
+        # daily usage_today.tickets counter is never incremented for it, so
+        # tickets_used/tickets_limit/upgrade_required below must read from
+        # the monthly counter instead, or they'd silently show 0/unlimited
+        # regardless of real usage.
+        is_monthly_tickets = "tickets_per_month" in limits
+        if is_monthly_tickets:
+            tickets_limit = limits.get("tickets_per_month")
+            tickets_used = _reset_monthly_tickets_if_new_month(tenant)
+        else:
+            tickets_limit = limits.get("tickets_per_day")
+            tickets_used = usage["tickets"]
+
         trial_start, trial_end = get_trial_dates(tenant)
         trial_days_remaining = None
         if plan == "trial" and trial_end:
@@ -445,7 +547,6 @@ def get_usage_summary(tenant_id: str) -> Dict[str, Any]:
         # the frontend can show "resubscribe" instead of a generic upgrade nag.
         was_previously_paid = (not admin) and plan == DEFAULT_PLAN and bool(tenant.get("plan_activated_at"))
 
-        tickets_limit = limits.get("tickets_per_day")
         ai_limit = limits.get("ai_replies_per_day")
         emails_limit = limits.get("emails_per_day")
         return {
@@ -458,10 +559,12 @@ def get_usage_summary(tenant_id: str) -> Dict[str, Any]:
             "was_previously_paid": was_previously_paid,
             "usage_today": usage,
             "limits": limits,
-            "tickets_remaining_today": None if tickets_limit is None else max(0, tickets_limit - usage["tickets"]),
+            "tickets_used_this_period": tickets_used,
+            "tickets_period": "month" if is_monthly_tickets else "day",
+            "tickets_remaining_today": None if tickets_limit is None else max(0, tickets_limit - tickets_used),
             "ai_replies_remaining_today": None if ai_limit is None else max(0, ai_limit - usage["ai_replies"]),
             "emails_remaining_today": None if emails_limit is None else max(0, emails_limit - usage["emails"]),
-            "upgrade_required": False if admin or tickets_limit is None else usage["tickets"] >= tickets_limit,
+            "upgrade_required": False if admin or tickets_limit is None else tickets_used >= tickets_limit,
         }
     except Exception as e:
         logger.warning(f"[Plan] get_usage_summary failed for tenant {tenant_id}: {e}")

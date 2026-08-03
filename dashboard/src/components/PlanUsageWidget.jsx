@@ -60,10 +60,16 @@ export default function PlanUsageWidget() {
     );
   }
 
-  const { plan, plan_label, trial_days_remaining, plan_days_remaining, was_previously_paid, usage_today, limits, upgrade_required } = usage;
+  const { plan, plan_label, trial_days_remaining, plan_days_remaining, was_previously_paid, usage_today, limits, upgrade_required, tickets_used_this_period, tickets_period } = usage;
   const isTrial = plan === 'trial';
   const isFree = plan === 'free' || plan === 'founding_free';
   const isPaid = PAID_PLANS.includes(plan);
+  // Starter tracks conversations monthly instead of daily (see plan_service.py) —
+  // usage_today.tickets/limits.tickets_per_day are both blank for it, so read
+  // from the period-aware fields the backend also provides.
+  const ticketsLabel = tickets_period === 'month' ? 'Conversations' : 'Tickets';
+  const ticketsUsed = tickets_used_this_period ?? usage_today?.tickets ?? 0;
+  const ticketsLimit = limits?.tickets_per_month ?? limits?.tickets_per_day;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
@@ -128,7 +134,7 @@ export default function PlanUsageWidget() {
 
           {!isTrial && !isFree && (
             <>
-              <Stat label="Tickets" used={usage_today?.tickets ?? 0} limit={limits?.tickets_per_day} />
+              <Stat label={ticketsLabel} used={ticketsUsed} limit={ticketsLimit} danger={upgrade_required} />
               <Stat label="AI replies" used={usage_today?.ai_replies ?? 0} limit={limits?.ai_replies_per_day} />
             </>
           )}

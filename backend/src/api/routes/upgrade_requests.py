@@ -15,7 +15,7 @@ from typing import Optional
 
 from src.api.middleware.tenant_auth import get_current_tenant, TenantContext
 from src.lib.supabase_client import supabase_insert
-from src.services.plan_service import PLAN_LIMITS
+from src.services.plan_service import PLAN_LIMITS, FOUNDING_PAID_CAP, get_founding_slots_remaining
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Upgrade Requests"])
@@ -41,6 +41,15 @@ async def list_plans():
             for pid in _VISIBLE_PLANS if pid in PLAN_LIMITS
         ]
     }
+
+
+@router.get("/founding-status")
+async def founding_status():
+    """Whether founding (struck-through) pricing should still be shown on
+    the pricing page — mirrors the landing page's "first 20 brands" framing.
+    Public: no info here beyond a remaining-slot count."""
+    remaining = get_founding_slots_remaining()
+    return {"slots_remaining": remaining, "cap": FOUNDING_PAID_CAP, "active": remaining > 0}
 
 
 @router.post("/upgrade-requests")
