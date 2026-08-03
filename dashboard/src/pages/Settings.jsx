@@ -17,7 +17,6 @@ const inputStyle = {
 
 function EmailTab() {
   const [gmailStatus, setGmailStatus] = useState(null);
-  const [queueStatus, setQueueStatus] = useState(null);
   const [loadingStatus, setLoadingStatus] = useState(true);
   const [disconnecting, setDisconnecting] = useState(false);
   const [mode, setMode] = useState('supervised');
@@ -30,12 +29,10 @@ function EmailTab() {
     setLoadingStatus(true);
     Promise.all([
       client.get('/api/v1/settings/gmail/status').catch(() => ({ data: { connected: false } })),
-      client.get('/api/v1/settings/gmail/queue-status').catch(() => ({ data: {} })),
       client.get('/api/ai-mode').catch(() => ({ data: { mode: 'supervised' } })),
       client.get('/api/v1/settings/account').catch(() => ({ data: {} })),
-    ]).then(([gmailRes, queueRes, modeRes, accountRes]) => {
+    ]).then(([gmailRes, modeRes, accountRes]) => {
       setGmailStatus(gmailRes.data);
-      setQueueStatus(queueRes.data);
       setMode(modeRes.data?.mode || 'supervised');
       setThreshold(accountRes.data?.settings?.confidence_threshold ?? accountRes.data?.confidence_threshold ?? 80);
     }).finally(() => setLoadingStatus(false));
@@ -175,30 +172,6 @@ function EmailTab() {
           </div>
         )}
       </div>
-
-      {/* Send Queue Status */}
-      {queueStatus && (
-        <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '20px' }}>
-          <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '14px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Send Queue Status</div>
-          <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
-            {[
-              { label: 'Queued', value: queueStatus.queued_count ?? 0 },
-              { label: 'Sent (24h)', value: queueStatus.sent_24h ?? 0 },
-              { label: 'Failed', value: queueStatus.failed_count ?? 0, danger: true },
-            ].map(({ label, value, danger }) => (
-              <div key={label}>
-                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '2px' }}>{label}</div>
-                <div style={{ fontSize: '20px', fontWeight: '700', color: danger && value > 0 ? 'var(--danger)' : 'var(--text-primary)', fontFamily: 'DM Mono, monospace' }}>{value}</div>
-              </div>
-            ))}
-          </div>
-          {(queueStatus.failed_count ?? 0) > 0 && (
-            <div style={{ marginTop: '12px', padding: '10px 12px', background: 'var(--warning-light, #fef3c7)', borderRadius: '6px', fontSize: '13px', color: 'var(--warning, #92400e)' }}>
-              ⚠ {queueStatus.failed_count} email(s) failed to send. Check your Gmail connection.
-            </div>
-          )}
-        </div>
-      )}
 
       {/* AI Mode */}
       <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '20px' }}>
