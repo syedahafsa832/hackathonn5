@@ -52,11 +52,20 @@ export default function QuarantineQueue() {
 
   useEffect(() => { fetchQueue(); }, [fetchQueue]);
 
+  // Both actions used to re-fetch the entire queue after succeeding, which
+  // (a) made the button sit on "Promoting…"/"Discarding…" for two sequential
+  // round trips instead of one, and (b) meant a transient failure on that
+  // second fetch set the page-level error state, which hid the whole list
+  // (including the item that had just been successfully acted on) behind
+  // "Failed to load quarantine queue". The action's own response already
+  // tells us the item is gone from the queue — remove it locally instead of
+  // re-fetching to find that out.
   const promote = async (id) => {
     setActing((a) => ({ ...a, [id]: 'promoting' }));
     try {
       await client.post(`/api/v1/quarantine/${id}/promote`);
-      await fetchQueue();
+      setItems((prev) => prev.filter((it) => it.id !== id));
+      setPending((p) => Math.max(0, p - 1));
     } catch (e) {
       alert(e.response?.data?.detail || 'Failed to promote email');
     } finally {
@@ -69,7 +78,8 @@ export default function QuarantineQueue() {
     setActing((a) => ({ ...a, [id]: 'discarding' }));
     try {
       await client.post(`/api/v1/quarantine/${id}/discard`);
-      await fetchQueue();
+      setItems((prev) => prev.filter((it) => it.id !== id));
+      setPending((p) => Math.max(0, p - 1));
     } catch (e) {
       alert(e.response?.data?.detail || 'Failed to discard email');
     } finally {
