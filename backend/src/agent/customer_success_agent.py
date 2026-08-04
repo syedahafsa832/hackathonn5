@@ -445,11 +445,14 @@ class CustomerSuccessAgent:
                         formatted_parts.append(sent + punct)
                 reply = '\n'.join(formatted_parts)
 
-            # For email: add greeting. For chat: skip — widget is already mid-conversation.
+            # For email: add a greeting, but only if the model's own reply
+            # doesn't already open with one — Reply Style presets like
+            # Professional/Premium instruct the model to write "Dear {name},"
+            # style openings, which the old "hi"/"hey"/"thanks" prefix check
+            # didn't recognize, so it prepended a second greeting on top.
+            # Chat skips this entirely — widget is already mid-conversation.
             if not _is_chat:
-                if reply and not reply.lower().startswith("hi") and not reply.lower().startswith("hey") and not reply.lower().startswith("thanks"):
-                    structured["reply_body"] = f"Hey {name},\n\n{reply}"
-                elif reply and not (name.lower() in reply.lower()[:20]):
+                if reply and name.lower() not in reply.lower()[:30]:
                     structured["reply_body"] = f"Hey {name},\n\n{reply}"
 
             # Merchant-set signature wins verbatim; otherwise fall back to the

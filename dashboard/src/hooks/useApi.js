@@ -88,6 +88,10 @@ export function useTakeover() {
     onSuccess: (_, id) => {
       queryClient.invalidateQueries(['conversations']);
       queryClient.invalidateQueries(['messages', id]);
+      // TicketDetail's reply box is gated on ticket.handler from this query —
+      // without invalidating it, the box stayed disabled until the next
+      // 5s poll instead of updating the moment takeover succeeded.
+      queryClient.invalidateQueries(['ticket', id]);
     },
   });
 }
@@ -102,6 +106,7 @@ export function useRelease() {
     onSuccess: (_, id) => {
       queryClient.invalidateQueries(['conversations']);
       queryClient.invalidateQueries(['messages', id]);
+      queryClient.invalidateQueries(['ticket', id]);
     },
   });
 }
