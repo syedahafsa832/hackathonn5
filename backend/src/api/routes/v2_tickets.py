@@ -519,7 +519,7 @@ async def update_ticket(
 
         return {
             "success": True,
-            "ticket": result[0] if result else None,
+            "ticket": result if result else None,
             "message": "Ticket updated successfully"
         }
 
@@ -601,7 +601,7 @@ async def respond_to_ticket(
 
         return {
             "success": True,
-            "ticket": result[0] if result else None,
+            "ticket": result if result else None,
             "email_sent": updates.get("response_sent", False),
             "message": "Response sent successfully"
         }
@@ -707,7 +707,7 @@ async def approve_ai_response(
 
         return {
             "success": True,
-            "ticket": result[0] if result else None,
+            "ticket": result if result else None,
             "email_sent": True,
             "message": "AI response approved and sent"
         }
@@ -1172,7 +1172,7 @@ async def escalate_ticket(
 
         return {
             "success": True,
-            "ticket": result[0] if result else None,
+            "ticket": result if result else None,
             "message": "Ticket escalated"
         }
 
@@ -1218,7 +1218,7 @@ async def close_ticket(
 
         return {
             "success": True,
-            "ticket": result[0] if result else None,
+            "ticket": result if result else None,
             "message": "Ticket closed"
         }
 

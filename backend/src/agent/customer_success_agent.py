@@ -212,6 +212,8 @@ class CustomerSuccessAgent:
             # Resolve brand-specific Shopify + Aftership credentials
             _brand_name = "our store"
             _agent_name = "Luna"
+            from src.services.reply_style_service import build_style_prompt_block
+            _style_block = build_style_prompt_block(None)
             _brand_shopify_domain = None
             _brand_shopify_token = None
             _brand_aftership_key = None
@@ -224,6 +226,11 @@ class CustomerSuccessAgent:
                     if _b:
                         _brand_name = _b[0].get("name") or _b[0].get("brand_name") or "our store"
                         _agent_name = _b[0].get("agent_name") or "Luna"
+                        try:
+                            from src.services.reply_style_service import get_active_style
+                            _style_block = build_style_prompt_block(get_active_style(_b[0]))
+                        except Exception as _style_err:
+                            logger.warning(f"[Agent] Reply Style resolution failed: {_style_err}")
                         if _b[0].get("shopify_connected") or _b[0].get("shopify_access_token"):
                             _brand_shopify_domain = _b[0].get("shopify_domain")
                             _raw = _b[0].get("shopify_access_token") or ""
@@ -349,7 +356,7 @@ class CustomerSuccessAgent:
                 logger.info("[ReturnActions] Skipping intent detection for chat mode")
 
             # 5. Response Generation
-            system_prompt = self._construct_v3_prompt(customer_info, rag_context, sizing_context, tool_context, action_context, brand_name=_brand_name, agent_name=_agent_name)
+            system_prompt = self._construct_v3_prompt(customer_info, rag_context, sizing_context, tool_context, action_context, brand_name=_brand_name, agent_name=_agent_name, style_block=_style_block)
 
             # Defensive check - ensure at least one AI provider is configured
             if not ai_provider_manager.has_providers:
@@ -480,20 +487,20 @@ class CustomerSuccessAgent:
             logger.error(f"Full traceback: {traceback.format_exc()}")
             return self._get_fallback_response(str(e), brand_name=_brand_name, agent_name=_agent_name)
 
-    def _construct_v3_prompt(self, customer_info: Dict[str, Any], rag_context: str, sizing_context: str, tool_context: str = "", action_context: str = "", brand_name: str = "our store", agent_name: str = "Luna") -> str:
+    def _construct_v3_prompt(self, customer_info: Dict[str, Any], rag_context: str, sizing_context: str, tool_context: str = "", action_context: str = "", brand_name: str = "our store", agent_name: str = "Luna", style_block: str = "") -> str:
         order_critical = (
             "\n⚠ LIVE DATA FROM SHOPIFY — USE ONLY THESE DETAILS:\n"
             "• Reference ONLY the product names, quantities, and totals listed below.\n"
             "• Do NOT invent or assume any product names, prices, or details not listed here.\n"
         ) if tool_context.strip() else "\n(No order data fetched — if the customer asks about an order, ask for their order number.)\n"
         return f"""
-        You are {agent_name}, a friendly customer support agent for {brand_name}. You sound like a real person texting a friend - casual, warm, and helpful. NOT a corporate bot.
+        You are {agent_name}, the AI customer support employee for {brand_name}. NOT a corporate bot — sound like a real person.
+
+        REPLY STYLE (wording and tone only — this never changes facts, actions, or policy):
+        {style_block}
 
         RULES:
-        - Write like you're texting - short sentences, easy words
-        - Never use bullet points or numbered lists
         - Never use words like "algorithm", "system", "deterministic", "variant"
-        - Keep messages short - 3-4 sentences max
         - Always sound human and friendly
         - NEVER refer to products not listed in ORDER INFO below
         - NEVER say "let me check", "I'll look into it", "give me a moment", or anything that implies you will do something later — respond fully RIGHT NOW based only on what is in ORDER INFO

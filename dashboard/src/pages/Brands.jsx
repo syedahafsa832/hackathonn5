@@ -143,6 +143,7 @@ function BrandCard({ brand, highlightGmail }) {
   const [gmailLoading, setGmailLoading] = useState(false);
   const [agentName, setAgentName] = useState(brand.agent_name || 'Luna');
   const [brandName, setBrandName] = useState(brand.name || '');
+  const [emailSignature, setEmailSignature] = useState(brand.email_signature || '');
   const [savingIdentity, setSavingIdentity] = useState(false);
   const [identityMsg, setIdentityMsg] = useState('');
 
@@ -150,7 +151,7 @@ function BrandCard({ brand, highlightGmail }) {
     setSavingIdentity(true);
     setIdentityMsg('');
     try {
-      await client.put(`/api/brands/${brand.id}`, { name: brandName, agent_name: agentName });
+      await client.put(`/api/brands/${brand.id}`, { name: brandName, agent_name: agentName, email_signature: emailSignature });
       setIdentityMsg('Saved!');
     } catch (err) {
       setIdentityMsg(err.response?.data?.detail || 'Failed to save.');
@@ -325,6 +326,15 @@ function BrandCard({ brand, highlightGmail }) {
                 onChange={e => setBrandName(e.target.value)}
                 placeholder="My Store"
                 style={{ padding: '7px 10px', borderRadius: '4px', border: '1px solid var(--border)', fontSize: '13px', width: '200px' }}
+              />
+            </div>
+            <div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>Email Signature</div>
+              <input
+                value={emailSignature}
+                onChange={e => setEmailSignature(e.target.value)}
+                placeholder={`— The ${brandName || 'Store'} Team`}
+                style={{ padding: '7px 10px', borderRadius: '4px', border: '1px solid var(--border)', fontSize: '13px', width: '220px' }}
               />
             </div>
             <button

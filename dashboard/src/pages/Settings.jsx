@@ -776,6 +776,347 @@ function FilterTab() {
   );
 }
 
+// ────────────────────────────────────────────────────── Reply Style Tab ──
+
+const STYLE_FIELD_LABELS = {
+  tone: 'Tone',
+  greeting_style: 'Greeting',
+  closing_style: 'Closing / sign-off',
+  emoji_usage: 'Emoji use',
+  sentence_length: 'Sentence length',
+  paragraph_style: 'Paragraph structure',
+  use_bullets: 'Bullet points',
+  use_customer_name: 'Customer name usage',
+};
+
+function ReplyStyleTab() {
+  const [brandId, setBrandId] = useState(null);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [msg, setMsg] = useState('');
+  const [regenerating, setRegenerating] = useState(false);
+  const [switching, setSwitching] = useState(false);
+  const [savingMode, setSavingMode] = useState(false);
+  const [examples, setExamples] = useState([]);
+  const [newExample, setNewExample] = useState('');
+  const [addingExample, setAddingExample] = useState(false);
+
+  const load = useCallback((id) => {
+    setLoading(true);
+    setError('');
+    client.get(`/api/v2/brands/${id}/reply-style`)
+      .then(res => setData(res.data))
+      .catch(() => setError('Failed to load Reply Style settings.'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    client.get('/api/brands').then(res => {
+      const list = Array.isArray(res.data) ? res.data : res.data?.brands || [];
+      if (list.length > 0) {
+        setBrandId(list[0].id);
+        load(list[0].id);
+      } else {
+        setLoading(false);
+      }
+    }).catch(() => setLoading(false));
+  }, [load]);
+
+  useEffect(() => {
+    if (!brandId) return;
+    client.get(`/api/v2/brands/${brandId}/reply-style/examples`)
+      .then(res => setExamples(res.data?.examples || []))
+      .catch(() => {});
+  }, [brandId]);
+
+  const choosePreset = async (presetId) => {
+    if (!brandId) return;
+    setSavingMode(true);
+    setMsg('');
+    try {
+      await client.patch(`/api/v2/brands/${brandId}/reply-style`, { mode: 'preset', preset: presetId });
+      setMsg('Reply Style updated.');
+      load(brandId);
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to update Reply Style.');
+    } finally {
+      setSavingMode(false);
+    }
+  };
+
+  const setDisabled = async (disabled) => {
+    if (!brandId) return;
+    setSavingMode(true);
+    try {
+      await client.patch(`/api/v2/brands/${brandId}/reply-style`, { mode: disabled ? 'disabled' : 'preset' });
+      load(brandId);
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to update Reply Style.');
+    } finally {
+      setSavingMode(false);
+    }
+  };
+
+  const toggleControl = async (field, value) => {
+    if (!brandId) return;
+    try {
+      await client.patch(`/api/v2/brands/${brandId}/reply-style`, { [field]: value });
+      load(brandId);
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to update setting.');
+    }
+  };
+
+  const regenerate = async () => {
+    if (!brandId) return;
+    setRegenerating(true);
+    setError('');
+    setMsg('');
+    try {
+      await client.post(`/api/v2/brands/${brandId}/reply-style/regenerate`);
+      setMsg('Reply Style regenerated from your recent approved replies.');
+      load(brandId);
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Could not regenerate — check the approved reply count below.');
+    } finally {
+      setRegenerating(false);
+    }
+  };
+
+  const switchToLearned = async () => {
+    if (!brandId) return;
+    setSwitching(true);
+    setError('');
+    try {
+      await client.post(`/api/v2/brands/${brandId}/reply-style/switch-to-learned`);
+      setMsg('Switched to your Learned Style.');
+      load(brandId);
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to switch to Learned Style.');
+    } finally {
+      setSwitching(false);
+    }
+  };
+
+  const addExample = async () => {
+    if (!brandId || !newExample.trim()) return;
+    setAddingExample(true);
+    try {
+      await client.post(`/api/v2/brands/${brandId}/reply-style/examples`, { content: newExample.trim() });
+      setNewExample('');
+      const res = await client.get(`/api/v2/brands/${brandId}/reply-style/examples`);
+      setExamples(res.data?.examples || []);
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to add example.');
+    } finally {
+      setAddingExample(false);
+    }
+  };
+
+  const deleteExample = async (id) => {
+    if (!brandId) return;
+    try {
+      await client.delete(`/api/v2/brands/${brandId}/reply-style/examples/${id}`);
+      setExamples(ex => ex.filter(e => e.id !== id));
+    } catch {
+      setError('Failed to delete example.');
+    }
+  };
+
+  const card = { background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '6px', padding: '20px 24px' };
+  const sectionTitle = { fontSize: '14px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '6px' };
+
+  if (loading) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        {[1, 2, 3].map(i => <div key={i} className="skeleton" style={{ height: '80px', borderRadius: '6px' }} />)}
+      </div>
+    );
+  }
+
+  if (!data) {
+    return <Alert variant="error">{error || 'Reply Style is not available for this brand yet.'}</Alert>;
+  }
+
+  const mode = data.mode || 'preset';
+  const presets = data.presets || [];
+  const progressPct = Math.min(100, Math.round((data.approved_reply_count / Math.max(1, data.min_replies_required)) * 100));
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', maxWidth: '760px' }}>
+      <div style={card}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+          <div>
+            <div style={sectionTitle}>Reply Style</div>
+            <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+              Controls how your AI agent's replies sound — tone, greetings, formatting. It never changes facts, refund decisions, or policy.
+            </div>
+          </div>
+          <div style={{
+            fontSize: '11px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.04em',
+            padding: '4px 10px', borderRadius: '999px',
+            background: mode === 'disabled' ? 'var(--bg-tertiary)' : mode === 'learned' ? '#ECFEFF' : '#F0FDF4',
+            color: mode === 'disabled' ? 'var(--text-muted)' : mode === 'learned' ? '#0E7490' : '#15803D',
+          }}>
+            {mode === 'disabled' ? 'Disabled' : mode === 'learned' ? 'Learned' : 'Preset'}
+          </div>
+        </div>
+
+        <Alert variant="error" onDismiss={() => setError('')}>{error}</Alert>
+        <Alert variant="success" onDismiss={() => setMsg('')}>{msg}</Alert>
+
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: 'var(--text-secondary)', marginTop: '8px' }}>
+          <input type="checkbox" checked={mode === 'disabled'} onChange={e => setDisabled(e.target.checked)} disabled={savingMode} />
+          Disable Reply Style (use a neutral default tone)
+        </label>
+      </div>
+
+      {mode !== 'disabled' && data.learned_profile && mode !== 'learned' && (
+        <div style={{ ...card, background: '#ECFEFF', borderColor: '#A5F3FC' }}>
+          <div style={{ fontSize: '13px', fontWeight: '600', color: '#0E7490', marginBottom: '8px' }}>
+            We've learned how your team naturally replies.
+          </div>
+          <button
+            onClick={switchToLearned}
+            disabled={switching}
+            style={{ padding: '8px 16px', borderRadius: '4px', background: '#06B6D4', color: 'white', fontWeight: '600', fontSize: '13px', cursor: switching ? 'not-allowed' : 'pointer' }}
+          >
+            {switching ? 'Switching...' : 'Switch to Learned Style'}
+          </button>
+        </div>
+      )}
+
+      {mode !== 'disabled' && (
+        <div style={card}>
+          <div style={sectionTitle}>Presets</div>
+          <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '14px' }}>
+            Pick a starting style. This is active immediately.
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '12px' }}>
+            {presets.map(p => {
+              const active = mode === 'preset' && data.preset === p.id;
+              return (
+                <div
+                  key={p.id}
+                  onClick={() => !savingMode && choosePreset(p.id)}
+                  style={{
+                    border: active ? '2px solid var(--accent)' : '1px solid var(--border)',
+                    borderRadius: '6px', padding: '14px', cursor: savingMode ? 'not-allowed' : 'pointer',
+                    background: active ? '#ECFEFF' : 'var(--bg-secondary)',
+                  }}
+                >
+                  <div style={{ fontWeight: '700', fontSize: '13px', marginBottom: '4px', color: 'var(--text-primary)' }}>
+                    {p.label}{active && ' ✓'}
+                  </div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '8px' }}>{p.description}</div>
+                  {p.example_replies?.[0] && (
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontStyle: 'italic', borderLeft: '2px solid var(--border)', paddingLeft: '8px' }}>
+                      "{p.example_replies[0]}"
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {mode === 'learned' && data.learned_profile && (
+        <div style={card}>
+          <div style={sectionTitle}>Detected Characteristics</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '10px', marginBottom: '14px' }}>
+            {Object.entries(STYLE_FIELD_LABELS).map(([key, label]) => (
+              <div key={key}>
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '2px' }}>{label}</div>
+                <div style={{ fontSize: '13px', color: 'var(--text-primary)', fontWeight: '500' }}>
+                  {typeof data.learned_profile[key] === 'boolean'
+                    ? (data.learned_profile[key] ? 'Yes' : 'No')
+                    : (data.learned_profile[key] || '—')}
+                </div>
+              </div>
+            ))}
+          </div>
+          {data.reasoning && (
+            <div style={{ background: 'var(--bg-secondary)', borderRadius: '6px', padding: '12px 14px', fontSize: '12px', color: 'var(--text-secondary)', whiteSpace: 'pre-line', marginBottom: '14px' }}>
+              {data.reasoning}
+            </div>
+          )}
+          <button
+            onClick={regenerate}
+            disabled={regenerating}
+            style={{ padding: '8px 16px', borderRadius: '4px', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', fontWeight: '600', fontSize: '13px', border: '1px solid var(--border)', cursor: regenerating ? 'not-allowed' : 'pointer' }}
+          >
+            {regenerating ? 'Regenerating...' : 'Regenerate from recent replies'}
+          </button>
+        </div>
+      )}
+
+      {mode !== 'disabled' && (
+        <div style={card}>
+          <div style={sectionTitle}>Learning</div>
+          <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '10px' }}>
+            {data.approved_reply_count} of {data.min_replies_required} approved replies needed to learn your team's real writing style.
+          </div>
+          <div style={{ height: '6px', borderRadius: '999px', background: 'var(--bg-tertiary)', overflow: 'hidden', marginBottom: '16px' }}>
+            <div style={{ height: '100%', width: `${progressPct}%`, background: 'var(--accent)' }} />
+          </div>
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+            <input
+              type="checkbox"
+              checked={!!data.learn_automatically}
+              onChange={e => toggleControl('learn_automatically', e.target.checked)}
+            />
+            Learn automatically from approved replies
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+            <input
+              type="checkbox"
+              checked={!!data.use_uploaded_only}
+              onChange={e => toggleControl('use_uploaded_only', e.target.checked)}
+            />
+            Use uploaded examples only (ignore ticket history)
+          </label>
+        </div>
+      )}
+
+      {mode !== 'disabled' && (
+        <div style={card}>
+          <div style={sectionTitle}>Uploaded Examples (optional)</div>
+          <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '12px' }}>
+            Seed data for faster personalization. Not required — approved replies work on their own.
+          </div>
+          <div style={{ display: 'flex', gap: '8px', marginBottom: '14px' }}>
+            <textarea
+              value={newExample}
+              onChange={e => setNewExample(e.target.value)}
+              placeholder="Paste an example reply..."
+              rows={2}
+              style={{ ...inputStyle, flex: 1, resize: 'vertical' }}
+            />
+            <button
+              onClick={addExample}
+              disabled={addingExample || !newExample.trim()}
+              style={{ padding: '0 16px', borderRadius: '4px', background: 'var(--accent)', color: 'white', fontWeight: '600', fontSize: '13px', cursor: addingExample ? 'not-allowed' : 'pointer', flexShrink: 0 }}
+            >
+              Add
+            </button>
+          </div>
+          {examples.length === 0 ? (
+            <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>No examples uploaded yet.</div>
+          ) : examples.map(ex => (
+            <div key={ex.id} style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', padding: '8px 0', borderTop: '1px solid var(--border)' }}>
+              <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{ex.content}</div>
+              <button onClick={() => deleteExample(ex.id)} style={{ fontSize: '11px', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0 }}>Delete</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ───────────────────────────────────────────────────────── Account Tab ──
 
 function AccountTab() {
@@ -1303,6 +1644,7 @@ const TABS = [
   { id: 'email', label: 'Email' },
   { id: 'shopify', label: 'Shopify' },
   { id: 'kb', label: 'Knowledge Base' },
+  { id: 'reply-style', label: 'Reply Style' },
   { id: 'widget', label: 'Chat Widget' },
   { id: 'account', label: 'Account' },
 ];
@@ -1387,6 +1729,7 @@ export default function Settings() {
         {activeTab === 'integrations' && <IntegrationsTab />}
         {activeTab === 'kb' && <KnowledgeBaseTab />}
         {activeTab === 'canned' && <CannedResponsesTab />}
+        {activeTab === 'reply-style' && <ReplyStyleTab />}
         {activeTab === 'widget' && <ChatWidgetTab />}
         {activeTab === 'account' && <AccountTab />}
       </div>

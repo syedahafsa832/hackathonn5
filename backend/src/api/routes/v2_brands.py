@@ -13,8 +13,10 @@ from pydantic import BaseModel, Field
 from datetime import datetime, timezone
 
 from src.api.middleware.tenant_auth import get_current_tenant, TenantContext
-from src.lib.supabase_client import supabase_select, supabase_insert, supabase_update, supabase_rpc
+from src.lib.supabase_client import supabase_select, supabase_insert, supabase_update, supabase_delete, supabase_rpc
 from src.services.shopify_service import encrypt_token
+from src.agent import reply_style_presets
+from src.services import reply_style_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/brands", tags=["Brands v2"])
@@ -22,7 +24,11 @@ router = APIRouter(prefix="/brands", tags=["Brands v2"])
 SAFE_COLUMNS = {"id", "name", "shopify_shop_name", "shopify_domain", "shopify_connected",
                 "support_email", "is_active", "gmail_email", "gmail_connected",
                 "return_policy_days", "auto_approve_threshold", "created_at", "updated_at",
-                "tenant_id", "exclude_digital_products", "refund_notes", "final_sale_tags"}
+                "tenant_id", "exclude_digital_products", "refund_notes", "final_sale_tags",
+                "agent_name", "email_signature",
+                "reply_style_mode", "reply_style_preset", "reply_style_profile",
+                "reply_style_reasoning", "reply_style_learn_automatically",
+                "reply_style_use_uploaded_only", "reply_style_last_generated_at"}
 
 
 def _strip_secrets(brand: dict) -> dict:
@@ -69,6 +75,17 @@ class ConnectShopifyRequest(BaseModel):
 
 class ExcludedIdsRequest(BaseModel):
     ids: list[int] = Field(default_factory=list)
+
+
+class UpdateReplyStyleRequest(BaseModel):
+    mode: Optional[str] = Field(None, pattern="^(preset|learned|disabled)$")
+    preset: Optional[str] = None
+    learn_automatically: Optional[bool] = None
+    use_uploaded_only: Optional[bool] = None
+
+
+class AddReplyExampleRequest(BaseModel):
+    content: str = Field(..., min_length=1, max_length=5000)
 
 
 # ==================== Routes ====================
@@ -163,7 +180,7 @@ async def update_brand(
             raise HTTPException(status_code=400, detail="No fields to update")
         updates["updated_at"] = datetime.now(timezone.utc).isoformat()
         result = supabase_update("brands", {"id": f"eq.{brand_id}"}, updates)
-        return {"success": True, "brand": _strip_secrets(result[0]) if result else None}
+        return {"success": True, "brand": _strip_secrets(result) if result else None}
     except HTTPException:
         raise
     except Exception as e:
@@ -360,3 +377,186 @@ async def disconnect_shopify(
     except Exception as e:
         logger.error(f"Error disconnecting Shopify: {e}")
         raise HTTPException(status_code=500, detail="Failed to disconnect Shopify")
+
+
+# ==================== Reply Style ====================
+# Wording/tone personalization — separate from Identity (agent_name,
+# email_signature, both already covered by the generic PATCH above).
+# Reply Style never affects facts, refund eligibility, or business logic.
+
+@router.get("/{brand_id}/reply-style")
+async def get_reply_style(
+    brand_id: str,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    """Current Reply Style state for the settings page: mode, active preset
+    or learned profile, reasoning, learning controls, and the preset catalog."""
+    try:
+        brand = _get_owned_brand(brand_id, tenant.tenant_id)
+
+        # Best-effort opportunistic regeneration check — never blocks the response.
+        try:
+            await reply_style_service.regenerate_if_due(brand_id)
+            brand = _get_owned_brand(brand_id, tenant.tenant_id)
+        except Exception as e:
+            logger.warning(f"[ReplyStyle] regenerate_if_due check failed: {e}")
+
+        active_style = reply_style_service.get_active_style(brand)
+        approved_count = reply_style_service.count_eligible_approved_replies(brand_id)
+
+        return {
+            "mode": brand.get("reply_style_mode") or "preset",
+            "preset": brand.get("reply_style_preset"),
+            "learned_profile": brand.get("reply_style_profile"),
+            "reasoning": brand.get("reply_style_reasoning"),
+            "active_style": active_style,
+            "learn_automatically": brand.get("reply_style_learn_automatically", True),
+            "use_uploaded_only": brand.get("reply_style_use_uploaded_only", False),
+            "last_generated_at": brand.get("reply_style_last_generated_at"),
+            "approved_reply_count": approved_count,
+            "eligible_for_learning": approved_count >= reply_style_service.MIN_APPROVED_REPLIES_TO_LEARN,
+            "min_replies_required": reply_style_service.MIN_APPROVED_REPLIES_TO_LEARN,
+            "presets": reply_style_presets.list_presets(),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting reply style: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get reply style")
+
+
+@router.patch("/{brand_id}/reply-style")
+async def update_reply_style(
+    brand_id: str,
+    request: UpdateReplyStyleRequest,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    """Update mode/preset/learning controls. Switching to 'learned' this way
+    requires a profile to already exist — use switch-to-learned for the
+    guided first transition, this endpoint is for toggling back and forth
+    afterwards or changing controls."""
+    try:
+        brand = _get_owned_brand(brand_id, tenant.tenant_id)
+
+        if request.mode == "learned" and not brand.get("reply_style_profile"):
+            raise HTTPException(status_code=400, detail="No learned profile available yet.")
+        if request.preset and request.preset not in reply_style_presets.PRESETS:
+            raise HTTPException(status_code=400, detail="Unknown preset.")
+
+        updates = {}
+        if request.mode is not None:
+            updates["reply_style_mode"] = request.mode
+        if request.preset is not None:
+            updates["reply_style_preset"] = request.preset
+        if request.learn_automatically is not None:
+            updates["reply_style_learn_automatically"] = request.learn_automatically
+        if request.use_uploaded_only is not None:
+            updates["reply_style_use_uploaded_only"] = request.use_uploaded_only
+
+        if not updates:
+            raise HTTPException(status_code=400, detail="No fields to update")
+
+        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+        result = supabase_update("brands", {"id": f"eq.{brand_id}"}, updates)
+        return {"success": True, "brand": _strip_secrets(result) if result else None}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating reply style: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update reply style")
+
+
+@router.post("/{brand_id}/reply-style/regenerate")
+async def regenerate_reply_style(
+    brand_id: str,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    """Manual regenerate — bypasses the 15-new-replies/7-day triggers but
+    still requires the minimum approved-reply count."""
+    try:
+        _get_owned_brand(brand_id, tenant.tenant_id)
+        result = await reply_style_service.generate_learned_profile(brand_id, force=False)
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=result.get("error"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error regenerating reply style: {e}")
+        raise HTTPException(status_code=500, detail="Failed to regenerate reply style")
+
+
+@router.post("/{brand_id}/reply-style/switch-to-learned")
+async def switch_reply_style_to_learned(
+    brand_id: str,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    """Full replacement of the active preset with the learned profile — no
+    blending, no confidence comparison, per spec."""
+    try:
+        _get_owned_brand(brand_id, tenant.tenant_id)
+        result = reply_style_service.switch_to_learned(brand_id)
+        if not result.get("success"):
+            raise HTTPException(status_code=400, detail=result.get("error"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error switching to learned style: {e}")
+        raise HTTPException(status_code=500, detail="Failed to switch to learned style")
+
+
+@router.get("/{brand_id}/reply-style/examples")
+async def list_reply_examples(
+    brand_id: str,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    """Optional uploaded example replies — seed data for faster personalization."""
+    try:
+        _get_owned_brand(brand_id, tenant.tenant_id)
+        rows = supabase_select("reply_style_examples", {
+            "brand_id": f"eq.{brand_id}", "order": "created_at.desc",
+        })
+        return {"examples": rows or []}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing reply examples: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list examples")
+
+
+@router.post("/{brand_id}/reply-style/examples")
+async def add_reply_example(
+    brand_id: str,
+    request: AddReplyExampleRequest,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    try:
+        _get_owned_brand(brand_id, tenant.tenant_id)
+        result = supabase_insert("reply_style_examples", {
+            "brand_id": brand_id,
+            "content": request.content.strip(),
+        })
+        return {"success": True, "example": result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error adding reply example: {e}")
+        raise HTTPException(status_code=500, detail="Failed to add example")
+
+
+@router.delete("/{brand_id}/reply-style/examples/{example_id}")
+async def delete_reply_example(
+    brand_id: str,
+    example_id: str,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    try:
+        _get_owned_brand(brand_id, tenant.tenant_id)
+        supabase_delete("reply_style_examples", {"id": f"eq.{example_id}", "brand_id": f"eq.{brand_id}"})
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting reply example: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete example")
