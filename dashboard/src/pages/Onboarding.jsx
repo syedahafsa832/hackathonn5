@@ -27,29 +27,31 @@ const skipBtn = {
 function ProgressBar({ step }) {
   const total = STEP_LABELS.length;
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '0', marginBottom: '40px', flexWrap: 'wrap' }}>
-      {STEP_LABELS.map((label, i) => {
-        const s = i + 1;
-        return (
-          <div key={s} style={{ display: 'flex', alignItems: 'center', flex: s < total ? '1' : 'none', minWidth: '90px' }}>
-            <div style={{
-              width: '28px', height: '28px', borderRadius: '50%', flexShrink: 0,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontWeight: '600', fontSize: '13px',
-              background: s < step ? 'var(--success)' : s === step ? 'var(--accent)' : 'var(--bg-tertiary)',
-              color: s <= step ? 'white' : 'var(--text-muted)',
-            }}>
-              {s < step ? '✓' : s}
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' }}>
+        {STEP_LABELS.map((_, i) => {
+          const s = i + 1;
+          return (
+            <div key={s} style={{ display: 'flex', alignItems: 'center', flex: s < total ? '1' : 'none' }}>
+              <div style={{
+                width: '28px', height: '28px', borderRadius: '50%', flexShrink: 0,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontWeight: '600', fontSize: '13px',
+                background: s < step ? 'var(--success)' : s === step ? 'var(--accent)' : 'var(--bg-tertiary)',
+                color: s <= step ? 'white' : 'var(--text-muted)',
+              }}>
+                {s < step ? '✓' : s}
+              </div>
+              {s < total && (
+                <div style={{ flex: 1, height: '2px', background: s < step ? 'var(--success)' : 'var(--border)', margin: '0 6px', minWidth: '10px' }} />
+              )}
             </div>
-            <div style={{ fontSize: '11px', color: s === step ? 'var(--accent)' : 'var(--text-muted)', marginLeft: '6px', whiteSpace: 'nowrap', fontWeight: s === step ? '600' : '400' }}>
-              {label}
-            </div>
-            {s < total && (
-              <div style={{ flex: 1, height: '2px', background: s < step ? 'var(--success)' : 'var(--border)', margin: '0 10px', minWidth: '16px' }} />
-            )}
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
+      <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--accent)' }}>
+        Step {step} of {total}: {STEP_LABELS[step - 1]}
+      </div>
     </div>
   );
 }
@@ -60,7 +62,9 @@ function StepShopify({ brandId, onNext, onConnected }) {
   const [shopifyDomain, setShopifyDomain] = useState('');
   const [shopifyApiKey, setShopifyApiKey] = useState('');
   const [loading, setLoading] = useState(false);
+  const [slowConnect, setSlowConnect] = useState(false);
   const [error, setError] = useState('');
+  const slowTimerRef = useRef(null);
 
   const handleConnect = async () => {
     if (!shopifyDomain.trim() || !shopifyApiKey.trim()) {
@@ -68,7 +72,11 @@ function StepShopify({ brandId, onNext, onConnected }) {
       return;
     }
     setLoading(true);
+    setSlowConnect(false);
     setError('');
+    // The backend can take a while on a cold start — without this, "Connecting..."
+    // sits there for up to 35s with zero feedback and looks hung.
+    slowTimerRef.current = setTimeout(() => setSlowConnect(true), 6000);
     try {
       await client.post(`/api/v2/brands/${brandId}/shopify/connect`, {
         shop_domain: shopifyDomain.trim().replace(/^https?:\/\//i, '').replace(/\/+$/, ''),
@@ -79,6 +87,8 @@ function StepShopify({ brandId, onNext, onConnected }) {
     } catch (err) {
       setError(extractErrorMessage(err, 'Could not connect to Shopify. Check your store URL and API key.'));
     } finally {
+      clearTimeout(slowTimerRef.current);
+      setSlowConnect(false);
       setLoading(false);
     }
   };
@@ -103,11 +113,16 @@ function StepShopify({ brandId, onNext, onConnected }) {
 
       <Alert variant="error">{error}</Alert>
 
-      <div style={{ display: 'flex', gap: '12px' }}>
+      <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
         <button onClick={handleConnect} disabled={loading} style={primaryBtn(loading)}>
           {loading ? 'Connecting...' : 'Connect →'}
         </button>
         <button onClick={onNext} style={skipBtn}>Skip for now</button>
+        {slowConnect && (
+          <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+            Still working — this can take longer than usual if our server just woke up.
+          </span>
+        )}
       </div>
     </div>
   );
