@@ -148,6 +148,7 @@ async def connect_shopify(
         )
 
     # Ensure a brand record exists and has Shopify credentials (required for Gmail and ticket pipeline)
+    mirrored_brand_id = None
     try:
         from src.services.shopify_service import encrypt_token
         from src.lib.supabase_client import supabase_update, supabase_insert
@@ -162,7 +163,8 @@ async def connect_shopify(
         brands = supabase_select("brands", {"tenant_id": f"eq.{tenant.tenant_id}", "is_active": "is.true"})
         if brands:
             supabase_update("brands", {"id": f"eq.{brands[0]['id']}"}, shopify_fields)
-            logger.info(f"[Settings] Shopify creds mirrored to brand {brands[0]['id']}")
+            mirrored_brand_id = brands[0]["id"]
+            logger.info(f"[Settings] Shopify creds mirrored to brand {mirrored_brand_id}")
         else:
             # No brand for this tenant — always create a new one (never reuse another tenant's brand)
             tenant_data = await auth_service.get_tenant(tenant.tenant_id)
@@ -173,11 +175,24 @@ async def connect_shopify(
                 new_brand["support_email"] = support_email
             try:
                 created = supabase_insert("brands", new_brand)
+                mirrored_brand_id = (created[0] if isinstance(created, list) else created).get("id")
                 logger.info(f"[Settings] Auto-created brand for tenant {tenant.tenant_id}: {created}")
             except Exception as brand_err:
                 logger.warning(f"[Settings] Could not auto-create brand: {brand_err}")
     except Exception as e:
         logger.warning(f"[Settings] Could not mirror Shopify to brand: {e}")
+
+    # Best-effort: record which scopes this token actually has, right now,
+    # so onboarding/import can show a precise message instead of discovering
+    # a missing permission mid-import.
+    if mirrored_brand_id:
+        try:
+            from src.services import shopify_scope_service
+            from src.services.shopify_service import ShopifyClient
+            scope_client = ShopifyClient(result.get("shop_domain"), request.access_token)
+            await shopify_scope_service.check_and_store_scopes(mirrored_brand_id, scope_client)
+        except Exception as e:
+            logger.warning(f"[Settings] Could not check Shopify scopes: {e}")
 
     return {
         "success": True,

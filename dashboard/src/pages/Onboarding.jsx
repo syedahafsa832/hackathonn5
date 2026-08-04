@@ -71,7 +71,7 @@ function StepShopify({ brandId, onNext, onConnected }) {
     setError('');
     try {
       await client.post(`/api/v2/brands/${brandId}/shopify/connect`, {
-        shop_domain: shopifyDomain.trim(),
+        shop_domain: shopifyDomain.trim().replace(/^https?:\/\//i, '').replace(/\/+$/, ''),
         access_token: shopifyApiKey.trim(),
       });
       onConnected();
@@ -160,6 +160,38 @@ function StepImport({ brandId, shopifyConnected, onNext }) {
   }
 
   const stillGoing = status === 'running';
+  const blocked = status === 'blocked_missing_scopes';
+
+  if (blocked) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+        <div>
+          <h2 style={{ fontSize: '22px', fontWeight: '700', marginBottom: '8px' }}>Almost there</h2>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: '1.5' }}>
+            Your Shopify connection works, but additional permissions are required to import products and store content.
+          </p>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', padding: '16px 20px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
+          <div style={{ fontSize: '13px', fontWeight: '700', color: 'var(--text-secondary)' }}>Missing permissions:</div>
+          {missingScopes.map(s => (
+            <div key={s} style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '14px' }}>
+              <span style={{ color: 'var(--warning, #b58900)', fontWeight: '700', flexShrink: 0 }}>⚠</span>
+              <span style={{ color: 'var(--text-secondary)' }}>{SCOPE_LABELS[s] || s} ({s})</span>
+            </div>
+          ))}
+        </div>
+
+        <Alert variant="error">
+          These permissions allow tResolv to understand your products, policies, and store information so Luna can answer customers accurately.
+          In Shopify Admin, go to Settings → Apps and sales channels → Develop apps → your app → Configuration, add the missing
+          permission(s), save, then reinstall the app and reconnect Shopify here with the updated access token.
+        </Alert>
+
+        <button onClick={onNext} style={primaryBtn(false)}>Continue for now →</button>
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -173,11 +205,10 @@ function StepImport({ brandId, shopifyConnected, onNext }) {
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', padding: '16px 20px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
-        {stillGoing && report.length === 0 && (
-          <div style={{ fontSize: '14px', color: 'var(--text-muted)' }}>Starting import…</div>
-        )}
-        {!stillGoing && report.length === 0 && (
-          <div style={{ fontSize: '14px', color: 'var(--text-muted)' }}>Nothing found to import — you can add knowledge manually later in Settings.</div>
+        {report.length === 0 && (
+          <div style={{ fontSize: '14px', color: 'var(--text-muted)' }}>
+            {stillGoing ? 'Starting import…' : 'Checking your store…'}
+          </div>
         )}
         {report.map(r => (
           <div key={r.resource} style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', fontSize: '14px' }}>

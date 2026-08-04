@@ -19,6 +19,7 @@ from src.services.shopify_service import encrypt_token
 from src.agent import reply_style_presets
 from src.services import reply_style_service
 from src.services import shopify_import_service
+from src.services import shopify_scope_service
 from src.services.supabase_service import supabase_service
 
 logger = logging.getLogger(__name__)
@@ -309,12 +310,15 @@ async def connect_shopify(
     for this tenant and deactivate the newly-created placeholder brand."""
     try:
         _get_owned_brand(brand_id, tenant.tenant_id)
-        shop_domain = request.shop_domain.lower().strip()
-        if not shop_domain.endswith(".myshopify.com"):
-            shop_domain = f"{shop_domain}.myshopify.com"
 
         from src.services.shopify_service import ShopifyClient
-        client_shopify = ShopifyClient(shop_domain, request.access_token)
+        # ShopifyClient._normalize_domain() strips a pasted http(s):// scheme,
+        # trailing slash, and appends .myshopify.com — do that once here and
+        # reuse client_shopify.shop_domain everywhere below, instead of a
+        # second hand-rolled normalization that didn't strip the scheme and
+        # let "https://store.myshopify.com" get stored verbatim.
+        client_shopify = ShopifyClient(request.shop_domain, request.access_token)
+        shop_domain = client_shopify.shop_domain
         validation = await client_shopify.validate_connection()
 
         if not validation.get("success"):
@@ -369,6 +373,11 @@ async def connect_shopify(
             else:
                 raise
 
+        # Best-effort: record which scopes this token actually has, right
+        # now, so onboarding/import can show a precise message instead of
+        # discovering a missing permission mid-import.
+        await shopify_scope_service.check_and_store_scopes(active_brand_id, client_shopify)
+
         await supabase_service.log_onboarding_event(active_brand_id, "shopify_connected", {
             "shop_domain": shop_domain,
         })
@@ -401,6 +410,31 @@ async def start_shopify_import(
         if shopify_import_service.get_import_status(brand_id) == "running":
             return {"success": True, "status": "running"}
 
+        granted = brand.get("shopify_granted_scopes")
+        if granted is None:
+            # Brand connected before scope tracking existed - check live now
+            # rather than starting an import that's blind to what will fail.
+            client = shopify_import_service._get_client_for_brand(brand)
+            if client:
+                result = await shopify_scope_service.check_and_store_scopes(brand_id, client)
+                granted = result.get("granted_scopes")
+            granted = granted or []
+
+        missing = shopify_scope_service.missing_scopes(granted, shopify_scope_service.IMPORT_SCOPES)
+        if len(missing) == len(shopify_scope_service.IMPORT_SCOPES):
+            # Neither read_products nor read_content is granted - every
+            # resource the importer knows how to fetch would 403. Don't run
+            # a doomed import; tell the merchant exactly what's missing.
+            shopify_scope_service.set_blocked(brand_id, missing)
+            return {
+                "success": True,
+                "status": "blocked_missing_scopes",
+                "missing_scopes": missing,
+                "message": "Your Shopify connection works, but additional permissions are required to import products and store content.",
+                "reason": "These permissions allow tResolv to understand your products, policies, and store information so Luna can answer customers accurately.",
+            }
+        shopify_scope_service.clear_blocked(brand_id)
+
         await supabase_service.log_onboarding_event(brand_id, "shopify_import_started", {})
         asyncio.create_task(shopify_import_service.run_shopify_import(brand_id))
         return {"success": True, "status": "running"}
@@ -424,9 +458,12 @@ async def get_shopify_import_status(
             "source_type": f"eq.{shopify_import_service.SOURCE_TYPE}",
             "order": "created_at.asc",
         })
+        blocked_scopes = shopify_scope_service.get_blocked(brand_id)
+        status = "blocked_missing_scopes" if blocked_scopes else shopify_import_service.get_import_status(brand_id)
+        missing_scopes = blocked_scopes if blocked_scopes else shopify_import_service.get_missing_scopes(brand_id)
         return {
-            "status": shopify_import_service.get_import_status(brand_id),
-            "missing_scopes": shopify_import_service.get_missing_scopes(brand_id),
+            "status": status,
+            "missing_scopes": missing_scopes,
             "report": shopify_import_service.get_import_report(brand_id),
             "sources": [
                 {
@@ -445,6 +482,51 @@ async def get_shopify_import_status(
         raise HTTPException(status_code=500, detail="Failed to get import status")
 
 
+@router.get("/{brand_id}/shopify/health")
+async def get_shopify_health(
+    brand_id: str,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    """Shopify connection health: which store/app is connected, what scopes
+    that token actually has, and what's missing — the single place to answer
+    'why isn't this working' without digging through logs."""
+    try:
+        brand = _get_owned_brand(brand_id, tenant.tenant_id)
+        if not brand.get("shopify_connected"):
+            return {"connected": False}
+
+        granted = brand.get("shopify_granted_scopes")
+        app_name = brand.get("shopify_app_name")
+        checked_at = brand.get("shopify_scopes_checked_at")
+
+        if granted is None:
+            client = shopify_import_service._get_client_for_brand(brand)
+            if client:
+                result = await shopify_scope_service.check_and_store_scopes(brand_id, client)
+                granted, app_name, checked_at = (
+                    result.get("granted_scopes"), result.get("app_name"), result.get("checked_at")
+                )
+
+        granted = granted or []
+        missing = shopify_scope_service.missing_scopes(granted, list(shopify_scope_service.REQUIRED_SCOPES.keys()))
+
+        return {
+            "connected": True,
+            "domain": brand.get("shopify_domain"),
+            "app_name": app_name,
+            "granted_scopes": granted,
+            "missing_scopes": missing,
+            "missing_scope_labels": [shopify_scope_service.REQUIRED_SCOPES.get(s, s) for s in missing],
+            "status": "needs_permission_update" if missing else "healthy",
+            "checked_at": checked_at,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting Shopify health for brand {brand_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get Shopify connection health")
+
+
 @router.post("/{brand_id}/shopify/disconnect")
 async def disconnect_shopify(
     brand_id: str,
@@ -458,7 +540,11 @@ async def disconnect_shopify(
             "shopify_access_token": None,
             "shopify_shop_name": None,
             "shopify_connected": False,
+            "shopify_granted_scopes": None,
+            "shopify_app_name": None,
+            "shopify_scopes_checked_at": None,
         })
+        shopify_scope_service.clear_blocked(brand_id)
         return {"success": True, "message": "Shopify disconnected"}
     except HTTPException:
         raise

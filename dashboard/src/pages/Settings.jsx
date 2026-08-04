@@ -217,6 +217,70 @@ function EmailTab() {
 
 // ─────────────────────────────────────────────────────── Shopify Tab ──
 
+function ShopifyHealthCard() {
+  const [health, setHealth] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    client.get('/api/brands').then(res => {
+      const list = Array.isArray(res.data) ? res.data : res.data?.brands || [];
+      const brand = list.find(b => b.shopify_connected) || list[0];
+      if (!brand?.id) { setLoading(false); return; }
+      client.get(`/api/v2/brands/${brand.id}/shopify/health`)
+        .then(r => setHealth(r.data))
+        .catch(() => setHealth(null))
+        .finally(() => setLoading(false));
+    }).catch(() => setLoading(false));
+  }, []);
+
+  if (loading) return <div className="skeleton" style={{ height: '160px', borderRadius: '8px' }} />;
+  if (!health?.connected) return null;
+
+  const healthy = health.status === 'healthy';
+  const scopeChip = (s, healthyChip) => (
+    <span key={s} style={{
+      fontSize: '12px', padding: '2px 8px', borderRadius: '4px',
+      background: healthyChip ? '#ECFDF5' : '#FEF2F2', color: healthyChip ? '#065F46' : '#B91C1C',
+    }}>{s}</span>
+  );
+
+  return (
+    <div style={{ background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', padding: '24px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+      <div style={{ fontSize: '16px', fontWeight: '600', color: '#1E293B' }}>Shopify connection health</div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: healthy ? '#10B981' : '#F59E0B', flexShrink: 0 }} />
+        <div style={{ fontSize: '14px', fontWeight: '600', color: healthy ? '#10B981' : '#F59E0B' }}>
+          {healthy ? 'Healthy' : 'Needs permission update'}
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '140px 1fr', rowGap: '8px', fontSize: '13px', color: '#475569' }}>
+        <div style={{ fontWeight: '600' }}>Connected store</div><div>{health.domain}</div>
+        <div style={{ fontWeight: '600' }}>Connected app</div><div>{health.app_name || 'Unknown'}</div>
+      </div>
+
+      <div>
+        <div style={{ fontSize: '13px', fontWeight: '600', color: '#475569', marginBottom: '6px' }}>Granted scopes</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+          {health.granted_scopes?.length
+            ? health.granted_scopes.map(s => scopeChip(s, true))
+            : <span style={{ fontSize: '12px', color: '#94A3B8' }}>None</span>}
+        </div>
+      </div>
+
+      {health.missing_scopes?.length > 0 && (
+        <div>
+          <div style={{ fontSize: '13px', fontWeight: '600', color: '#475569', marginBottom: '6px' }}>Missing scopes</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+            {health.missing_scopes.map(s => scopeChip(s, false))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ShopifyTab() {
   const [shopifyStatus, setShopifyStatus] = useState(null);
   const [loadingStatus, setLoadingStatus] = useState(true);
@@ -251,7 +315,7 @@ function ShopifyTab() {
     setMsg('');
     try {
       const res = await client.post('/api/v1/settings/shopify/connect', {
-        shop_domain: form.shopify_domain.trim(),
+        shop_domain: form.shopify_domain.trim().replace(/^https?:\/\//i, '').replace(/\/+$/, ''),
         access_token: form.access_token.trim(),
       });
       setMsg(`Connected: ${res.data.shop_name || 'Shopify store'}`);
@@ -312,6 +376,8 @@ function ShopifyTab() {
     <div style={{ maxWidth: '520px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <Alert variant="success">{msg}</Alert>
       <Alert variant="error">{error}</Alert>
+
+      {isConnected && <ShopifyHealthCard />}
 
       {isConnected ? (
         <div style={{ background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', padding: '24px', display: 'flex', flexDirection: 'column', gap: '14px' }}>

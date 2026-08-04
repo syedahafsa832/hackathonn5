@@ -131,7 +131,8 @@ async def test_connect_shopify_stores_encrypted_token_not_plaintext():
     with patch("src.api.routes.v2_brands.supabase_select", side_effect=fake_select), \
          patch("src.api.routes.v2_brands.supabase_update", side_effect=fake_update), \
          patch("src.services.shopify_service.ShopifyClient.validate_connection",
-               new=AsyncMock(return_value={"success": True, "shop_name": "Test Shop", "shop_domain": "test-shop.myshopify.com"})):
+               new=AsyncMock(return_value={"success": True, "shop_name": "Test Shop", "shop_domain": "test-shop.myshopify.com"})), \
+         patch("src.api.routes.v2_brands.shopify_scope_service.check_and_store_scopes", new=AsyncMock(return_value={})):
         resp = client.post(
             f"/api/v2/brands/{brand_id}/shopify/connect",
             json={"shop_domain": "test-shop", "access_token": submitted_token},
