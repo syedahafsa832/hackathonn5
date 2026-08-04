@@ -115,26 +115,13 @@ function StepShopify({ brandId, onNext, onConnected }) {
 
 // ────────────────────────────────────────────── Step 2: Import store ──
 
-const CATEGORY_LABELS = {
-  'Products': (s) => `${s.metadata?.count ?? s.chunk_count ?? ''} products imported`.trim(),
-  'Return Policy': () => 'Return policy imported',
-  'Shipping Policy': () => 'Shipping information imported',
-  'FAQ Pages': () => 'FAQ pages imported',
-  'Store Pages': () => 'Store pages imported',
-};
-
-function categoryLabel(source) {
-  const base = Object.keys(CATEGORY_LABELS).find(k => source.name?.startsWith(k));
-  if (!base) return source.name;
-  return CATEGORY_LABELS[base](source);
-}
-
 const SCOPE_LABELS = { read_products: 'Products', read_content: 'Online Store content (Pages, Blogs)' };
 
 function StepImport({ brandId, shopifyConnected, onNext }) {
   const [status, setStatus] = useState('not_started');
   const [sources, setSources] = useState([]);
   const [missingScopes, setMissingScopes] = useState([]);
+  const [report, setReport] = useState([]);
   const pollRef = useRef(null);
 
   useEffect(() => {
@@ -146,6 +133,7 @@ function StepImport({ brandId, shopifyConnected, onNext }) {
         setStatus(res.data?.status || 'not_started');
         setSources(res.data?.sources || []);
         setMissingScopes(res.data?.missing_scopes || []);
+        setReport(res.data?.report || []);
         if (res.data?.status === 'running') {
           pollRef.current = setTimeout(poll, 2000);
         }
@@ -171,7 +159,6 @@ function StepImport({ brandId, shopifyConnected, onNext }) {
     );
   }
 
-  const doneSources = sources.filter(s => s.status === 'completed');
   const stillGoing = status === 'running';
 
   return (
@@ -185,31 +172,39 @@ function StepImport({ brandId, shopifyConnected, onNext }) {
         </p>
       </div>
 
-      {!stillGoing && missingScopes.length > 0 && (
-        <Alert variant="error">
-          Your Shopify app is missing permission to read {missingScopes.map(s => SCOPE_LABELS[s] || s).join(' and ')}.
-          In Shopify Admin, go to Settings → Apps and sales channels → Develop apps → your app → Configuration,
-          add the missing scope(s), save, then reinstall the app and reconnect Shopify here with the new access token.
-        </Alert>
-      )}
-
       <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', padding: '16px 20px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
-        {sources.length === 0 && stillGoing && (
+        {stillGoing && report.length === 0 && (
           <div style={{ fontSize: '14px', color: 'var(--text-muted)' }}>Starting import…</div>
         )}
-        {sources.length === 0 && !stillGoing && missingScopes.length === 0 && (
+        {!stillGoing && report.length === 0 && (
           <div style={{ fontSize: '14px', color: 'var(--text-muted)' }}>Nothing found to import — you can add knowledge manually later in Settings.</div>
         )}
-        {sources.map(s => (
-          <div key={s.name} style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '14px' }}>
-            <span style={{ color: s.status === 'completed' ? 'var(--success)' : s.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)', fontWeight: '700', flexShrink: 0 }}>
-              {s.status === 'completed' ? '✓' : s.status === 'failed' ? '✕' : '○'}
+        {report.map(r => (
+          <div key={r.resource} style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', fontSize: '14px' }}>
+            <span style={{
+              color: r.status === 'imported' ? 'var(--success)' : r.status === 'skipped' ? 'var(--warning, #b58900)' : 'var(--text-muted)',
+              fontWeight: '700', flexShrink: 0,
+            }}>
+              {r.status === 'imported' ? '✓' : r.status === 'skipped' ? '⚠' : '○'}
             </span>
-            <span style={{ color: 'var(--text-secondary)' }}>{categoryLabel(s)}</span>
+            <span style={{ color: 'var(--text-secondary)' }}>
+              {r.status === 'imported' && `Imported ${r.count} ${r.resource.toLowerCase()}`}
+              {r.status === 'skipped' && `Couldn't import ${r.resource} because ${r.reason}`}
+              {r.status === 'empty' && `No ${r.resource.toLowerCase()} found in your store`}
+            </span>
           </div>
         ))}
         {stillGoing && <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Still working — this continues in the background either way.</div>}
       </div>
+
+      {!stillGoing && missingScopes.length > 0 && (
+        <Alert variant="error">
+          You can continue using tResolv now — reconnect Shopify later with an updated access token to import
+          {' '}{missingScopes.map(s => SCOPE_LABELS[s] || s).join(' and ')}. In Shopify Admin, go to Settings →
+          Apps and sales channels → Develop apps → your app → Configuration, add the missing scope(s), save,
+          then reinstall the app and reconnect Shopify here.
+        </Alert>
+      )}
 
       <button onClick={onNext} style={primaryBtn(false)}>
         {stillGoing ? 'Continue (import keeps running) →' : 'Continue →'}

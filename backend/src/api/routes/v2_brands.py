@@ -427,6 +427,7 @@ async def get_shopify_import_status(
         return {
             "status": shopify_import_service.get_import_status(brand_id),
             "missing_scopes": shopify_import_service.get_missing_scopes(brand_id),
+            "report": shopify_import_service.get_import_report(brand_id),
             "sources": [
                 {
                     "name": s.get("name"),

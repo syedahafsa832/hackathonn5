@@ -36,6 +36,11 @@ _import_status: Dict[str, str] = {}
 # approval" - populated only when that specific error is seen, so the UI can
 # tell a merchant exactly what to fix instead of a dead-end "nothing found".
 _import_missing_scopes: Dict[str, List[str]] = {}
+# brand_id -> per-resource outcome list, e.g.
+# [{"resource": "Products", "status": "skipped", "count": 0, "reason": "missing the read_products scope"}, ...]
+# so the UI can render "Imported 18 products / Skipped Pages (missing read_content)"
+# instead of one all-or-nothing message.
+_import_report: Dict[str, List[Dict[str, Any]]] = {}
 
 
 def get_import_status(brand_id: str) -> str:
@@ -44,6 +49,10 @@ def get_import_status(brand_id: str) -> str:
 
 def get_missing_scopes(brand_id: str) -> List[str]:
     return _import_missing_scopes.get(brand_id, [])
+
+
+def get_import_report(brand_id: str) -> List[Dict[str, Any]]:
+    return _import_report.get(brand_id, [])
 
 
 def _get_client_for_brand(brand: Dict[str, Any]) -> Optional[ShopifyClient]:
@@ -142,6 +151,40 @@ async def _import_products(client: ShopifyClient, brand_id: str) -> Dict[str, An
     return {"found": imported > 0, "count": imported}
 
 
+async def _import_collections(client: ShopifyClient, brand_id: str) -> Dict[str, Any]:
+    """Custom + smart collections both live under the same read_products
+    scope as products.json - not a separate permission."""
+    collections: List[Dict[str, Any]] = []
+    for endpoint in ("custom_collections.json", "smart_collections.json"):
+        try:
+            resp = await asyncio.to_thread(client._request, "GET", endpoint, None, {"limit": 250})
+        except ShopifyError as e:
+            logger.warning(f"[ShopifyImport] {endpoint} fetch failed for brand {brand_id}: {e.message}")
+            if _is_scope_error(e.message):
+                return {"found": False, "count": 0, "scope_error": "read_products"}
+            continue
+        except Exception as e:
+            logger.warning(f"[ShopifyImport] {endpoint} fetch failed for brand {brand_id}: {e}")
+            continue
+        key = "custom_collections" if "custom" in endpoint else "smart_collections"
+        collections.extend((resp.get("data") or {}).get(key, []))
+
+    if not collections:
+        return {"found": False, "count": 0}
+
+    parts = []
+    for c in collections:
+        title = c.get("title", "Untitled collection")
+        description = _strip_html(c.get("body_html", ""))
+        parts.append(f"Collection: {title}" + (f"\nDescription: {description}" if description else ""))
+    content = "\n\n".join(parts)
+    result = await brand_knowledge_service.upload_text(
+        brand_id, name="Collections", content=content,
+        metadata={"type": "shopify_collections", "count": len(collections)}, source_type=SOURCE_TYPE,
+    )
+    return {"found": bool(result.get("success")), "count": len(collections) if result.get("success") else 0}
+
+
 async def _import_policies(client: ShopifyClient, brand_id: str) -> Dict[str, Any]:
     results = {"return_policy": {"found": False}, "shipping_policy": {"found": False}}
     try:
@@ -220,12 +263,46 @@ async def _import_pages(client: ShopifyClient, brand_id: str) -> Dict[str, Any]:
     return {"found": imported > 0, "count": imported, "faq_count": len(faq_pages)}
 
 
+def _build_import_report(summary: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Turns the raw per-category dicts into a flat, UI-ready list so a
+    missing scope on one resource (e.g. pages) doesn't hide the resources
+    that DID succeed (e.g. products) behind one all-or-nothing message."""
+    report: List[Dict[str, Any]] = []
+
+    def _add(resource: str, count: int, scope_error: Optional[str]):
+        if scope_error:
+            report.append({
+                "resource": resource, "status": "skipped", "count": 0,
+                "reason": f"the Shopify app is missing the {scope_error} scope",
+            })
+        elif count:
+            report.append({"resource": resource, "status": "imported", "count": count, "reason": None})
+        else:
+            report.append({"resource": resource, "status": "empty", "count": 0, "reason": None})
+
+    products = summary.get("products", {})
+    _add("Products", products.get("count", 0), products.get("scope_error"))
+
+    collections = summary.get("collections", {})
+    _add("Collections", collections.get("count", 0), collections.get("scope_error"))
+
+    policies = summary.get("policies", {})
+    policy_count = sum(1 for k in ("return_policy", "shipping_policy") if policies.get(k, {}).get("found"))
+    _add("Policies", policy_count, policies.get("scope_error"))
+
+    pages = summary.get("pages", {})
+    _add("Pages", pages.get("count", 0), pages.get("scope_error"))
+
+    return report
+
+
 async def run_shopify_import(brand_id: str) -> None:
     """The background job. Never raises — each category is independently
     best-effort so one failing (e.g. store has no policies configured)
     doesn't abort the rest."""
     _import_status[brand_id] = "running"
     _import_missing_scopes.pop(brand_id, None)
+    _import_report.pop(brand_id, None)
     summary: Dict[str, Any] = {}
     try:
         brands = supabase_select("brands", {"id": f"eq.{brand_id}"})
@@ -242,6 +319,7 @@ async def run_shopify_import(brand_id: str) -> None:
         await _clear_previous_import(brand_id)
 
         summary["products"] = await _import_products(client, brand_id)
+        summary["collections"] = await _import_collections(client, brand_id)
         summary["policies"] = await _import_policies(client, brand_id)
         summary["pages"] = await _import_pages(client, brand_id)
 
@@ -253,6 +331,7 @@ async def run_shopify_import(brand_id: str) -> None:
         if missing_scopes:
             _import_missing_scopes[brand_id] = sorted(missing_scopes)
 
+        _import_report[brand_id] = _build_import_report(summary)
         _import_status[brand_id] = "done"
         await supabase_service.log_onboarding_event(brand_id, "shopify_import_completed", summary)
     except Exception as e:
