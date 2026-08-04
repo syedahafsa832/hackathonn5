@@ -425,7 +425,7 @@ async def get_ticket(
         # "brand not in brand_ids" already means "not mine" for admins too. An
         # unconditional admin bypass here would let an admin from ANY org reach
         # ANY other org's ticket — that was the actual bug this replaced.
-        if ticket["brand_id"] not in context.brand_ids:
+        if (ticket.get("brand_id") or ticket.get("store_id")) not in context.brand_ids:
             raise HTTPException(status_code=404, detail="Ticket not found")
 
         # Get related actions
@@ -506,7 +506,7 @@ async def update_ticket(
         ticket = tickets[0]
 
         # Verify brand access — no is_admin bypass (see get_ticket for why)
-        if ticket["brand_id"] not in context.brand_ids:
+        if (ticket.get("brand_id") or ticket.get("store_id")) not in context.brand_ids:
             raise HTTPException(status_code=404, detail="Ticket not found")
 
         updates = request.model_dump(exclude_none=True)
@@ -546,7 +546,7 @@ async def respond_to_ticket(
         ticket = tickets[0]
 
         # Verify brand access — no is_admin bypass (see get_ticket for why)
-        if ticket["brand_id"] not in context.brand_ids:
+        if (ticket.get("brand_id") or ticket.get("store_id")) not in context.brand_ids:
             raise HTTPException(status_code=404, detail="Ticket not found")
 
         # Update ticket with response
@@ -628,7 +628,7 @@ async def approve_ai_response(
         ticket = tickets[0]
 
         # Verify brand access — no is_admin bypass (see get_ticket for why)
-        if ticket["brand_id"] not in context.brand_ids:
+        if (ticket.get("brand_id") or ticket.get("store_id")) not in context.brand_ids:
             raise HTTPException(status_code=404, detail="Ticket not found")
 
         # Idempotency guard: already approved (e.g. double-click, retried request) —
@@ -735,7 +735,7 @@ async def get_ticket_order(
         # Verify brand access — this endpoint had no ownership check at all before;
         # any authenticated user could pull any tenant's Shopify order data by
         # ticket_id. No is_admin bypass (see get_ticket for why).
-        if ticket["brand_id"] not in context.brand_ids:
+        if (ticket.get("brand_id") or ticket.get("store_id")) not in context.brand_ids:
             raise HTTPException(status_code=404, detail="Ticket not found")
 
         order_number = ticket.get("detected_order_number") or ticket.get("detected_order_id")
@@ -1153,7 +1153,7 @@ async def escalate_ticket(
         ticket = tickets[0]
 
         # Verify brand access — no is_admin bypass (see get_ticket for why)
-        if ticket["brand_id"] not in context.brand_ids:
+        if (ticket.get("brand_id") or ticket.get("store_id")) not in context.brand_ids:
             raise HTTPException(status_code=404, detail="Ticket not found")
 
         # Update ticket
@@ -1199,7 +1199,7 @@ async def close_ticket(
         ticket = tickets[0]
 
         # Verify brand access — no is_admin bypass (see get_ticket for why)
-        if ticket["brand_id"] not in context.brand_ids:
+        if (ticket.get("brand_id") or ticket.get("store_id")) not in context.brand_ids:
             raise HTTPException(status_code=404, detail="Ticket not found")
 
         updates = {
