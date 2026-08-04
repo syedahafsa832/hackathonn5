@@ -111,6 +111,23 @@ class SupabaseService:
         }
         supabase_insert("audit_logs", payload)
 
+    async def log_onboarding_event(self, store_id: Optional[str], event_type: str, metadata: Dict = None):
+        """Log an onboarding funnel event (signup_completed, shopify_connected, etc.)
+        via the same audit_logs table log_audit already writes to — analytics_events
+        is defined in migration 006 but was never actually applied to the live
+        database (confirmed directly against Supabase), so this reuses the table
+        that does exist rather than adding a new one. Never raises: a broken
+        analytics write must not block the onboarding action it's logging."""
+        try:
+            supabase_insert("audit_logs", {
+                "store_id": store_id,
+                "action_type": event_type,
+                "performed_by": "onboarding",
+                "metadata": metadata or {},
+            })
+        except Exception as e:
+            logger.warning(f"[Onboarding] Failed to log event '{event_type}': {e}")
+
     async def get_tickets(self, store_id: Optional[str] = None, status: Optional[str] = None) -> List[Dict[str, Any]]:
         """Fetch tickets. If store_id is None or dummy UUID, return all tickets."""
         dummy = "00000000-0000-0000-0000-000000000000"

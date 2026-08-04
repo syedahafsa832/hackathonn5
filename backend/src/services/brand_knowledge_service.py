@@ -48,6 +48,10 @@ class BrandKnowledgeService:
         self.chunk_size = 1000  # Characters per chunk
         self.chunk_overlap = 200  # Overlap between chunks
 
+    def _get_tenant_id(self, brand_id: str) -> Optional[str]:
+        rows = supabase_select("brands", {"id": f"eq.{brand_id}"})
+        return rows[0].get("tenant_id") if rows else None
+
     def _chunk_text(self, text: str, source_name: str) -> List[Dict[str, Any]]:
         """Split text into overlapping chunks for embedding."""
         text = text.strip()
@@ -118,7 +122,8 @@ class BrandKnowledgeService:
         name: str,
         content: str,
         user_id: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        source_type: str = "text"
     ) -> Dict[str, Any]:
         """
         Upload text content to brand's knowledge base.
@@ -129,18 +134,27 @@ class BrandKnowledgeService:
             content: Text content to embed
             user_id: ID of user uploading
             metadata: Optional metadata
+            source_type: 'text' (manual paste, default) or 'shopify_sync' (auto-import)
 
         Returns:
             Result dict with source_id, chunk_count, status
         """
         try:
+            # tenant_id is still NOT NULL on knowledge_base_sources/rag_chunks
+            # (the live schema never actually migrated off it onto brand_id
+            # alone), so every insert needs both.
+            tenant_id = self._get_tenant_id(brand_id)
+            if not tenant_id:
+                return {"success": False, "error": "Could not resolve tenant for this brand"}
+
             # Create source record
             source_id = str(uuid.uuid4())
             source_record = {
                 "id": source_id,
                 "brand_id": brand_id,
+                "tenant_id": tenant_id,
                 "name": name,
-                "source_type": "text",
+                "source_type": source_type,
                 "status": "processing",
                 "created_by": user_id,
                 "metadata": metadata or {}
@@ -172,6 +186,7 @@ class BrandKnowledgeService:
                 chunk_record = {
                     "id": str(uuid.uuid4()),
                     "brand_id": brand_id,
+                    "tenant_id": tenant_id,
                     "source_id": source_id,
                     "content": chunk["content"],
                     "embedding": embedding,

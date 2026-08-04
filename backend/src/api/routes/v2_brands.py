@@ -6,6 +6,7 @@ Replaces the old version that referenced non-existent columns
 (organization_id, slug, ai_auto_respond, etc.).
 """
 
+import asyncio
 import logging
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, Query
@@ -17,6 +18,8 @@ from src.lib.supabase_client import supabase_select, supabase_insert, supabase_u
 from src.services.shopify_service import encrypt_token
 from src.agent import reply_style_presets
 from src.services import reply_style_service
+from src.services import shopify_import_service
+from src.services.supabase_service import supabase_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/brands", tags=["Brands v2"])
@@ -73,6 +76,10 @@ class UpdateBrandRequest(BaseModel):
 class ConnectShopifyRequest(BaseModel):
     shop_domain: str = Field(..., min_length=3)
     access_token: str = Field(..., min_length=10)
+
+
+class TestReplyRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=1000)
 
 
 class ExcludedIdsRequest(BaseModel):
@@ -346,6 +353,10 @@ async def connect_shopify(
             else:
                 raise
 
+        await supabase_service.log_onboarding_event(active_brand_id, "shopify_connected", {
+            "shop_domain": shop_domain,
+        })
+
         return {
             "success": True,
             "shop_name": validation.get("shop_name"),
@@ -357,6 +368,63 @@ async def connect_shopify(
     except Exception as e:
         logger.error(f"Error connecting Shopify: {e}")
         raise HTTPException(status_code=500, detail="Failed to connect Shopify")
+
+
+@router.post("/{brand_id}/shopify/import")
+async def start_shopify_import(
+    brand_id: str,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    """Kick off the background import of products/policies/pages into the
+    brand's knowledge base. Fire-and-forget - poll import-status for progress."""
+    try:
+        brand = _get_owned_brand(brand_id, tenant.tenant_id)
+        if not brand.get("shopify_connected"):
+            raise HTTPException(status_code=400, detail="Connect Shopify before importing.")
+
+        if shopify_import_service.get_import_status(brand_id) == "running":
+            return {"success": True, "status": "running"}
+
+        await supabase_service.log_onboarding_event(brand_id, "shopify_import_started", {})
+        asyncio.create_task(shopify_import_service.run_shopify_import(brand_id))
+        return {"success": True, "status": "running"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error starting Shopify import: {e}")
+        raise HTTPException(status_code=500, detail="Failed to start import")
+
+
+@router.get("/{brand_id}/shopify/import-status")
+async def get_shopify_import_status(
+    brand_id: str,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    """Poll target for onboarding's import-progress screen."""
+    try:
+        _get_owned_brand(brand_id, tenant.tenant_id)
+        sources = supabase_select("knowledge_base_sources", {
+            "brand_id": f"eq.{brand_id}",
+            "source_type": f"eq.{shopify_import_service.SOURCE_TYPE}",
+            "order": "created_at.asc",
+        })
+        return {
+            "status": shopify_import_service.get_import_status(brand_id),
+            "sources": [
+                {
+                    "name": s.get("name"),
+                    "status": s.get("status"),
+                    "chunk_count": s.get("chunk_count"),
+                    "metadata": s.get("metadata"),
+                }
+                for s in (sources or [])
+            ],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting import status: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get import status")
 
 
 @router.post("/{brand_id}/shopify/disconnect")
@@ -562,3 +630,46 @@ async def delete_reply_example(
     except Exception as e:
         logger.error(f"Error deleting reply example: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete example")
+
+
+# ==================== Test Luna (onboarding activation) ====================
+
+@router.post("/{brand_id}/test-reply")
+async def test_reply(
+    brand_id: str,
+    request: TestReplyRequest,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    """Runs a sample question through the real agent so a merchant can see an
+    actual generated reply during onboarding, before any real customer email
+    arrives. Same code path production replies use - not a canned response."""
+    try:
+        brand = _get_owned_brand(brand_id, tenant.tenant_id)
+
+        from src.agent.customer_success_agent import customer_success_agent
+        chat_query = (
+            "[CHAT MODE — reply in 1-3 short sentences, conversational tone, no bullet points]\n"
+            f"Customer: {request.message}"
+        )
+        result = await customer_success_agent.process_customer_query(
+            query=chat_query,
+            customer_info={"name": "Test Customer", "email": "test@example.com", "channel": "chat"},
+            tenant_id=brand.get("tenant_id"),
+            store_id=brand_id,
+        )
+
+        await supabase_service.log_onboarding_event(brand_id, "test_reply_generated", {
+            "question": request.message,
+        })
+
+        return {
+            "success": True,
+            "question": request.message,
+            "reply": result.get("reply_body"),
+            "confidence_score": result.get("confidence_score"),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating test reply: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate test reply")

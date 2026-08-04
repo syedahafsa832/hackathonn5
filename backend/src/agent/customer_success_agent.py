@@ -5,15 +5,13 @@ import logging
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 
-# Note: tenant_id parameter is used for multi-tenant RAG retrieval
-
 # Set OPENAI_API_KEY for compatibility with Mistral's OpenAI-compatible API
 if not os.getenv("OPENAI_API_KEY"):
     os.environ["OPENAI_API_KEY"] = os.getenv("MISTRAL_API_KEY", "")
 
 from openai import OpenAI
 
-from ..services.rag_engine import rag_engine
+from ..services.brand_knowledge_service import brand_knowledge_service
 from ..services.sentiment_analyzer import sentiment_analyzer
 from ..services.size_engine import size_engine
 from ..services.tools import v3_tools
@@ -163,9 +161,14 @@ class CustomerSuccessAgent:
         try:
             _is_chat = "[CHAT MODE" in query
 
-            # 1. RAG Retrieval - rag_engine itself skips the embedding call when this
-            # tenant has no KB docs uploaded, so chat no longer needs a blanket skip here.
-            rag_context = await rag_engine.get_relevant_context(query, tenant_id=tenant_id)
+            # 1. RAG Retrieval - brand_knowledge_service.get_brand_context() is scoped
+            # correctly by brand_id via match_brand_rag_chunks. rag_engine.get_relevant_context's
+            # tenant-scoped path calls match_tenant_rag_chunks, which references a
+            # tenant_id column migration 006 dropped from rag_chunks - that RPC always
+            # errors, is silently swallowed, and falls through to an UNSCOPED
+            # cross-tenant search every single time. Do not switch back to rag_engine
+            # here without first fixing that RPC/table mismatch.
+            rag_context = await brand_knowledge_service.get_brand_context(store_id, query) if store_id else ""
             logger.info(f"[Agent] RAG context retrieved: {len(rag_context)} chars")
 
             # 2. Sizing Engine - Get actual recommendation if we have measurements

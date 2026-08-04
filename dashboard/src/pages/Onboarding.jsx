@@ -3,31 +3,49 @@ import { useNavigate } from 'react-router-dom';
 import client, { extractErrorMessage } from '../api/client';
 import Alert from '../components/Alert';
 
-const STEP_LABELS = ['Your brand', 'Reply style', 'Connect Gmail', 'Ready'];
+const STEP_LABELS = ['Connect Shopify', 'Import your store', 'Connect inbox', 'Customize Luna', 'Test AI'];
+
+const inputStyle = {
+  width: '100%', padding: '10px 12px', border: '1px solid var(--border-strong)',
+  borderRadius: '4px', fontSize: '14px', background: 'var(--bg-primary)',
+  color: 'var(--text-primary)', boxSizing: 'border-box',
+};
+
+const primaryBtn = (disabled) => ({
+  padding: '11px 24px', borderRadius: '4px', fontSize: '14px', fontWeight: '600',
+  background: disabled ? 'var(--bg-tertiary)' : 'var(--accent)',
+  color: disabled ? 'var(--text-muted)' : 'white',
+  cursor: disabled ? 'not-allowed' : 'pointer',
+  alignSelf: 'flex-start',
+});
+
+const skipBtn = {
+  padding: '11px 20px', borderRadius: '4px', fontSize: '14px', color: 'var(--text-secondary)',
+  background: 'transparent', border: '1px solid var(--border)', cursor: 'pointer',
+};
 
 function ProgressBar({ step }) {
   const total = STEP_LABELS.length;
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '0', marginBottom: '40px' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: '0', marginBottom: '40px', flexWrap: 'wrap' }}>
       {STEP_LABELS.map((label, i) => {
         const s = i + 1;
         return (
-          <div key={s} style={{ display: 'flex', alignItems: 'center', flex: s < total ? '1' : 'none' }}>
+          <div key={s} style={{ display: 'flex', alignItems: 'center', flex: s < total ? '1' : 'none', minWidth: '90px' }}>
             <div style={{
-              width: '32px', height: '32px', borderRadius: '50%', flexShrink: 0,
+              width: '28px', height: '28px', borderRadius: '50%', flexShrink: 0,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontWeight: '600', fontSize: '14px',
+              fontWeight: '600', fontSize: '13px',
               background: s < step ? 'var(--success)' : s === step ? 'var(--accent)' : 'var(--bg-tertiary)',
               color: s <= step ? 'white' : 'var(--text-muted)',
-              transition: 'all 0.3s',
             }}>
               {s < step ? '✓' : s}
             </div>
-            <div style={{ fontSize: '12px', color: s === step ? 'var(--accent)' : 'var(--text-muted)', marginLeft: '6px', whiteSpace: 'nowrap', fontWeight: s === step ? '600' : '400' }}>
+            <div style={{ fontSize: '11px', color: s === step ? 'var(--accent)' : 'var(--text-muted)', marginLeft: '6px', whiteSpace: 'nowrap', fontWeight: s === step ? '600' : '400' }}>
               {label}
             </div>
             {s < total && (
-              <div style={{ flex: 1, height: '2px', background: s < step ? 'var(--success)' : 'var(--border)', margin: '0 12px', transition: 'background 0.3s' }} />
+              <div style={{ flex: 1, height: '2px', background: s < step ? 'var(--success)' : 'var(--border)', margin: '0 10px', minWidth: '16px' }} />
             )}
           </div>
         );
@@ -36,48 +54,30 @@ function ProgressBar({ step }) {
   );
 }
 
-function Step1({ onNext }) {
-  const [brandName, setBrandName] = useState('');
+// ─────────────────────────────────────────────────── Step 1: Shopify ──
+
+function StepShopify({ brandId, onNext, onConnected }) {
   const [shopifyDomain, setShopifyDomain] = useState('');
   const [shopifyApiKey, setShopifyApiKey] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const inputStyle = {
-    width: '100%', padding: '10px 12px', border: '1px solid var(--border-strong)',
-    borderRadius: '4px', fontSize: '14px', background: 'var(--bg-primary)',
-    color: 'var(--text-primary)', boxSizing: 'border-box',
-  };
-
-  const handleNext = async () => {
-    if (!brandName.trim()) { setError('Brand name is required.'); return; }
+  const handleConnect = async () => {
+    if (!shopifyDomain.trim() || !shopifyApiKey.trim()) {
+      setError('Store URL and Admin API key are both required.');
+      return;
+    }
     setLoading(true);
     setError('');
     try {
-      const slug = brandName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-      const brandRes = await client.post('/api/v2/brands', {
-        name: brandName.trim(),
-        slug: slug || 'my-brand',
+      await client.post(`/api/v2/brands/${brandId}/shopify/connect`, {
+        shop_domain: shopifyDomain.trim(),
+        access_token: shopifyApiKey.trim(),
       });
-      const newBrandId = brandRes.data?.brand?.id || brandRes.data?.id;
-      if (!newBrandId) throw new Error('Failed to create brand');
-
-      let activeBrandId = newBrandId;
-      if (shopifyDomain.trim() && shopifyApiKey.trim()) {
-        try {
-          const shopRes = await client.post(`/api/v2/brands/${newBrandId}/shopify/connect`, {
-            shop_domain: shopifyDomain.trim(),
-            access_token: shopifyApiKey.trim(),
-          });
-          // Use the active brand ID from the response (may differ after domain conflict resolution)
-          if (shopRes.data?.brand_id) activeBrandId = shopRes.data.brand_id;
-        } catch {
-          // Shopify connection optional — continue
-        }
-      }
-      onNext(activeBrandId);
+      onConnected();
+      onNext();
     } catch (err) {
-      setError(extractErrorMessage(err, 'Failed to create brand. Try again.'));
+      setError(extractErrorMessage(err, 'Could not connect to Shopify. Check your store URL and API key.'));
     } finally {
       setLoading(false);
     }
@@ -86,53 +86,184 @@ function Step1({ onNext }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div>
-        <h2 style={{ fontSize: '22px', fontWeight: '700', marginBottom: '8px' }}>Set up your brand</h2>
+        <h2 style={{ fontSize: '22px', fontWeight: '700', marginBottom: '8px' }}>Connect Shopify</h2>
         <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: '1.5' }}>
-          Tell us about your store. You can connect Shopify now or skip and do it later in Settings.
+          We'll import your products, policies, and pages so Luna understands your store automatically — no manual setup.
         </p>
       </div>
 
       <div>
-        <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', marginBottom: '5px' }}>
-          Brand name <span style={{ color: 'var(--danger)' }}>*</span>
-        </label>
-        <input value={brandName} onChange={e => setBrandName(e.target.value)} placeholder="e.g. Luna Apparel" style={inputStyle} />
+        <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', marginBottom: '5px' }}>Store URL</label>
+        <input value={shopifyDomain} onChange={e => setShopifyDomain(e.target.value)} placeholder="yourstore.myshopify.com" style={inputStyle} />
       </div>
-
-      <div style={{ borderTop: '1px solid var(--border)', paddingTop: '20px' }}>
-        <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '14px' }}>
-          Shopify (optional)
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          <div>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', marginBottom: '5px' }}>Store URL</label>
-            <input value={shopifyDomain} onChange={e => setShopifyDomain(e.target.value)} placeholder="yourstore.myshopify.com" style={inputStyle} />
-          </div>
-          <div>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', marginBottom: '5px' }}>Admin API key</label>
-            <input type="password" value={shopifyApiKey} onChange={e => setShopifyApiKey(e.target.value)} placeholder="shpat_..." style={inputStyle} />
-          </div>
-        </div>
+      <div>
+        <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', marginBottom: '5px' }}>Admin API key</label>
+        <input type="password" value={shopifyApiKey} onChange={e => setShopifyApiKey(e.target.value)} placeholder="shpat_..." style={inputStyle} />
       </div>
 
       <Alert variant="error">{error}</Alert>
 
-      <button
-        onClick={handleNext}
-        disabled={loading || !brandName.trim()}
-        style={{
-          padding: '11px 24px', borderRadius: '4px', fontSize: '14px', fontWeight: '600',
-          background: !brandName.trim() || loading ? 'var(--bg-tertiary)' : 'var(--accent)',
-          color: !brandName.trim() || loading ? 'var(--text-muted)' : 'white',
-          cursor: !brandName.trim() || loading ? 'not-allowed' : 'pointer',
-          alignSelf: 'flex-start',
-        }}
-      >
-        {loading ? 'Creating...' : 'Continue →'}
+      <div style={{ display: 'flex', gap: '12px' }}>
+        <button onClick={handleConnect} disabled={loading} style={primaryBtn(loading)}>
+          {loading ? 'Connecting...' : 'Connect →'}
+        </button>
+        <button onClick={onNext} style={skipBtn}>Skip for now</button>
+      </div>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────── Step 2: Import store ──
+
+const CATEGORY_LABELS = {
+  'Products': (s) => `${s.metadata?.count ?? s.chunk_count ?? ''} products imported`.trim(),
+  'Return Policy': () => 'Return policy imported',
+  'Shipping Policy': () => 'Shipping information imported',
+  'FAQ Pages': () => 'FAQ pages imported',
+  'Store Pages': () => 'Store pages imported',
+};
+
+function categoryLabel(source) {
+  const base = Object.keys(CATEGORY_LABELS).find(k => source.name?.startsWith(k));
+  if (!base) return source.name;
+  return CATEGORY_LABELS[base](source);
+}
+
+function StepImport({ brandId, shopifyConnected, onNext }) {
+  const [status, setStatus] = useState('not_started');
+  const [sources, setSources] = useState([]);
+  const pollRef = useRef(null);
+
+  useEffect(() => {
+    if (!shopifyConnected || !brandId) return;
+    client.post(`/api/v2/brands/${brandId}/shopify/import`).catch(() => {});
+
+    const poll = () => {
+      client.get(`/api/v2/brands/${brandId}/shopify/import-status`).then(res => {
+        setStatus(res.data?.status || 'not_started');
+        setSources(res.data?.sources || []);
+        if (res.data?.status === 'running') {
+          pollRef.current = setTimeout(poll, 2000);
+        }
+      }).catch(() => {
+        pollRef.current = setTimeout(poll, 3000);
+      });
+    };
+    poll();
+    return () => clearTimeout(pollRef.current);
+  }, [brandId, shopifyConnected]);
+
+  if (!shopifyConnected) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+        <div>
+          <h2 style={{ fontSize: '22px', fontWeight: '700', marginBottom: '8px' }}>Import your store</h2>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: '1.5' }}>
+            You skipped Shopify, so there's nothing to import yet. You can connect it later in Settings.
+          </p>
+        </div>
+        <button onClick={onNext} style={primaryBtn(false)}>Continue →</button>
+      </div>
+    );
+  }
+
+  const doneSources = sources.filter(s => s.status === 'completed');
+  const stillGoing = status === 'running';
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      <div>
+        <h2 style={{ fontSize: '22px', fontWeight: '700', marginBottom: '8px' }}>
+          {stillGoing ? 'Learning your store…' : 'Store imported'}
+        </h2>
+        <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: '1.5' }}>
+          Pulling your products, return policy, shipping info, and pages so Luna can answer real questions.
+        </p>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', padding: '16px 20px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
+        {sources.length === 0 && stillGoing && (
+          <div style={{ fontSize: '14px', color: 'var(--text-muted)' }}>Starting import…</div>
+        )}
+        {sources.length === 0 && !stillGoing && (
+          <div style={{ fontSize: '14px', color: 'var(--text-muted)' }}>Nothing found to import — you can add knowledge manually later in Settings.</div>
+        )}
+        {sources.map(s => (
+          <div key={s.name} style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '14px' }}>
+            <span style={{ color: s.status === 'completed' ? 'var(--success)' : s.status === 'failed' ? 'var(--danger)' : 'var(--text-muted)', fontWeight: '700', flexShrink: 0 }}>
+              {s.status === 'completed' ? '✓' : s.status === 'failed' ? '✕' : '○'}
+            </span>
+            <span style={{ color: 'var(--text-secondary)' }}>{categoryLabel(s)}</span>
+          </div>
+        ))}
+        {stillGoing && <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Still working — this continues in the background either way.</div>}
+      </div>
+
+      <button onClick={onNext} style={primaryBtn(false)}>
+        {stillGoing ? 'Continue (import keeps running) →' : 'Continue →'}
       </button>
     </div>
   );
 }
+
+// ─────────────────────────────────────────────────── Step 3: Gmail ──
+
+function StepGmail({ brandId, onNext }) {
+  const [polling, setPolling] = useState(false);
+  const [gmailError, setGmailError] = useState('');
+
+  const connectGmail = async () => {
+    setPolling(true);
+    setGmailError('');
+    try {
+      const res = await client.get(`/api/brands/${brandId}/gmail/auth-url`);
+      const authUrl = res.data?.auth_url || res.data?.url;
+      if (authUrl) window.location.href = authUrl;
+    } catch (err) {
+      setGmailError(extractErrorMessage(err, 'Could not start Gmail connection.'));
+      setPolling(false);
+    }
+  };
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('gmail_connected') === '1') {
+      onNext();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      <div>
+        <h2 style={{ fontSize: '22px', fontWeight: '700', marginBottom: '8px' }}>Connect your inbox</h2>
+        <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: '1.5' }}>
+          Now connect the inbox where customers contact you. Resolv reads it for new support emails and replies on your behalf.
+        </p>
+      </div>
+
+      <div style={{ padding: '20px', background: 'var(--bg-secondary)', borderRadius: '6px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        {['Automatically reads new support emails', 'Sends AI-drafted replies from your address', 'Never shares your emails with third parties'].map(text => (
+          <div key={text} style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '14px', color: 'var(--text-secondary)' }}>
+            <span style={{ color: 'var(--success)', fontWeight: '700', flexShrink: 0 }}>✓</span>
+            {text}
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+        <button onClick={connectGmail} disabled={polling} style={{ ...primaryBtn(polling), display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
+          {polling ? 'Redirecting...' : 'Connect Gmail'}
+        </button>
+        <button onClick={onNext} style={skipBtn}>Skip for now</button>
+      </div>
+      <Alert variant="error">{gmailError}</Alert>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────── Step 4: Reply Style ──
 
 function StepStyle({ brandId, onNext }) {
   const [presets, setPresets] = useState([]);
@@ -158,6 +289,7 @@ function StepStyle({ brandId, onNext }) {
     setError('');
     try {
       await client.patch(`/api/v2/brands/${brandId}/reply-style`, { mode: 'preset', preset: selected });
+      localStorage.setItem('resolv_reply_style_done', 'true');
       onNext();
     } catch (err) {
       setError(extractErrorMessage(err, 'Failed to save Reply Style. You can change this later in Settings.'));
@@ -169,9 +301,9 @@ function StepStyle({ brandId, onNext }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div>
-        <h2 style={{ fontSize: '22px', fontWeight: '700', marginBottom: '8px' }}>How should your AI sound?</h2>
+        <h2 style={{ fontSize: '22px', fontWeight: '700', marginBottom: '8px' }}>How should Luna reply?</h2>
         <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: '1.5' }}>
-          Pick a starting style. This becomes active immediately — you can fine-tune it later in Settings, or let it learn your team's own writing style over time.
+          Pick a starting style. This becomes active immediately — you can fine-tune it later in Settings.
         </p>
       </div>
 
@@ -207,156 +339,152 @@ function StepStyle({ brandId, onNext }) {
 
       <Alert variant="error">{error}</Alert>
 
-      <button
-        onClick={handleNext}
-        disabled={saving || loading}
-        style={{
-          padding: '11px 24px', borderRadius: '4px', fontSize: '14px', fontWeight: '600',
-          background: saving || loading ? 'var(--bg-tertiary)' : 'var(--accent)',
-          color: saving || loading ? 'var(--text-muted)' : 'white',
-          cursor: saving || loading ? 'not-allowed' : 'pointer',
-          alignSelf: 'flex-start',
-        }}
-      >
+      <button onClick={handleNext} disabled={saving || loading} style={primaryBtn(saving || loading)}>
         {saving ? 'Saving...' : 'Continue →'}
       </button>
     </div>
   );
 }
 
-function Step2({ brandId, onNext }) {
-  const [polling, setPolling] = useState(false);
-  const [gmailError, setGmailError] = useState('');
-  const pollRef = useRef(null);
+// ─────────────────────────────────────────────── Step 5: Test Luna ──
 
-  const connectGmail = async () => {
-    setPolling(true);
-    setGmailError('');
+const SAMPLE_QUESTIONS = [
+  'Where is my order #1234?',
+  'I want to return my order.',
+  'When will my package arrive?',
+];
+
+function StepTestLuna({ brandId, onFinish }) {
+  const [replies, setReplies] = useState({});
+  const [loadingQ, setLoadingQ] = useState(null);
+  const [error, setError] = useState('');
+  const [customQuestion, setCustomQuestion] = useState('');
+
+  const ask = async (question) => {
+    setLoadingQ(question);
+    setError('');
     try {
-      const res = await client.get(`/api/brands/${brandId}/gmail/auth-url`);
-      const authUrl = res.data?.auth_url || res.data?.url;
-      if (authUrl) window.location.href = authUrl;
+      const res = await client.post(`/api/v2/brands/${brandId}/test-reply`, { message: question });
+      setReplies(r => ({ ...r, [question]: res.data?.reply || '(no reply generated)' }));
+      localStorage.setItem('resolv_test_reply_done', 'true');
     } catch (err) {
-      setGmailError(extractErrorMessage(err, 'Could not start Gmail connection.'));
-      setPolling(false);
+      setError(extractErrorMessage(err, 'Could not generate a test reply.'));
+    } finally {
+      setLoadingQ(null);
     }
   };
 
-  // Poll for Gmail connection after returning from OAuth
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const gmailConnected = params.get('gmail_connected');
-    if (gmailConnected === '1') {
-      onNext();
-    }
-  }, []);
+  const askCustom = () => {
+    if (!customQuestion.trim()) return;
+    ask(customQuestion.trim());
+    setCustomQuestion('');
+  };
+
+  const hasAnyReply = Object.keys(replies).length > 0;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div>
-        <h2 style={{ fontSize: '22px', fontWeight: '700', marginBottom: '8px' }}>Connect Gmail</h2>
+        <h2 style={{ fontSize: '22px', fontWeight: '700', marginBottom: '8px' }}>Test Luna</h2>
         <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: '1.5' }}>
-          Resolv reads your inbox for new support emails and replies on your behalf. Your emails never leave Google.
+          Your AI employee is ready. Try a real question below — this runs through the actual support agent, not a demo.
         </p>
       </div>
 
-      <div style={{ padding: '20px', background: 'var(--bg-secondary)', borderRadius: '6px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-        {['Automatically reads new support emails', 'Sends AI-drafted replies from your address', 'Never shares your emails with third parties'].map(text => (
-          <div key={text} style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '14px', color: 'var(--text-secondary)' }}>
-            <span style={{ color: 'var(--success)', fontWeight: '700', flexShrink: 0 }}>✓</span>
-            {text}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        {SAMPLE_QUESTIONS.map(q => (
+          <div key={q} style={{ border: '1px solid var(--border)', borderRadius: '6px', padding: '14px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+              <div style={{ fontSize: '14px', fontWeight: '500' }}>"{q}"</div>
+              <button
+                onClick={() => ask(q)}
+                disabled={loadingQ === q}
+                style={{ padding: '6px 14px', borderRadius: '4px', fontSize: '12px', fontWeight: '600', background: 'var(--accent)', color: 'white', cursor: loadingQ === q ? 'not-allowed' : 'pointer', flexShrink: 0 }}
+              >
+                {loadingQ === q ? 'Asking...' : replies[q] ? 'Ask again' : 'Ask Luna'}
+              </button>
+            </div>
+            {replies[q] && (
+              <div style={{ marginTop: '10px', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px', fontSize: '13px', color: 'var(--text-primary)', whiteSpace: 'pre-line' }}>
+                {replies[q]}
+              </div>
+            )}
           </div>
         ))}
       </div>
 
-      <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-        <button
-          onClick={connectGmail}
-          disabled={polling}
-          style={{
-            padding: '11px 24px', borderRadius: '4px', fontSize: '14px', fontWeight: '600',
-            background: 'var(--accent)', color: 'white', cursor: polling ? 'not-allowed' : 'pointer',
-            display: 'flex', alignItems: 'center', gap: '8px',
-          }}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
-          {polling ? 'Redirecting...' : 'Connect Gmail'}
-        </button>
-        <button
-          onClick={onNext}
-          style={{ padding: '11px 20px', borderRadius: '4px', fontSize: '14px', color: 'var(--text-secondary)', background: 'transparent', border: '1px solid var(--border)', cursor: 'pointer' }}
-        >
-          Skip for now
+      <div style={{ display: 'flex', gap: '8px' }}>
+        <input
+          value={customQuestion}
+          onChange={e => setCustomQuestion(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && askCustom()}
+          placeholder="Or ask your own question..."
+          style={{ ...inputStyle, flex: 1 }}
+        />
+        <button onClick={askCustom} disabled={!customQuestion.trim() || loadingQ === customQuestion} style={{ padding: '0 18px', borderRadius: '4px', fontSize: '13px', fontWeight: '600', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)', cursor: 'pointer' }}>
+          Ask
         </button>
       </div>
-      <Alert variant="error">{gmailError}</Alert>
-    </div>
-  );
-}
 
-function Step3({ onFinish }) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', alignItems: 'center', textAlign: 'center', padding: '20px 0' }}>
-      <div style={{
-        width: '72px', height: '72px', borderRadius: '50%', background: 'var(--success-light)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '32px',
-      }}>
-        ✓
-      </div>
+      <Alert variant="error">{error}</Alert>
 
-      <div>
-        <h2 style={{ fontSize: '24px', fontWeight: '700', marginBottom: '8px', color: 'var(--success)' }}>You are ready</h2>
-        <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: '1.6', maxWidth: '340px' }}>
-          Resolv is set up. The moment your first support email arrives, we will draft a reply and put it in your approval queue.
-        </p>
-      </div>
-
-      <button
-        onClick={onFinish}
-        style={{
-          padding: '13px 32px', borderRadius: '4px', fontSize: '15px', fontWeight: '700',
-          background: 'var(--accent)', color: 'white', cursor: 'pointer',
-        }}
-      >
-        Go to Dashboard →
+      <button onClick={onFinish} style={{ ...primaryBtn(false), padding: '13px 32px', fontSize: '15px' }}>
+        {hasAnyReply ? 'Go to Dashboard →' : 'Skip and go to Dashboard →'}
       </button>
     </div>
   );
 }
 
+// ──────────────────────────────────────────────────── Main flow ──
+
 export default function Onboarding() {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [brandId, setBrandId] = useState(null);
+  const [shopifyConnected, setShopifyConnected] = useState(false);
+  const [loadingBrand, setLoadingBrand] = useState(true);
 
-  const handleStep1Next = (newBrandId) => {
-    setBrandId(newBrandId);
-    setStep(2);
-  };
-
-  const handleStyleNext = () => setStep(3);
-  const handleStep2Next = () => setStep(4);
+  useEffect(() => {
+    client.get('/api/brands').then(res => {
+      const list = Array.isArray(res.data) ? res.data : res.data?.brands || [];
+      if (list.length > 0) {
+        setBrandId(list[0].id);
+        setShopifyConnected(!!list[0].shopify_connected || !!list[0].shopify_domain);
+      }
+    }).finally(() => setLoadingBrand(false));
+  }, []);
 
   const handleFinish = () => {
-    localStorage.setItem('resolv_onboarding_complete', 'true');
     navigate('/dashboard');
   };
 
+  if (loadingBrand) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div className="skeleton" style={{ width: '400px', height: '200px', borderRadius: '8px' }} />
+      </div>
+    );
+  }
+
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
-      <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '40px', width: '100%', maxWidth: '520px' }}>
+      <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '40px', width: '100%', maxWidth: '600px' }}>
         <div style={{ marginBottom: '32px' }}>
-          <div style={{ fontWeight: '800', fontSize: '20px', letterSpacing: '-0.5px', marginBottom: '24px' }}>
+          <div style={{ fontWeight: '800', fontSize: '18px', letterSpacing: '-0.5px', marginBottom: '4px' }}>
             <span style={{ color: 'var(--accent)' }}>t</span>
             <span style={{ color: 'var(--text-primary)' }}>Resolv</span>
+          </div>
+          <div style={{ fontSize: '14px', color: 'var(--text-secondary)', marginBottom: '20px' }}>
+            Let's get your AI support employee working.
           </div>
           <ProgressBar step={step} />
         </div>
 
-        {step === 1 && <Step1 onNext={handleStep1Next} />}
-        {step === 2 && <StepStyle brandId={brandId} onNext={handleStyleNext} />}
-        {step === 3 && <Step2 brandId={brandId} onNext={handleStep2Next} />}
-        {step === 4 && <Step3 onFinish={handleFinish} />}
+        {step === 1 && <StepShopify brandId={brandId} onNext={() => setStep(2)} onConnected={() => setShopifyConnected(true)} />}
+        {step === 2 && <StepImport brandId={brandId} shopifyConnected={shopifyConnected} onNext={() => setStep(3)} />}
+        {step === 3 && <StepGmail brandId={brandId} onNext={() => setStep(4)} />}
+        {step === 4 && <StepStyle brandId={brandId} onNext={() => setStep(5)} />}
+        {step === 5 && <StepTestLuna brandId={brandId} onFinish={handleFinish} />}
       </div>
     </div>
   );

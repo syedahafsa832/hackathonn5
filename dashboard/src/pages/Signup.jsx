@@ -28,7 +28,7 @@ export default function Signup() {
       const token = res.data.access_token;
       if (token) {
         localStorage.setItem('resolv_token', token);
-        navigate('/dashboard');
+        navigate('/onboarding');
       } else {
         navigate('/login');
       }

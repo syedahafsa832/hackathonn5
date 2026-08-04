@@ -24,6 +24,10 @@ export default function Dashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [slowLoad, setSlowLoad] = useState(false);
   const [activeBrand, setActiveBrand] = useState(null);
+  const [knowledgeImported, setKnowledgeImported] = useState(false);
+  const [checklistDismissed, setChecklistDismissed] = useState(
+    () => localStorage.getItem('resolv_checklist_dismissed') === 'true'
+  );
   const prevTicketCount = useRef(0);
 
   const handleRefresh = useCallback(async () => {
@@ -54,7 +58,14 @@ export default function Dashboard() {
       if (brands.length === 0) {
         navigate('/onboarding');
       } else {
-        setActiveBrand(brands[0]);
+        const brand = brands[0];
+        setActiveBrand(brand);
+        const isShopifyConnected = !!brand?.shopify_connected || !!brand?.shopify_domain;
+        if (isShopifyConnected) {
+          client.get(`/api/v2/brands/${brand.id}/shopify/import-status`)
+            .then(r => setKnowledgeImported((r.data?.sources || []).some(s => s.status === 'completed')))
+            .catch(() => {});
+        }
       }
     }).catch(() => {
       // brands check failed — stay on dashboard
@@ -89,24 +100,48 @@ export default function Dashboard() {
 
   const gmailConnected = !!activeBrand?.gmail_connected;
   const shopifyConnected = !!activeBrand?.shopify_connected || !!activeBrand?.shopify_domain;
+  const replyStyleDone = localStorage.getItem('resolv_reply_style_done') === 'true';
+  const testReplyDone = localStorage.getItem('resolv_test_reply_done') === 'true';
+
+  const checklistItems = [
+    { label: 'Shopify connected', done: shopifyConnected },
+    { label: 'Store knowledge imported', done: knowledgeImported },
+    { label: 'Gmail connected', done: gmailConnected },
+    { label: 'Reply style selected', done: replyStyleDone },
+    { label: 'Test conversation completed', done: testReplyDone },
+  ];
+  const allDone = checklistItems.every(i => i.done);
+
+  const dismissChecklist = () => {
+    localStorage.setItem('resolv_checklist_dismissed', 'true');
+    setChecklistDismissed(true);
+  };
 
   return (
     <div style={{ padding: '28px 32px', display: 'flex', flexDirection: 'column', gap: '28px' }}>
 
-      {/* Setup incomplete banner */}
-      {activeBrand && (!gmailConnected || !shopifyConnected) && (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: '6px', fontSize: '13px', flexWrap: 'wrap', gap: '8px' }}>
-          <div>
-            <span style={{ color: '#B45309', fontWeight: '600' }}>Setup incomplete.</span>
-            <span style={{ color: '#64748B', marginLeft: '6px' }}>
-              {!gmailConnected && 'Gmail not connected. '}
-              {!shopifyConnected && 'Shopify not connected. '}
-              Luna can't work until both are connected.
-            </span>
+      {/* Onboarding checklist */}
+      {activeBrand && !allDone && !checklistDismissed && (
+        <div style={{ padding: '14px 16px', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: '6px', fontSize: '13px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px', gap: '8px', flexWrap: 'wrap' }}>
+            <span style={{ color: '#B45309', fontWeight: '700' }}>Get Luna live 🚀</span>
+            <div style={{ display: 'flex', gap: '14px', alignItems: 'center' }}>
+              <Link to="/onboarding" style={{ color: '#B45309', fontWeight: '600', textDecoration: 'none' }}>
+                Continue setup →
+              </Link>
+              <button onClick={dismissChecklist} style={{ background: 'none', border: 'none', color: '#94A3B8', cursor: 'pointer', fontSize: '12px', padding: 0 }}>
+                Dismiss
+              </button>
+            </div>
           </div>
-          <Link to="/onboarding" style={{ color: '#B45309', fontSize: '13px', fontWeight: '600', textDecoration: 'none', flexShrink: 0 }}>
-            Complete setup →
-          </Link>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+            {checklistItems.map(item => (
+              <div key={item.label} style={{ display: 'flex', alignItems: 'center', gap: '8px', color: item.done ? '#15803D' : '#64748B' }}>
+                <span style={{ fontWeight: '700', flexShrink: 0 }}>{item.done ? '✓' : '○'}</span>
+                {item.label}
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
