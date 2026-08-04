@@ -34,7 +34,7 @@ export default function Signup() {
       }
     } catch (err) {
       if (!err.response) {
-        setError('Cannot reach the server. Make sure the backend is running on port 8000.');
+        setError('Cannot reach the server right now. This can happen briefly while it wakes up — try again in a few seconds.');
       } else {
         const msg = err.response?.data?.detail || err.response?.data?.error || 'Registration failed. Please try again.';
         setError(typeof msg === 'string' ? msg : JSON.stringify(msg));
