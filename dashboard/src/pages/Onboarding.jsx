@@ -129,9 +129,12 @@ function categoryLabel(source) {
   return CATEGORY_LABELS[base](source);
 }
 
+const SCOPE_LABELS = { read_products: 'Products', read_content: 'Online Store content (Pages, Blogs)' };
+
 function StepImport({ brandId, shopifyConnected, onNext }) {
   const [status, setStatus] = useState('not_started');
   const [sources, setSources] = useState([]);
+  const [missingScopes, setMissingScopes] = useState([]);
   const pollRef = useRef(null);
 
   useEffect(() => {
@@ -142,6 +145,7 @@ function StepImport({ brandId, shopifyConnected, onNext }) {
       client.get(`/api/v2/brands/${brandId}/shopify/import-status`).then(res => {
         setStatus(res.data?.status || 'not_started');
         setSources(res.data?.sources || []);
+        setMissingScopes(res.data?.missing_scopes || []);
         if (res.data?.status === 'running') {
           pollRef.current = setTimeout(poll, 2000);
         }
@@ -181,11 +185,19 @@ function StepImport({ brandId, shopifyConnected, onNext }) {
         </p>
       </div>
 
+      {!stillGoing && missingScopes.length > 0 && (
+        <Alert variant="error">
+          Your Shopify app is missing permission to read {missingScopes.map(s => SCOPE_LABELS[s] || s).join(' and ')}.
+          In Shopify Admin, go to Settings → Apps and sales channels → Develop apps → your app → Configuration,
+          add the missing scope(s), save, then reinstall the app and reconnect Shopify here with the new access token.
+        </Alert>
+      )}
+
       <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', padding: '16px 20px', background: 'var(--bg-secondary)', borderRadius: '6px' }}>
         {sources.length === 0 && stillGoing && (
           <div style={{ fontSize: '14px', color: 'var(--text-muted)' }}>Starting import…</div>
         )}
-        {sources.length === 0 && !stillGoing && (
+        {sources.length === 0 && !stillGoing && missingScopes.length === 0 && (
           <div style={{ fontSize: '14px', color: 'var(--text-muted)' }}>Nothing found to import — you can add knowledge manually later in Settings.</div>
         )}
         {sources.map(s => (

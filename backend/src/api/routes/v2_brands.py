@@ -334,22 +334,38 @@ async def connect_shopify(
         except Exception as upd_err:
             err_str = str(upd_err)
             if "409" in err_str or "23505" in err_str or "conflict" in err_str.lower():
-                # Domain unique constraint — claim the brand that already owns this domain
+                # Domain unique constraint — the domain is already connected to some
+                # brand. Only claim it if that brand has no owner yet (a genuinely
+                # unclaimed placeholder). If it already belongs to a different,
+                # real tenant, claiming it would silently hijack that tenant's
+                # brand (their Shopify connection, Gmail connection, tickets, the
+                # works) onto this caller's account - confirmed as a real incident
+                # during testing, not a hypothetical. Reject instead.
                 existing = supabase_select("brands", {"shopify_domain": f"eq.{shop_domain}"})
-                if existing:
-                    active_brand_id = existing[0]["id"]
-                    supabase_update("brands", {"id": f"eq.{active_brand_id}"}, {
-                        "tenant_id": tenant.tenant_id,
-                        "shopify_access_token": encrypt_token(request.access_token),
-                        "shopify_connected": True,
-                        "is_active": True,
-                    })
-                    # Deactivate the empty placeholder that was just created
-                    if active_brand_id != brand_id:
-                        supabase_update("brands", {"id": f"eq.{brand_id}"}, {"is_active": False})
-                    logger.info(f"[v2/brands] Claimed existing brand {active_brand_id} for tenant {tenant.tenant_id}")
-                else:
+                if not existing:
                     raise
+                existing_brand = existing[0]
+                existing_tenant_id = existing_brand.get("tenant_id")
+                if existing_tenant_id and existing_tenant_id != tenant.tenant_id:
+                    logger.warning(
+                        f"[v2/brands] Rejected Shopify connect: domain {shop_domain} already "
+                        f"belongs to tenant {existing_tenant_id}, not requesting tenant {tenant.tenant_id}"
+                    )
+                    raise HTTPException(
+                        status_code=409,
+                        detail="This Shopify store is already connected to a different tResolv account."
+                    )
+                active_brand_id = existing_brand["id"]
+                supabase_update("brands", {"id": f"eq.{active_brand_id}"}, {
+                    "tenant_id": tenant.tenant_id,
+                    "shopify_access_token": encrypt_token(request.access_token),
+                    "shopify_connected": True,
+                    "is_active": True,
+                })
+                # Deactivate the empty placeholder that was just created
+                if active_brand_id != brand_id:
+                    supabase_update("brands", {"id": f"eq.{brand_id}"}, {"is_active": False})
+                logger.info(f"[v2/brands] Claimed unowned brand {active_brand_id} for tenant {tenant.tenant_id}")
             else:
                 raise
 
@@ -410,6 +426,7 @@ async def get_shopify_import_status(
         })
         return {
             "status": shopify_import_service.get_import_status(brand_id),
+            "missing_scopes": shopify_import_service.get_missing_scopes(brand_id),
             "sources": [
                 {
                     "name": s.get("name"),
