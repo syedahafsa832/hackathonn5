@@ -482,10 +482,12 @@ export default function Onboarding() {
   const [shopifyConnected, setShopifyConnected] = useState(false);
   const [loadingBrand, setLoadingBrand] = useState(true);
   const [brandLoadError, setBrandLoadError] = useState(false);
+  const [notAuthenticated, setNotAuthenticated] = useState(false);
 
   const loadBrand = () => {
     setLoadingBrand(true);
     setBrandLoadError(false);
+    setNotAuthenticated(false);
     client.get('/api/brands').then(res => {
       const list = Array.isArray(res.data) ? res.data : res.data?.brands || [];
       if (list.length > 0) {
@@ -496,12 +498,23 @@ export default function Onboarding() {
         // something actually went wrong, not just "no brand yet".
         setBrandLoadError(true);
       }
-    }).catch(() => {
+    }).catch((err) => {
       // No .catch() here previously meant a slow/cold-start timeout (Render
       // free tier, ~30s+) silently left brandId at null, and every later
       // step (e.g. Connect Shopify) then called /api/v2/brands/null/... and
       // failed with a confusing "Brand not found" instead of a clear retry.
-      setBrandLoadError(true);
+      //
+      // A 401 is a different failure entirely — no amount of retrying fixes
+      // a missing/invalid token, so showing "server waking up, try again"
+      // for that case is actively misleading. The client's response
+      // interceptor already redirects to /login when a token existed and
+      // got rejected; this only catches the remaining case (no token at
+      // all) so the message here matches what's actually wrong.
+      if (err?.response?.status === 401) {
+        setNotAuthenticated(true);
+      } else {
+        setBrandLoadError(true);
+      }
     }).finally(() => setLoadingBrand(false));
   };
 
@@ -515,6 +528,22 @@ export default function Onboarding() {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <div className="skeleton" style={{ width: '400px', height: '200px', borderRadius: '8px' }} />
+      </div>
+    );
+  }
+
+  if (notAuthenticated) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
+        <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '40px', maxWidth: '440px', textAlign: 'center' }}>
+          <h2 style={{ fontSize: '18px', fontWeight: '700', marginBottom: '10px' }}>You've been signed out</h2>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: '1.5', marginBottom: '20px' }}>
+            Your session isn't valid anymore — log in again to continue setting up your account.
+          </p>
+          <button onClick={() => navigate('/login')} style={{ padding: '10px 24px', borderRadius: '4px', fontSize: '14px', fontWeight: '600', background: 'var(--accent)', color: 'white', cursor: 'pointer' }}>
+            Go to login
+          </button>
+        </div>
       </div>
     );
   }
