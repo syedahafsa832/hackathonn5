@@ -443,16 +443,31 @@ export default function Onboarding() {
   const [brandId, setBrandId] = useState(null);
   const [shopifyConnected, setShopifyConnected] = useState(false);
   const [loadingBrand, setLoadingBrand] = useState(true);
+  const [brandLoadError, setBrandLoadError] = useState(false);
 
-  useEffect(() => {
+  const loadBrand = () => {
+    setLoadingBrand(true);
+    setBrandLoadError(false);
     client.get('/api/brands').then(res => {
       const list = Array.isArray(res.data) ? res.data : res.data?.brands || [];
       if (list.length > 0) {
         setBrandId(list[0].id);
         setShopifyConnected(!!list[0].shopify_connected || !!list[0].shopify_domain);
+      } else {
+        // Signup auto-creates a brand server-side, so an empty list here means
+        // something actually went wrong, not just "no brand yet".
+        setBrandLoadError(true);
       }
+    }).catch(() => {
+      // No .catch() here previously meant a slow/cold-start timeout (Render
+      // free tier, ~30s+) silently left brandId at null, and every later
+      // step (e.g. Connect Shopify) then called /api/v2/brands/null/... and
+      // failed with a confusing "Brand not found" instead of a clear retry.
+      setBrandLoadError(true);
     }).finally(() => setLoadingBrand(false));
-  }, []);
+  };
+
+  useEffect(() => { loadBrand(); }, []);
 
   const handleFinish = () => {
     navigate('/dashboard');
@@ -462,6 +477,22 @@ export default function Onboarding() {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <div className="skeleton" style={{ width: '400px', height: '200px', borderRadius: '8px' }} />
+      </div>
+    );
+  }
+
+  if (brandLoadError || !brandId) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
+        <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '40px', maxWidth: '440px', textAlign: 'center' }}>
+          <h2 style={{ fontSize: '18px', fontWeight: '700', marginBottom: '10px' }}>Couldn't load your account</h2>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: '1.5', marginBottom: '20px' }}>
+            This can happen right after signup while our server wakes up. Try again in a few seconds.
+          </p>
+          <button onClick={loadBrand} style={{ padding: '10px 24px', borderRadius: '4px', fontSize: '14px', fontWeight: '600', background: 'var(--accent)', color: 'white', cursor: 'pointer' }}>
+            Retry
+          </button>
+        </div>
       </div>
     );
   }
