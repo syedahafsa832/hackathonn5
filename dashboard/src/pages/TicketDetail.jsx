@@ -479,7 +479,11 @@ export default function TicketDetail() {
     );
   }
 
-  const isHumanHandled = ticket.handler && ticket.handler.startsWith('human');
+  // ticket.handler was never a real field — takeover/release only ever write
+  // ticket.status ('human_managing' / 'open'), so this check always fell
+  // through to false and the reply box stayed locked even after a
+  // successful takeover.
+  const isHumanHandled = ticket.status === 'human_managing';
 
   return (
     <div className="split-panel" style={{ padding: '24px', gap: '24px', alignItems: 'flex-start' }}>
@@ -584,7 +588,7 @@ export default function TicketDetail() {
             <div>
               <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '3px' }}>Current Handler</div>
               <div style={{ fontWeight: '600', color: isHumanHandled ? 'var(--warning)' : 'var(--success)', textTransform: 'capitalize' }}>
-                {ticket.handler || 'Auto-routing...'}
+                {isHumanHandled ? 'Human' : 'Auto-routing...'}
               </div>
             </div>
             {ticket.unread_count > 0 && (
