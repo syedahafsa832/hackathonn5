@@ -6,6 +6,7 @@ import { useEscalations, useActions, useQuarantineCount, useMe } from '../hooks/
 const NAV = [
   { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { path: '/tickets', label: 'Conversations', icon: Inbox },
+  { path: '/brands', label: 'Brands', icon: Store },
   { path: '/actions', label: 'Escalations', icon: ShieldAlert, badge: true },
   { path: '/quarantine', label: 'Quarantine', icon: ShieldQuestion, quarantineBadge: true },
   { path: '/settings', label: 'Settings', icon: Settings },
