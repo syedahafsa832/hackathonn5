@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import client from '../api/client';
+import Alert from '../components/Alert';
 import { useMe } from '../hooks/useApi';
 
 const CALENDAR_URL = 'https://calendar.app.google/YkSqLTsYr18bUP2Z6';
@@ -327,7 +328,7 @@ export default function Upgrade() {
               onBlur={e => e.target.style.borderColor = '#E4E4E7'}
             />
 
-            {error && <div style={{ fontSize: '12.5px', color: '#DC2626' }}>{error}</div>}
+            <Alert variant="error">{error}</Alert>
 
             <button
               type="submit"

@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import client from '../api/client';
 import ChatWidget from '../components/ChatWidget';
+import Alert from '../components/Alert';
 
 const inputStyle = {
   width: '100%',
@@ -116,11 +117,7 @@ function EmailTab() {
 
   return (
     <div style={{ maxWidth: '520px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
-      {msg && (
-        <div style={{ fontSize: '13px', color: msg.includes('Failed') ? 'var(--danger)' : 'var(--success)', padding: '8px 12px', background: msg.includes('Failed') ? 'var(--danger-light)' : 'var(--success-light)', borderRadius: '4px' }}>
-          {msg}
-        </div>
-      )}
+      <Alert variant={msg.includes('Failed') ? 'error' : 'success'}>{msg}</Alert>
 
       {/* Gmail Connection */}
       <div style={{ background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', padding: '24px' }}>
@@ -313,12 +310,8 @@ function ShopifyTab() {
 
   return (
     <div style={{ maxWidth: '520px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      {msg && (
-        <div style={{ fontSize: '13px', color: 'var(--success)', padding: '8px 12px', background: 'var(--success-light)', borderRadius: '4px' }}>{msg}</div>
-      )}
-      {error && (
-        <div style={{ fontSize: '13px', color: 'var(--danger)', padding: '8px 12px', background: 'var(--danger-light)', borderRadius: '4px' }}>{error}</div>
-      )}
+      <Alert variant="success">{msg}</Alert>
+      <Alert variant="error">{error}</Alert>
 
       {isConnected ? (
         <div style={{ background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', padding: '24px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
@@ -510,11 +503,7 @@ function KnowledgeBaseTab() {
             style={{ ...inputStyle, resize: 'vertical', lineHeight: '1.5' }}
           />
         </div>
-        {uploadMsg && (
-          <div style={{ fontSize: '13px', color: uploadMsg.includes('fail') || uploadMsg.includes('required') ? 'var(--danger)' : 'var(--success)', padding: '8px 12px', background: uploadMsg.includes('fail') || uploadMsg.includes('required') ? 'var(--danger-light)' : 'var(--success-light)', borderRadius: '4px' }}>
-            {uploadMsg}
-          </div>
-        )}
+        <Alert variant={uploadMsg.includes('fail') || uploadMsg.includes('required') ? 'error' : 'success'}>{uploadMsg}</Alert>
         <button
           onClick={handleUpload}
           disabled={uploading}
@@ -526,9 +515,9 @@ function KnowledgeBaseTab() {
 
       <div>
         <div style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '12px' }}>Knowledge Sources</div>
-        {error && (
-          <div style={{ padding: '10px 14px', background: 'var(--danger-light)', color: 'var(--danger)', borderRadius: '4px', fontSize: '13px', marginBottom: '12px' }}>{error}</div>
-        )}
+        <div style={{ marginBottom: error ? '12px' : 0 }}>
+          <Alert variant="error">{error}</Alert>
+        </div>
         {loading ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {[1,2,3].map(i => <div key={i} className="skeleton" style={{ height: '48px', borderRadius: '4px' }} />)}
@@ -656,11 +645,7 @@ function FilterTab() {
 
   return (
     <div style={{ maxWidth: '520px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
-      {msg && (
-        <div style={{ fontSize: '13px', color: msg.includes('Failed') || msg.includes('must') ? 'var(--danger)' : 'var(--success)', padding: '8px 12px', background: msg.includes('Failed') || msg.includes('must') ? 'var(--danger-light)' : 'var(--success-light)', borderRadius: '4px' }}>
-          {msg}
-        </div>
-      )}
+      <Alert variant={msg.includes('Failed') || msg.includes('must') ? 'error' : 'success'}>{msg}</Alert>
 
       {/* Domain Lists */}
       <div style={cardStyle}>
@@ -842,11 +827,7 @@ function AccountTab() {
         <input value={profile.email} readOnly style={{ ...inputStyle, background: 'var(--bg-secondary)', color: 'var(--text-muted)' }} />
         <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>Email cannot be changed here</div>
       </div>
-      {msg && (
-        <div style={{ fontSize: '13px', color: msg.includes('Failed') ? 'var(--danger)' : 'var(--success)', padding: '8px 12px', background: msg.includes('Failed') ? 'var(--danger-light)' : 'var(--success-light)', borderRadius: '4px' }}>
-          {msg}
-        </div>
-      )}
+      <Alert variant={msg.includes('Failed') ? 'error' : 'success'}>{msg}</Alert>
       <button
         onClick={save}
         disabled={saving}
@@ -866,6 +847,8 @@ function CannedResponsesTab() {
   const [form, setForm] = useState({ title: '', trigger_keywords: '', response_text: '' });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [deleteError, setDeleteError] = useState('');
 
   const load = () => {
     setLoading(true);
@@ -885,9 +868,11 @@ function CannedResponsesTab() {
     }
     setSaving(true);
     setError('');
+    setSuccess('');
     try {
       await client.post('/api/v1/canned-responses', form);
       setForm({ title: '', trigger_keywords: '', response_text: '' });
+      setSuccess('Canned response saved.');
       load();
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to save.');
@@ -897,10 +882,13 @@ function CannedResponsesTab() {
   };
 
   const handleDelete = async (id) => {
+    setDeleteError('');
     try {
       await client.delete(`/api/v1/canned-responses/${id}`);
       load();
-    } catch {}
+    } catch (err) {
+      setDeleteError(err.response?.data?.detail || 'Failed to delete response.');
+    }
   };
 
   return (
@@ -927,7 +915,8 @@ function CannedResponsesTab() {
             rows={4}
             style={{ padding: '8px 12px', border: '1px solid var(--border-strong)', borderRadius: '4px', fontSize: '14px', background: 'var(--bg-primary)', resize: 'vertical' }}
           />
-          {error && <div style={{ fontSize: '13px', color: 'var(--danger)' }}>{error}</div>}
+          <Alert variant="error">{error}</Alert>
+          <Alert variant="success">{success}</Alert>
           <button type="submit" disabled={saving} style={{ alignSelf: 'flex-start', padding: '8px 18px', borderRadius: '4px', background: 'var(--accent)', color: 'white', fontWeight: '600', fontSize: '13px', cursor: saving ? 'not-allowed' : 'pointer' }}>
             {saving ? 'Saving...' : 'Save Response'}
           </button>
@@ -936,6 +925,9 @@ function CannedResponsesTab() {
 
       <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '24px' }}>
         <h3 style={{ fontSize: '14px', fontWeight: '600', marginBottom: '16px' }}>Saved Responses</h3>
+        <div style={{ marginBottom: deleteError ? '12px' : 0 }}>
+          <Alert variant="error" onDismiss={() => setDeleteError('')}>{deleteError}</Alert>
+        </div>
         {loading ? (
           [1,2].map(i => <div key={i} className="skeleton" style={{ height: '60px', borderRadius: '6px', marginBottom: '8px' }} />)
         ) : items.length === 0 ? (
@@ -1285,11 +1277,9 @@ function IntegrationsTab() {
           </div>
         )}
 
-        {msg && (
-          <div style={{ marginTop: '12px', fontSize: '13px', color: msg.includes('ailed') ? 'var(--danger)' : 'var(--success)' }}>
-            {msg}
-          </div>
-        )}
+        <div style={{ marginTop: msg ? '12px' : 0 }}>
+          <Alert variant={msg.includes('ailed') ? 'error' : 'success'}>{msg}</Alert>
+        </div>
       </div>
 
       {/* Carrier reference */}

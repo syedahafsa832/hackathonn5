@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import client from '../api/client';
 import { useBrand } from '../context/BrandContext';
 import Badge from '../components/Badge';
+import Alert from '../components/Alert';
 import { useConversations, useMarkRead } from '../hooks/useApi';
 
 function formatDate(iso) {
@@ -186,13 +187,10 @@ export default function Tickets() {
         </div>
       )}
 
+      <Alert variant="error">{error}</Alert>
+
       {/* Table */}
       <div style={{ background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', overflow: 'hidden' }}>
-        {error && (
-          <div style={{ padding: '16px 20px', color: '#EF4444', background: '#FEF2F2', borderBottom: '1px solid #E4E4E7' }}>
-            {error}
-          </div>
-        )}
 
         {/* Mobile card list */}
         <div className="table-mobile-cards">

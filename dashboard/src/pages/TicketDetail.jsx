@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import client from '../api/client';
 import Badge from '../components/Badge';
 import ActionCard from '../components/ActionCard';
+import Alert from '../components/Alert';
 import { useSendMessage, useTakeover, useRelease, useTicket, useMarkRead } from '../hooks/useApi';
 
 // Mirrors api.getConversationMessages()'s merge logic, but runs on a ticket
@@ -168,15 +169,7 @@ function OrderPanel({ ticketId, ticket }) {
             )}
           </div>
 
-          {actionResult && (
-            <div style={{
-              padding: '8px 10px', borderRadius: '4px', fontSize: '12px', lineHeight: '1.5',
-              background: actionResult.ok ? 'var(--success-light)' : 'var(--danger-light)',
-              color: actionResult.ok ? 'var(--success)' : 'var(--danger)',
-            }}>
-              {actionResult.msg}
-            </div>
-          )}
+          <Alert variant={actionResult?.ok ? 'success' : 'error'} style={{ fontSize: '12px' }}>{actionResult?.msg}</Alert>
 
           {(() => {
             const isRestocked = !!order.cancelled_at && order.fulfillment_status === 'restocked';
@@ -572,18 +565,12 @@ export default function TicketDetail() {
               {sending ? 'Sending...' : 'Send'}
             </button>
           </div>
-          {sendStatus && (
-            <div style={{
-              margin: '0 20px 16px',
-              fontSize: '12px',
-              padding: '8px 10px',
-              borderRadius: '4px',
-              color: sendStatus.includes('fail') || sendStatus.includes('No Gmail') ? 'var(--danger)' : 'var(--success)',
-              background: sendStatus.includes('fail') || sendStatus.includes('No Gmail') ? 'var(--danger-light)' : 'var(--success-light)',
-            }}>
-              {sendStatus}
-            </div>
-          )}
+          <Alert
+            variant={sendStatus.includes('fail') || sendStatus.includes('No Gmail') ? 'error' : 'success'}
+            style={{ margin: '0 20px 16px', fontSize: '12px' }}
+          >
+            {sendStatus}
+          </Alert>
         </div>
       </div>
 
@@ -628,11 +615,12 @@ export default function TicketDetail() {
               </button>
             )}
           </div>
-          {actionStatus && (
-            <div style={{ marginTop: '10px', fontSize: '12px', color: actionStatus.includes('fail') || actionStatus.includes('could not') ? 'var(--danger)' : 'var(--success)', padding: '8px 10px', background: actionStatus.includes('fail') || actionStatus.includes('could not') ? 'var(--danger-light)' : 'var(--success-light)', borderRadius: '4px' }}>
-              {actionStatus}
-            </div>
-          )}
+          <Alert
+            variant={actionStatus.includes('fail') || actionStatus.includes('could not') ? 'error' : 'success'}
+            style={{ marginTop: '10px', fontSize: '12px' }}
+          >
+            {actionStatus}
+          </Alert>
         </div>
 
         {/* Order Context */}
