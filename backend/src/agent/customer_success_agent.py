@@ -212,6 +212,7 @@ class CustomerSuccessAgent:
             # Resolve brand-specific Shopify + Aftership credentials
             _brand_name = "our store"
             _agent_name = "Luna"
+            _email_signature = None
             from src.services.reply_style_service import build_style_prompt_block
             _style_block = build_style_prompt_block(None)
             _brand_shopify_domain = None
@@ -226,6 +227,7 @@ class CustomerSuccessAgent:
                     if _b:
                         _brand_name = _b[0].get("name") or _b[0].get("brand_name") or "our store"
                         _agent_name = _b[0].get("agent_name") or "Luna"
+                        _email_signature = _b[0].get("email_signature") or None
                         try:
                             from src.services.reply_style_service import get_active_style
                             _style_block = build_style_prompt_block(get_active_style(_b[0]))
@@ -361,7 +363,7 @@ class CustomerSuccessAgent:
             # Defensive check - ensure at least one AI provider is configured
             if not ai_provider_manager.has_providers:
                 logger.error("No AI providers configured - API key(s) may be missing")
-                return self._get_fallback_response("No AI providers configured", brand_name=_brand_name, agent_name=_agent_name)
+                return self._get_fallback_response("No AI providers configured", brand_name=_brand_name, agent_name=_agent_name, email_signature=_email_signature)
 
             same_prompt_messages = [
                 {"role": "system", "content": system_prompt},
@@ -377,12 +379,12 @@ class CustomerSuccessAgent:
                 )
             except AllProvidersFailedError as api_error:
                 logger.error(f"[Agent] All AI providers failed: {api_error}")
-                return self._get_provider_failure_response(brand_name=_brand_name, agent_name=_agent_name)
+                return self._get_provider_failure_response(brand_name=_brand_name, agent_name=_agent_name, email_signature=_email_signature)
 
             raw_content = response.choices[0].message.content
             if not raw_content:
                 logger.error("Empty response from API")
-                return self._get_fallback_response("Empty API response", brand_name=_brand_name, agent_name=_agent_name)
+                return self._get_fallback_response("Empty API response", brand_name=_brand_name, agent_name=_agent_name, email_signature=_email_signature)
 
             try:
                 # Clean up response - remove markdown code blocks if present
@@ -398,7 +400,7 @@ class CustomerSuccessAgent:
                 structured = json.loads(clean_content)
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse JSON response: {e}. Raw content: {raw_content[:500]}")
-                return self._get_fallback_response(f"JSON parse error: {str(e)}", brand_name=_brand_name, agent_name=_agent_name)
+                return self._get_fallback_response(f"JSON parse error: {str(e)}", brand_name=_brand_name, agent_name=_agent_name, email_signature=_email_signature)
 
             # 4. Confidence Calculation - Be more lenient
             sentiment = sentiment_analyzer.analyze_sentiment_detailed(query)
@@ -450,8 +452,12 @@ class CustomerSuccessAgent:
                 elif reply and not (name.lower() in reply.lower()[:20]):
                     structured["reply_body"] = f"Hey {name},\n\n{reply}"
 
-            # Add casual sign-off instead of formal
-            if _agent_name not in structured["reply_body"]:
+            # Merchant-set signature wins verbatim; otherwise fall back to the
+            # generated "— {agent_name}\n{brand_name}" sign-off.
+            if _email_signature:
+                if _email_signature not in structured["reply_body"]:
+                    structured["reply_body"] += f"\n\n{_email_signature}"
+            elif _agent_name not in structured["reply_body"]:
                 structured["reply_body"] += f"\n\n— {_agent_name}\n{_brand_name}"
 
             # Attach order_data for widget card display
@@ -485,7 +491,7 @@ class CustomerSuccessAgent:
             import traceback
             logger.error(f"V3 Agent Error: {e}")
             logger.error(f"Full traceback: {traceback.format_exc()}")
-            return self._get_fallback_response(str(e), brand_name=_brand_name, agent_name=_agent_name)
+            return self._get_fallback_response(str(e), brand_name=_brand_name, agent_name=_agent_name, email_signature=_email_signature)
 
     def _construct_v3_prompt(self, customer_info: Dict[str, Any], rag_context: str, sizing_context: str, tool_context: str = "", action_context: str = "", brand_name: str = "our store", agent_name: str = "Luna", style_block: str = "") -> str:
         order_critical = (
@@ -567,9 +573,9 @@ class CustomerSuccessAgent:
         95-100: definitive answer. 80-94: quite sure. 60-79: mostly sure. Below 60: escalate.
         """
 
-    def _get_fallback_response(self, error: str, brand_name: str = "", agent_name: str = "Luna") -> Dict[str, Any]:
+    def _get_fallback_response(self, error: str, brand_name: str = "", agent_name: str = "Luna", email_signature: str = None) -> Dict[str, Any]:
         logger.error(f"Using fallback response due to error: {error}")
-        sign_off = f"— {agent_name}\n{brand_name}" if brand_name else f"— {agent_name}"
+        sign_off = email_signature or (f"— {agent_name}\n{brand_name}" if brand_name else f"— {agent_name}")
         return {
             "intent": "general_inquiry",
             "sentiment": "neutral",
@@ -581,12 +587,12 @@ class CustomerSuccessAgent:
             "status": "escalated"
         }
 
-    def _get_provider_failure_response(self, brand_name: str = "", agent_name: str = "Luna") -> Dict[str, Any]:
+    def _get_provider_failure_response(self, brand_name: str = "", agent_name: str = "Luna", email_signature: str = None) -> Dict[str, Any]:
         """Every configured Mistral key failed for this request. Distinct from
         _get_fallback_response so the escalation card reads as an infrastructure
         problem, not a generic "system error" — same customer-facing tone, but a
         specific escalation_reason a human can act on immediately."""
-        sign_off = f"— {agent_name}\n{brand_name}" if brand_name else f"— {agent_name}"
+        sign_off = email_signature or (f"— {agent_name}\n{brand_name}" if brand_name else f"— {agent_name}")
         return {
             "intent": "general_inquiry",
             "sentiment": "neutral",

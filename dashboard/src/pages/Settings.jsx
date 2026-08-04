@@ -802,6 +802,14 @@ function ReplyStyleTab() {
   const [newExample, setNewExample] = useState('');
   const [addingExample, setAddingExample] = useState(false);
 
+  // Identity (assistant name, signature) is a separate concept from Reply
+  // Style — it's who the AI is, not how it sounds. Kept as its own
+  // state/save action, not part of the reply_style_* payload.
+  const [agentName, setAgentName] = useState('');
+  const [emailSignature, setEmailSignature] = useState('');
+  const [savingIdentity, setSavingIdentity] = useState(false);
+  const [identityMsg, setIdentityMsg] = useState('');
+
   const load = useCallback((id) => {
     setLoading(true);
     setError('');
@@ -811,17 +819,42 @@ function ReplyStyleTab() {
       .finally(() => setLoading(false));
   }, []);
 
+  const loadIdentity = useCallback((id) => {
+    client.get(`/api/v2/brands/${id}`)
+      .then(res => {
+        const brand = res.data?.brand || res.data;
+        setAgentName(brand?.agent_name || 'Luna');
+        setEmailSignature(brand?.email_signature || '');
+      })
+      .catch(() => {});
+  }, []);
+
+  const saveIdentity = async () => {
+    if (!brandId) return;
+    setSavingIdentity(true);
+    setIdentityMsg('');
+    try {
+      await client.patch(`/api/v2/brands/${brandId}`, { agent_name: agentName, email_signature: emailSignature });
+      setIdentityMsg('Saved!');
+    } catch (err) {
+      setIdentityMsg(err.response?.data?.detail || 'Failed to save.');
+    } finally {
+      setSavingIdentity(false);
+    }
+  };
+
   useEffect(() => {
     client.get('/api/brands').then(res => {
       const list = Array.isArray(res.data) ? res.data : res.data?.brands || [];
       if (list.length > 0) {
         setBrandId(list[0].id);
         load(list[0].id);
+        loadIdentity(list[0].id);
       } else {
         setLoading(false);
       }
     }).catch(() => setLoading(false));
-  }, [load]);
+  }, [load, loadIdentity]);
 
   useEffect(() => {
     if (!brandId) return;
@@ -945,6 +978,47 @@ function ReplyStyleTab() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', maxWidth: '760px' }}>
+      <div style={card}>
+        <div style={sectionTitle}>Identity</div>
+        <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '14px' }}>
+          Who your AI is — its name and how it signs off. Separate from Reply Style, which controls tone and wording.
+        </div>
+        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <div>
+            <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>Assistant Name</div>
+            <input
+              value={agentName}
+              onChange={e => setAgentName(e.target.value)}
+              placeholder="Luna"
+              maxLength={20}
+              style={{ padding: '7px 10px', borderRadius: '4px', border: '1px solid var(--border)', fontSize: '13px', width: '160px' }}
+            />
+          </div>
+          <div>
+            <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>Email Signature</div>
+            <textarea
+              value={emailSignature}
+              onChange={e => setEmailSignature(e.target.value)}
+              placeholder={`Best,\n${agentName || 'Luna'}`}
+              rows={2}
+              style={{ padding: '7px 10px', borderRadius: '4px', border: '1px solid var(--border)', fontSize: '13px', width: '260px', resize: 'vertical', fontFamily: 'inherit' }}
+            />
+          </div>
+          <button
+            onClick={saveIdentity}
+            disabled={savingIdentity}
+            style={{ padding: '7px 14px', borderRadius: '4px', background: 'var(--accent)', color: 'white', fontWeight: '500', fontSize: '13px', cursor: savingIdentity ? 'not-allowed' : 'pointer' }}
+          >
+            {savingIdentity ? 'Saving...' : 'Save'}
+          </button>
+          {identityMsg && (
+            <span style={{ fontSize: '12px', color: identityMsg === 'Saved!' ? 'var(--success)' : 'var(--danger)' }}>
+              {identityMsg}
+            </span>
+          )}
+        </div>
+      </div>
+
       <div style={card}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
           <div>

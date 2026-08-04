@@ -66,6 +66,8 @@ class UpdateBrandRequest(BaseModel):
     exclude_digital_products: Optional[bool] = None
     refund_notes: Optional[str] = None
     final_sale_tags: Optional[list[str]] = None
+    agent_name: Optional[str] = Field(None, max_length=20)
+    email_signature: Optional[str] = Field(None, max_length=500)
 
 
 class ConnectShopifyRequest(BaseModel):
