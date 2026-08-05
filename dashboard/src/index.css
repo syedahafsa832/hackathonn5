@@ -161,6 +161,23 @@ input, textarea, select {
   50% { opacity: 0.3; }
 }
 
+/* Onboarding checklist card — check pop, row fade-in, confetti fall */
+@keyframes checkPop {
+  0% { transform: scale(0.4); opacity: 0; }
+  60% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); }
+}
+
+@keyframes rowFadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes confettiFall {
+  0% { transform: translateY(-10px) rotate(0deg); opacity: 1; }
+  100% { transform: translateY(220px) rotate(540deg); opacity: 0; }
+}
+
 .toast.success { background: var(--success); }
 .toast.error { background: var(--danger); }
 .toast.info { background: var(--accent); }

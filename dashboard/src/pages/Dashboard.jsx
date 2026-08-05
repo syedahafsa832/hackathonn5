@@ -5,6 +5,7 @@ import StatCard from '../components/StatCard';
 import ActionCard from '../components/ActionCard';
 import FilteredEmailsWidget from '../components/FilteredEmailsWidget';
 import PlanUsageWidget from '../components/PlanUsageWidget';
+import OnboardingChecklistCard from '../components/OnboardingChecklistCard';
 import { useNotifications } from '../hooks/useNotifications';
 import { useStats, useConversations } from '../hooks/useApi';
 
@@ -103,14 +104,13 @@ export default function Dashboard() {
   const replyStyleDone = localStorage.getItem('resolv_reply_style_done') === 'true';
   const testReplyDone = localStorage.getItem('resolv_test_reply_done') === 'true';
 
-  const checklistItems = [
-    { label: 'Shopify connected', done: shopifyConnected },
-    { label: 'Store knowledge imported', done: knowledgeImported },
-    { label: 'Gmail connected', done: gmailConnected },
-    { label: 'Reply style selected', done: replyStyleDone },
-    { label: 'Test conversation completed', done: testReplyDone },
-  ];
-  const allDone = checklistItems.every(i => i.done);
+  const onboardingSteps = {
+    shopify: shopifyConnected,
+    knowledge: knowledgeImported,
+    gmail: gmailConnected,
+    replyStyle: replyStyleDone,
+    testAi: testReplyDone,
+  };
 
   const dismissChecklist = () => {
     localStorage.setItem('resolv_checklist_dismissed', 'true');
@@ -120,29 +120,11 @@ export default function Dashboard() {
   return (
     <div style={{ padding: '28px 32px', display: 'flex', flexDirection: 'column', gap: '28px' }}>
 
-      {/* Onboarding checklist */}
-      {activeBrand && !allDone && !checklistDismissed && (
-        <div style={{ padding: '14px 16px', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: '6px', fontSize: '13px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px', gap: '8px', flexWrap: 'wrap' }}>
-            <span style={{ color: '#B45309', fontWeight: '700' }}>Get Luna live 🚀</span>
-            <div style={{ display: 'flex', gap: '14px', alignItems: 'center' }}>
-              <Link to="/onboarding" style={{ color: '#B45309', fontWeight: '600', textDecoration: 'none' }}>
-                Continue setup →
-              </Link>
-              <button onClick={dismissChecklist} style={{ background: 'none', border: 'none', color: '#94A3B8', cursor: 'pointer', fontSize: '12px', padding: 0 }}>
-                Dismiss
-              </button>
-            </div>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-            {checklistItems.map(item => (
-              <div key={item.label} style={{ display: 'flex', alignItems: 'center', gap: '8px', color: item.done ? '#15803D' : '#64748B' }}>
-                <span style={{ fontWeight: '700', flexShrink: 0 }}>{item.done ? '✓' : '○'}</span>
-                {item.label}
-              </div>
-            ))}
-          </div>
-        </div>
+      {/* Onboarding checklist — stays visible through the completion/celebration
+          state (not hidden the instant allDone flips true) so there's actually
+          something to celebrate; the user dismisses it for good afterwards. */}
+      {activeBrand && !checklistDismissed && (
+        <OnboardingChecklistCard steps={onboardingSteps} onDismiss={dismissChecklist} />
       )}
 
       {/* Cold-start notice */}
