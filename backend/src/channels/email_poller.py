@@ -174,7 +174,7 @@ class EmailPoller:
             tenant_id = brand.get("tenant_id")
             if not tenant_id:
                 return self.poll_interval
-            tenants = supabase_select("tenants", {"id": f"eq.{tenant_id}"})
+            tenants = await asyncio.to_thread(supabase_select, "tenants", {"id": f"eq.{tenant_id}"})
             if tenants and tenants[0].get("plan") == "founding_free":
                 return self.poll_interval * 2
         except Exception:
@@ -259,7 +259,9 @@ class EmailPoller:
                 # Skip if this exact Gmail message was already stored (survives restarts)
                 if gmail_msg_id:
                     try:
-                        already_seen = supabase_select("tickets", {"gmail_message_id": f"eq.{gmail_msg_id}"})
+                        already_seen = await asyncio.to_thread(
+                            supabase_select, "tickets", {"gmail_message_id": f"eq.{gmail_msg_id}"}
+                        )
                         if already_seen:
                             logger.debug(f"[Poller] Skipping already-processed message {gmail_msg_id}")
                             continue
@@ -269,8 +271,8 @@ class EmailPoller:
                 # ── Filter evaluation (runs before any ticket or AI work) ──
                 logger.info(f"[email_filter] evaluating gmail_message_id={gmail_msg_id} sender={sender} brand={brand.get('name')}")
                 email["brand_support_email"] = support_email
-                filter_result = email_filter_service.evaluate(email, brand_id)
-                email_filter_service.log_decision(brand_id, sender, thread_id, filter_result)
+                filter_result = await asyncio.to_thread(email_filter_service.evaluate, email, brand_id)
+                await asyncio.to_thread(email_filter_service.log_decision, brand_id, sender, thread_id, filter_result)
 
                 if filter_result.decision == "blocked":
                     logger.info(
@@ -280,8 +282,12 @@ class EmailPoller:
                     continue
 
                 # ── Guardian evaluation (Layers 4–5: AI intent + confidence gate) ──
-                guardian_result = email_guardian_service.evaluate(email, brand_id, brand_name=brand.get("name"))
-                email_guardian_service.log_guardian_decision(brand_id, sender, thread_id, guardian_result)
+                guardian_result = await asyncio.to_thread(
+                    email_guardian_service.evaluate, email, brand_id, brand_name=brand.get("name")
+                )
+                await asyncio.to_thread(
+                    email_guardian_service.log_guardian_decision, brand_id, sender, thread_id, guardian_result
+                )
 
                 if guardian_result.decision in ("blocked", "quarantined"):
                     logger.info(
@@ -301,7 +307,9 @@ class EmailPoller:
                 existing_ticket = None
                 if thread_id:
                     try:
-                        results = supabase_select("tickets", {"gmail_thread_id": f"eq.{thread_id}"})
+                        results = await asyncio.to_thread(
+                            supabase_select, "tickets", {"gmail_thread_id": f"eq.{thread_id}"}
+                        )
                         if results:
                             existing_ticket = results[0]
                             logger.info(f"[Poller] Thread match: appending to ticket {existing_ticket['id']}")
@@ -323,11 +331,13 @@ class EmailPoller:
                         "received_at": datetime.now(timezone.utc).isoformat(),
                         "direction":   "inbound",
                     })
-                    supabase_update("tickets", {"id": f"eq.{existing_ticket['id']}"}, {
-                        "messages":   current_msgs,
-                        "status":     "open",
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                    })
+                    await asyncio.to_thread(
+                        supabase_update, "tickets", {"id": f"eq.{existing_ticket['id']}"}, {
+                            "messages":   current_msgs,
+                            "status":     "open",
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                    )
                     logger.info(f"[email_filter] ticket_updated ticket_id={existing_ticket['id']} gmail_message_id={gmail_msg_id}")
                     continue
 
@@ -371,9 +381,11 @@ class EmailPoller:
 
             # Update last_polled_at after processing all emails in this batch
             try:
-                supabase_update("brands", {"id": f"eq.{brand_id}"}, {
-                    "last_polled_at": datetime.now(timezone.utc).isoformat(),
-                })
+                await asyncio.to_thread(
+                    supabase_update, "brands", {"id": f"eq.{brand_id}"}, {
+                        "last_polled_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
                 logger.debug(f"[Poller] Updated last_polled_at for brand '{brand.get('name')}'")
             except Exception as ts_err:
                 logger.warning(f"[Poller] Could not update last_polled_at for brand {brand_id}: {ts_err}")
@@ -392,7 +404,7 @@ class EmailPoller:
             window_end = (now - timedelta(minutes=30)).isoformat()
 
             # Fetch recently resolved tickets
-            resolved = supabase_select("tickets", {
+            resolved = await asyncio.to_thread(supabase_select, "tickets", {
                 "status": "in.(auto_resolved,resolved)",
                 "email_sent": "is.true",
                 "updated_at": f"gte.{window_start}",
@@ -416,7 +428,9 @@ class EmailPoller:
                 if not brand_id or not customer_email or not thread_id:
                     continue
 
-                brands = supabase_select("brands", {"id": f"eq.{brand_id}", "gmail_connected": "is.true"})
+                brands = await asyncio.to_thread(
+                    supabase_select, "brands", {"id": f"eq.{brand_id}", "gmail_connected": "is.true"}
+                )
                 if not brands:
                     continue
                 brand = brands[0]
@@ -442,7 +456,9 @@ class EmailPoller:
                     )
                     # Mark csat_sent — safe if column doesn't exist yet
                     try:
-                        supabase_update("tickets", {"id": f"eq.{ticket['id']}"}, {"csat_sent": True})
+                        await asyncio.to_thread(
+                            supabase_update, "tickets", {"id": f"eq.{ticket['id']}"}, {"csat_sent": True}
+                        )
                     except Exception:
                         pass
                     logger.info(f"[CSAT] Sent survey for ticket {ticket['id']} to {customer_email}")
