@@ -39,7 +39,16 @@ function Drawer({ open, onClose, onCreated }) {
       onCreated(res.data?.brand || res.data);
       setName(''); setShopName(''); setAccessToken(''); setSupportEmail('');
     } catch (err) {
-      setError(extractErrorMessage(err, 'Failed to create brand.'));
+      // Same distinction applied to Login/Signup/Shopify-connect this session:
+      // extractErrorMessage's fallback only fires when there's no response to
+      // read (the request never reached the backend at all), so "Failed to
+      // create brand" alone is misleading there — it reads as a validation
+      // failure when it's actually a connectivity one. A real rejection
+      // (including the plan-limit case) still gets its specific message from
+      // extractErrorMessage below, unchanged.
+      setError(err.response
+        ? extractErrorMessage(err, 'Failed to create brand.')
+        : "Couldn't reach the server right now. This can happen briefly while it wakes up — try again in a few seconds.");
     } finally {
       setLoading(false);
     }
