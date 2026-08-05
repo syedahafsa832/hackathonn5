@@ -936,6 +936,7 @@ function ReplyStyleTab() {
     setMsg('');
     try {
       await client.patch(`/api/v2/brands/${brandId}/reply-style`, { mode: 'preset', preset: presetId });
+      localStorage.setItem('resolv_reply_style_done', 'true');
       setMsg('Reply Style updated.');
       load(brandId);
     } catch (err) {
@@ -950,6 +951,7 @@ function ReplyStyleTab() {
     setSavingMode(true);
     try {
       await client.patch(`/api/v2/brands/${brandId}/reply-style`, { mode: disabled ? 'disabled' : 'preset' });
+      localStorage.setItem('resolv_reply_style_done', 'true');
       load(brandId);
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to update Reply Style.');
@@ -962,6 +964,7 @@ function ReplyStyleTab() {
     if (!brandId) return;
     try {
       await client.patch(`/api/v2/brands/${brandId}/reply-style`, { [field]: value });
+      localStorage.setItem('resolv_reply_style_done', 'true');
       load(brandId);
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to update setting.');
@@ -975,6 +978,7 @@ function ReplyStyleTab() {
     setMsg('');
     try {
       await client.post(`/api/v2/brands/${brandId}/reply-style/regenerate`);
+      localStorage.setItem('resolv_reply_style_done', 'true');
       setMsg('Reply Style regenerated from your recent approved replies.');
       load(brandId);
     } catch (err) {
@@ -990,6 +994,7 @@ function ReplyStyleTab() {
     setError('');
     try {
       await client.post(`/api/v2/brands/${brandId}/reply-style/switch-to-learned`);
+      localStorage.setItem('resolv_reply_style_done', 'true');
       setMsg('Switched to your Learned Style.');
       load(brandId);
     } catch (err) {
@@ -1004,6 +1009,7 @@ function ReplyStyleTab() {
     setAddingExample(true);
     try {
       await client.post(`/api/v2/brands/${brandId}/reply-style/examples`, { content: newExample.trim() });
+      localStorage.setItem('resolv_reply_style_done', 'true');
       setNewExample('');
       const res = await client.get(`/api/v2/brands/${brandId}/reply-style/examples`);
       setExamples(res.data?.examples || []);
