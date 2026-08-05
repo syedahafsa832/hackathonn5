@@ -513,8 +513,44 @@ export default function Onboarding() {
     client.get('/api/brands').then(res => {
       const list = Array.isArray(res.data) ? res.data : res.data?.brands || [];
       if (list.length > 0) {
-        setBrandId(list[0].id);
-        setShopifyConnected(!!list[0].shopify_connected || !!list[0].shopify_domain);
+        const brand = list[0];
+        setBrandId(brand.id);
+        const isShopifyConnected = !!brand.shopify_connected || !!brand.shopify_domain;
+        setShopifyConnected(isShopifyConnected);
+
+        // Root cause of the "redirect back to onboarding" bug: step always
+        // started at 1 regardless of real progress, so any fresh visit to
+        // /onboarding — including the Dashboard checklist's own "Continue
+        // setup" button, which never targeted a specific step — restarted
+        // the whole flow from "Connect Shopify" even when everything past
+        // it was already done. Resume at the first genuinely incomplete
+        // step instead. reply_style_mode/preset come from the brand row
+        // itself (server truth), not localStorage, since that's more
+        // reliable than a flag that can be missing on another device/
+        // browser or after clearing site data.
+        const resumeAt = (gmailDone) => {
+          if (!isShopifyConnected) return 1;
+          const replyStyleDone = !!(brand.reply_style_mode || brand.reply_style_preset)
+            || localStorage.getItem('resolv_reply_style_done') === 'true';
+          if (!gmailDone) return 3;
+          if (!replyStyleDone) return 4;
+          return 5;
+        };
+
+        if (isShopifyConnected) {
+          // loadingBrand must stay true until this resolves — otherwise the
+          // skeleton disappears one tick before setStep() lands, and the
+          // stale default (1) flashes on screen for a frame, which is
+          // exactly the "looks like it reset to step 1" symptom this fix
+          // is for.
+          return client.get(`/api/v2/brands/${brand.id}/shopify/import-status`)
+            .then(r => {
+              const imported = (r.data?.sources || []).some(s => s.status === 'completed');
+              setStep(imported ? resumeAt(!!brand.gmail_connected) : 2);
+            })
+            .catch(() => setStep(resumeAt(!!brand.gmail_connected)));
+        }
+        setStep(1);
       } else {
         // Signup auto-creates a brand server-side, so an empty list here means
         // something actually went wrong, not just "no brand yet".
