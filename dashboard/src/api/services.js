@@ -172,9 +172,16 @@ const api = {
   // --- STATS ---
 
   getStats: async () => {
+    // Previously .catch()'d both requests into empty arrays, so a transient
+    // network/backend failure (cold start, 502/503) rendered as confident
+    // "0" stats indistinguishable from a real empty account, instead of
+    // React Query's error state — same anti-pattern already fixed in
+    // getConversations() above. Let failures propagate; React Query retries
+    // automatically and exposes isError/error so the UI can tell the two
+    // apart instead of silently lying with zeros.
     const [ticketsRes, actionsRes] = await Promise.all([
-      client.get('/api/tickets').catch(() => ({ data: [] })),
-      client.get('/api/v1/actions/pending').catch(() => ({ data: [] })),
+      client.get('/api/tickets'),
+      client.get('/api/v1/actions/pending'),
     ]);
     const tickets = Array.isArray(ticketsRes.data) ? ticketsRes.data : ticketsRes.data?.tickets || [];
     const pendingActions = Array.isArray(actionsRes.data) ? actionsRes.data : actionsRes.data?.actions || [];

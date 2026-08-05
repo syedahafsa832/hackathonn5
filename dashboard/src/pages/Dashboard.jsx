@@ -16,7 +16,7 @@ function formatTime(iso) {
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { data: stats, isLoading: statsLoading, refetch: refetchStats } = useStats();
+  const { data: stats, isLoading: statsLoading, isError: statsError, refetch: refetchStats } = useStats();
   const { data: conversations, isLoading: convsLoading, refetch: refetchConvs } = useConversations('active');
   const { notify, requestPermission, hasBeenAsked, isSupported } = useNotifications();
   const [showNotifBanner, setShowNotifBanner] = useState(false);
@@ -181,30 +181,37 @@ export default function Dashboard() {
         </span>
       </div>
 
-      {/* Stat cards */}
+      {/* Stat cards — statsError && no cached data means the request itself
+          failed (cold start / network), not that activity is genuinely
+          zero. Show '—' instead of a confident-but-wrong 0 in that case. */}
+      {statsError && !stats && (
+        <div style={{ fontSize: '12.5px', color: '#B45309', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: '6px', padding: '8px 12px' }}>
+          Couldn't load live stats — retrying automatically. These numbers aren't final yet.
+        </div>
+      )}
       <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
-        <StatCard 
-          label="Active Conversations" 
-          value={stats?.activeConversations ?? 0} 
-          loading={loading} 
-          subtitle="Real-time open chats" 
+        <StatCard
+          label="Active Conversations"
+          value={stats ? stats.activeConversations : (statsError ? '—' : 0)}
+          loading={loading}
+          subtitle="Real-time open chats"
         />
         <StatCard
           label="AI Responded"
-          value={stats?.aiHandledPct != null ? `${stats?.aiHandledPct}%` : '—'}
+          value={stats?.aiHandledPct != null ? `${stats.aiHandledPct}%` : '—'}
           loading={loading}
           subtitle="Replies sent by AI automatically"
           isAi={true}
         />
-        <StatCard 
-          label="Escalated Chats" 
-          value={stats?.escalatedChats ?? 0} 
-          loading={loading} 
-          subtitle="Need immediate attention" 
+        <StatCard
+          label="Escalated Chats"
+          value={stats ? stats.escalatedChats : (statsError ? '—' : 0)}
+          loading={loading}
+          subtitle="Need immediate attention"
         />
         <StatCard
           label="Pending Approvals"
-          value={stats?.pendingApprovals ?? 0}
+          value={stats ? stats.pendingApprovals : (statsError ? '—' : 0)}
           loading={loading}
           subtitle="Actions awaiting review"
         />
@@ -286,6 +293,10 @@ export default function Dashboard() {
         {loading ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             {[1,2,3].map(i => <div key={i} className="skeleton" style={{ height: '100px', borderRadius: '6px' }} />)}
+          </div>
+        ) : statsError && !stats ? (
+          <div style={{ padding: '32px', textAlign: 'center', border: '1px solid #FDE68A', borderRadius: '8px', background: '#FFFBEB', color: '#B45309', fontSize: '14px' }}>
+            Couldn't check for escalations right now — retrying automatically.
           </div>
         ) : (stats?.escalatedChats ?? 0) === 0 ? (
           <div style={{ padding: '32px', textAlign: 'center', border: '1px solid #E4E4E7', borderRadius: '8px', background: 'white', color: '#64748B', fontSize: '14px' }}>

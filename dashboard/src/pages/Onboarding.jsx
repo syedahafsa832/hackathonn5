@@ -85,7 +85,14 @@ function StepShopify({ brandId, onNext, onConnected }) {
       onConnected();
       onNext();
     } catch (err) {
-      setError(extractErrorMessage(err, 'Could not connect to Shopify. Check your store URL and API key.'));
+      // extractErrorMessage's fallback only fires when there's no real
+      // response to read a message from — i.e. the request never reached
+      // the backend at all (network/cold-start failure), not that Shopify
+      // rejected the credentials. "Check your store URL and API key" is
+      // actively wrong for that case, so use a distinct message for it.
+      setError(err.response
+        ? extractErrorMessage(err, 'Could not connect to Shopify. Check your store URL and API key.')
+        : "Couldn't reach the server right now. This can happen briefly while it wakes up — try again in a few seconds.");
     } finally {
       clearTimeout(slowTimerRef.current);
       setSlowConnect(false);
