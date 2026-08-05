@@ -1431,25 +1431,23 @@ function CannedResponsesTab() {
 // ──────────────────────────────────────────────────── Chat Widget Tab ──
 
 function ChatWidgetTab() {
-  const [brands, setBrands] = useState([]);
-  const [selectedBrand, setSelectedBrand] = useState(null);
+  const [brand, setBrand] = useState(null);
   const [copied, setCopied] = useState(false);
   const [accentColor, setAccentColor] = useState('#06B6D4');
 
   useEffect(() => {
     client.get('/api/brands').then(res => {
       const list = Array.isArray(res.data) ? res.data : res.data?.brands || [];
-      setBrands(list);
-      if (list.length > 0) setSelectedBrand(list[0]);
+      setBrand(list[0] || null);
     }).catch(() => {});
   }, []);
 
   const backendUrl = import.meta.env.VITE_API_BASE_URL ||
     window.location.origin.replace(':5173', ':8001').replace(':3000', ':8001');
-  const embedCode = selectedBrand
+  const embedCode = brand
     ? `<script>
   window.tResolvConfig = {
-    brandId:    "${selectedBrand.id}",
+    brandId:    "${brand.id}",
     botName:    "Luna",
     color:      "#FFFFFF",
     brandLabel: "AI Support"
@@ -1479,19 +1477,6 @@ function ChatWidgetTab() {
         </div>
       </div>
 
-      {brands.length > 1 && (
-        <div style={section}>
-          <div style={label}>Select brand</div>
-          <select
-            value={selectedBrand?.id || ''}
-            onChange={e => setSelectedBrand(brands.find(b => b.id === e.target.value))}
-            style={{ padding: '8px 12px', borderRadius: '4px', border: '1px solid var(--border)', background: 'var(--bg-primary)', color: 'var(--text-primary)', fontSize: '13px' }}
-          >
-            {brands.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-          </select>
-        </div>
-      )}
-
       <div style={section}>
         <div style={label}>Embed code — paste before {'</body>'} in your Shopify theme</div>
         <div style={{ position: 'relative' }}>
@@ -1501,7 +1486,7 @@ function ChatWidgetTab() {
             fontFamily: 'DM Mono, monospace', overflowX: 'auto', margin: 0,
             whiteSpace: 'pre-wrap', wordBreak: 'break-all',
           }}>
-            {embedCode || 'No brand found — add a brand first.'}
+            {embedCode || 'No store found — check your Shopify connection in Settings.'}
           </pre>
           {embedCode && (
             <button
@@ -1524,7 +1509,7 @@ function ChatWidgetTab() {
 
       <div style={section}>
         <div style={label}>Live Preview</div>
-        {selectedBrand ? (
+        {brand ? (
           <div className="demo-phone-frame" style={{
             width: '320px',
             height: '520px',
@@ -1573,7 +1558,7 @@ function ChatWidgetTab() {
             </div>
 
             {/* The ChatWidget */}
-            <ChatWidget brandId={selectedBrand.id} accentColor={accentColor} />
+            <ChatWidget brandId={brand.id} accentColor={accentColor} />
 
             {/* Style overrides to keep the widget confined within the phone frame */}
             <style>{`
@@ -1598,7 +1583,7 @@ function ChatWidgetTab() {
           </div>
         ) : (
           <div style={{ ...card, padding: '32px', textAlign: 'center', color: 'var(--text-secondary)' }}>
-            Select a brand to preview the widget
+            Connect your Shopify store to preview the widget
           </div>
         )}
       </div>

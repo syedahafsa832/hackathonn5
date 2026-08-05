@@ -13,13 +13,13 @@ function formatDate(iso) {
 
 export default function Tickets() {
   const navigate = useNavigate();
-  const { activeBrand } = useBrand();
+  const { brand } = useBrand();
   const [statusFilter, setStatusFilter] = useState('active');
   const [search, setSearch] = useState('');
   const [tagFilter, setTagFilter] = useState('');
   const [gmailConnected, setGmailConnected] = useState(null);
 
-  const { data: tickets = [], isLoading: loading, error: queryError, refetch } = useConversations(statusFilter || 'active', activeBrand?.id);
+  const { data: tickets = [], isLoading: loading, error: queryError, refetch } = useConversations(statusFilter || 'active', brand?.id);
   const { mutate: markRead } = useMarkRead();
   const [refreshing, setRefreshing] = useState(false);
 

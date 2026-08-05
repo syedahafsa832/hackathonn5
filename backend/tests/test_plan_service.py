@@ -179,3 +179,30 @@ def test_check_brand_limit_blocks_second_brand_on_free_plan():
     assert result["allowed"] is False
     assert result["limit"] == 1
     assert result["used"] == 1
+
+
+def test_every_plan_caps_brands_at_one():
+    """tResolv is single-store-per-account — Growth used to allow 3 and
+    Scale/enterprise was uncapped (None). If either regresses back to
+    allowing more than one brand, this must fail loudly rather than
+    silently reopening multi-brand signups on a paid plan."""
+    for plan_id, limits in ps.PLAN_LIMITS.items():
+        assert limits.get("brands") == 1, f"plan '{plan_id}' allows {limits.get('brands')} brands, expected 1"
+
+
+def test_check_brand_limit_blocks_second_brand_on_growth_plan():
+    """Growth previously allowed up to 3 brands — confirms the cap now
+    applies uniformly across plans, not just free."""
+    tenant = {"id": "t7", "email": "user@example.com", "plan": "growth"}
+
+    def fake_select(table, params=None):
+        if table == "tenants":
+            return [tenant]
+        if table == "brands":
+            return [{"id": "b1"}]  # already has 1 brand
+        return []
+
+    with patch("src.services.plan_service.supabase_select", side_effect=fake_select):
+        result = ps.check_brand_limit("t7")
+    assert result["allowed"] is False
+    assert result["limit"] == 1

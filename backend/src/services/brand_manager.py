@@ -142,38 +142,6 @@ class BrandManager:
             logger.error(f"[BrandManager] Error getting brand by shop: {e}")
             return None
 
-    async def list_brands(self, active_only: bool = True) -> List[Dict[str, Any]]:
-        """List all brands (without sensitive credentials)."""
-        try:
-            filters = {}
-            if active_only:
-                filters["is_active"] = "eq.true"
-
-            brands = supabase_select("brands", filters)
-
-            # Remove sensitive data
-            safe_brands = []
-            for brand in brands:
-                safe_brands.append({
-                    "id": brand.get("id"),
-                    "name": brand.get("name"),
-                    "shopify_shop_name": brand.get("shopify_shop_name"),
-                    "support_email": brand.get("support_email"),
-                    "sender_name": brand.get("sender_name"),
-                    "logo_url": brand.get("logo_url"),
-                    "primary_color": brand.get("primary_color"),
-                    "is_active": brand.get("is_active"),
-                    "return_policy_days": brand.get("return_policy_days"),
-                    "auto_approve_threshold": brand.get("auto_approve_threshold"),
-                    "created_at": brand.get("created_at"),
-                    "gmail_connected": brand.get("gmail_connected", False),
-                    "gmail_email": brand.get("gmail_email"),
-                })
-
-            return safe_brands
-        except Exception as e:
-            logger.error(f"[BrandManager] Error listing brands: {e}")
-            return []
 
     async def update_brand(self, brand_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
         """Update brand settings."""

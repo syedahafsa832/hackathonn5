@@ -15,132 +15,11 @@ function Dot({ connected }) {
   );
 }
 
-function Drawer({ open, onClose, onCreated }) {
-  const [name, setName] = useState('');
-  const [shopName, setShopName] = useState('');
-  const [accessToken, setAccessToken] = useState('');
-  const [supportEmail, setSupportEmail] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-
-  if (!open) return null;
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError('');
-    setLoading(true);
-    try {
-      const res = await client.post('/api/brands', {
-        name,
-        shopify_shop_name: shopName.replace('.myshopify.com', ''),
-        shopify_access_token: accessToken,
-        support_email: supportEmail,
-      });
-      onCreated(res.data?.brand || res.data);
-      setName(''); setShopName(''); setAccessToken(''); setSupportEmail('');
-    } catch (err) {
-      // Same distinction applied to Login/Signup/Shopify-connect this session:
-      // extractErrorMessage's fallback only fires when there's no response to
-      // read (the request never reached the backend at all), so "Failed to
-      // create brand" alone is misleading there — it reads as a validation
-      // failure when it's actually a connectivity one. A real rejection
-      // (including the plan-limit case) still gets its specific message from
-      // extractErrorMessage below, unchanged.
-      setError(err.response
-        ? extractErrorMessage(err, 'Failed to create brand.')
-        : "Couldn't reach the server right now. This can happen briefly while it wakes up — try again in a few seconds.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const inputStyle = {
-    width: '100%',
-    padding: '9px 12px',
-    border: '1px solid var(--border-strong)',
-    borderRadius: '4px',
-    fontSize: '14px',
-    background: 'var(--bg-primary)',
-    color: 'var(--text-primary)',
-  };
-
-  const labelStyle = {
-    display: 'block',
-    fontSize: '13px',
-    fontWeight: '500',
-    color: 'var(--text-secondary)',
-    marginBottom: '5px',
-  };
-
-  return (
-    <>
-      <div
-        onClick={onClose}
-        style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.3)', zIndex: 200 }}
-      />
-      <div style={{
-        position: 'fixed',
-        top: 0,
-        right: 0,
-        bottom: 0,
-        width: '380px',
-        background: 'var(--bg-primary)',
-        borderLeft: '1px solid var(--border)',
-        zIndex: 201,
-        display: 'flex',
-        flexDirection: 'column',
-        boxShadow: '-4px 0 24px rgba(0,0,0,0.08)',
-      }}>
-        <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h2 style={{ fontSize: '15px', fontWeight: '600' }}>Add Brand</h2>
-          <button onClick={onClose} style={{ background: 'none', fontSize: '20px', color: 'var(--text-muted)', cursor: 'pointer' }}>×</button>
-        </div>
-
-        <form onSubmit={handleSubmit} style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px', flex: 1 }}>
-          <div>
-            <label style={labelStyle}>Brand name</label>
-            <input value={name} onChange={e => setName(e.target.value)} required placeholder="My Shopify Brand" style={inputStyle} />
-          </div>
-          <div>
-            <label style={labelStyle}>Shopify store name</label>
-            <input value={shopName} onChange={e => setShopName(e.target.value)} required placeholder="your-store (without .myshopify.com)" style={inputStyle} />
-            <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
-              e.g. if your store is <strong>mybrand.myshopify.com</strong>, enter <strong>mybrand</strong>
-            </div>
-          </div>
-          <div>
-            <label style={labelStyle}>Support email</label>
-            <input value={supportEmail} onChange={e => setSupportEmail(e.target.value)} required type="email" placeholder="support@mybrand.com" style={inputStyle} />
-          </div>
-          <div>
-            <label style={labelStyle}>Admin API access token</label>
-            <input value={accessToken} onChange={e => setAccessToken(e.target.value)} required type="password" placeholder="shpat_xxxxxxxxxxxx" style={inputStyle} />
-            <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
-              Shopify Admin → Settings → Apps → Develop apps → your app → Install → copy token
-            </div>
-          </div>
-
-          {error && (
-            <div style={{ padding: '10px 12px', background: 'var(--danger-light)', borderRadius: '4px', color: 'var(--danger)', fontSize: '13px' }}>
-              {error}
-            </div>
-          )}
-
-          <div style={{ display: 'flex', gap: '8px', marginTop: 'auto' }}>
-            <button type="submit" disabled={loading} style={{ flex: 1, padding: '10px', borderRadius: '4px', background: 'var(--accent)', color: 'white', fontWeight: '600', fontSize: '14px', cursor: loading ? 'not-allowed' : 'pointer' }}>
-              {loading ? 'Creating...' : 'Create brand'}
-            </button>
-            <button type="button" onClick={onClose} style={{ padding: '10px 16px', borderRadius: '4px', border: '1px solid var(--border)', background: 'transparent', fontSize: '14px', cursor: 'pointer', color: 'var(--text-secondary)' }}>
-              Cancel
-            </button>
-          </div>
-        </form>
-      </div>
-    </>
-  );
-}
-
-function BrandCard({ brand, highlightGmail }) {
+// tResolv is single-store-per-account — this is the settings view for
+// that one store's identity, refund policy, Shopify connection, and
+// Gmail inbox. Previously this component (BrandCard) was one card among
+// many in a list you could add to; there's no "add another" flow anymore.
+function StoreCard({ brand, highlightGmail }) {
   const [expanded, setExpanded] = useState(highlightGmail || false);
   const [connecting, setConnecting] = useState(false);
   const [connectMsg, setConnectMsg] = useState('');
@@ -329,7 +208,7 @@ function BrandCard({ brand, highlightGmail }) {
               />
             </div>
             <div>
-              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>Brand Display Name</div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>Store Display Name</div>
               <input
                 value={brandName}
                 onChange={e => setBrandName(e.target.value)}
@@ -491,45 +370,32 @@ function BrandCard({ brand, highlightGmail }) {
 }
 
 export default function Brands() {
-  const [brands, setBrands] = useState([]);
+  const [brand, setBrand] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [drawerOpen, setDrawerOpen] = useState(false);
   const [searchParams] = useSearchParams();
   const gmailConnected = searchParams.get('gmail_connected');
   const gmailEmail = searchParams.get('email');
   const gmailError = searchParams.get('gmail_error');
-  const highlightBrandId = searchParams.get('brand_id');
 
   useEffect(() => {
     setLoading(true);
     client.get('/api/brands').then(res => {
       const d = res.data;
-      setBrands(Array.isArray(d) ? d : d?.brands || d?.data || []);
+      const list = Array.isArray(d) ? d : d?.brands || d?.data || [];
+      setBrand(list[0] || null);
     }).catch(() => {
-      setError('Failed to load brands.');
+      setError('Failed to load your store.');
     }).finally(() => setLoading(false));
   }, []);
 
-  const handleCreated = (brand) => {
-    if (brand) setBrands(prev => [...prev, brand]);
-    setDrawerOpen(false);
-  };
-
   return (
     <div style={{ padding: '24px' }}>
-      <Drawer open={drawerOpen} onClose={() => setDrawerOpen(false)} onCreated={handleCreated} />
-
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-        <div style={{ fontSize: '14px', color: 'var(--text-secondary)' }}>
-          {loading ? 'Loading...' : `${brands.length} brand${brands.length !== 1 ? 's' : ''}`}
-        </div>
-        <button
-          onClick={() => setDrawerOpen(true)}
-          style={{ padding: '8px 16px', borderRadius: '4px', background: 'var(--accent)', color: 'white', fontWeight: '500', fontSize: '13px' }}
-        >
-          + Add brand
-        </button>
+      <div style={{ marginBottom: '20px' }}>
+        <h2 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--text-primary)', margin: 0 }}>Your Shopify store</h2>
+        <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '4px 0 0' }}>
+          Identity, refund policy, and connections for the AI agent working your inbox.
+        </p>
       </div>
 
       {gmailConnected === '1' && (
@@ -549,21 +415,15 @@ export default function Brands() {
       )}
 
       {loading ? (
-        <div style={{ display: 'grid', gap: '12px' }}>
-          {[1,2,3].map(i => <div key={i} className="skeleton" style={{ height: '80px', borderRadius: '6px' }} />)}
-        </div>
-      ) : brands.length === 0 ? (
-        <div style={{ padding: '64px', textAlign: 'center', border: '1px solid var(--border)', borderRadius: '6px', background: 'var(--bg-primary)' }}>
-          <div style={{ fontSize: '32px', marginBottom: '12px' }}>🏪</div>
-          <div style={{ fontWeight: '600', marginBottom: '6px' }}>No brands yet</div>
-          <div style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '16px' }}>Add your first Shopify brand to get started</div>
-          <button onClick={() => setDrawerOpen(true)} style={{ padding: '9px 18px', borderRadius: '4px', background: 'var(--accent)', color: 'white', fontWeight: '500', fontSize: '13px' }}>
-            Add brand
-          </button>
-        </div>
+        <div className="skeleton" style={{ height: '80px', borderRadius: '6px' }} />
+      ) : brand ? (
+        <StoreCard brand={brand} highlightGmail={gmailConnected === '1'} />
       ) : (
-        <div style={{ display: 'grid', gap: '12px' }}>
-          {brands.map(brand => <BrandCard key={brand.id} brand={brand} highlightGmail={brand.id === highlightBrandId || (gmailConnected === '1' && brands.length === 1)} />)}
+        <div style={{ padding: '48px', textAlign: 'center', border: '1px solid var(--border)', borderRadius: '6px', background: 'var(--bg-primary)' }}>
+          <div style={{ fontWeight: '600', marginBottom: '6px' }}>We couldn't find your store</div>
+          <div style={{ color: 'var(--text-muted)', fontSize: '13px' }}>
+            This can happen briefly right after signup — try refreshing. If it persists, contact support.
+          </div>
         </div>
       )}
     </div>

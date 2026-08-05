@@ -1,11 +1,14 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import client from '../api/client';
 
+// tResolv is single-store-per-account — this exposes the tenant's one
+// brand, not a list to switch between. Previously held an array + a
+// switchBrand()/localStorage "last selected brand" concept; removed along
+// with the rest of the multi-brand UI (Add Brand, brand switcher).
 const BrandContext = createContext(null);
 
 export function BrandProvider({ children }) {
-  const [brands, setBrands] = useState([]);
-  const [activeBrand, setActiveBrand] = useState(null); // null = "All brands"
+  const [brand, setBrand] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -15,27 +18,12 @@ export function BrandProvider({ children }) {
     client.get('/api/brands').then(res => {
       const d = res.data;
       const list = Array.isArray(d) ? d : d?.brands || [];
-      setBrands(list);
-      // Restore last selected brand from localStorage
-      const saved = localStorage.getItem('resolv_active_brand');
-      if (saved) {
-        const found = list.find(b => b.id === saved);
-        if (found) setActiveBrand(found);
-      }
+      setBrand(list[0] || null);
     }).catch(() => {}).finally(() => setLoading(false));
   }, []);
 
-  const switchBrand = (brand) => {
-    setActiveBrand(brand);
-    if (brand) {
-      localStorage.setItem('resolv_active_brand', brand.id);
-    } else {
-      localStorage.removeItem('resolv_active_brand');
-    }
-  };
-
   return (
-    <BrandContext.Provider value={{ brands, activeBrand, switchBrand, loading }}>
+    <BrandContext.Provider value={{ brand, loading }}>
       {children}
     </BrandContext.Provider>
   );

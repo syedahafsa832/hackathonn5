@@ -143,11 +143,13 @@ PLAN_LIMITS: Dict[str, Dict[str, Optional[int]]] = {
         "ai_replies_per_day": None,
         "emails_per_day": 20000,
         "shopify_actions_per_day": 2000,
-        # Landing page: "Up to 3 brands." Multi-brand is a manual,
-        # onboarding-time setup (see the note on the Upgrade page) — there's
-        # no self-serve brand switcher yet, but the cap itself is real and
-        # enforced the same way as every other plan's brand limit.
-        "brands": 3,
+        # tResolv is single-store-per-account: every plan is capped at 1
+        # Shopify brand/store. Growth used to allow up to 3 as a manual,
+        # onboarding-time setup — removed along with the rest of the
+        # multi-brand UI/API (Add Brand, brand switcher, org-wide brand
+        # lists). Usage/feature limits still differ by plan; store count
+        # does not.
+        "brands": 1,
         "users": 1,
         "gmail_accounts": 3,
         "price_monthly": 249,
@@ -159,7 +161,10 @@ PLAN_LIMITS: Dict[str, Dict[str, Optional[int]]] = {
         "ai_replies_per_day": None,
         "emails_per_day": None,
         "shopify_actions_per_day": None,
-        "brands": None,
+        # Store count is 1 even on Scale — single-store-per-account is a
+        # product-wide rule, not a plan dimension. "Custom" on this plan
+        # means usage/feature limits, not brand/store count.
+        "brands": 1,
         "users": None,
         "gmail_accounts": None,
         # None here means "custom / contact us", same convention as the

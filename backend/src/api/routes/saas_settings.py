@@ -425,12 +425,12 @@ async def _get_tenant_brand_async(tenant_id: str) -> Optional[dict]:
     NO global fallback — returns None if no owned brand found.
     """
     try:
-        # Primary: explicit tenant ownership, active brands
+        # Primary: explicit tenant ownership, active brand. tResolv is
+        # single-store-per-account (enforced by a unique index on
+        # brands.tenant_id WHERE is_active), so this is at most one row.
         owned = supabase_select("brands", {"tenant_id": f"eq.{tenant_id}", "is_active": "is.true"})
         if owned:
-            # Prefer the brand with Gmail connected if multiple
-            gmail_brands = [b for b in owned if b.get("gmail_connected")]
-            return gmail_brands[0] if gmail_brands else owned[0]
+            return owned[0]
 
         # Fallback: inactive brand for this tenant that has Gmail connected
         # (happens after onboarding 409 flow deactivated the brand before Gmail was connected)
