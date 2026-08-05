@@ -169,7 +169,6 @@ web-form/.nyc_output/
 web-form/coverage-final.json
 
 # CI/CD
-.github/
 .circleci/
 .jenkins/
 .drone.yml

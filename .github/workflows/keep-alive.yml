@@ -1,0 +1,25 @@
+name: Keep backend alive
+
+# Render's free tier spins the backend down after ~15 minutes with no
+# traffic, and the next request pays a cold-start tax (or hits a 502/503
+# during the restart window) — this is the actual cause behind the
+# recurring "CORS error" reports users hit, since a proxy-level 502/503
+# carries no CORS headers for the browser to read. Pinging /health well
+# inside that 15-minute window keeps the instance warm so real user
+# requests don't pay that cost.
+on:
+  schedule:
+    # Every 10 minutes — leaves margin under Render's ~15 min idle timeout
+    # even if a scheduled run gets delayed (GitHub does not guarantee
+    # scheduled workflows fire exactly on time).
+    - cron: '*/10 * * * *'
+  workflow_dispatch: {} # allows a manual "Run workflow" click for testing
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /health
+        run: |
+          curl -sf --retry 3 --retry-delay 5 --max-time 30 \
+            https://hackathonn5.onrender.com/health
