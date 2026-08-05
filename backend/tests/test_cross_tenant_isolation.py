@@ -40,6 +40,7 @@ os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test")
 from src.api.routes.saas_auth import router as saas_auth_router  # noqa: E402
 from src.api.routes.v2_brands import router as v2_brands_router  # noqa: E402
 from src.api.routes.v2_tickets import router as v2_tickets_router  # noqa: E402
+from src.api.routes.brands import router as brands_router  # noqa: E402
 from src.services.auth_service import auth_service as real_auth_service  # noqa: E402
 
 
@@ -49,6 +50,7 @@ app = FastAPI()
 app.include_router(saas_auth_router, prefix="/api/v1")
 app.include_router(v2_brands_router, prefix="/api/v2")
 app.include_router(v2_tickets_router, prefix="/api/v2")
+app.include_router(brands_router, prefix="/api")
 client = TestClient(app)
 
 
@@ -125,12 +127,17 @@ def _patched_supabase():
          patch("src.api.routes.v2_brands.supabase_update", side_effect=db.update), \
          patch("src.api.routes.v2_tickets.supabase_select", side_effect=db.select), \
          patch("src.api.routes.v2_tickets.supabase_update", side_effect=db.update), \
+         patch("src.api.routes.brands.supabase_select", side_effect=db.select), \
+         patch("src.services.brand_manager.supabase_select", side_effect=db.select), \
+         patch("src.services.brand_manager.supabase_update", side_effect=db.update), \
          patch("src.api.middleware.auth_middleware.supabase_auth_service.verify_jwt",
                side_effect=_verify_jwt_via_real_v1_decode):
         yield
     db.tenants.clear()
     db.brands.clear()
     db.tickets.clear()
+    from src.services.brand_manager import brand_manager as _bm
+    _bm._brand_cache.clear()
 
 
 def _register(email: str) -> dict:
@@ -239,3 +246,66 @@ def test_5_each_org_can_access_its_own_ticket_and_brand(two_tenants):
     )
     assert other_way.status_code == 200
     assert other_way.json()["ticket"]["subject"] == "B's issue"
+
+
+# ─── 6-9. The plain (non-v2) brands.py router: GET/PUT/DELETE /api/brands/{id}
+# had NO auth dependency at all before this fix — any caller, authenticated
+# or not, who knew/guessed a brand UUID could read another tenant's
+# support_email/email_signature, overwrite their shopify_access_token, or
+# deactivate their brand. This is the router Brands.jsx's "Save" button
+# actually calls (client.put('/api/brands/${id}', ...)), so it's live,
+# in-use code, not a dead legacy path. ────────────────────────────────────
+
+def test_6_get_plain_brand_with_no_auth_header_is_rejected(two_tenants):
+    """The original bug: zero Authorization header at all still worked."""
+    resp = client.get(f"/api/brands/{two_tenants['brand_a']['id']}")
+    assert resp.status_code in (401, 403)
+
+
+def test_7_get_plain_brand_cross_tenant_returns_404_not_data(two_tenants):
+    resp = client.get(
+        f"/api/brands/{two_tenants['brand_b']['id']}",
+        headers=_auth(two_tenants["org_a"]["access_token"]),
+    )
+    assert resp.status_code == 404
+    assert two_tenants["brand_b"]["name"] not in resp.text
+
+
+def test_8_put_plain_brand_cross_tenant_returns_404_and_does_not_modify(two_tenants):
+    """Before the fix, this would have silently renamed org B's brand and
+    could have overwritten their shopify_access_token."""
+    resp = client.put(
+        f"/api/brands/{two_tenants['brand_b']['id']}",
+        json={"name": "HIJACKED", "shopify_access_token": "attacker-controlled-token"},
+        headers=_auth(two_tenants["org_a"]["access_token"]),
+    )
+    assert resp.status_code == 404
+    assert db.brands[two_tenants["brand_b"]["id"]]["name"] != "HIJACKED"
+    assert db.brands[two_tenants["brand_b"]["id"]].get("shopify_access_token") != "attacker-controlled-token"
+
+
+def test_9_delete_plain_brand_cross_tenant_returns_404_and_does_not_deactivate(two_tenants):
+    resp = client.delete(
+        f"/api/brands/{two_tenants['brand_b']['id']}",
+        headers=_auth(two_tenants["org_a"]["access_token"]),
+    )
+    assert resp.status_code == 404
+    assert db.brands[two_tenants["brand_b"]["id"]]["is_active"] is True
+
+
+def test_10_own_org_can_still_read_and_update_its_own_brand_via_plain_router(two_tenants):
+    """Proves the 404s above are real isolation, not a broken endpoint."""
+    get_resp = client.get(
+        f"/api/brands/{two_tenants['brand_a']['id']}",
+        headers=_auth(two_tenants["org_a"]["access_token"]),
+    )
+    assert get_resp.status_code == 200
+    assert get_resp.json()["id"] == two_tenants["brand_a"]["id"]
+
+    put_resp = client.put(
+        f"/api/brands/{two_tenants['brand_a']['id']}",
+        json={"email_signature": "— The A Team"},
+        headers=_auth(two_tenants["org_a"]["access_token"]),
+    )
+    assert put_resp.status_code == 200
+    assert db.brands[two_tenants["brand_a"]["id"]]["email_signature"] == "— The A Team"

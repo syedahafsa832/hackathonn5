@@ -15,6 +15,18 @@ router = APIRouter(prefix="/brands", tags=["brands"])
 logger = logging.getLogger(__name__)
 
 
+def _assert_owned(brand_id: str, tenant_id: str) -> None:
+    """get/put/delete below previously had no tenant check at all — any
+    caller who knew or guessed a brand UUID could read another tenant's
+    support_email/email_signature or overwrite their shopify_access_token.
+    Raises 404 (not 403) so an unauthorized caller can't distinguish 'not
+    yours' from 'doesn't exist' by probing IDs, matching v2_brands.py's
+    _get_owned_brand convention."""
+    owned = supabase_select("brands", {"id": f"eq.{brand_id}", "tenant_id": f"eq.{tenant_id}"})
+    if not owned:
+        raise HTTPException(status_code=404, detail="Brand not found")
+
+
 # ============== Request/Response Models ==============
 
 class CreateBrandRequest(BaseModel):
@@ -145,13 +157,14 @@ async def list_brands(
 
 
 @router.get("/{brand_id}", response_model=dict)
-async def get_brand(brand_id: str):
+async def get_brand(brand_id: str, tenant: TenantContext = Depends(get_current_tenant)):
     """
     Get a specific brand by ID.
     """
     try:
         from src.services.brand_manager import brand_manager
 
+        _assert_owned(brand_id, tenant.tenant_id)
         brand = await brand_manager.get_brand(brand_id)
 
         if not brand:
@@ -182,12 +195,14 @@ async def get_brand(brand_id: str):
 
 
 @router.put("/{brand_id}", response_model=dict)
-async def update_brand(brand_id: str, request: UpdateBrandRequest):
+async def update_brand(brand_id: str, request: UpdateBrandRequest, tenant: TenantContext = Depends(get_current_tenant)):
     """
     Update brand settings.
     """
     try:
         from src.services.brand_manager import brand_manager
+
+        _assert_owned(brand_id, tenant.tenant_id)
 
         # Build updates dict from non-None fields
         updates = {k: v for k, v in request.dict().items() if v is not None}
@@ -212,7 +227,8 @@ async def update_brand(brand_id: str, request: UpdateBrandRequest):
 @router.delete("/{brand_id}", response_model=dict)
 async def delete_brand(
     brand_id: str,
-    hard_delete: bool = Query(False, description="Permanently delete (vs deactivate)")
+    hard_delete: bool = Query(False, description="Permanently delete (vs deactivate)"),
+    tenant: TenantContext = Depends(get_current_tenant),
 ):
     """
     Delete or deactivate a brand.
@@ -220,6 +236,7 @@ async def delete_brand(
     try:
         from src.services.brand_manager import brand_manager
 
+        _assert_owned(brand_id, tenant.tenant_id)
         result = await brand_manager.delete_brand(brand_id, soft_delete=not hard_delete)
 
         if result.get("success"):
