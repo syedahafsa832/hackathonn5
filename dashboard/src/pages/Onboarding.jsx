@@ -425,8 +425,14 @@ function StepTestLuna({ brandId, onFinish }) {
     setError('');
     try {
       const res = await client.post(`/api/v2/brands/${brandId}/test-reply`, { message: question });
-      setReplies(r => ({ ...r, [question]: res.data?.reply || '(no reply generated)' }));
-      localStorage.setItem('resolv_test_reply_done', 'true');
+      if (res.data?.provider_outage) {
+        setReplies(r => ({ ...r, [question]: null }));
+        setError("Luna's AI models are all at capacity right now (usage limit reached across every connected provider). This is temporary — try again in a few minutes.");
+      } else {
+        setReplies(r => ({ ...r, [question]: res.data?.reply || '(no reply generated)' }));
+        setError('');
+        localStorage.setItem('resolv_test_reply_done', 'true');
+      }
     } catch (err) {
       setError(extractErrorMessage(err, 'Could not generate a test reply.'));
     } finally {

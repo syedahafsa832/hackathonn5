@@ -771,6 +771,11 @@ async def test_reply(
             "question": request.message,
             "reply": result.get("reply_body"),
             "confidence_score": result.get("confidence_score"),
+            # True only when every configured AI model (all Mistral + Groq keys)
+            # was out of quota for this request — lets the onboarding UI show a
+            # clear "AI is at capacity" notice instead of presenting the generic
+            # customer-facing fallback copy as if it were a real Luna reply.
+            "provider_outage": result.get("provider_outage", False),
         }
     except HTTPException:
         raise

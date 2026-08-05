@@ -136,6 +136,15 @@ def _build_order_context(order: dict, tracking_context: str = "") -> str:
     return "\n".join(lines)
 
 
+# Shared with the dashboard (TicketDetail.jsx checks this prefix) and the Test
+# Luna onboarding endpoint — every configured AI model (all Mistral keys, all
+# Groq keys) is out of quota/rate-limited. Worded for a non-technical store
+# owner reading it in the Escalations list, not a dev. Module-level (not a
+# class attribute) so it resolves correctly even when tests call
+# _get_provider_failure_response with a bare MagicMock() as self.
+PROVIDER_OUTAGE_REASON = "AI reply limit reached — every connected AI model is temporarily out of quota. This resolves on its own once quota resets; reply manually for now."
+
+
 class CustomerSuccessAgent:
     """
     V3 Customer Success Agent (Luna) for Aurelio & Finch.
@@ -594,10 +603,11 @@ class CustomerSuccessAgent:
         }
 
     def _get_provider_failure_response(self, brand_name: str = "", agent_name: str = "Luna", email_signature: str = None) -> Dict[str, Any]:
-        """Every configured Mistral key failed for this request. Distinct from
-        _get_fallback_response so the escalation card reads as an infrastructure
-        problem, not a generic "system error" — same customer-facing tone, but a
-        specific escalation_reason a human can act on immediately."""
+        """Every configured AI provider (all Mistral keys, all Groq fallback keys)
+        failed for this request — distinct from _get_fallback_response so the
+        escalation card reads as a known, temporary quota problem, not a generic
+        "system error". provider_outage=True lets callers (Test Luna) detect this
+        specific case without string-matching escalation_reason."""
         sign_off = email_signature or (f"— {agent_name}\n{brand_name}" if brand_name else f"— {agent_name}")
         return {
             "intent": "general_inquiry",
@@ -605,7 +615,8 @@ class CustomerSuccessAgent:
             "risk_level": "medium",
             "confidence_score": 40,
             "escalate": True,
-            "escalation_reason": "AI providers temporarily unavailable",
+            "provider_outage": True,
+            "escalation_reason": PROVIDER_OUTAGE_REASON,
             "reply_body": f"Hey there!\n\nThanks for reaching out. I'm having a bit of trouble processing your message right now, but I've flagged this for my team to take a look.\n\nSomeone will get back to you shortly!\n\n{sign_off}",
             "status": "escalated"
         }

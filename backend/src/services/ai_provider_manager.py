@@ -33,6 +33,7 @@ class _Provider:
     label: str
     api_key: str
     model: str
+    base_url: str = DEFAULT_BASE_URL
 
 
 class AllProvidersFailedError(Exception):
@@ -83,13 +84,33 @@ class AIProviderManager:
             key = os.getenv(f"MISTRAL_API_KEY_FALLBACK_{i}")
             if key:
                 providers.append(_Provider(f"fallback_{i}", key, os.getenv(f"MISTRAL_MODEL_FALLBACK_{i}", DEFAULT_MODEL)))
+
+        # Last-resort fallback on a different provider entirely (Groq), tried only
+        # after every Mistral key above has failed — keeps ticket replies flowing
+        # if Mistral's account-wide rate limit or quota is hit, not just one key.
+        # Mirrors the Mistral primary+fallback_N scheme: GROQ_API_KEY is the first
+        # Groq key, GROQ_API_KEY_FALLBACK_{i} are additional ones tried after it.
+        groq_default_model = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+        groq_default_base_url = os.getenv("GROQ_API_BASE_URL", "https://api.groq.com/openai/v1")
+        groq_key = os.getenv("GROQ_API_KEY")
+        if groq_key:
+            providers.append(_Provider("groq_fallback_1", groq_key, groq_default_model, base_url=groq_default_base_url))
+        for i in (1, 2, 3):
+            key = os.getenv(f"GROQ_API_KEY_FALLBACK_{i}")
+            if key:
+                providers.append(_Provider(
+                    f"groq_fallback_{i + 1}",
+                    key,
+                    os.getenv(f"GROQ_MODEL_FALLBACK_{i}", groq_default_model),
+                    base_url=os.getenv(f"GROQ_API_BASE_URL_FALLBACK_{i}", groq_default_base_url),
+                ))
         return providers
 
     def _client_for(self, provider: _Provider) -> OpenAI:
         if provider.label not in self._clients:
             self._clients[provider.label] = OpenAI(
                 api_key=provider.api_key,
-                base_url=DEFAULT_BASE_URL,
+                base_url=provider.base_url,
                 max_retries=1,
                 timeout=15.0,
             )

@@ -329,7 +329,7 @@ function buildEscalationBrief(ticket) {
     : 'No order number detected in this conversation.';
 
   const tags = ticket.tags || [];
-  const isProviderOutage = ticket.escalation_reason === 'AI providers temporarily unavailable';
+  const isProviderOutage = (ticket.escalation_reason || '').startsWith('AI reply limit reached');
   let recommendedAction = 'Read the conversation below and reply manually.';
   if (isProviderOutage) {
     recommendedAction = 'Review conversation and reply manually.';

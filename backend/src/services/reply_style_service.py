@@ -198,7 +198,7 @@ async def generate_learned_profile(brand_id: str, force: bool = False) -> Dict:
         )
     except AllProvidersFailedError as e:
         logger.error(f"[ReplyStyle] Profile generation failed, all providers down: {e}")
-        return {"success": False, "error": "AI provider unavailable, try again shortly."}
+        return {"success": False, "error": "All connected AI models are at capacity right now — try again in a few minutes."}
 
     raw = (response.choices[0].message.content or "").strip()
     if raw.startswith("```"):
