@@ -90,6 +90,7 @@ export default function OnboardingChecklistCard({ steps, onDismiss }) {
   }, [allDone, celebrated]);
 
   const goToOnboarding = () => navigate('/onboarding');
+  const goToReplyStyle = () => navigate('/settings', { state: { tab: 'reply-style' } });
 
   return (
     <section
@@ -210,7 +211,7 @@ export default function OnboardingChecklistCard({ steps, onDismiss }) {
 
               {status === 'current' && (
                 <button
-                  onClick={goToOnboarding}
+                  onClick={item.key === 'replyStyle' ? goToReplyStyle : goToOnboarding}
                   style={{
                     fontSize: '12px', fontWeight: '600', color: 'white', background: 'var(--cyan-500)',
                     border: 'none', borderRadius: '7px', padding: '6px 12px', cursor: 'pointer',
@@ -240,7 +241,7 @@ export default function OnboardingChecklistCard({ steps, onDismiss }) {
       ) : (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
           <button
-            onClick={goToOnboarding}
+            onClick={items[currentIndex]?.key === 'replyStyle' ? goToReplyStyle : goToOnboarding}
             onMouseEnter={() => setCtaHover(true)}
             onMouseLeave={() => setCtaHover(false)}
             style={{

@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
 import client from '../api/client';
 import ChatWidget from '../components/ChatWidget';
 import Alert from '../components/Alert';
@@ -1783,7 +1784,8 @@ const ADVANCED_TABS = [
 ];
 
 export default function Settings() {
-  const [activeTab, setActiveTab] = useState('email');
+  const location = useLocation();
+  const [activeTab, setActiveTab] = useState(location.state?.tab || 'email');
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   useEffect(() => {
