@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 const client = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || 'https://hackathonn5.onrender.com',
+  baseURL: import.meta.env.VITE_API_BASE_URL || 'https://backend.tresolv.online',
   timeout: 35000, // covers Render free-tier cold start (~30s)
 });
 
