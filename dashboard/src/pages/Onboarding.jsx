@@ -58,17 +58,44 @@ function ProgressBar({ step }) {
 
 // ─────────────────────────────────────────────────── Step 1: Shopify ──
 
+const SHOPIFY_ERROR_MESSAGES = {
+  denied: 'Shopify connection was cancelled.',
+  invalid_state: 'That connection link expired or was invalid. Please try again.',
+  missing_params: 'Shopify did not return the expected information. Please try again.',
+  token_exchange_failed: 'Could not complete the connection with Shopify. Please try again.',
+  domain_taken: 'This Shopify store is already connected to a different tResolv account.',
+  connection_failed: 'Could not connect to Shopify. Please check your store URL and try again.',
+};
+
 function StepShopify({ brandId, onNext, onConnected }) {
   const [shopifyDomain, setShopifyDomain] = useState('');
-  const [shopifyApiKey, setShopifyApiKey] = useState('');
   const [loading, setLoading] = useState(false);
   const [slowConnect, setSlowConnect] = useState(false);
   const [error, setError] = useState('');
+  const [connected, setConnected] = useState(null); // { shopName, shopDomain, products, orders } once OAuth returns
   const slowTimerRef = useRef(null);
 
+  // Picks up the redirect back from the OAuth callback (backend/src/api/routes/shopify_auth.py).
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('shopify_connected') === '1') {
+      setConnected({
+        shopName: params.get('shop_name') || params.get('shop_domain') || 'your store',
+        products: params.get('products'),
+        orders: params.get('orders'),
+      });
+      onConnected();
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (params.get('shopify_error')) {
+      setError(SHOPIFY_ERROR_MESSAGES[params.get('shopify_error')] || 'Could not connect to Shopify. Please try again.');
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleConnect = async () => {
-    if (!shopifyDomain.trim() || !shopifyApiKey.trim()) {
-      setError('Store URL and Admin API key are both required.');
+    if (!shopifyDomain.trim()) {
+      setError('Store URL is required.');
       return;
     }
     setLoading(true);
@@ -78,27 +105,35 @@ function StepShopify({ brandId, onNext, onConnected }) {
     // sits there for up to 35s with zero feedback and looks hung.
     slowTimerRef.current = setTimeout(() => setSlowConnect(true), 6000);
     try {
-      await client.post(`/api/v2/brands/${brandId}/shopify/connect`, {
-        shop_domain: shopifyDomain.trim().replace(/^https?:\/\//i, '').replace(/\/+$/, ''),
-        access_token: shopifyApiKey.trim(),
-      });
-      onConnected();
-      onNext();
+      const shop = shopifyDomain.trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+      const res = await client.get(`/api/v2/brands/${brandId}/shopify/oauth/start`, { params: { shop } });
+      window.location.href = res.data.auth_url;
     } catch (err) {
-      // extractErrorMessage's fallback only fires when there's no real
-      // response to read a message from — i.e. the request never reached
-      // the backend at all (network/cold-start failure), not that Shopify
-      // rejected the credentials. "Check your store URL and API key" is
-      // actively wrong for that case, so use a distinct message for it.
       setError(err.response
-        ? extractErrorMessage(err, 'Could not connect to Shopify. Check your store URL and API key.')
+        ? extractErrorMessage(err, 'Could not start the Shopify connection. Check your store URL.')
         : "Couldn't reach the server right now. This can happen briefly while it wakes up — try again in a few seconds.");
-    } finally {
       clearTimeout(slowTimerRef.current);
       setSlowConnect(false);
       setLoading(false);
     }
   };
+
+  if (connected) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+        <div>
+          <h2 style={{ fontSize: '22px', fontWeight: '700', marginBottom: '8px' }}>Shopify Connected ✅</h2>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: '1.5' }}>
+            Store: {connected.shopName}
+            {connected.products != null && <><br />Products: {connected.products}</>}
+            {connected.orders != null && <><br />Orders: {connected.orders}</>}
+            <br />Ready for Luna 🚀
+          </p>
+        </div>
+        <button onClick={onNext} style={primaryBtn(false)}>Continue →</button>
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -113,16 +148,12 @@ function StepShopify({ brandId, onNext, onConnected }) {
         <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', marginBottom: '5px' }}>Store URL</label>
         <input value={shopifyDomain} onChange={e => setShopifyDomain(e.target.value)} placeholder="yourstore.myshopify.com" style={inputStyle} />
       </div>
-      <div>
-        <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', marginBottom: '5px' }}>Admin API key</label>
-        <input type="password" value={shopifyApiKey} onChange={e => setShopifyApiKey(e.target.value)} placeholder="shpat_..." style={inputStyle} />
-      </div>
 
       <Alert variant="error">{error}</Alert>
 
       <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
         <button onClick={handleConnect} disabled={loading} style={primaryBtn(loading)}>
-          {loading ? 'Connecting...' : 'Connect →'}
+          {loading ? 'Connecting...' : 'Connect Shopify Store →'}
         </button>
         <button onClick={onNext} style={skipBtn}>Skip for now</button>
         {slowConnect && (

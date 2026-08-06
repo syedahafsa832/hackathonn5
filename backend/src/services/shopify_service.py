@@ -344,6 +344,24 @@ class ShopifyClient:
                 "error_code": e.error_code
             }
 
+    async def get_counts(self) -> Dict[str, Any]:
+        """Best-effort product/order counts for the post-connect summary
+        screen — either can legitimately fail (e.g. missing read_orders
+        scope) without the connection itself being a failure, so each is
+        caught independently and reported as None rather than raising."""
+        counts: Dict[str, Optional[int]] = {"products": None, "orders": None}
+        try:
+            result = self._request("GET", "products/count.json")
+            counts["products"] = result.get("data", {}).get("count")
+        except Exception as e:
+            logger.warning(f"[Shopify] Could not fetch product count: {e}")
+        try:
+            result = self._request("GET", "orders/count.json", params={"status": "any"})
+            counts["orders"] = result.get("data", {}).get("count")
+        except Exception as e:
+            logger.warning(f"[Shopify] Could not fetch order count: {e}")
+        return counts
+
     @staticmethod
     def check_refund_status(order: Dict[str, Any]) -> Dict[str, Any]:
         """Already-cancelled / already-refunded check on an already-fetched order.

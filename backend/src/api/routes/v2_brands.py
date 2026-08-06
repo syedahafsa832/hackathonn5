@@ -299,94 +299,132 @@ async def delete_brand(
         raise HTTPException(status_code=500, detail="Failed to delete brand")
 
 
+async def _connect_shopify_credentials(brand_id: str, tenant_id: str, shop_domain: str, access_token: str) -> dict:
+    """Core of connecting a Shopify store to a brand — shared by the manual
+    access-token endpoint below and the OAuth callback (shopify_auth.py),
+    so the domain-conflict-claim logic only exists once. Never raises
+    HTTPException (callers translate the returned shape appropriately —
+    one into an HTTP error response, the other into a redirect).
+
+    If another brand already owns this domain (unique constraint), we claim
+    that brand for this tenant and deactivate the newly-created placeholder
+    brand."""
+    from src.services.shopify_service import ShopifyClient
+
+    # ShopifyClient._normalize_domain() strips a pasted http(s):// scheme,
+    # trailing slash, and appends .myshopify.com — do that once here and
+    # reuse client_shopify.shop_domain everywhere below, instead of a
+    # second hand-rolled normalization that didn't strip the scheme and
+    # let "https://store.myshopify.com" get stored verbatim.
+    client_shopify = ShopifyClient(shop_domain, access_token)
+    shop_domain = client_shopify.shop_domain
+    validation = await client_shopify.validate_connection()
+
+    if not validation.get("success"):
+        return {"success": False, "status_code": 400, "error": validation.get("error", "Failed to connect to Shopify"), "error_code": "connection_failed"}
+
+    shopify_fields = {
+        "shopify_domain": shop_domain,
+        "shopify_access_token": encrypt_token(access_token),
+        "shopify_shop_name": validation.get("shop_name"),
+        "shopify_connected": True,
+        "tenant_id": tenant_id,
+    }
+
+    active_brand_id = brand_id
+    try:
+        supabase_update("brands", {"id": f"eq.{brand_id}"}, shopify_fields)
+    except Exception as upd_err:
+        err_str = str(upd_err)
+        if "409" in err_str or "23505" in err_str or "conflict" in err_str.lower():
+            # Domain unique constraint — the domain is already connected to some
+            # brand. Only claim it if that brand has no owner yet (a genuinely
+            # unclaimed placeholder). If it already belongs to a different,
+            # real tenant, claiming it would silently hijack that tenant's
+            # brand (their Shopify connection, Gmail connection, tickets, the
+            # works) onto this caller's account - confirmed as a real incident
+            # during testing, not a hypothetical. Reject instead.
+            existing = supabase_select("brands", {"shopify_domain": f"eq.{shop_domain}"})
+            if not existing:
+                raise
+            existing_brand = existing[0]
+            existing_tenant_id = existing_brand.get("tenant_id")
+            if existing_tenant_id and existing_tenant_id != tenant_id:
+                logger.warning(
+                    f"[v2/brands] Rejected Shopify connect: domain {shop_domain} already "
+                    f"belongs to tenant {existing_tenant_id}, not requesting tenant {tenant_id}"
+                )
+                return {"success": False, "status_code": 409, "error": "This Shopify store is already connected to a different tResolv account.", "error_code": "domain_taken"}
+            active_brand_id = existing_brand["id"]
+            supabase_update("brands", {"id": f"eq.{active_brand_id}"}, {
+                "tenant_id": tenant_id,
+                "shopify_access_token": encrypt_token(access_token),
+                "shopify_connected": True,
+                "is_active": True,
+            })
+            # Deactivate the empty placeholder that was just created
+            if active_brand_id != brand_id:
+                supabase_update("brands", {"id": f"eq.{brand_id}"}, {"is_active": False})
+            logger.info(f"[v2/brands] Claimed unowned brand {active_brand_id} for tenant {tenant_id}")
+        else:
+            raise
+
+    # Best-effort: record which scopes this token actually has, right
+    # now, so onboarding/import can show a precise message instead of
+    # discovering a missing permission mid-import.
+    await shopify_scope_service.check_and_store_scopes(active_brand_id, client_shopify)
+
+    await supabase_service.log_onboarding_event(active_brand_id, "shopify_connected", {
+        "shop_domain": shop_domain,
+    })
+
+    return {
+        "success": True,
+        "shop_name": validation.get("shop_name"),
+        "shop_domain": shop_domain,
+        "brand_id": active_brand_id,  # May differ from URL brand_id after 409 resolution
+        "client": client_shopify,  # reused by callers that want get_counts() without reconnecting
+    }
+
+
+@router.get("/{brand_id}/shopify/oauth/start")
+async def shopify_oauth_start(
+    brand_id: str,
+    shop: str = Query(..., description="Store domain, e.g. mybrand or mybrand.myshopify.com"),
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    """Authenticated: returns the Shopify OAuth authorization URL for this
+    brand. The frontend navigates the browser to it directly (a full-page
+    redirect can't carry the Authorization header, so the actual OAuth
+    callback below has no auth dependency — the signed state proves which
+    brand/tenant initiated it, same pattern as the Gmail OAuth flow)."""
+    _get_owned_brand(brand_id, tenant.tenant_id)
+    from src.services.shopify_oauth import get_authorize_url
+    try:
+        auth_url = get_authorize_url(brand_id, shop)
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"auth_url": auth_url}
+
+
 @router.post("/{brand_id}/shopify/connect")
 async def connect_shopify(
     brand_id: str,
     request: ConnectShopifyRequest,
     tenant: TenantContext = Depends(get_current_tenant),
 ):
-    """Connect a Shopify store to a brand.
-    If another brand already owns this domain (unique constraint), we claim that brand
-    for this tenant and deactivate the newly-created placeholder brand."""
+    """Connect a Shopify store to a brand via a pasted Admin API access
+    token (manual fallback — the primary path is the OAuth flow above)."""
     try:
         _get_owned_brand(brand_id, tenant.tenant_id)
-
-        from src.services.shopify_service import ShopifyClient
-        # ShopifyClient._normalize_domain() strips a pasted http(s):// scheme,
-        # trailing slash, and appends .myshopify.com — do that once here and
-        # reuse client_shopify.shop_domain everywhere below, instead of a
-        # second hand-rolled normalization that didn't strip the scheme and
-        # let "https://store.myshopify.com" get stored verbatim.
-        client_shopify = ShopifyClient(request.shop_domain, request.access_token)
-        shop_domain = client_shopify.shop_domain
-        validation = await client_shopify.validate_connection()
-
-        if not validation.get("success"):
-            raise HTTPException(status_code=400, detail=validation.get("error", "Failed to connect to Shopify"))
-
-        shopify_fields = {
-            "shopify_domain": shop_domain,
-            "shopify_access_token": encrypt_token(request.access_token),
-            "shopify_shop_name": validation.get("shop_name"),
-            "shopify_connected": True,
-            "tenant_id": tenant.tenant_id,
-        }
-
-        active_brand_id = brand_id
-        try:
-            supabase_update("brands", {"id": f"eq.{brand_id}"}, shopify_fields)
-        except Exception as upd_err:
-            err_str = str(upd_err)
-            if "409" in err_str or "23505" in err_str or "conflict" in err_str.lower():
-                # Domain unique constraint — the domain is already connected to some
-                # brand. Only claim it if that brand has no owner yet (a genuinely
-                # unclaimed placeholder). If it already belongs to a different,
-                # real tenant, claiming it would silently hijack that tenant's
-                # brand (their Shopify connection, Gmail connection, tickets, the
-                # works) onto this caller's account - confirmed as a real incident
-                # during testing, not a hypothetical. Reject instead.
-                existing = supabase_select("brands", {"shopify_domain": f"eq.{shop_domain}"})
-                if not existing:
-                    raise
-                existing_brand = existing[0]
-                existing_tenant_id = existing_brand.get("tenant_id")
-                if existing_tenant_id and existing_tenant_id != tenant.tenant_id:
-                    logger.warning(
-                        f"[v2/brands] Rejected Shopify connect: domain {shop_domain} already "
-                        f"belongs to tenant {existing_tenant_id}, not requesting tenant {tenant.tenant_id}"
-                    )
-                    raise HTTPException(
-                        status_code=409,
-                        detail="This Shopify store is already connected to a different tResolv account."
-                    )
-                active_brand_id = existing_brand["id"]
-                supabase_update("brands", {"id": f"eq.{active_brand_id}"}, {
-                    "tenant_id": tenant.tenant_id,
-                    "shopify_access_token": encrypt_token(request.access_token),
-                    "shopify_connected": True,
-                    "is_active": True,
-                })
-                # Deactivate the empty placeholder that was just created
-                if active_brand_id != brand_id:
-                    supabase_update("brands", {"id": f"eq.{brand_id}"}, {"is_active": False})
-                logger.info(f"[v2/brands] Claimed unowned brand {active_brand_id} for tenant {tenant.tenant_id}")
-            else:
-                raise
-
-        # Best-effort: record which scopes this token actually has, right
-        # now, so onboarding/import can show a precise message instead of
-        # discovering a missing permission mid-import.
-        await shopify_scope_service.check_and_store_scopes(active_brand_id, client_shopify)
-
-        await supabase_service.log_onboarding_event(active_brand_id, "shopify_connected", {
-            "shop_domain": shop_domain,
-        })
-
+        result = await _connect_shopify_credentials(brand_id, tenant.tenant_id, request.shop_domain, request.access_token)
+        if not result.get("success"):
+            raise HTTPException(status_code=result.get("status_code", 400), detail=result.get("error"))
         return {
             "success": True,
-            "shop_name": validation.get("shop_name"),
-            "shop_domain": shop_domain,
-            "brand_id": active_brand_id,  # May differ from URL brand_id after 409 resolution
+            "shop_name": result.get("shop_name"),
+            "shop_domain": result.get("shop_domain"),
+            "brand_id": result.get("brand_id"),
         }
     except HTTPException:
         raise
