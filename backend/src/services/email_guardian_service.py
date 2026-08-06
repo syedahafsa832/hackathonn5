@@ -203,7 +203,27 @@ class EmailGuardianService:
         classification: str,
         confidence: float,
     ) -> Optional[str]:
-        """Insert a quarantine record. Returns the new record id or None on error."""
+        """Insert a quarantine record. Returns the record id (existing or new)
+        or None on error.
+
+        Dedupes on gmail_message_id first: Gmail's `after:` search operator
+        is date-level, not time-level, so the same message keeps reappearing
+        in every poll for the rest of that calendar day. Without this check,
+        a single low-confidence email produces a fresh quarantine row on
+        every ~15s poll cycle for hours — this is what actually happened in
+        production (one email, 458 duplicate rows)."""
+        gmail_message_id = email.get("id")
+        if gmail_message_id:
+            try:
+                existing = supabase_select("email_quarantine", {
+                    "brand_id": f"eq.{brand_id}",
+                    "gmail_message_id": f"eq.{gmail_message_id}",
+                })
+                if existing:
+                    return existing[0].get("id")
+            except Exception as e:
+                logger.warning(f"[Guardian] Quarantine dedup check failed, proceeding to insert: {e}")
+
         try:
             row = supabase_insert("email_quarantine", {
                 "brand_id":          brand_id,
@@ -211,6 +231,7 @@ class EmailGuardianService:
                 "subject":           email.get("subject", ""),
                 "body_preview":      _html_to_preview_text(email.get("body") or email.get("content", "")),
                 "thread_id":         email.get("thread_id"),
+                "gmail_message_id":  gmail_message_id,
                 "ai_classification": classification,
                 "ai_confidence":     confidence,
                 "status":            "pending",
