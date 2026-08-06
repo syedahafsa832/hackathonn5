@@ -5,6 +5,7 @@ Per-brand RAG knowledge base management.
 """
 
 import os
+import asyncio
 import logging
 import uuid
 import re
@@ -178,7 +179,13 @@ class BrandKnowledgeService:
             total_tokens = 0
 
             for chunk in chunks:
-                embedding = self._get_embedding(chunk["content"])
+                # Off the event loop: this is a blocking network call, and
+                # upload_text() runs inside background import jobs (see
+                # shopify_import_service.run_shopify_import) - without this,
+                # a large import ties up the single event loop for its whole
+                # duration, so unrelated requests (like onboarding's own
+                # import-status poll) stall until it finishes.
+                embedding = await asyncio.to_thread(self._get_embedding, chunk["content"])
                 if not embedding:
                     logger.warning(f"[KB] Failed to embed chunk {chunk['chunk_index']}")
                     continue

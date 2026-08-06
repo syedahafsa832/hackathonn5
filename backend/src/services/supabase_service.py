@@ -12,17 +12,15 @@ class SupabaseService:
     """Service for interacting with Supabase tables via REST API."""
 
     async def get_or_create_customer(self, email: str, store_id: str, name: str = None, phone: str = None) -> Dict[str, Any]:
-        """Find a customer by email or create a new one. The customers table has a unique
-        constraint on email (not on email+store_id), so we fall back to an email-only lookup
-        on 409 to avoid crashing when the same address appears in multiple brands."""
+        """Find a customer by email or create a new one. customers.email has a GLOBAL
+        unique constraint (not email+store_id — see schema.sql), so lookup and the
+        insert-conflict fallback both key on email alone. store_id is only ever set
+        on first creation and never overwritten on an existing row, so a customer
+        already owned by another store isn't silently reassigned."""
         try:
-            # Try scoped lookup first
-            results = supabase_select("customers", {
-                "email": f"eq.{email}",
-                "store_id": f"eq.{store_id}"
-            })
-            if results:
-                return results[0]
+            existing = supabase_select("customers", {"email": f"eq.{email}"})
+            if existing:
+                return self._update_customer_fields(existing[0], name, phone)
 
             new_customer = {
                 "email": email,
@@ -36,14 +34,30 @@ class SupabaseService:
             except Exception as insert_err:
                 err_str = str(insert_err)
                 if "409" in err_str or "23505" in err_str or "duplicate key" in err_str.lower():
-                    # Another row with this email already exists — return it
+                    # Lost the race to a concurrent request that inserted first — use its row.
                     existing = supabase_select("customers", {"email": f"eq.{email}"})
                     if existing:
-                        return existing[0]
+                        return self._update_customer_fields(existing[0], name, phone)
                 raise
         except Exception as e:
             logger.error(f"Supabase error in get_or_create_customer: {e}")
             return {"email": email, "name": name or "Customer", "store_id": store_id}
+
+    def _update_customer_fields(self, customer: Dict[str, Any], name: Optional[str], phone: Optional[str]) -> Dict[str, Any]:
+        """Patch an existing customer's name/phone when the caller has new values
+        for them. Never touches store_id (see get_or_create_customer)."""
+        updates = {}
+        if name and name != customer.get("name"):
+            updates["name"] = name
+        if phone and phone != customer.get("phone"):
+            updates["phone"] = phone
+        if not updates:
+            return customer
+        try:
+            return supabase_update("customers", {"id": f"eq.{customer['id']}"}, updates)
+        except Exception as e:
+            logger.warning(f"Supabase error updating customer fields: {e}")
+            return customer
 
     async def create_ticket(self, ticket_data: Dict[str, Any]) -> Dict[str, Any]:
         """Insert a new ticket into the tickets table."""
