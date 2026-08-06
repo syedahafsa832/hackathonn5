@@ -391,6 +391,7 @@ async def _connect_shopify_credentials(brand_id: str, tenant_id: str, shop_domai
 async def shopify_oauth_start(
     brand_id: str,
     shop: str = Query(..., description="Store domain, e.g. mybrand or mybrand.myshopify.com"),
+    return_to: str = Query("onboarding", description="Dashboard page to return to after connecting: 'onboarding' or 'settings'"),
     tenant: TenantContext = Depends(get_current_tenant),
 ):
     """Authenticated: returns the Shopify OAuth authorization URL for this
@@ -401,7 +402,7 @@ async def shopify_oauth_start(
     _get_owned_brand(brand_id, tenant.tenant_id)
     from src.services.shopify_oauth import get_authorize_url
     try:
-        auth_url = get_authorize_url(brand_id, shop)
+        auth_url = get_authorize_url(brand_id, shop, return_to)
     except ValueError as e:
         raise HTTPException(status_code=500, detail=str(e))
     return {"auth_url": auth_url}

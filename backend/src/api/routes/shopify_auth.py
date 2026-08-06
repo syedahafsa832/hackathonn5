@@ -44,18 +44,28 @@ async def shopify_oauth_callback(
     access-token flow uses."""
     frontend_url = _frontend_url()
 
-    if error:
-        logger.warning(f"[ShopifyOAuth] Denied by merchant: {error}")
-        return RedirectResponse(f"{frontend_url}/onboarding?shopify_error=denied")
-
-    if not code or not state or not shop:
-        return RedirectResponse(f"{frontend_url}/onboarding?shopify_error=missing_params")
-
     from src.services.shopify_oauth import verify_state, normalize_shop_domain
 
-    state_data = verify_state(state)
+    # Best-effort: recover which dashboard page to return to even on an
+    # error path, so a connection started from Settings doesn't dump the
+    # merchant into the onboarding wizard just because it failed. Falls
+    # back to "onboarding" if state is missing/unverifiable at this point.
+    early_state = verify_state(state) if state else None
+    return_to = (early_state or {}).get("return_to", "onboarding")
+
+    def redirect(qs: str) -> RedirectResponse:
+        return RedirectResponse(f"{frontend_url}/{return_to}?{qs}")
+
+    if error:
+        logger.warning(f"[ShopifyOAuth] Denied by merchant: {error}")
+        return redirect("shopify_error=denied")
+
+    if not code or not state or not shop:
+        return redirect("shopify_error=missing_params")
+
+    state_data = early_state
     if not state_data:
-        return RedirectResponse(f"{frontend_url}/onboarding?shopify_error=invalid_state")
+        return redirect("shopify_error=invalid_state")
 
     brand_id = state_data.get("brand_id")
     requested_shop = state_data.get("shop")
@@ -65,7 +75,7 @@ async def shopify_oauth_callback(
         # authorize against — if it doesn't, something is wrong enough to
         # not trust this exchange.
         logger.warning(f"[ShopifyOAuth] Shop mismatch: requested {requested_shop}, callback said {callback_shop}")
-        return RedirectResponse(f"{frontend_url}/onboarding?shopify_error=invalid_state")
+        return redirect("shopify_error=invalid_state")
 
     client_id = os.getenv("SHOPIFY_CLIENT_ID")
     client_secret = os.getenv("SHOPIFY_CLIENT_SECRET")
@@ -78,13 +88,13 @@ async def shopify_oauth_callback(
             )
         if token_resp.status_code != 200:
             logger.error(f"[ShopifyOAuth] Token exchange failed ({token_resp.status_code}): {token_resp.text[:300]}")
-            return RedirectResponse(f"{frontend_url}/onboarding?shopify_error=token_exchange_failed")
+            return redirect("shopify_error=token_exchange_failed")
         access_token = token_resp.json().get("access_token")
         if not access_token:
-            return RedirectResponse(f"{frontend_url}/onboarding?shopify_error=token_exchange_failed")
+            return redirect("shopify_error=token_exchange_failed")
     except Exception as e:
         logger.error(f"[ShopifyOAuth] Token exchange error: {e}")
-        return RedirectResponse(f"{frontend_url}/onboarding?shopify_error=connection_failed")
+        return redirect("shopify_error=connection_failed")
 
     # Reuse the exact same validate + save + domain-conflict-claim + scope-recording
     # logic the manual access-token flow uses — see v2_brands.py.
@@ -93,18 +103,18 @@ async def shopify_oauth_callback(
 
     brands = supabase_select("brands", {"id": f"eq.{brand_id}"})
     if not brands:
-        return RedirectResponse(f"{frontend_url}/onboarding?shopify_error=invalid_state")
+        return redirect("shopify_error=invalid_state")
     tenant_id = brands[0].get("tenant_id")
 
     try:
         result = await _connect_shopify_credentials(brand_id, tenant_id, callback_shop, access_token)
     except Exception as e:
         logger.error(f"[ShopifyOAuth] Connect error: {e}")
-        return RedirectResponse(f"{frontend_url}/onboarding?shopify_error=connection_failed")
+        return redirect("shopify_error=connection_failed")
 
     if not result.get("success"):
         error_code = result.get("error_code", "connection_failed")
-        return RedirectResponse(f"{frontend_url}/onboarding?shopify_error={error_code}")
+        return redirect(f"shopify_error={error_code}")
 
     # Best-effort product/order counts for the success screen — never block
     # a successful connection on this.
@@ -124,4 +134,4 @@ async def shopify_oauth_callback(
     if orders is not None:
         params += f"&orders={orders}"
     logger.info(f"[ShopifyOAuth] Connected {result.get('shop_domain')} to brand {result.get('brand_id')}")
-    return RedirectResponse(f"{frontend_url}/onboarding?{params}")
+    return redirect(params)

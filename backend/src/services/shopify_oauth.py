@@ -20,6 +20,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _STATE_TTL = 600  # 10-minute OAuth window, same as the Gmail flow
+_VALID_RETURN_TO = {"onboarding", "settings"}  # allowlist — return_to feeds a redirect URL
 
 
 def _state_key() -> bytes:
@@ -36,12 +37,17 @@ def normalize_shop_domain(domain: str) -> str:
     return domain
 
 
-def sign_state(brand_id: str, shop_domain: str) -> str:
+def sign_state(brand_id: str, shop_domain: str, return_to: str = "onboarding") -> str:
     """HMAC-signed state token: base64(payload).signature — tampering is detectable,
-    so the callback never has to trust a bare brand_id/shop from the query string."""
+    so the callback never has to trust a bare brand_id/shop from the query string.
+    return_to tells the callback which dashboard page to redirect back to
+    (Settings' Shopify tab and onboarding both start this same flow)."""
+    if return_to not in _VALID_RETURN_TO:
+        return_to = "onboarding"
     payload = json.dumps({
         "brand_id": brand_id,
         "shop": shop_domain,
+        "return_to": return_to,
         "exp": int(time.time()) + _STATE_TTL,
     }).encode()
     sig = hmac.new(_state_key(), payload, hashlib.sha256).hexdigest()[:24]
@@ -50,8 +56,8 @@ def sign_state(brand_id: str, shop_domain: str) -> str:
 
 
 def verify_state(state: str) -> Optional[dict]:
-    """Verify a signed state token. Returns {"brand_id", "shop"} or None if
-    invalid, expired, or tampered with."""
+    """Verify a signed state token. Returns {"brand_id", "shop", "return_to"}
+    or None if invalid, expired, or tampered with."""
     try:
         b64, sig = state.rsplit(".", 1)
         pad = 4 - len(b64) % 4
@@ -66,7 +72,10 @@ def verify_state(state: str) -> Optional[dict]:
         if data.get("exp", 0) < int(time.time()):
             logger.warning("[ShopifyOAuth] State expired")
             return None
-        return {"brand_id": data.get("brand_id"), "shop": data.get("shop")}
+        return_to = data.get("return_to") or "onboarding"
+        if return_to not in _VALID_RETURN_TO:
+            return_to = "onboarding"
+        return {"brand_id": data.get("brand_id"), "shop": data.get("shop"), "return_to": return_to}
     except Exception as e:
         logger.warning(f"[ShopifyOAuth] State verification error: {e}")
         return None
@@ -77,14 +86,14 @@ def callback_uri() -> str:
     return f"{base}/shopify/oauth/callback"
 
 
-def get_authorize_url(brand_id: str, shop: str) -> str:
+def get_authorize_url(brand_id: str, shop: str, return_to: str = "onboarding") -> str:
     """Build the Shopify OAuth authorization URL a merchant is redirected to."""
     client_id = os.getenv("SHOPIFY_CLIENT_ID")
     if not client_id:
         raise ValueError("SHOPIFY_CLIENT_ID is not configured")
     scopes = os.getenv("SHOPIFY_SCOPES", "read_products,write_products")
     shop_domain = normalize_shop_domain(shop)
-    state = sign_state(brand_id, shop_domain)
+    state = sign_state(brand_id, shop_domain, return_to)
     return (
         f"https://{shop_domain}/admin/oauth/authorize"
         f"?client_id={client_id}"

@@ -15,6 +15,15 @@ const inputStyle = {
   boxSizing: 'border-box',
 };
 
+const SHOPIFY_OAUTH_ERROR_MESSAGES = {
+  denied: 'Shopify connection was cancelled.',
+  invalid_state: 'That connection link expired or was invalid. Please try again.',
+  missing_params: 'Shopify did not return the expected information. Please try again.',
+  token_exchange_failed: 'Could not complete the connection with Shopify. Please try again.',
+  domain_taken: 'This Shopify store is already connected to a different tResolv account.',
+  connection_failed: 'Could not connect to Shopify. Please check your store URL and try again.',
+};
+
 // ──────────────────────────────────────────────────────── Email Tab ──
 
 function EmailTab() {
@@ -285,7 +294,8 @@ function ShopifyHealthCard() {
 function ShopifyTab() {
   const [shopifyStatus, setShopifyStatus] = useState(null);
   const [loadingStatus, setLoadingStatus] = useState(true);
-  const [form, setForm] = useState({ shopify_domain: '', access_token: '' });
+  const [brandId, setBrandId] = useState(null);
+  const [shopDomain, setShopDomain] = useState('');
   const [connecting, setConnecting] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
   const [msg, setMsg] = useState('');
@@ -304,28 +314,48 @@ function ShopifyTab() {
 
   useEffect(() => { loadStatus(); }, [loadStatus]);
 
+  useEffect(() => {
+    client.get('/api/brands').then(res => {
+      const list = Array.isArray(res.data) ? res.data : res.data?.brands || [];
+      if (list[0]?.id) setBrandId(list[0].id);
+    }).catch(() => {});
+  }, []);
+
+  // Picks up the redirect back from the OAuth callback (backend/src/api/routes/shopify_auth.py).
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('shopify_connected') === '1') {
+      setMsg(`Connected: ${params.get('shop_name') || params.get('shop_domain') || 'Shopify store'}`);
+      loadStatus();
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (params.get('shopify_error')) {
+      setError(SHOPIFY_OAUTH_ERROR_MESSAGES[params.get('shopify_error')] || 'Could not connect to Shopify. Please try again.');
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const isConnected = shopifyStatus?.connected;
 
   const handleConnect = async () => {
-    if (!form.shopify_domain.trim() || !form.access_token.trim()) {
-      setError('Both store URL and access token are required.');
+    if (!shopDomain.trim()) {
+      setError('Store URL is required.');
+      return;
+    }
+    if (!brandId) {
+      setError("Couldn't find your workspace. Please refresh and try again.");
       return;
     }
     setConnecting(true);
     setError('');
     setMsg('');
     try {
-      const res = await client.post('/api/v1/settings/shopify/connect', {
-        shop_domain: form.shopify_domain.trim().replace(/^https?:\/\//i, '').replace(/\/+$/, ''),
-        access_token: form.access_token.trim(),
-      });
-      setMsg(`Connected: ${res.data.shop_name || 'Shopify store'}`);
-      setForm({ shopify_domain: '', access_token: '' });
-      loadStatus();
+      const shop = shopDomain.trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+      const res = await client.get(`/api/v2/brands/${brandId}/shopify/oauth/start`, { params: { shop, return_to: 'settings' } });
+      window.location.href = res.data.auth_url;
     } catch (err) {
       const detail = err.response?.data?.detail;
-      setError(typeof detail === 'string' ? detail : detail?.error || 'Failed to connect. Check your domain and token.');
-    } finally {
+      setError(typeof detail === 'string' ? detail : detail?.error || 'Could not start the Shopify connection. Check your store URL.');
       setConnecting(false);
     }
   };
@@ -451,30 +481,12 @@ function ShopifyTab() {
             <div style={{ fontSize: '14px', fontWeight: '600', color: '#64748B' }}>Not Connected</div>
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px', background: '#F8FAFC', borderRadius: '6px', fontSize: '13px', color: '#475569', lineHeight: '1.7' }}>
-            <div><strong>Step 1:</strong> In Shopify, go to Settings → Apps → Develop apps</div>
-            <div><strong>Step 2:</strong> Create an app and configure Admin API scopes: <code style={{ fontSize: '12px', background: '#E2E8F0', padding: '1px 4px', borderRadius: '3px' }}>read_orders, write_orders, read_customers, read_products, write_order_edits</code></div>
-            <div><strong>Step 3:</strong> Install the app and copy your Admin API access token</div>
-          </div>
-
           <div>
             <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: '#475569', marginBottom: '5px' }}>Store URL</label>
             <input
-              value={form.shopify_domain}
-              onChange={e => setForm(f => ({ ...f, shopify_domain: e.target.value }))}
+              value={shopDomain}
+              onChange={e => setShopDomain(e.target.value)}
               placeholder="mystore.myshopify.com"
-              style={inputStyle}
-              onFocus={e => e.target.style.borderColor = '#06B6D4'}
-              onBlur={e => e.target.style.borderColor = '#E4E4E7'}
-            />
-          </div>
-          <div>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: '#475569', marginBottom: '5px' }}>Admin API Access Token</label>
-            <input
-              type="password"
-              value={form.access_token}
-              onChange={e => setForm(f => ({ ...f, access_token: e.target.value }))}
-              placeholder="shpat_..."
               style={inputStyle}
               onFocus={e => e.target.style.borderColor = '#06B6D4'}
               onBlur={e => e.target.style.borderColor = '#E4E4E7'}
@@ -487,7 +499,7 @@ function ShopifyTab() {
             onMouseEnter={e => { if(!connecting) e.target.style.background = '#0891B2'; }}
             onMouseLeave={e => { if(!connecting) e.target.style.background = '#06B6D4'; }}
           >
-            {connecting ? 'Connecting...' : 'Connect Shopify →'}
+            {connecting ? 'Connecting...' : 'Connect Shopify Store →'}
           </button>
         </div>
       )}
