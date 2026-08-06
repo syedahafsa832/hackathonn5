@@ -206,3 +206,212 @@ def test_check_brand_limit_blocks_second_brand_on_growth_plan():
         result = ps.check_brand_limit("t7")
     assert result["allowed"] is False
     assert result["limit"] == 1
+
+
+# ── AI-reply quota: trial's lifetime-total counter ───────────────────────────
+# Trial no longer gates on a daily ai_replies_per_day allowance (500/day,
+# never the effective bottleneck since tickets_per_day was unlimited) — it's
+# now a real lifetime total (25 across the whole 14-day trial), read directly
+# off tenants.ai_replies_used_total with no reset logic at all.
+
+def test_trial_ai_replies_lifetime_mode_blocks_at_25():
+    tenant = {"id": "t12", "email": "user@example.com", "plan": "trial",
+              "trial_end_at": (datetime.now(timezone.utc) + timedelta(days=5)).isoformat(),
+              "ai_replies_used_total": 25}
+    p1, p2 = _mocked(tenant)
+    with p1, p2:
+        result = ps.check_limit("t12", "ai_replies")
+    assert result["allowed"] is False
+    assert result["limit"] == 25
+    assert result["used"] == 25
+    assert result["reason"] == "trial_limit_reached"
+
+
+def test_trial_ai_replies_lifetime_mode_allows_below_25():
+    tenant = {"id": "t13", "email": "user@example.com", "plan": "trial",
+              "trial_end_at": (datetime.now(timezone.utc) + timedelta(days=5)).isoformat(),
+              "ai_replies_used_total": 24}
+    p1, p2 = _mocked(tenant)
+    with p1, p2:
+        result = ps.check_limit("t13", "ai_replies")
+    assert result["allowed"] is True
+    assert result["remaining"] == 1
+
+
+def test_trial_ai_replies_ignores_stale_daily_usage_date():
+    """A stale usage_date must not matter for the lifetime counter — unlike
+    the daily-reset resources, ai_replies_total never resets."""
+    tenant = {"id": "t14", "email": "user@example.com", "plan": "trial",
+              "trial_end_at": (datetime.now(timezone.utc) + timedelta(days=5)).isoformat(),
+              "usage_date": "2000-01-01", "ai_replies_used_total": 25}
+    p1, p2 = _mocked(tenant)
+    with p1, p2:
+        result = ps.check_limit("t14", "ai_replies")
+    assert result["allowed"] is False
+    assert result["used"] == 25
+
+
+def test_record_usage_increments_lifetime_counter_for_trial():
+    tenant = {"id": "t15", "email": "user@example.com", "plan": "trial",
+              "trial_end_at": (datetime.now(timezone.utc) + timedelta(days=5)).isoformat(),
+              "ai_replies_used_total": 5}
+    p1, p2 = _mocked(tenant)
+    with p1, p2:
+        ps.record_usage("t15", "ai_replies")
+    assert tenant["ai_replies_used_total"] == 6
+    # Must not touch the daily column at all.
+    assert tenant.get("usage_ai_replies_today") in (None, 0)
+
+
+def test_free_plan_ai_replies_still_uses_daily_column_not_lifetime():
+    """Regression guard: the new lifetime branch is trial-only — free plan's
+    ai_replies_per_day daily cap must be completely unaffected, even with a
+    huge (irrelevant) ai_replies_used_total sitting on the row."""
+    tenant = {"id": "t16", "email": "user@example.com", "plan": "free",
+              "usage_date": TODAY, "usage_ai_replies_today": 9, "ai_replies_used_total": 999}
+    p1, p2 = _mocked(tenant)
+    with p1, p2:
+        result = ps.check_limit("t16", "ai_replies")
+    assert result["allowed"] is True  # 9 < 10, free plan's daily cap
+    assert result["used"] == 9
+    assert result["limit"] == 10
+
+
+def test_record_ai_reply_event_inserts_row_and_increments_counter():
+    tenant = {"id": "t17", "email": "user@example.com", "plan": "trial",
+              "trial_end_at": (datetime.now(timezone.utc) + timedelta(days=5)).isoformat(),
+              "ai_replies_used_total": 0}
+    inserted = []
+
+    def fake_select(table, params=None):
+        return [tenant] if table == "tenants" else []
+
+    def fake_update(table, match, data):
+        tenant.update(data)
+        return [tenant]
+
+    def fake_insert(table, data):
+        inserted.append((table, data))
+        return data
+
+    with patch("src.services.plan_service.supabase_select", side_effect=fake_select), \
+         patch("src.services.plan_service.supabase_update", side_effect=fake_update), \
+         patch("src.services.plan_service.supabase_insert", side_effect=fake_insert):
+        ps.record_ai_reply_event(
+            "t17", channel="gmail", brand_id="b1", ticket_id="tk1",
+            customer_identifier="cust@example.com", model_used="mistral-large-latest",
+        )
+
+    assert tenant["ai_replies_used_total"] == 1
+    assert len(inserted) == 1
+    table, data = inserted[0]
+    assert table == "ai_reply_events"
+    assert data["tenant_id"] == "t17"
+    assert data["channel"] == "gmail"
+    assert data["brand_id"] == "b1"
+    assert data["model_used"] == "mistral-large-latest"
+
+
+def test_cross_channel_calls_share_one_quota_and_block_at_25_total():
+    """Abuse-prevention proof: switching channels does not grant extra quota.
+    15 Gmail-channel events + 10 Chat-Widget-channel events against the same
+    tenant must exhaust the 25-total cap jointly, and a 26th call on EITHER
+    channel must then be blocked — the cap is per-tenant, not per-channel."""
+    tenant = {"id": "t18", "email": "user@example.com", "plan": "trial",
+              "trial_end_at": (datetime.now(timezone.utc) + timedelta(days=5)).isoformat(),
+              "ai_replies_used_total": 0}
+    inserted = []
+
+    def fake_select(table, params=None):
+        return [tenant] if table == "tenants" else []
+
+    def fake_update(table, match, data):
+        tenant.update(data)
+        return [tenant]
+
+    def fake_insert(table, data):
+        inserted.append(data)
+        return data
+
+    with patch("src.services.plan_service.supabase_select", side_effect=fake_select), \
+         patch("src.services.plan_service.supabase_update", side_effect=fake_update), \
+         patch("src.services.plan_service.supabase_insert", side_effect=fake_insert):
+
+        for _ in range(15):
+            assert ps.check_limit("t18", "ai_replies")["allowed"] is True
+            ps.record_ai_reply_event("t18", channel="gmail")
+
+        for _ in range(10):
+            assert ps.check_limit("t18", "ai_replies")["allowed"] is True
+            ps.record_ai_reply_event("t18", channel="chat_widget")
+
+        assert tenant["ai_replies_used_total"] == 25
+
+        assert ps.check_limit("t18", "ai_replies")["allowed"] is False  # gmail's next attempt
+        assert ps.check_limit("t18", "ai_replies")["allowed"] is False  # chat_widget's next attempt
+
+    gmail_events = [e for e in inserted if e["channel"] == "gmail"]
+    chat_events = [e for e in inserted if e["channel"] == "chat_widget"]
+    assert len(gmail_events) == 15
+    assert len(chat_events) == 10
+
+
+def test_usage_summary_exposes_trial_ai_reply_fields_and_breakdown():
+    tenant = {"id": "t19", "email": "user@example.com", "plan": "trial",
+              "trial_end_at": (datetime.now(timezone.utc) + timedelta(days=5)).isoformat(),
+              "ai_replies_used_total": 18, "usage_date": TODAY}
+
+    def fake_select(table, params=None):
+        if table == "tenants":
+            return [tenant]
+        if table == "ai_reply_events":
+            return [{"channel": "gmail"}] * 12 + [{"channel": "chat_widget"}] * 6
+        return []
+
+    with patch("src.services.plan_service.supabase_select", side_effect=fake_select):
+        summary = ps.get_usage_summary("t19")
+
+    assert summary["ai_replies_used_trial"] == 18
+    assert summary["ai_replies_trial_limit"] == 25
+    assert summary["ai_replies_trial_remaining"] == 7
+    assert summary["trial_expired"] is False
+    assert summary["ai_replies_breakdown"] == {"gmail": 12, "chat_widget": 6}
+    assert summary["upgrade_required"] is False
+
+
+def test_usage_summary_upgrade_required_when_trial_quota_exhausted():
+    tenant = {"id": "t21", "email": "user@example.com", "plan": "trial",
+              "trial_end_at": (datetime.now(timezone.utc) + timedelta(days=5)).isoformat(),
+              "ai_replies_used_total": 25, "usage_date": TODAY}
+
+    def fake_select(table, params=None):
+        return [tenant] if table == "tenants" else []
+
+    with patch("src.services.plan_service.supabase_select", side_effect=fake_select):
+        summary = ps.get_usage_summary("t21")
+
+    assert summary["ai_replies_trial_remaining"] == 0
+    assert summary["upgrade_required"] is True
+
+
+def test_usage_summary_trial_expired_flag_independent_of_current_plan():
+    """trial_end_at in the past + plan already auto-downgraded to 'free' by
+    _resolve_plan() — trial_expired must still read True, so the frontend can
+    tell this apart from a tenant that was always on Free."""
+    tenant = {"id": "t20", "email": "user@example.com", "plan": "trial",
+              "trial_end_at": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+              "ai_replies_used_total": 3, "usage_date": TODAY}
+
+    def fake_select(table, params=None):
+        return [tenant] if table == "tenants" else []
+
+    def fake_update(table, match, data):
+        tenant.update(data)
+        return [tenant]
+
+    with patch("src.services.plan_service.supabase_select", side_effect=fake_select), \
+         patch("src.services.plan_service.supabase_update", side_effect=fake_update):
+        summary = ps.get_usage_summary("t20")
+
+    assert summary["plan"] == "free"  # auto-downgraded
+    assert summary["trial_expired"] is True

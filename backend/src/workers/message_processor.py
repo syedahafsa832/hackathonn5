@@ -238,19 +238,27 @@ class UnifiedMessageProcessor:
                 })
                 return {"ticket_id": ticket.get("id"), "status": "requires_human"}
 
-            # ========== STAGE 4.5: AI-REPLY DAILY LIMIT (trial-abuse protection) ==========
+            # ========== STAGE 4.5: AI-REPLY QUOTA (trial-abuse protection) ==========
             # Checked before the LLM call, not after — the point is to not spend
-            # the API call at all once a tenant is over its daily AI-reply cap.
+            # the API call at all once a tenant is over its AI-reply cap. For
+            # trial tenants this is now a lifetime total (25 across the whole
+            # trial), not a daily allowance — see plan_service.PLAN_LIMITS.
             ai_limit_check = plan_service.check_limit(tenant_id, "ai_replies")
             if not ai_limit_check["allowed"]:
                 logger.info(
-                    f"[PROCESSOR] Daily AI-reply limit reached for tenant {tenant_id} "
+                    f"[PROCESSOR] AI-reply limit reached for tenant {tenant_id} "
                     f"(plan={ai_limit_check['plan']} used={ai_limit_check['used']}/{ai_limit_check['limit']}) — routing to human"
                 )
                 if early_ticket_id:
+                    is_trial_quota = ai_limit_check.get("reason") == "trial_limit_reached"
+                    escalation_reason = (
+                        "You've used all 25 AI replies included in your free trial. Upgrade to continue automating support."
+                        if is_trial_quota
+                        else "AI reply limit reached for your plan. Upgrade to continue automating support with unlimited replies."
+                    )
                     supabase_update("tickets", {"id": f"eq.{early_ticket_id}"}, {
                         "status": "requires_human",
-                        "escalation_reason": "Daily AI reply limit reached. Upgrade to Pro for unlimited AI support.",
+                        "escalation_reason": escalation_reason,
                     })
                     return {
                         "ticket_id": early_ticket_id,
@@ -266,8 +274,25 @@ class UnifiedMessageProcessor:
                 ticket_id=early_ticket_id,
             )
             logger.info(f"[TIMING] AI generation (RAG+LLM): {time.monotonic() - t_ai_start:.2f}s")
-            if ai_result.get("reply_body"):
-                plan_service.record_ai_reply(tenant_id)
+            # ai_reply_generated is only set on the real model-generated path —
+            # every fallback path (provider outage, empty response, JSON parse
+            # error) returns the same canned "having trouble" reply_body
+            # without it, so reply_body alone can't detect a real generation.
+            # A failed AI call must never consume trial/plan quota.
+            if ai_result.get("reply_body") and ai_result.get("ai_reply_generated"):
+                plan_service.record_ai_reply_event(
+                    tenant_id,
+                    brand_id=store_id,
+                    # message_processor.py's channel values are 'email' (Gmail
+                    # poller + quarantine release) or 'web_form' — 'email' is
+                    # renamed to 'gmail' to match the vocabulary used
+                    # everywhere else (ai_reply_events, the dashboard's
+                    # per-channel breakdown, v2_chat_widget.py's 'chat_widget').
+                    channel="gmail" if channel == "email" else channel,
+                    ticket_id=early_ticket_id,
+                    customer_identifier=customer_email,
+                    model_used=ai_result.get("model_used"),
+                )
 
             confidence = ai_result.get("confidence_score", 0) / 100.0
             intent = ai_result.get("intent", "unknown")

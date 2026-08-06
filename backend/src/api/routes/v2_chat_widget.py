@@ -177,6 +177,7 @@ async def chat(request: Request, body: ChatRequest):
 
     # ── Founding cohort daily limit ─────────────────────────────────────────
     from src.services.auth_service import auth_service
+    from src.services import plan_service
     tenant_id = brand.get("tenant_id")
     if not await auth_service.check_daily_ticket_limit(tenant_id):
         limit_reply = (
@@ -185,6 +186,18 @@ async def chat(request: Request, body: ChatRequest):
         )
         supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {"status": "requires_human"})
         return ChatResponse(reply=limit_reply, session_id=body.session_id, suggested_actions=[])
+
+    # ── AI-reply quota (shared with the Gmail channel — same tenant-scoped
+    # counter, checked before calling the model so an exhausted quota never
+    # spends an API call) ───────────────────────────────────────────────────
+    ai_limit_check = plan_service.check_limit(tenant_id, "ai_replies")
+    if not ai_limit_check["allowed"]:
+        supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {"status": "requires_human"})
+        return ChatResponse(
+            reply="✨ Luna's free trial replies have been used.\n\nThe store owner can upgrade to continue AI-powered support.",
+            session_id=body.session_id,
+            suggested_actions=[],
+        )
 
     # Parse stored messages
     stored_msgs = ticket.get("messages") or []
@@ -263,6 +276,21 @@ async def chat(request: Request, body: ChatRequest):
             ticket_status_update = "escalated"
         elif agent_status in ("auto_resolved", "auto_resolved_review"):
             ticket_status_update = agent_status
+
+        # ai_reply_generated is only set on the real model-generated path —
+        # every fallback path (provider outage, empty response, JSON parse
+        # error) returns the same canned "having trouble" reply_body without
+        # it, so reply_body alone can't detect a real generation. A failed
+        # AI call must never consume trial/plan quota.
+        if result.get("reply_body") and result.get("ai_reply_generated"):
+            plan_service.record_ai_reply_event(
+                tenant_id,
+                brand_id=body.brand_id,
+                channel="chat_widget",
+                ticket_id=ticket_id,
+                customer_identifier=body.customer_email or ticket.get("customer_email") or body.session_id,
+                model_used=result.get("model_used"),
+            )
 
     except Exception as e:
         logger.error(f"[ChatWidget] Agent error: {e}")

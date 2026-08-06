@@ -3,7 +3,7 @@ Subscription/Entitlement Hardening Tests (see prompt TASK 9)
 =============================================================
 1. Admin unlimited — 10,000 tickets still allowed
 2. Trial active — within limits
-3. Trial AI-abuse protection — 501st AI reply blocked
+3. Trial AI-abuse protection — 26th AI reply blocked (25 lifetime total)
 4. Free plan — 11th ticket -> blocked with structured reason
 5. Brand creation — free user's 2nd brand blocked
 6. Gmail connection — free user's 2nd Gmail blocked
@@ -56,32 +56,36 @@ def test_admin_allows_ten_thousand_tickets():
 
 
 # ---- 2. Trial active — within limits -------------------------------------
+# Trial's AI-reply cap changed from a daily allowance (500/day, never the
+# effective bottleneck since tickets/day was unlimited) to a real lifetime
+# total: 25 replies across the whole 14-day trial, read directly off
+# tenants.ai_replies_used_total (see plan_service.PLAN_LIMITS["trial"]).
 
 def test_trial_within_limits_is_allowed():
     tenant = {"id": "trial1", "email": "user@example.com", "plan": "trial",
               "trial_end_at": (datetime.now(timezone.utc) + timedelta(days=10)).isoformat(),
-              "usage_date": TODAY, "usage_ai_replies_today": 100}
+              "usage_date": TODAY, "ai_replies_used_total": 10}
     p1, p2 = _mocked(tenant)
     with p1, p2:
         result = ps.check_limit("trial1", "ai_replies")
     assert result["allowed"] is True
     assert result["plan"] == "trial"
-    assert result["remaining"] == 400  # 500 - 100
+    assert result["remaining"] == 15  # 25 - 10
 
 
 # ---- 3. Trial AI-abuse protection -----------------------------------------
 
-def test_trial_blocks_501st_ai_reply():
+def test_trial_blocks_26th_ai_reply():
     tenant = {"id": "trial2", "email": "user@example.com", "plan": "trial",
               "trial_end_at": (datetime.now(timezone.utc) + timedelta(days=10)).isoformat(),
-              "usage_date": TODAY, "usage_ai_replies_today": 500}
+              "usage_date": TODAY, "ai_replies_used_total": 25}
     p1, p2 = _mocked(tenant)
     with p1, p2:
         result = ps.check_limit("trial2", "ai_replies")
     assert result["allowed"] is False
-    assert result["limit"] == 500
-    assert result["used"] == 500
-    assert result["reason"] == "daily_limit_reached"
+    assert result["limit"] == 25
+    assert result["used"] == 25
+    assert result["reason"] == "trial_limit_reached"
     assert result["upgrade_required"] is True
 
 

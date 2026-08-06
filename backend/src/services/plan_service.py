@@ -29,7 +29,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
 
-from src.lib.supabase_client import supabase_select, supabase_update
+from src.lib.supabase_client import supabase_select, supabase_update, supabase_insert
 
 logger = logging.getLogger(__name__)
 
@@ -91,10 +91,14 @@ _COUNT_LIMIT_KEY = {
 # `None` means unlimited for that dimension.
 PLAN_LIMITS: Dict[str, Dict[str, Optional[int]]] = {
     "trial": {
-        # Full evaluation access, but capped so a throwaway signup can't burn
-        # AI/API spend — see TASK 1 (trial abuse protection).
+        # Full evaluation access — unlimited tickets, onboarding, Shopify
+        # import, Knowledge Base, dashboard, and Chat Widget installs. The
+        # only metered resource is AI-generated customer replies, capped as
+        # a lifetime total across the whole trial (not a daily allowance —
+        # see ai_replies_total below, checked via the "ai_replies" resource
+        # in check_limit()/record_usage()'s lifetime-counter branch).
         "tickets_per_day": None,
-        "ai_replies_per_day": 500,
+        "ai_replies_total": 25,
         "emails_per_day": 1000,
         "shopify_actions_per_day": 100,
         "brands": 1,
@@ -389,12 +393,23 @@ def check_limit(tenant_id: Optional[str], resource: str, email: Optional[str] = 
         # (free/trial/founding_free, plus growth/enterprise's unlimited
         # tickets_per_day) goes through the existing daily path unchanged.
         is_monthly_tickets = resource == "tickets" and "tickets_per_month" in limits
+        # Trial's AI-reply cap is a lifetime total across the whole trial, not
+        # a daily allowance — a plan signals this by defining ai_replies_total
+        # instead of ai_replies_per_day. No reset logic at all: the counter
+        # only ever goes up, read straight off tenants.ai_replies_used_total.
+        is_lifetime_ai_replies = resource == "ai_replies" and "ai_replies_total" in limits
         if is_monthly_tickets:
             limit = limits["tickets_per_month"]
             if limit is None:
                 return base
             used = _reset_monthly_tickets_if_new_month(tenant)
             base["reset_at"] = _next_month_reset_at()
+        elif is_lifetime_ai_replies:
+            limit = limits["ai_replies_total"]
+            if limit is None:
+                return base
+            used = tenant.get("ai_replies_used_total") or 0
+            base["reset_at"] = None
         elif resource in _DAILY_RESOURCES:
             limit = limits.get(_DAILY_LIMIT_KEY[resource])
             if limit is None:
@@ -420,6 +435,7 @@ def check_limit(tenant_id: Optional[str], resource: str, email: Optional[str] = 
         if used >= limit:
             base["reason"] = (
                 "monthly_limit_reached" if is_monthly_tickets
+                else "trial_limit_reached" if is_lifetime_ai_replies
                 else "daily_limit_reached" if resource in _DAILY_RESOURCES
                 else "plan_limit_reached"
             )
@@ -449,6 +465,14 @@ def record_usage(tenant_id: Optional[str], resource: str) -> None:
             if "tickets_per_month" in limits:
                 used = _reset_monthly_tickets_if_new_month(tenant)
                 supabase_update("tenants", {"id": f"eq.{tenant_id}"}, {"usage_tickets_this_month": used + 1})
+                return
+
+        if resource == "ai_replies":
+            plan = _resolve_plan(tenant)
+            limits = PLAN_LIMITS.get(plan, PLAN_LIMITS[DEFAULT_PLAN])
+            if "ai_replies_total" in limits:
+                used = tenant.get("ai_replies_used_total") or 0
+                supabase_update("tenants", {"id": f"eq.{tenant_id}"}, {"ai_replies_used_total": used + 1})
                 return
 
         usage = _reset_usage_if_new_day(tenant)
@@ -498,12 +522,63 @@ def record_ai_reply(tenant_id: Optional[str]) -> None:
     record_usage(tenant_id, "ai_replies")
 
 
+def record_ai_reply_event(
+    tenant_id: Optional[str],
+    *,
+    channel: str,
+    brand_id: Optional[str] = None,
+    ticket_id: Optional[str] = None,
+    customer_identifier: Optional[str] = None,
+    model_used: Optional[str] = None,
+) -> None:
+    """The one call every AI-reply-generating channel makes after a successful
+    generation — increments the same tenant-scoped counter record_ai_reply()
+    always has (so the quota is channel-agnostic, not per-channel) and logs an
+    append-only event row for analytics/abuse investigation. Both Gmail
+    (message_processor.py) and Chat Widget (v2_chat_widget.py) call this
+    instead of record_ai_reply() directly, so neither can drift out of sync
+    with the other's counting."""
+    record_usage(tenant_id, "ai_replies")
+    if not tenant_id:
+        return
+    try:
+        supabase_insert("ai_reply_events", {
+            "tenant_id": tenant_id,
+            "brand_id": brand_id,
+            "channel": channel,
+            "ticket_id": ticket_id,
+            "customer_identifier": customer_identifier,
+            "model_used": model_used,
+        })
+    except Exception as e:
+        logger.warning(f"[Plan] Failed to log ai_reply_event for tenant {tenant_id} channel={channel}: {e}")
+
+
 def record_email_processed(tenant_id: Optional[str]) -> None:
     record_usage(tenant_id, "emails")
 
 
 def record_shopify_action(tenant_id: Optional[str]) -> None:
     record_usage(tenant_id, "shopify_actions")
+
+
+def _ai_replies_breakdown(tenant_id: str) -> Dict[str, int]:
+    """{channel: count} of every AI reply ever generated for this tenant,
+    tallied from the ai_reply_events ledger. Powers the dashboard's
+    "Gmail: X · Chat Widget: Y" line. Cheap while the only metered plan
+    (trial) caps at 25 total events — revisit (e.g. a cached per-channel
+    counter) if/when a paid plan starts metering AI replies at real
+    monthly volume."""
+    try:
+        rows = supabase_select("ai_reply_events", {"tenant_id": f"eq.{tenant_id}", "select": "channel"}) or []
+    except Exception as e:
+        logger.warning(f"[Plan] Failed to load ai_replies_breakdown for tenant {tenant_id}: {e}")
+        return {}
+    breakdown: Dict[str, int] = {}
+    for row in rows:
+        ch = row.get("channel") or "unknown"
+        breakdown[ch] = breakdown.get(ch, 0) + 1
+    return breakdown
 
 
 def get_usage_summary(tenant_id: str) -> Dict[str, Any]:
@@ -540,6 +615,20 @@ def get_usage_summary(tenant_id: str) -> Dict[str, Any]:
         if plan == "trial" and trial_end:
             trial_days_remaining = max(0, (trial_end - datetime.now(timezone.utc)).days)
 
+        # Independent of the *current* resolved plan — trial_end_at is never
+        # cleared, so this stays True even after _resolve_plan() has already
+        # downgraded the tenant to 'free'. Lets the frontend tell "the 14-day
+        # window ran out" apart from "still on trial, out of AI replies".
+        trial_expired = bool(trial_end) and datetime.now(timezone.utc) >= trial_end
+
+        ai_replies_used_trial = None
+        ai_replies_trial_limit = None
+        ai_replies_trial_remaining = None
+        if "ai_replies_total" in limits:
+            ai_replies_trial_limit = limits["ai_replies_total"]
+            ai_replies_used_trial = tenant.get("ai_replies_used_total") or 0
+            ai_replies_trial_remaining = max(0, ai_replies_trial_limit - ai_replies_used_trial)
+
         plan_days_remaining = None
         if plan in PAID_PLANS:
             expires_at = get_paid_plan_expiry(tenant)
@@ -554,11 +643,17 @@ def get_usage_summary(tenant_id: str) -> Dict[str, Any]:
 
         ai_limit = limits.get("ai_replies_per_day")
         emails_limit = limits.get("emails_per_day")
+
+        ai_quota_exhausted = ai_replies_trial_remaining is not None and ai_replies_trial_remaining <= 0
+        tickets_exhausted = tickets_limit is not None and tickets_used >= tickets_limit
+        upgrade_required = False if admin else (ai_quota_exhausted or tickets_exhausted)
+
         return {
             "plan": plan,
             "plan_label": limits.get("label", plan.title()),
             "is_super_admin": admin,
             "trial_days_remaining": trial_days_remaining,
+            "trial_expired": trial_expired,
             "plan_activated_at": tenant.get("plan_activated_at"),
             "plan_days_remaining": plan_days_remaining,
             "was_previously_paid": was_previously_paid,
@@ -569,7 +664,15 @@ def get_usage_summary(tenant_id: str) -> Dict[str, Any]:
             "tickets_remaining_today": None if tickets_limit is None else max(0, tickets_limit - tickets_used),
             "ai_replies_remaining_today": None if ai_limit is None else max(0, ai_limit - usage["ai_replies"]),
             "emails_remaining_today": None if emails_limit is None else max(0, emails_limit - usage["emails"]),
-            "upgrade_required": False if admin or tickets_limit is None else tickets_used >= tickets_limit,
+            # Trial-specific lifetime AI-reply quota — None for every other plan.
+            "ai_replies_used_trial": ai_replies_used_trial,
+            "ai_replies_trial_limit": ai_replies_trial_limit,
+            "ai_replies_trial_remaining": ai_replies_trial_remaining,
+            # tenant["ai_replies_used_total"] (not the plan-gated local var
+            # above) so this still populates after a trial expires and
+            # downgrades to 'free' — the counter itself is never cleared.
+            "ai_replies_breakdown": _ai_replies_breakdown(tenant_id) if tenant.get("ai_replies_used_total") else {},
+            "upgrade_required": upgrade_required,
         }
     except Exception as e:
         logger.warning(f"[Plan] get_usage_summary failed for tenant {tenant_id}: {e}")

@@ -210,3 +210,22 @@ def test_provider_failure_escalation_copy():
     assert "quota" in result["escalation_reason"].lower()
     assert "system error" not in result["escalation_reason"].lower()
     assert result["reply_body"]  # customer still gets an acknowledgment, not a blank reply
+    # A failed AI call must never consume trial/plan quota — callers
+    # (message_processor.py, v2_chat_widget.py) gate record_ai_reply_event()
+    # on this flag being present and truthy, not on reply_body alone (which
+    # is always non-empty here, since the customer still gets a canned
+    # acknowledgment).
+    assert "ai_reply_generated" not in result
+
+
+def test_fallback_response_also_excluded_from_quota():
+    """_get_fallback_response (empty API response / JSON parse error / any
+    other exception) returns the same kind of canned reply_body as the
+    provider-failure path — it must be excluded from quota consumption too,
+    not just the provider_outage case."""
+    from src.agent.customer_success_agent import CustomerSuccessAgent
+    result = CustomerSuccessAgent._get_fallback_response(
+        MagicMock(), "Empty API response", brand_name="Acme", agent_name="Luna"
+    )
+    assert result["reply_body"]
+    assert "ai_reply_generated" not in result

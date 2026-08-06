@@ -500,6 +500,14 @@ class CustomerSuccessAgent:
                     "cancelledAt": _os.get("cancelled_at"),
                 }
 
+            structured["model_used"] = _model
+            # Only the real, model-generated path sets this — both
+            # _get_provider_failure_response (all providers exhausted) and
+            # _get_fallback_response (empty response / JSON parse error /
+            # any other exception) return the same canned "having trouble"
+            # text without it, so callers gating AI-reply quota on this flag
+            # never charge a customer's trial/plan quota for a failed call.
+            structured["ai_reply_generated"] = True
             return structured
 
         except Exception as e:
