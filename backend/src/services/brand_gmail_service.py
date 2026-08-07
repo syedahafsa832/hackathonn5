@@ -16,7 +16,9 @@ import asyncio
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
+from src.services.email_layout import render_plain_text_email_html
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
@@ -324,13 +326,23 @@ class BrandGmailService:
 
         return emails
 
+    @staticmethod
+    def _build_message(body: str) -> MIMEMultipart:
+        """multipart/alternative: the plain-text part is the body untouched
+        (compatibility fallback), the html part is the same copy with a
+        spaced-out layout applied - see email_layout.py."""
+        msg = MIMEMultipart("alternative")
+        msg.attach(MIMEText(body, "plain"))
+        msg.attach(MIMEText(render_plain_text_email_html(body), "html"))
+        return msg
+
     async def send_email(self, brand: dict, to_email: str, subject: str, body: str) -> Dict[str, Any]:
         """Send an email from a brand's connected Gmail account."""
         svc = self._build_service(brand)
         if not svc:
             return {"success": False, "error": "Gmail not connected for this brand"}
         try:
-            msg = MIMEText(body)
+            msg = self._build_message(body)
             msg["to"]      = to_email
             msg["subject"] = subject
             raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
@@ -346,7 +358,7 @@ class BrandGmailService:
         if not svc:
             return {"success": False, "error": "Gmail not connected for this brand"}
         try:
-            msg = MIMEText(body)
+            msg = self._build_message(body)
             msg["to"]      = to_email
             msg["subject"] = subject if subject.startswith("Re:") else f"Re: {subject}"
             raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
