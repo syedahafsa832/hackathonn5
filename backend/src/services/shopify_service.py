@@ -449,6 +449,47 @@ class ShopifyClient:
             logger.error(f"[Shopify] Error fetching order: {e}")
             raise ShopifyError(str(e), ShopifyErrorCode.UNKNOWN_ERROR)
 
+    async def find_orders_by_email(self, email: str) -> Dict[str, Any]:
+        """List a customer's real orders straight from Shopify. Returns every
+        match rather than picking one, so callers can surface "which order?"
+        instead of guessing when there's more than one."""
+        try:
+            result = self._request(
+                "GET",
+                "orders.json",
+                params={"email": email, "status": "any", "limit": 50}
+            )
+            orders = result.get("data", {}).get("orders", [])
+            return {"success": True, "orders": orders, "count": len(orders)}
+        except ShopifyError:
+            raise
+        except Exception as e:
+            logger.error(f"[Shopify] Error listing orders by email: {e}")
+            raise ShopifyError(str(e), ShopifyErrorCode.UNKNOWN_ERROR)
+
+    async def find_products_by_title(self, query: str, limit: int = 250) -> Dict[str, Any]:
+        """Search real Shopify products by (case-insensitive, substring) title
+        match. Shopify's REST title filter is exact-match only, so this scans
+        a bounded recent page client-side, same fallback shape as get_order's
+        order_number scan. Returns every match rather than the first one —
+        an ambiguous product name (e.g. "hoodie" matching 4 products) must be
+        surfaced as a choice, never guessed."""
+        try:
+            result = self._request(
+                "GET",
+                "products.json",
+                params={"limit": limit, "fields": "id,title,variants,status"}
+            )
+            products = result.get("data", {}).get("products", [])
+            needle = query.strip().lower()
+            matches = [p for p in products if needle in (p.get("title") or "").lower() and p.get("status") == "active"]
+            return {"success": True, "products": matches, "count": len(matches)}
+        except ShopifyError:
+            raise
+        except Exception as e:
+            logger.error(f"[Shopify] Error searching products by title: {e}")
+            raise ShopifyError(str(e), ShopifyErrorCode.UNKNOWN_ERROR)
+
     async def process_refund(
         self,
         order_id: str,

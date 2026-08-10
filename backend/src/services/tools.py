@@ -165,47 +165,30 @@ class V3Tools:
             logger.error(f"Tool error [get_order_status]: {e}")
             return {"error": "Failed to retrieve order status."}
 
-    async def get_orders_by_email(self, email: str) -> Dict[str, Any]:
-        """Find all orders for a customer by email."""
+    async def get_orders_by_email(self, email: str, shop_domain: str = None, access_token: str = None) -> Dict[str, Any]:
+        """Find a customer's orders by email — live Shopify data only.
+        Returns every matching order (never picks one) so the caller can ask
+        "which order?" instead of guessing when there's more than one."""
+        if not shop_domain or not access_token:
+            return {"error": "Shopify not connected for this store."}
         try:
-            # Look up orders by customer email
-            orders = supabase_select("orders", {"customer_email": f"eq.{email}"})
-
-            if not orders:
-                return {"error": f"No orders found for {email}"}
-
-            # Return simplified order list with items
-            order_list = []
-            for o in orders:
-                # Get order items
-                order_items = supabase_select("order_items", {"order_id": f"eq.{o.get('id')}"})
-                items = []
-                for item in order_items:
-                    items.append({
-                        "title": item.get("title"),
-                        "quantity": item.get("quantity"),
-                        "price": item.get("price"),
-                        "sku": item.get("sku")
-                    })
-
-                order_list.append({
+            from src.services.shopify_service import ShopifyClient
+            client = ShopifyClient(shop_domain, access_token)
+            result = await client.find_orders_by_email(email)
+            order_list = [
+                {
                     "order_number": o.get("order_number"),
-                    "status": o.get("status"),
-                    "tracking_number": o.get("tracking_number"),
-                    "shipping_status": o.get("shipping_status"),
-                    "total_amount": o.get("total_amount"),
-                    "items": items
-                })
-
-            return {
-                "success": True,
-                "email": email,
-                "orders": order_list,
-                "count": len(order_list)
-            }
+                    "status": o.get("fulfillment_status") or "unfulfilled",
+                    "financial_status": o.get("financial_status"),
+                    "total_amount": o.get("total_price"),
+                    "created_at": o.get("created_at"),
+                }
+                for o in result.get("orders", [])
+            ]
+            return {"success": True, "email": email, "orders": order_list, "count": len(order_list)}
         except Exception as e:
             logger.error(f"Tool error [get_orders_by_email]: {e}")
-            return {"error": "Failed to retrieve orders."}
+            return {"error": "Failed to retrieve orders from Shopify."}
 
     async def get_shipping_status(self, tracking_number: str) -> Dict[str, Any]:
         """Query AfterShip API for real-time tracking updates."""
@@ -238,50 +221,55 @@ class V3Tools:
             logger.error(f"Tool error [get_shipping_status]: {e}")
             return {"error": "Shipping carrier service unavailable."}
 
-    async def get_inventory_status(self, product_name: str) -> Dict[str, Any]:
-        """Check inventory levels for a product by name."""
+    async def get_inventory_status(self, product_name: str, shop_domain: str = None, access_token: str = None) -> Dict[str, Any]:
+        """Check real Shopify inventory for a product by name. Never guesses:
+        zero matches is reported as "not found" (not "out of stock"), and
+        multiple matches come back as an ambiguous list for the caller to
+        ask about instead of picking one."""
+        if not shop_domain or not access_token:
+            return {"success": False, "message": "I can't check live inventory right now — let me get a team member to confirm."}
         try:
-            # Search products in Supabase - use 'title' not 'name'
-            products = supabase_select("products", {"title": f"ilike.%{product_name}%"})
+            from src.services.shopify_service import ShopifyClient
+            client = ShopifyClient(shop_domain, access_token)
+            result = await client.find_products_by_title(product_name)
+            products = result.get("products", [])
 
             if not products:
-                # Try variants - use 'size' or 'sku', not 'title' for name search
-                variants = supabase_select("variants", {"sku": f"ilike.%{product_name}%"})
-
-            if not products and not variants:
                 return {"success": False, "message": f"I couldn't find '{product_name}' in our current collection. Want me to check something else for you?"}
 
-            # Get inventory from variants
-            inventory_info = []
-            product_title = ""
-
-            if products:
-                product_title = products[0].get("title", product_name)
-                # Get variants for this product
-                product_id = products[0].get("id")
-                variants = supabase_select("variants", {"product_id": f"eq.{product_id}"})
-
-            if variants:
-                for v in variants[:5]:  # Limit to 5 results
-                    inventory_info.append({
-                        "size": v.get("size"),
-                        "sku": v.get("sku"),
-                        "price": v.get("price")
-                    })
-
-            if inventory_info:
+            if len(products) > 1:
+                titles = [p.get("title") for p in products[:8]]
                 return {
                     "success": True,
-                    "product": product_title or product_name,
-                    "variants": inventory_info,
-                    "message": f"Yes, we have {product_title} available in {len(inventory_info)} sizes."
+                    "ambiguous": True,
+                    "matches": titles,
+                    "message": f"I found a few products matching '{product_name}': {', '.join(titles)}. Which one did you mean?",
                 }
 
-            return {"success": False, "message": f"We have {product_title} in our collection but let me check on specific availability for you."}
-
+            product = products[0]
+            variant_info = [
+                {
+                    "size": v.get("title"),
+                    "sku": v.get("sku"),
+                    "price": v.get("price"),
+                    "in_stock": (v.get("inventory_quantity") or 0) > 0,
+                    "quantity": v.get("inventory_quantity"),
+                }
+                for v in product.get("variants", [])[:10]
+            ]
+            any_in_stock = any(v["in_stock"] for v in variant_info)
+            return {
+                "success": True,
+                "product": product.get("title"),
+                "variants": variant_info,
+                "message": (
+                    f"Yes, {product.get('title')} is in stock." if any_in_stock
+                    else f"{product.get('title')} is currently out of stock in all variants."
+                ),
+            }
         except Exception as e:
             logger.error(f"Tool error [get_inventory_status]: {e}")
-            return {"success": False, "message": "Let me look into that for you personally."}
+            return {"success": False, "message": "I couldn't verify live inventory right now — let me get a team member to confirm."}
 
     async def create_back_in_stock_alert(self, email: str, sku: str) -> Dict[str, Any]:
         """Register a customer for a back-in-stock notification."""

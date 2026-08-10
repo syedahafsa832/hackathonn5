@@ -276,7 +276,11 @@ class CustomerSuccessAgent:
                     customer_email = customer_info.get("email")
 
                 if customer_email:
-                    tool_results["orders_by_email"] = await v3_tools.get_orders_by_email(customer_email)
+                    tool_results["orders_by_email"] = await v3_tools.get_orders_by_email(
+                        customer_email,
+                        shop_domain=_brand_shopify_domain,
+                        access_token=_brand_shopify_token,
+                    )
 
             # Check for inventory/product inquiry
             if any(kw in query_lower for kw in ["in stock", "available", "inventory", "do you have"]):
@@ -284,7 +288,11 @@ class CustomerSuccessAgent:
                 product_match = re.search(r'(hoodie|jacket|pants|shirt|tshirt|coat|dress|skirt)', query_lower)
                 if product_match:
                     product = product_match.group(1)
-                    tool_results["inventory"] = await v3_tools.get_inventory_status(product)
+                    tool_results["inventory"] = await v3_tools.get_inventory_status(
+                        product,
+                        shop_domain=_brand_shopify_domain,
+                        access_token=_brand_shopify_token,
+                    )
 
             # 3b. Aftership live tracking — runs only when order was found and has a tracking number
             if "order_status" in tool_results and tool_results["order_status"].get("success"):
@@ -338,12 +346,21 @@ class CustomerSuccessAgent:
                     orders = tool_results["orders_by_email"]
                     if orders.get("success") and orders.get("orders"):
                         order_list = [f"#{o.get('order_number')} ({o.get('status')})" for o in orders.get("orders", [])]
-                        tool_context += f"Customer's orders: {', '.join(order_list)}\n"
+                        if len(order_list) > 1:
+                            tool_context += f"Customer has multiple orders: {', '.join(order_list)}. Ask which order they mean before answering — do not guess.\n"
+                        else:
+                            tool_context += f"Customer's orders: {', '.join(order_list)}\n"
+                    elif orders.get("error"):
+                        tool_context += "ORDER LOOKUP BY EMAIL FAILED: Do not invent or guess order details. Ask the customer for their order number, or let them know a team member will follow up.\n"
 
                 if "inventory" in tool_results:
                     inv = tool_results["inventory"]
-                    if inv.get("success"):
+                    if inv.get("ambiguous"):
+                        tool_context += f"{inv.get('message')} Ask the customer to clarify which product before answering — do not guess or pick one.\n"
+                    elif inv.get("success"):
                         tool_context += f"{inv.get('message', 'Available')}\n"
+                    else:
+                        tool_context += f"INVENTORY LOOKUP: {inv.get('message', 'Could not verify inventory')}. Do NOT guess stock levels — use this message as-is or offer to have a team member confirm.\n"
 
             # 4. Return/Exchange Action Layer — skip LLM intent call for chat (saves API call)
             action_context = ""
