@@ -72,6 +72,16 @@ def test_find_products_by_title_excludes_inactive():
     assert result["count"] == 0
 
 
+def test_find_products_by_title_excludes_archived():
+    """Archived is a distinct Shopify status from draft — both must be treated
+    as unavailable, not just draft."""
+    client = _client()
+    products = [{"id": 1, "title": "Discontinued Hoodie", "status": "archived", "variants": []}]
+    with patch.object(client, "_request", return_value={"data": {"products": products}}):
+        result = run(client.find_products_by_title("hoodie"))
+    assert result["count"] == 0
+
+
 # ── tools.get_orders_by_email ────────────────────────────────────────────
 
 def test_get_orders_by_email_without_credentials_errors_not_guesses():
@@ -111,7 +121,7 @@ def test_get_inventory_status_without_credentials_escalates_not_guesses():
 def test_get_inventory_status_in_stock():
     tools = V3Tools()
     fake = {"products": [{"title": "Essential Hoodie", "variants": [
-        {"title": "M", "sku": "EH-M", "price": "50.00", "inventory_quantity": 5},
+        {"title": "M", "sku": "EH-M", "price": "50.00", "inventory_quantity": 5, "inventory_management": "shopify"},
     ]}]}
     with patch.object(ShopifyClient, "find_products_by_title", new=AsyncMock(return_value=fake)):
         result = run(tools.get_inventory_status("hoodie", shop_domain="test.myshopify.com", access_token="tok"))
@@ -122,8 +132,8 @@ def test_get_inventory_status_in_stock():
 def test_get_inventory_status_out_of_stock_all_variants():
     tools = V3Tools()
     fake = {"products": [{"title": "Essential Hoodie", "variants": [
-        {"title": "M", "sku": "EH-M", "price": "50.00", "inventory_quantity": 0},
-        {"title": "L", "sku": "EH-L", "price": "50.00", "inventory_quantity": 0},
+        {"title": "M", "sku": "EH-M", "price": "50.00", "inventory_quantity": 0, "inventory_management": "shopify"},
+        {"title": "L", "sku": "EH-L", "price": "50.00", "inventory_quantity": 0, "inventory_management": "shopify"},
     ]}]}
     with patch.object(ShopifyClient, "find_products_by_title", new=AsyncMock(return_value=fake)):
         result = run(tools.get_inventory_status("hoodie", shop_domain="test.myshopify.com", access_token="tok"))
@@ -148,6 +158,40 @@ def test_get_inventory_status_not_found_is_honest_not_guessed():
         result = run(tools.get_inventory_status("nonexistent-thing", shop_domain="test.myshopify.com", access_token="tok"))
     assert result["success"] is False
     assert "couldn't find" in result["message"].lower()
+
+
+def test_get_inventory_status_mixed_variants_reports_each_accurately():
+    """Product exists but the specific variant a customer wants may not be
+    the one in stock — each variant's in_stock flag must be independently
+    accurate, not collapsed into one product-level yes/no."""
+    tools = V3Tools()
+    fake = {"products": [{"title": "Essential Hoodie", "variants": [
+        {"title": "S", "sku": "EH-S", "price": "50.00", "inventory_quantity": 0, "inventory_management": "shopify"},
+        {"title": "M", "sku": "EH-M", "price": "50.00", "inventory_quantity": 3, "inventory_management": "shopify"},
+    ]}]}
+    with patch.object(ShopifyClient, "find_products_by_title", new=AsyncMock(return_value=fake)):
+        result = run(tools.get_inventory_status("hoodie", shop_domain="test.myshopify.com", access_token="tok"))
+    assert result["success"] is True
+    variants_by_size = {v["size"]: v["in_stock"] for v in result["variants"]}
+    assert variants_by_size == {"S": False, "M": True}
+    assert "in stock" in result["message"].lower()
+
+
+def test_get_inventory_status_untracked_inventory_not_reported_as_out_of_stock():
+    """Shopify variants with inventory_management=None aren't stock-tracked
+    (the product keeps selling regardless of quantity) — treating a stale/zero
+    quantity as authoritative here would be inventing an "out of stock" claim
+    that isn't true."""
+    tools = V3Tools()
+    fake = {"products": [{"title": "Digital Gift Card", "variants": [
+        {"title": "Default Title", "sku": "GIFTCARD", "price": "25.00",
+         "inventory_quantity": 0, "inventory_management": None},
+    ]}]}
+    with patch.object(ShopifyClient, "find_products_by_title", new=AsyncMock(return_value=fake)):
+        result = run(tools.get_inventory_status("gift card", shop_domain="test.myshopify.com", access_token="tok"))
+    assert result["success"] is True
+    assert result["variants"][0]["in_stock"] is True
+    assert "out of stock" not in result["message"].lower()
 
 
 def test_get_inventory_status_shopify_failure_escalates():
@@ -231,3 +275,144 @@ def test_get_order_status_shopify_api_failure_returns_error_not_crash():
         result = run(tools.get_order_status("1004", shop_domain="test.myshopify.com", access_token="tok"))
     assert "error" in result
     assert "success" not in result
+
+
+# ── tools.get_order_status — additional cases from the order-tracking hardening task ──
+#
+# Coverage map:
+#   order does not exist          -> test_get_order_status_nonexistent_order_returns_error_not_invented
+#   cancelled order                -> test_get_order_status_cancelled_order_reports_cancelled
+#   partially fulfilled order      -> test_get_order_status_partially_fulfilled_order
+#   multiple shipments/fulfillments-> test_get_order_status_multiple_fulfillments_preserves_every_shipment
+#   ownership: matching email      -> test_get_order_status_customer_email_matches_owner_returns_data
+#   ownership: wrong customer      -> test_get_order_status_customer_email_mismatch_blocks_access
+#   ownership: no email (anon)     -> test_get_order_status_no_customer_email_blocks_access
+#   ownership: check opt-out       -> test_get_order_status_customer_email_none_preserves_backward_compat
+
+def test_get_order_status_nonexistent_order_returns_error_not_invented():
+    tools = V3Tools()
+    empty = {"orders": []}
+    with patch("src.services.tools.requests.get", return_value=_FakeResp(200, empty)):
+        result = run(tools.get_order_status("999999", shop_domain="test.myshopify.com", access_token="tok"))
+    assert "error" in result
+    assert "success" not in result
+
+
+def test_get_order_status_cancelled_order_reports_cancelled():
+    tools = V3Tools()
+    payload = _order_payload(fulfillment_status=None, cancelled_at="2026-01-03T00:00:00Z")
+    with patch("src.services.tools.requests.get", return_value=_FakeResp(200, payload)):
+        result = run(tools.get_order_status("1005", shop_domain="test.myshopify.com", access_token="tok"))
+    assert result["success"] is True
+    assert result["cancelled_at"] == "2026-01-03T00:00:00Z"
+
+
+def test_get_order_status_partially_fulfilled_order():
+    tools = V3Tools()
+    payload = _order_payload(fulfillment_status="partial", fulfillments=[{
+        "tracking_number": "TRACK-PARTIAL-1", "tracking_url": None,
+        "tracking_company": "USPS", "shipment_status": "in_transit",
+        "created_at": "2026-01-02T00:00:00Z",
+    }])
+    with patch("src.services.tools.requests.get", return_value=_FakeResp(200, payload)):
+        result = run(tools.get_order_status("1006", shop_domain="test.myshopify.com", access_token="tok"))
+    assert result["success"] is True
+    assert result["status"] == "partial"
+
+
+def test_get_order_status_multiple_fulfillments_preserves_every_shipment():
+    """Corrected behavior: a multi-shipment order must not lose real shipment
+    data. The top-level tracking_* fields still mirror the first fulfillment
+    for backward compatibility with single-shipment callers, but the full,
+    distinct list of shipments must also be present — never collapsed."""
+    tools = V3Tools()
+    payload = _order_payload(fulfillment_status="fulfilled", fulfillments=[
+        {"tracking_number": "FIRST-SHIPMENT", "tracking_url": None,
+         "tracking_company": "UPS", "shipment_status": "delivered", "created_at": "2026-01-02T00:00:00Z"},
+        {"tracking_number": "SECOND-SHIPMENT", "tracking_url": None,
+         "tracking_company": "FedEx", "shipment_status": "in_transit", "created_at": "2026-01-03T00:00:00Z"},
+    ])
+    with patch("src.services.tools.requests.get", return_value=_FakeResp(200, payload)):
+        result = run(tools.get_order_status("1007", shop_domain="test.myshopify.com", access_token="tok"))
+    assert result["success"] is True
+    # Backward-compatible single-shipment fields mirror the first fulfillment.
+    assert result["tracking_number"] == "FIRST-SHIPMENT"
+    assert result["tracking_company"] == "UPS"
+    # Nothing is discarded: both real shipments are preserved distinctly.
+    assert result["fulfillment_count"] == 2
+    assert [f["tracking_number"] for f in result["fulfillments"]] == ["FIRST-SHIPMENT", "SECOND-SHIPMENT"]
+    assert [f["tracking_company"] for f in result["fulfillments"]] == ["UPS", "FedEx"]
+    assert [f["shipment_status"] for f in result["fulfillments"]] == ["delivered", "in_transit"]
+
+
+def test_get_order_status_single_fulfillment_reports_count_one():
+    tools = V3Tools()
+    payload = _order_payload(fulfillment_status="fulfilled", fulfillments=[{
+        "tracking_number": "ONLY-SHIPMENT", "tracking_url": None,
+        "tracking_company": "UPS", "shipment_status": "in_transit", "created_at": "2026-01-02T00:00:00Z",
+    }])
+    with patch("src.services.tools.requests.get", return_value=_FakeResp(200, payload)):
+        result = run(tools.get_order_status("1009", shop_domain="test.myshopify.com", access_token="tok"))
+    assert result["fulfillment_count"] == 1
+    assert result["fulfillments"][0]["tracking_number"] == "ONLY-SHIPMENT"
+
+
+def test_get_order_status_no_fulfillments_reports_count_zero():
+    tools = V3Tools()
+    payload = _order_payload(fulfillment_status=None, fulfillments=[])
+    with patch("src.services.tools.requests.get", return_value=_FakeResp(200, payload)):
+        result = run(tools.get_order_status("1010", shop_domain="test.myshopify.com", access_token="tok"))
+    assert result["fulfillment_count"] == 0
+    assert result["fulfillments"] == []
+
+
+def test_get_order_status_customer_email_matches_owner_returns_data():
+    tools = V3Tools()
+    payload = _order_payload(fulfillment_status="fulfilled", email="owner@example.com")
+    with patch("src.services.tools.requests.get", return_value=_FakeResp(200, payload)):
+        result = run(tools.get_order_status(
+            "1008", shop_domain="test.myshopify.com", access_token="tok",
+            customer_email="Owner@Example.com",  # case-insensitive match
+        ))
+    assert result["success"] is True
+    assert result["order_number"] == 1001
+
+
+def test_get_order_status_customer_email_mismatch_blocks_access():
+    """Security requirement: a valid order number alone must never return
+    another customer's order data."""
+    tools = V3Tools()
+    payload = _order_payload(fulfillment_status="fulfilled", email="owner@example.com")
+    with patch("src.services.tools.requests.get", return_value=_FakeResp(200, payload)):
+        result = run(tools.get_order_status(
+            "1008", shop_domain="test.myshopify.com", access_token="tok",
+            customer_email="attacker@example.com",
+        ))
+    assert "error" in result
+    assert "success" not in result
+
+
+def test_get_order_status_no_customer_email_blocks_access():
+    """An unverified/anonymous requester (e.g. chat widget visitor who hasn't
+    given an email) passes customer_email="" — must not get order data back
+    just by guessing a valid order number."""
+    tools = V3Tools()
+    payload = _order_payload(fulfillment_status="fulfilled", email="owner@example.com")
+    with patch("src.services.tools.requests.get", return_value=_FakeResp(200, payload)):
+        result = run(tools.get_order_status(
+            "1008", shop_domain="test.myshopify.com", access_token="tok",
+            customer_email="",
+        ))
+    assert "error" in result
+    assert "success" not in result
+
+
+def test_get_order_status_customer_email_none_preserves_backward_compat():
+    """customer_email=None (the default) means the caller isn't verifying
+    ownership at all — used by callers that don't have a customer identity
+    to check against. Documents the opt-in nature of the check."""
+    tools = V3Tools()
+    payload = _order_payload(fulfillment_status="fulfilled", email="owner@example.com")
+    with patch("src.services.tools.requests.get", return_value=_FakeResp(200, payload)):
+        result = run(tools.get_order_status("1008", shop_domain="test.myshopify.com", access_token="tok"))
+    assert result["success"] is True

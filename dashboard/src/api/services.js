@@ -191,18 +191,29 @@ const api = {
       t.email_sent === true ||
       ['auto_resolved', 'auto_resolved_review'].includes(t.status)
     );
-    const aiHandledPct = tickets.length > 0 ? Math.round((aiHandled.length / tickets.length) * 100) : 0;
+    // null (not 0) when there's no data at all — a real 0% and "no tickets yet"
+    // are different facts, and every other percentage stat below already uses
+    // null for "not enough data" so the '—' rendering is consistent across cards.
+    const aiHandledPct = tickets.length > 0 ? Math.round((aiHandled.length / tickets.length) * 100) : null;
     return {
       activeConversations: active.length,
       totalConversations: tickets.length,
       escalatedChats: tickets.filter(t => t.status === 'escalated').length,
       pendingApprovals: pendingActions.length,
       aiHandledPct,
-      // avg first response in seconds (from tickets with first_response_at set)
+      // Resolved: ticket lifecycle actually reached a close, not just "AI sent a reply".
+      resolvedCount: tickets.filter(t => ['resolved', 'closed'].includes(t.status)).length,
+      // avg first response in seconds (from tickets with first_response_at set).
+      // Excludes negative deltas — a first_response_at earlier than created_at is
+      // a data anomaly (clock skew, backfilled timestamp), not a real response
+      // time, and would otherwise drag the average into a nonsensical negative.
       avgResponseSeconds: (() => {
-        const responded = tickets.filter(t => t.first_response_at && t.created_at);
+        const responded = tickets
+          .filter(t => t.first_response_at && t.created_at)
+          .map(t => (new Date(t.first_response_at) - new Date(t.created_at)) / 1000)
+          .filter(seconds => Number.isFinite(seconds) && seconds >= 0);
         return responded.length > 0
-          ? Math.round(responded.reduce((sum, t) => sum + (new Date(t.first_response_at) - new Date(t.created_at)) / 1000, 0) / responded.length)
+          ? Math.round(responded.reduce((sum, s) => sum + s, 0) / responded.length)
           : null;
       })(),
       // CSAT: % of YES responses out of all surveyed tickets
@@ -210,6 +221,30 @@ const api = {
         const surveyed = tickets.filter(t => t.csat_sent);
         const positive = surveyed.filter(t => (t.csat_response || '').toUpperCase().trim() === 'YES');
         return surveyed.length > 0 ? Math.round((positive.length / surveyed.length) * 100) : null;
+      })(),
+      // Avg AI confidence — from ai_result.confidence_score already stored per
+      // ticket. Clamped to the valid 0-100 range: a malformed value (negative,
+      // >100, NaN) would otherwise silently skew the average with no error.
+      avgConfidencePct: (() => {
+        const scored = tickets
+          .map(t => t.confidence_score)
+          .filter(v => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 100);
+        return scored.length > 0
+          ? Math.round(scored.reduce((sum, v) => sum + v, 0) / scored.length)
+          : null;
+      })(),
+      // Top customer intents — from ai_result.intent already stored per ticket.
+      // Not a new signal: same field Tickets.jsx/TicketDetail.jsx already display per-ticket.
+      topIntents: (() => {
+        const counts = {};
+        tickets.forEach(t => {
+          if (!t.intent || t.intent === 'unknown') return;
+          counts[t.intent] = (counts[t.intent] || 0) + 1;
+        });
+        return Object.entries(counts)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 5)
+          .map(([intent, count]) => ({ intent, count }));
       })(),
     };
   },

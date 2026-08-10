@@ -226,7 +226,39 @@ export default function Dashboard() {
           loading={loading}
           subtitle="Time to first AI reply (7d)"
         />
+        <StatCard
+          label="Resolved"
+          value={stats ? stats.resolvedCount : (statsError ? '—' : 0)}
+          loading={loading}
+          subtitle="Conversations closed out"
+        />
+        <StatCard
+          label="Customer Satisfaction"
+          value={stats?.csatPct != null ? `${stats.csatPct}%` : '—'}
+          loading={loading}
+          subtitle={stats?.csatPct != null ? 'Positive CSAT responses' : 'No CSAT surveys sent yet'}
+        />
+        <StatCard
+          label="Avg AI Confidence"
+          value={stats?.avgConfidencePct != null ? `${stats.avgConfidencePct}%` : '—'}
+          loading={loading}
+          subtitle="Model's own certainty in its replies"
+        />
       </div>
+
+      {stats?.topIntents?.length > 0 && (
+        <div style={{ border: '1px solid #E4E4E7', borderRadius: '8px', background: 'white', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <h2 style={{ margin: 0, fontSize: '13px', fontWeight: '600', color: '#64748B', textTransform: 'uppercase', letterSpacing: '0.03em' }}>Common Intents</h2>
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            {stats.topIntents.map(({ intent, count }) => (
+              <span key={intent} style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '5px 12px', borderRadius: '100px', background: '#F8FAFC', border: '1px solid #E4E4E7', fontSize: '13px', color: '#0F172A' }}>
+                {intent.replace(/_/g, ' ')}
+                <strong style={{ color: '#06B6D4' }}>{count}</strong>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Recent Conversations + Filtered Emails — side by side, stacks below 768px */}
       <div className="dashboard-two-col">

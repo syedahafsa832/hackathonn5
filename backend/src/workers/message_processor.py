@@ -342,45 +342,23 @@ class UnifiedMessageProcessor:
                 logger.info(f"[PROCESSOR] Human override active for email thread: {subject}")
 
             # ========== STAGE 8: DECISION LOGIC ==========
-            should_auto_reply = False
-
-            if ai_mode in ("paused", "supervised"):
-                logger.info(f"[PROCESSOR] AI Mode {ai_mode} - storing draft only")
-                ticket_payload["ai_draft"] = reply_body
-                ticket_payload["status"] = "ai_suggested"
-
-            elif ai_mode in ("active", "autopilot"):
-                if is_overridden:
-                    logger.info(f"[PROCESSOR] Human takeover active - suppressing reply")
-                    ticket_payload["status"] = "human_managing"
-                    ticket_payload["ai_draft"] = reply_body  # Store as draft anyway
-
-                elif confidence >= confidence_threshold and not ticket_payload["escalate"] and risk_level == "low":
-                    # AUTO-REPLY: High confidence, low risk, no escalation
-                    should_auto_reply = True
-                    ticket_payload["ai_reply"] = reply_body
-                    ticket_payload["status"] = "auto_resolved"
-                    logger.info(f"[PROCESSOR] ✓ AUTO-REPLY APPROVED - Confidence: {confidence:.0%}")
-
-                elif confidence >= 0.5 and risk_level == "low" and not ticket_payload["escalate"]:
-                    # MEDIUM CONFIDENCE + LOW RISK only: send but flag for review
-                    should_auto_reply = True
-                    ticket_payload["ai_reply"] = reply_body
-                    ticket_payload["status"] = "auto_resolved_review"
-                    logger.info(f"[PROCESSOR] ✓ AUTO-REPLY (needs review) - Confidence: {confidence:.0%}")
-
-                else:
-                    # MEDIUM/HIGH RISK or AI-flagged escalation → human queue for the ACTION
-                    # but the acknowledgment reply ("we'll review your request") is safe to send now.
-                    ticket_payload["status"] = "escalated"
-                    if reply_body and confidence >= 0.5:
-                        # Send the acknowledgment; the financial action still needs approval.
-                        should_auto_reply = True
-                        ticket_payload["ai_reply"] = reply_body
-                        logger.info(f"[PROCESSOR] ✓ Sending acknowledgment (escalated) - Confidence: {confidence:.0%}, Risk: {risk_level}")
-                    else:
-                        ticket_payload["ai_draft"] = reply_body
-                        logger.info(f"[PROCESSOR] Escalating (no send) - Confidence: {confidence:.0%}, Risk: {risk_level}")
+            routing = self._decide_ticket_routing(
+                ai_mode=ai_mode,
+                is_overridden=is_overridden,
+                confidence=confidence,
+                confidence_threshold=confidence_threshold,
+                ai_flagged_escalate=ticket_payload["escalate"],
+                risk_level=risk_level,
+                reply_body=reply_body,
+            )
+            should_auto_reply = routing["should_auto_reply"]
+            if routing["status"] is not None:
+                ticket_payload["status"] = routing["status"]
+            if routing.get("ai_reply") is not None:
+                ticket_payload["ai_reply"] = routing["ai_reply"]
+            if routing.get("ai_draft") is not None:
+                ticket_payload["ai_draft"] = routing["ai_draft"]
+            logger.info(f"[PROCESSOR] Routing decision: {routing['log_message']}")
 
             # ========== STAGE 9: UPDATE TICKET with AI results (was created at Stage 1.8) ==========
             logger.info(f"[PROCESSOR] Finalising ticket with status: {ticket_payload.get('status')}")
@@ -508,6 +486,64 @@ class UnifiedMessageProcessor:
             logger.error(f"[PROCESSOR] ERROR: {str(e)}", exc_info=True)
             logger.info(f"[TIMING] Total pipeline (errored): {time.monotonic() - t_start:.2f}s")
             return {"ticket_id": None, "status": "error", "error": str(e)}
+
+    def _decide_ticket_routing(
+        self, ai_mode: str, is_overridden: bool, confidence: float,
+        confidence_threshold: float, ai_flagged_escalate: bool,
+        risk_level: str, reply_body: str,
+    ) -> Dict[str, Any]:
+        """Pure decision logic for STAGE 8 (unsupported/ambiguous/failed/sensitive
+        requests must escalate, not auto-reply as if resolved). Extracted from
+        process_message() so the escalation rules can be unit tested directly
+        without mocking Supabase/plan_service/the AI agent. Behavior is
+        unchanged from the inline version this replaced."""
+        if ai_mode in ("paused", "supervised"):
+            return {
+                "should_auto_reply": False, "status": "ai_suggested",
+                "ai_draft": reply_body,
+                "log_message": f"AI Mode {ai_mode} - storing draft only",
+            }
+
+        if ai_mode in ("active", "autopilot"):
+            if is_overridden:
+                return {
+                    "should_auto_reply": False, "status": "human_managing",
+                    "ai_draft": reply_body,
+                    "log_message": "Human takeover active - suppressing reply",
+                }
+
+            if confidence >= confidence_threshold and not ai_flagged_escalate and risk_level == "low":
+                return {
+                    "should_auto_reply": True, "status": "auto_resolved",
+                    "ai_reply": reply_body,
+                    "log_message": f"AUTO-REPLY APPROVED - Confidence: {confidence:.0%}",
+                }
+
+            if confidence >= 0.5 and risk_level == "low" and not ai_flagged_escalate:
+                return {
+                    "should_auto_reply": True, "status": "auto_resolved_review",
+                    "ai_reply": reply_body,
+                    "log_message": f"AUTO-REPLY (needs review) - Confidence: {confidence:.0%}",
+                }
+
+            # MEDIUM/HIGH RISK or AI-flagged escalation -> human queue for the ACTION,
+            # but the acknowledgment reply ("we'll review your request") is safe to send now.
+            if reply_body and confidence >= 0.5:
+                return {
+                    "should_auto_reply": True, "status": "escalated",
+                    "ai_reply": reply_body,
+                    "log_message": f"Sending acknowledgment (escalated) - Confidence: {confidence:.0%}, Risk: {risk_level}",
+                }
+            return {
+                "should_auto_reply": False, "status": "escalated",
+                "ai_draft": reply_body,
+                "log_message": f"Escalating (no send) - Confidence: {confidence:.0%}, Risk: {risk_level}",
+            }
+
+        # Unknown/unsupported ai_mode value - no branch above matched, so nothing
+        # in ticket_payload gets set here; process_message's own default ("status"
+        # from ticket_payload dict init) is preserved rather than guessing.
+        return {"should_auto_reply": False, "status": None, "log_message": f"Unrecognized ai_mode={ai_mode!r} - no routing rule matched"}
 
     async def _check_thread_override(self, customer_email: str, subject: str) -> bool:
         """Check if there's an active human override for this specific email thread."""

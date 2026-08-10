@@ -76,17 +76,59 @@ def _build_order_context(order: dict, tracking_context: str = "") -> str:
         for item_line in items:
             lines.append(f"  - {item_line}")
 
-    if tracking_context:
+    status_phrases = {
+        "in_transit": "in transit",
+        "out_for_delivery": "out for delivery today",
+        "delivered": "delivered",
+        "attempted_delivery": "delivery was attempted but failed",
+        "failure": "experiencing a delivery issue",
+    }
+
+    def _shipped_day(iso_val):
+        if not iso_val:
+            return None
+        try:
+            return datetime.fromisoformat(iso_val.replace("Z", "+00:00")).strftime("%A")
+        except Exception:
+            return None
+
+    shipments = order.get("fulfillments") or []
+
+    if len(shipments) > 1:
+        # Multiple REAL Shopify fulfillments (split shipment, backorder catch-up,
+        # multi-warehouse, etc). Each is reported separately — never merged into
+        # one fake shipment, and never collapsed to "just the first one" like the
+        # single-shipment branch below does for the common case.
+        lines.append("")
+        lines.append(f"SHIPPING INFO — THIS ORDER HAS {len(shipments)} SEPARATE SHIPMENTS:")
+        for i, s in enumerate(shipments, start=1):
+            s_tracking = s.get("tracking_number")
+            s_company = s.get("tracking_company")
+            s_url = s.get("tracking_url")
+            s_status = s.get("shipment_status")
+            s_day = _shipped_day(s.get("shipped_at"))
+            readable = status_phrases.get(s_status, "recently shipped, tracking should update within 24 hours")
+            lines.append(f"  Shipment {i}:")
+            if s_company:
+                lines.append(f"    Carrier: {s_company}")
+            if s_tracking:
+                lines.append(f"    Tracking Number: {s_tracking}")
+            else:
+                lines.append("    Tracking Number: not yet available from the carrier")
+            if s_url:
+                lines.append(f"    Tracking URL: {s_url}")
+            if s_day:
+                lines.append(f"    Shipped: {s_day}")
+            lines.append(f"    Current status: {readable}")
+        lines.append("")
+        lines.append("IF CUSTOMER ASKS WHERE THEIR ORDER IS:")
+        lines.append(f"  This order shipped in {len(shipments)} separate packages — mention EACH shipment distinctly (e.g. 'shipment 1 of 2 is...').")
+        lines.append("  Do NOT combine them into a single tracking number or status. Do NOT invent tracking for a shipment that doesn't have one yet.")
+        lines.append("  If you cannot clearly explain all shipments, say a team member will confirm the full shipping breakdown rather than guessing.")
+    elif tracking_context:
         # Live Aftership data or fallback instructions — injected by caller
         lines.append(tracking_context)
     elif tracking or shipment_status:
-        status_phrases = {
-            "in_transit": "in transit",
-            "out_for_delivery": "out for delivery today",
-            "delivered": "delivered",
-            "attempted_delivery": "delivery was attempted but failed",
-            "failure": "experiencing a delivery issue",
-        }
         readable_status = status_phrases.get(shipment_status, "recently shipped, tracking should update within 24 hours")
 
         lines.append("")
@@ -97,12 +139,9 @@ def _build_order_context(order: dict, tracking_context: str = "") -> str:
             lines.append(f"  Tracking Number: {tracking}")
         if tracking_url:
             lines.append(f"  Tracking URL: {tracking_url}")
-        if shipped_at:
-            try:
-                shipped_day = datetime.fromisoformat(shipped_at.replace("Z", "+00:00")).strftime("%A")
-                lines.append(f"  Shipped: {shipped_day}")
-            except Exception:
-                pass
+        shipped_day = _shipped_day(shipped_at)
+        if shipped_day:
+            lines.append(f"  Shipped: {shipped_day}")
         lines.append(f"  Current status: {readable_status}")
         lines.append("")
         lines.append("IF CUSTOMER ASKS WHERE THEIR ORDER IS:")
@@ -143,6 +182,45 @@ def _build_order_context(order: dict, tracking_context: str = "") -> str:
 # class attribute) so it resolves correctly even when tests call
 # _get_provider_failure_response with a bare MagicMock() as self.
 PROVIDER_OUTAGE_REASON = "AI reply limit reached — every connected AI model is temporarily out of quota. This resolves on its own once quota resets; reply manually for now."
+
+# Rule 1 backstop (safety-non-negotiable): refunds/cancellations/address changes
+# are only ever *staged* for merchant approval by return_actions_integration.py -
+# this pipeline never executes them synchronously. The system prompt already
+# instructs the model to never claim these are done (see ACTION RULES in
+# _construct_v3_prompt), but that is a prompt instruction, not a guarantee.
+# This is the code-level check for when the model ignores it anyway.
+_UNCONFIRMED_ACTION_INTENTS = {"refund_request", "cancellation_request", "address_change"}
+_UNCONFIRMED_ACTION_DETECTED = {"refund", "cancel_order", "change_address"}
+_FALSE_SUCCESS_RE = re.compile(
+    r"\b(has been|have been|is|was)\s+(processed|approved|completed|confirmed|issued|refunded|cancell?ed|updated)\b"
+    r"|\b(successfully|already)\s+(processed|approved|completed|refunded|cancell?ed|updated)\b",
+    re.IGNORECASE,
+)
+
+
+def _enforce_no_unconfirmed_action_success(structured: Dict[str, Any]) -> Dict[str, Any]:
+    """If the model's reply claims a refund/cancellation/address-change already
+    happened, that claim is always false in this pipeline (nothing sensitive is
+    executed synchronously here - see module docstring above). Overrides the
+    reply with an honest "sent for confirmation" message and forces escalation
+    rather than letting a false success claim reach the customer."""
+    is_action_reply = (
+        structured.get("intent") in _UNCONFIRMED_ACTION_INTENTS
+        or structured.get("action_detected") in _UNCONFIRMED_ACTION_DETECTED
+    )
+    if is_action_reply and _FALSE_SUCCESS_RE.search(structured.get("reply_body") or ""):
+        logger.warning(
+            f"[Agent] Reply claimed unconfirmed action success (intent={structured.get('intent')}, "
+            f"action_detected={structured.get('action_detected')}) — overriding"
+        )
+        structured["reply_body"] = (
+            "I've received your request and sent it to our team to confirm before anything "
+            "changes on the order. You'll get an update as soon as it's handled."
+        )
+        structured["escalate"] = True
+        structured["status"] = "escalated"
+        structured["escalation_reason"] = "AI reply claimed an unconfirmed action was completed - routed to human review."
+    return structured
 
 
 class CustomerSuccessAgent:
@@ -264,6 +342,10 @@ class CustomerSuccessAgent:
                         order_id,
                         shop_domain=_brand_shopify_domain,
                         access_token=_brand_shopify_token,
+                        # Ownership check: a bare order number must never surface another
+                        # customer's order data. customer_info["email"] is "" for an
+                        # unverified chat-widget visitor, which always fails the check.
+                        customer_email=customer_info.get("email") or "",
                     )
 
                 # Also try to look up by customer email if provided in query
@@ -456,6 +538,9 @@ class CustomerSuccessAgent:
                 structured["escalate"] = True
             else:
                 structured["status"] = "auto_resolved"
+
+            # 5b. Safety backstop: never let a false "action completed" claim through
+            structured = _enforce_no_unconfirmed_action_success(structured)
 
             # 6. Signature Enforcement - Make it natural, not robotic
             name = customer_info.get("name", "there").split()[0]

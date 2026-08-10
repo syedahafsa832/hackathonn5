@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import client, { extractErrorMessage } from '../api/client';
 import Alert from '../components/Alert';
 
-const STEP_LABELS = ['Connect Shopify', 'Import your store', 'Connect inbox', 'Customize Luna', 'Test AI'];
+const STEP_LABELS = ['Connect Shopify', 'Import your store', 'Connect inbox', 'Customize Luna', 'Test AI', 'Go Live'];
 
 const inputStyle = {
   width: '100%', padding: '10px 12px', border: '1px solid var(--border-strong)',
@@ -445,7 +445,7 @@ const SAMPLE_QUESTIONS = [
   'When will my package arrive?',
 ];
 
-function StepTestLuna({ brandId, onFinish }) {
+function StepTestLuna({ brandId, onNext }) {
   const [replies, setReplies] = useState({});
   const [loadingQ, setLoadingQ] = useState(null);
   const [error, setError] = useState('');
@@ -525,9 +525,92 @@ function StepTestLuna({ brandId, onFinish }) {
 
       <Alert variant="error">{error}</Alert>
 
-      <button onClick={onFinish} style={{ ...primaryBtn(false), padding: '13px 32px', fontSize: '15px' }}>
-        {hasAnyReply ? 'Go to Dashboard →' : 'Skip and go to Dashboard →'}
+      <button onClick={onNext} style={{ ...primaryBtn(false), padding: '13px 32px', fontSize: '15px' }}>
+        {hasAnyReply ? 'Continue →' : 'Skip →'}
       </button>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────── Step 6: Go Live ──
+
+function StepGoLive({ brandId, shopifyConnected, gmailConnected, onFinish }) {
+  const [loading, setLoading] = useState(true);
+  const [live, setLive] = useState(false);
+  const [activating, setActivating] = useState(false);
+  const [error, setError] = useState('');
+
+  const loadStatus = () => {
+    setLoading(true);
+    client.get('/api/ai-mode', { params: { store_id: brandId } })
+      .then(res => setLive(res.data?.mode === 'autopilot'))
+      .catch(() => setError('Could not check activation status.'))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { if (brandId) loadStatus(); }, [brandId]);
+
+  const handleGoLive = async () => {
+    if (!window.confirm(
+      "Go live now? tResolv will start reading and replying to real customer emails and chats. " +
+      "Refunds, cancellations, and address changes will still wait for your approval."
+    )) return;
+    setActivating(true);
+    setError('');
+    try {
+      await client.patch('/api/ai-mode', { mode: 'active', store_id: brandId });
+      setLive(true);
+    } catch (err) {
+      setError(extractErrorMessage(err, 'Could not activate tResolv. Please try again.'));
+    } finally {
+      setActivating(false);
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      <div>
+        <h2 style={{ fontSize: '22px', fontWeight: '700', marginBottom: '8px' }}>Go Live</h2>
+        <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: '1.5' }}>
+          tResolv is ready. Go live when you're ready to let it handle real customer conversations.
+        </p>
+      </div>
+
+      {loading ? (
+        <div className="skeleton" style={{ height: '60px', borderRadius: '6px' }} />
+      ) : live ? (
+        <div style={{ padding: '16px 20px', background: 'var(--success-bg, #ECFDF5)', border: '1px solid var(--success, #10B981)', borderRadius: '6px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <span style={{ fontSize: '18px' }}>🟢</span>
+          <span style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)' }}>
+            tResolv is live — it's handling real customer conversations now.
+          </span>
+        </div>
+      ) : (
+        <div style={{ padding: '16px 20px', background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: '6px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <span style={{ fontSize: '18px' }}>⏸</span>
+          <span style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-secondary)' }}>
+            tResolv is paused — it is not responding to real customers yet.
+          </span>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '13px', color: 'var(--text-muted)' }}>
+        <div>{shopifyConnected ? '✓' : '○'} Shopify {shopifyConnected ? 'connected' : 'not connected yet'}</div>
+        <div>{gmailConnected ? '✓' : '○'} Inbox {gmailConnected ? 'connected' : 'not connected yet'}</div>
+      </div>
+
+      <Alert variant="error">{error}</Alert>
+
+      <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+        {!live && (
+          <button onClick={handleGoLive} disabled={activating} style={{ ...primaryBtn(activating), padding: '13px 32px', fontSize: '15px' }}>
+            {activating ? 'Activating...' : 'Go Live →'}
+          </button>
+        )}
+        <button onClick={onFinish} style={live ? { ...primaryBtn(false), padding: '13px 32px', fontSize: '15px' } : skipBtn}>
+          {live ? 'Go to Dashboard →' : "I'll do this later →"}
+        </button>
+      </div>
     </div>
   );
 }
@@ -539,6 +622,7 @@ export default function Onboarding() {
   const [step, setStep] = useState(1);
   const [brandId, setBrandId] = useState(null);
   const [shopifyConnected, setShopifyConnected] = useState(false);
+  const [gmailConnected, setGmailConnected] = useState(false);
   const [loadingBrand, setLoadingBrand] = useState(true);
   const [brandLoadError, setBrandLoadError] = useState(false);
   const [notAuthenticated, setNotAuthenticated] = useState(false);
@@ -554,6 +638,7 @@ export default function Onboarding() {
         setBrandId(brand.id);
         const isShopifyConnected = !!brand.shopify_connected || !!brand.shopify_domain;
         setShopifyConnected(isShopifyConnected);
+        setGmailConnected(!!brand.gmail_connected);
 
         // Root cause of the "redirect back to onboarding" bug: step always
         // started at 1 regardless of real progress, so any fresh visit to
@@ -675,9 +760,10 @@ export default function Onboarding() {
 
         {step === 1 && <StepShopify brandId={brandId} onNext={() => setStep(2)} onConnected={() => setShopifyConnected(true)} />}
         {step === 2 && <StepImport brandId={brandId} shopifyConnected={shopifyConnected} onNext={() => setStep(3)} />}
-        {step === 3 && <StepGmail brandId={brandId} onNext={() => setStep(4)} />}
+        {step === 3 && <StepGmail brandId={brandId} onNext={() => { setGmailConnected(true); setStep(4); }} />}
         {step === 4 && <StepStyle brandId={brandId} onNext={() => setStep(5)} />}
-        {step === 5 && <StepTestLuna brandId={brandId} onFinish={handleFinish} />}
+        {step === 5 && <StepTestLuna brandId={brandId} onNext={() => setStep(6)} />}
+        {step === 6 && <StepGoLive brandId={brandId} shopifyConnected={shopifyConnected} gmailConnected={gmailConnected} onFinish={handleFinish} />}
       </div>
     </div>
   );

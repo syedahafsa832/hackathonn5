@@ -15,6 +15,14 @@ router = APIRouter(prefix="/api/public", tags=["Public"])
 
 MAX_DISPLAY_SECONDS = 600  # cap displayed resolve time at 10 min
 
+# Refunds/cancellations/address changes are only ever *staged* for merchant
+# approval (return_actions_integration.py) - a ticket with one of these intents
+# can land in status=auto_resolved/resolved just because the acknowledgment
+# reply ("I've sent this to our team") was sent, not because the actual
+# refund/cancellation/address-change was completed. Showing that as "Resolved"
+# on the public homepage would overclaim automation this product doesn't do.
+_STAGED_ACTION_INTENTS = {"refund_request", "cancellation_request", "address_change"}
+
 
 def _seconds_between(created_at: str, updated_at: str) -> int:
     try:
@@ -41,6 +49,8 @@ async def public_live_feed():
 
     feed = []
     for t in rows:
+        if t.get("intent") in _STAGED_ACTION_INTENTS:
+            continue
         order_id = t.get("detected_order_id")
         confidence_raw = t.get("confidence_score")
         confidence = round(confidence_raw) if confidence_raw else 80

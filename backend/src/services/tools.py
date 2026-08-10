@@ -66,8 +66,15 @@ class V3Tools:
             logger.error(f"Tool error [check_inventory]: {e}")
             return {"error": "Failed to check inventory."}
 
-    async def get_order_status(self, order_id: str, shop_domain: str = None, access_token: str = None) -> Dict[str, Any]:
-        """Fetch order status directly from Shopify. Local mirror is never used — always live data."""
+    async def get_order_status(self, order_id: str, shop_domain: str = None, access_token: str = None, customer_email: str = None) -> Dict[str, Any]:
+        """Fetch order status directly from Shopify. Local mirror is never used — always live data.
+
+        customer_email, when passed (not None), is enforced as an ownership check:
+        a valid order number alone must never return another customer's order
+        details. None (the default) preserves the old no-check behavior for
+        callers that don't have a customer email to verify against; passing ""
+        (e.g. an unverified chat-widget visitor) always fails the check since it
+        can never match a real order email."""
         try:
             shop = shop_domain or self.shop_name
             token = access_token or self.shopify_token
@@ -125,7 +132,35 @@ class V3Tools:
                 return {"error": f"Order #{order_id} not found.", "order_number": order_id}
 
             o = shopify_orders[0]
-            _first_fulfillment = o.get("fulfillments", [{}])[0] if o.get("fulfillments") else {}
+
+            if customer_email is not None:
+                order_email = (
+                    o.get("email") or o.get("contact_email")
+                    or (o.get("customer") or {}).get("email") or ""
+                ).strip().lower()
+                provided_email = customer_email.strip().lower()
+                if not provided_email or not order_email or provided_email != order_email:
+                    logger.warning(
+                        f"[Tools] Order #{order_id} ownership check failed — "
+                        f"requested by a different/unverified email, not returning order data"
+                    )
+                    return {"error": f"Order #{order_id} not found.", "order_number": order_id}
+
+            _fulfillments = o.get("fulfillments") or []
+            # Real Shopify shipments — one entry per fulfillment, never merged.
+            # An order can ship in multiple boxes (split shipment, backorder catch-up,
+            # multi-warehouse) each with its own tracking number/carrier/status.
+            _all_shipments = [
+                {
+                    "tracking_number": f.get("tracking_number"),
+                    "tracking_url": f.get("tracking_url"),
+                    "tracking_company": f.get("tracking_company"),
+                    "shipment_status": f.get("shipment_status"),
+                    "shipped_at": f.get("created_at"),
+                }
+                for f in _fulfillments
+            ]
+            _first_fulfillment = _fulfillments[0] if _fulfillments else {}
             tracking = _first_fulfillment.get("tracking_number")
             tracking_url = _first_fulfillment.get("tracking_url")
             tracking_company = _first_fulfillment.get("tracking_company")
@@ -140,11 +175,20 @@ class V3Tools:
                 "status": o.get("fulfillment_status") or "unfulfilled",
                 "financial_status": o.get("financial_status"),
                 "cancelled_at": o.get("cancelled_at"),
+                # Backward-compatible single-shipment fields — mirror the first
+                # real fulfillment, exactly as before. Callers that only look at
+                # these still work unchanged for the (overwhelmingly common)
+                # single-fulfillment case.
                 "tracking_number": tracking,
                 "tracking_url": tracking_url,
                 "tracking_company": tracking_company,
                 "shipment_status": shipment_status,
                 "shipped_at": shipped_at,
+                # Full shipment list — always present, length == number of real
+                # Shopify fulfillments. Callers that need to represent multiple
+                # shipments distinctly (rather than just the first) use this.
+                "fulfillments": _all_shipments,
+                "fulfillment_count": len(_all_shipments),
                 "total_amount": o.get("total_price"),
                 "items": [
                     {
@@ -252,7 +296,11 @@ class V3Tools:
                     "size": v.get("title"),
                     "sku": v.get("sku"),
                     "price": v.get("price"),
-                    "in_stock": (v.get("inventory_quantity") or 0) > 0,
+                    # inventory_management=None means Shopify isn't tracking stock for
+                    # this variant (continues selling regardless of quantity) — treating
+                    # its quantity as authoritative would falsely report "out of stock"
+                    # for a product that's actually always available.
+                    "in_stock": True if not v.get("inventory_management") else (v.get("inventory_quantity") or 0) > 0,
                     "quantity": v.get("inventory_quantity"),
                 }
                 for v in product.get("variants", [])[:10]

@@ -30,27 +30,58 @@ function EmailTab() {
   const [gmailStatus, setGmailStatus] = useState(null);
   const [loadingStatus, setLoadingStatus] = useState(true);
   const [disconnecting, setDisconnecting] = useState(false);
-  const [mode, setMode] = useState('supervised');
+  // Same brandId-resolution pattern as ShopifyTab/ReplyStyleTab below and
+  // Onboarding.jsx's Go Live step: /api/ai-mode defaults to the global
+  // DEFAULT_STORE server-side when store_id is omitted, which silently
+  // read/wrote the WRONG brand's AI mode in this multi-tenant SaaS. Every
+  // call below must pass this brand's own id.
+  const [brandId, setBrandId] = useState(null);
+  // null = not yet known / unavailable, distinct from any real mode string —
+  // used to render the AI Mode section's own disabled/error state instead of
+  // ever guessing a mode for a brand we couldn't resolve.
+  const [mode, setMode] = useState(null);
   const [threshold, setThreshold] = useState(80);
   const [savingMode, setSavingMode] = useState(false);
   const [msg, setMsg] = useState('');
   const thresholdTimer = useRef(null);
 
-  const loadStatus = useCallback(() => {
+  const loadStatus = useCallback(async (currentBrandId) => {
     setLoadingStatus(true);
-    Promise.all([
-      client.get('/api/v1/settings/gmail/status').catch(() => ({ data: { connected: false } })),
-      client.get('/api/ai-mode').catch(() => ({ data: { mode: 'supervised' } })),
-      client.get('/api/v1/settings/account').catch(() => ({ data: {} })),
-    ]).then(([gmailRes, modeRes, accountRes]) => {
+    try {
+      const [gmailRes, accountRes] = await Promise.all([
+        client.get('/api/v1/settings/gmail/status').catch(() => ({ data: { connected: false } })),
+        client.get('/api/v1/settings/account').catch(() => ({ data: {} })),
+      ]);
       setGmailStatus(gmailRes.data);
-      setMode(modeRes.data?.mode || 'supervised');
       setThreshold(accountRes.data?.settings?.confidence_threshold ?? accountRes.data?.confidence_threshold ?? 80);
-    }).finally(() => setLoadingStatus(false));
+
+      if (!currentBrandId) {
+        // No valid brand resolved — never call /api/ai-mode. Without an
+        // explicit store_id it silently falls back to the shared global
+        // DEFAULT_STORE server-side, which would read/write the wrong
+        // brand's AI mode. Leave mode unknown so the section below shows
+        // its own error state instead.
+        setMode(null);
+        return;
+      }
+      try {
+        const modeRes = await client.get('/api/ai-mode', { params: { store_id: currentBrandId } });
+        setMode(modeRes.data?.mode || 'supervised');
+      } catch {
+        setMode(null);
+      }
+    } finally {
+      setLoadingStatus(false);
+    }
   }, []);
 
   useEffect(() => {
-    loadStatus();
+    client.get('/api/brands').then(res => {
+      const list = Array.isArray(res.data) ? res.data : res.data?.brands || [];
+      const id = list[0]?.id || null;
+      setBrandId(id);
+      loadStatus(id);
+    }).catch(() => loadStatus(null));
     // If we're returning from Gmail OAuth, refresh status and clean up URL
     const params = new URLSearchParams(window.location.search);
     if (params.get('gmail_connected')) {
@@ -93,10 +124,12 @@ function EmailTab() {
   };
 
   const handleModeChange = async (newMode) => {
+    // No valid brand resolved — never call /api/ai-mode without store_id.
+    if (!brandId) return;
     setSavingMode(true);
     setMsg('');
     try {
-      await client.patch('/api/ai-mode', { mode: newMode });
+      await client.patch('/api/ai-mode', { mode: newMode, store_id: brandId });
       setMode(newMode);
     } catch {
       setMsg('Failed to update AI mode.');
@@ -183,6 +216,9 @@ function EmailTab() {
       {/* AI Mode */}
       <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '20px' }}>
         <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '14px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>AI Mode</div>
+        {!brandId ? (
+          <Alert variant="error">Couldn't determine your store, so AI Mode can't be shown or changed right now. Try reloading the page.</Alert>
+        ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
           {[
             { id: 'autopilot', label: 'Autopilot', desc: `Resolv sends replies automatically when confidence ≥ ${threshold}%. Refunds and cancellations always require your approval.` },
@@ -201,6 +237,7 @@ function EmailTab() {
             </div>
           ))}
         </div>
+        )}
 
         {/* Confidence Threshold */}
         <div style={{ marginTop: '16px' }}>

@@ -169,6 +169,32 @@ class AuthService:
                     "support_email": email.lower().strip(),
                 })
                 logger.info(f"[Auth] Default brand '{brand_name}' ({created_brand.get('id')}) created for tenant {tenant_id}")
+
+                # Safe go-live gate: new brands start paused until the merchant
+                # explicitly activates in onboarding. This ONLY affects brands
+                # created from this point forward — get_system_settings() falls
+                # back to ai_mode="active" when no system_settings row exists at
+                # all, which is exactly the case for every brand created before
+                # this change, so existing live merchants are untouched. Do not
+                # change that fallback; it's what keeps this backward-compatible.
+                brand_id = created_brand.get("id")
+                if brand_id:
+                    try:
+                        supabase_insert("system_settings", {
+                            "store_id": brand_id,
+                            "ai_mode": "paused",
+                            "confidence_threshold": 0.65,
+                        })
+                        logger.info(f"[Auth] Brand {brand_id} initialized with ai_mode=paused pending Go Live")
+                    except Exception as settings_err:
+                        # Not fatal — get_system_settings() falls back to "active" if this
+                        # row is missing, same as it always has. Logged because that
+                        # fallback means this specific brand would (unintentionally) be
+                        # live from Gmail-connect instead of paused as designed.
+                        logger.error(
+                            f"[Auth] Failed to create paused system_settings for new brand "
+                            f"{brand_id}: {settings_err} — this brand will default to ai_mode=active"
+                        )
             except Exception as brand_err:
                 # Registration itself still succeeds — a tenant with no brand is
                 # recoverable, a fully-failed signup isn't. But this must NOT be
