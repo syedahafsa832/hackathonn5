@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import client from '../api/client';
 import ChatWidget from '../components/ChatWidget';
 import Alert from '../components/Alert';
+import GmailUnverifiedNotice from '../components/GmailUnverifiedNotice';
 
 const inputStyle = {
   width: '100%',
@@ -197,6 +198,9 @@ function EmailTab() {
             </div>
             <div style={{ fontSize: '14px', color: '#475569', lineHeight: '1.5' }}>
               Resolv will monitor this inbox every 60 seconds for new customer emails and send replies from it — directly from your address.
+            </div>
+            <div style={{ width: '100%' }}>
+              <GmailUnverifiedNotice />
             </div>
             <button
               onClick={handleConnect}

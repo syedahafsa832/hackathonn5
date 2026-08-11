@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import client, { extractErrorMessage } from '../api/client';
 import Alert from '../components/Alert';
+import GmailUnverifiedNotice from '../components/GmailUnverifiedNotice';
 
 const STEP_LABELS = ['Connect Shopify', 'Import your store', 'Connect inbox', 'Customize Luna', 'Test AI', 'Go Live'];
 
@@ -342,6 +343,8 @@ function StepGmail({ brandId, onNext }) {
         ))}
       </div>
 
+      <GmailUnverifiedNotice />
+
       <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
         <button onClick={connectGmail} disabled={polling} style={{ ...primaryBtn(polling), display: 'flex', alignItems: 'center', gap: '8px' }}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
@@ -439,10 +442,17 @@ function StepStyle({ brandId, onNext }) {
 
 // ─────────────────────────────────────────────── Step 5: Test Luna ──
 
+// Deliberately general/policy questions, not order-specific — a brand-new
+// store has no real orders yet, so a canned "Where is my order #1234?" would
+// reliably come back "I couldn't find that order," which is the *correct*
+// safe behavior (never inventing order data) but looks like a broken demo at
+// the exact moment a merchant is deciding whether this thing works. These
+// questions instead exercise the RAG/policy-answering path, which works
+// immediately after Shopify import with zero real orders involved.
 const SAMPLE_QUESTIONS = [
-  'Where is my order #1234?',
-  'I want to return my order.',
-  'When will my package arrive?',
+  "What's your return policy?",
+  'Do you ship internationally?',
+  'How long does shipping usually take?',
 ];
 
 function StepTestLuna({ brandId, onNext }) {
@@ -521,6 +531,9 @@ function StepTestLuna({ brandId, onNext }) {
         <button onClick={askCustom} disabled={!customQuestion.trim() || loadingQ === customQuestion} style={{ padding: '0 18px', borderRadius: '4px', fontSize: '13px', fontWeight: '600', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)', cursor: 'pointer' }}>
           Ask
         </button>
+      </div>
+      <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+        Tip: for a real order-tracking example, ask about one of your actual order numbers — a made-up one will correctly come back "not found" rather than invented.
       </div>
 
       <Alert variant="error">{error}</Alert>

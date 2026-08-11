@@ -26,6 +26,11 @@ export default function Dashboard() {
   const [slowLoad, setSlowLoad] = useState(false);
   const [activeBrand, setActiveBrand] = useState(null);
   const [knowledgeImported, setKnowledgeImported] = useState(false);
+  // null = not yet known. Real backend state (same /api/ai-mode endpoint the
+  // Onboarding Go Live step and Settings' AI Mode toggle use) — never
+  // inferred from onboarding-step completion, since finishing setup does not
+  // itself make a brand live (see Onboarding.jsx StepGoLive).
+  const [isLive, setIsLive] = useState(null);
   const [checklistDismissed, setChecklistDismissed] = useState(
     () => localStorage.getItem('resolv_checklist_dismissed') === 'true'
   );
@@ -67,6 +72,9 @@ export default function Dashboard() {
             .then(r => setKnowledgeImported((r.data?.sources || []).some(s => s.status === 'completed')))
             .catch(() => {});
         }
+        client.get('/api/ai-mode', { params: { store_id: brand.id } })
+          .then(r => setIsLive(r.data?.mode === 'autopilot'))
+          .catch(() => setIsLive(false));
       }
     }).catch(() => {
       // brands check failed — stay on dashboard
@@ -110,6 +118,7 @@ export default function Dashboard() {
     gmail: gmailConnected,
     replyStyle: replyStyleDone,
     testAi: testReplyDone,
+    goLive: !!isLive,
   };
 
   const dismissChecklist = () => {

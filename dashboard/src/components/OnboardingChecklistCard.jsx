@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Store, Database, Mail, Sparkles, PlayCircle, CheckCircle2, Circle, ArrowRight, PartyPopper } from 'lucide-react';
+import { Store, Database, Mail, Sparkles, PlayCircle, Rocket, CheckCircle2, Circle, ArrowRight, PartyPopper } from 'lucide-react';
 
 const CELEBRATED_KEY = 'resolv_onboarding_celebrated';
 
@@ -29,6 +29,14 @@ const STEP_DEFS = [
     key: 'testAi', title: 'Test AI', icon: PlayCircle, cta: 'Start test',
     doneCopy: 'First conversation completed',
     pendingCopy: 'Run your first AI conversation',
+  },
+  {
+    // Distinct from the steps above: completing setup does not itself put
+    // Luna live (see Onboarding.jsx StepGoLive) — this reflects the real
+    // backend ai_mode, fetched by Dashboard.jsx, never inferred.
+    key: 'goLive', title: 'Go Live', icon: Rocket, cta: 'Go Live',
+    doneCopy: 'Luna is live and handling real conversations',
+    pendingCopy: "Everything's ready — activate Luna when you want it live",
   },
 ];
 
@@ -119,12 +127,12 @@ export default function OnboardingChecklistCard({ steps, onDismiss }) {
           </div>
           <div style={{ minWidth: 0 }}>
             <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '700', color: 'var(--text-primary)' }}>
-              {allDone ? "You're ready to automate support" : 'Get Luna live'}
+              {allDone ? "Luna is live" : 'Get Luna live'}
             </h3>
             <p style={{ margin: '2px 0 0', fontSize: '13px', color: 'var(--text-secondary)' }}>
               {allDone
-                ? 'Every step is complete — Luna will now handle incoming tickets automatically.'
-                : 'Finish setup so Luna can start resolving tickets automatically.'}
+                ? "Every step is complete and Luna is active — she's handling incoming tickets now."
+                : 'Finish setup, then activate Luna so she can start resolving tickets automatically.'}
             </p>
           </div>
         </div>
