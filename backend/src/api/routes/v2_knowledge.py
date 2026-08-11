@@ -105,7 +105,13 @@ async def get_source(
 async def upload_text(
     brand_id: str,
     request: UploadTextRequest,
-    context: AuthenticatedContext = Depends(require_admin)
+    context: AuthenticatedContext = Depends(require_admin),
+    # require_admin only checks the caller's own role - it never verified
+    # brand_id in the URL actually belongs to them, letting any admin-role
+    # user write to any other tenant's knowledge base (security audit
+    # finding A2). require_brand_access adds the missing ownership check
+    # without weakening the existing admin-role requirement above.
+    _brand_access: AuthenticatedContext = Depends(require_brand_access("brand_id")),
 ):
     """
     Upload text content to the knowledge base.
@@ -148,7 +154,10 @@ async def upload_text(
 async def delete_source(
     brand_id: str,
     source_id: str,
-    context: AuthenticatedContext = Depends(require_admin)
+    context: AuthenticatedContext = Depends(require_admin),
+    # Same fix as /upload above - require_admin alone doesn't check that
+    # brand_id belongs to this caller (finding A2).
+    _brand_access: AuthenticatedContext = Depends(require_brand_access("brand_id")),
 ):
     """Delete a knowledge base source and all its chunks"""
     try:

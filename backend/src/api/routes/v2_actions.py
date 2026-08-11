@@ -277,10 +277,16 @@ async def get_action(
 
         action = actions[0]
 
-        # Verify access
+        # Verify access — no is_admin bypass (security audit finding B6):
+        # get_user_context() already scopes context.brand_ids to every brand
+        # in the caller's own org regardless of role, so "brand not in
+        # brand_ids" already means "not mine" for admins too. An unconditional
+        # admin bypass here let an admin from ANY org reach ANY other org's
+        # action — including approve/reject/retry, which execute real Shopify
+        # refunds/cancellations. Matches the pattern already fixed this way
+        # in v2_tickets.py.
         if action["brand_id"] not in context.brand_ids:
-            if not UserRole.is_admin(context.user.role):
-                raise HTTPException(status_code=403, detail="Access denied")
+            raise HTTPException(status_code=403, detail="Access denied")
 
         # Get action logs
         logs = supabase_select("action_logs", {
@@ -310,10 +316,9 @@ async def create_action(
 ):
     """Create a new action manually"""
     try:
-        # Verify brand access
+        # Verify brand access — no is_admin bypass (see get_action for why)
         if request.brand_id not in context.brand_ids:
-            if not UserRole.is_admin(context.user.role):
-                raise HTTPException(status_code=403, detail="Access denied to this brand")
+            raise HTTPException(status_code=403, detail="Access denied to this brand")
 
         action_data = {
             "brand_id": request.brand_id,
@@ -372,10 +377,11 @@ async def approve_action(
 
         action = actions[0]
 
-        # Verify access
+        # Verify access — no is_admin bypass (see get_action for why). This
+        # one matters most: approving executes a real Shopify refund/
+        # cancellation/address-change.
         if action["brand_id"] not in context.brand_ids:
-            if not UserRole.is_admin(context.user.role):
-                raise HTTPException(status_code=403, detail="Access denied")
+            raise HTTPException(status_code=403, detail="Access denied")
 
         # Check status
         if action["status"] != "pending":
@@ -561,10 +567,9 @@ async def reject_action(
 
         action = actions[0]
 
-        # Verify access
+        # Verify access — no is_admin bypass (see get_action for why)
         if action["brand_id"] not in context.brand_ids:
-            if not UserRole.is_admin(context.user.role):
-                raise HTTPException(status_code=403, detail="Access denied")
+            raise HTTPException(status_code=403, detail="Access denied")
 
         # Check status
         if action["status"] != "pending":
@@ -615,10 +620,9 @@ async def retry_action(
 
         action = actions[0]
 
-        # Verify access
+        # Verify access — no is_admin bypass (see get_action for why)
         if action["brand_id"] not in context.brand_ids:
-            if not UserRole.is_admin(context.user.role):
-                raise HTTPException(status_code=403, detail="Access denied")
+            raise HTTPException(status_code=403, detail="Access denied")
 
         # Check status
         if action["status"] != "failed":

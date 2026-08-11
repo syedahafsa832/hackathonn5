@@ -119,6 +119,13 @@ def _verify_jwt_via_real_v1_decode(token):
 
 @pytest.fixture(autouse=True)
 def _patched_supabase():
+    # Security audit finding A3 added real rate limiting to /register and
+    # /login (src/lib/rate_limiter.py's shared Limiter). Its storage is
+    # process-global, not per-test, and this file registers many tenants in
+    # quick succession from the same TestClient "IP" - reset it per test so
+    # that's exercising real app behavior, not fighting the limiter.
+    from src.lib.rate_limiter import limiter
+    limiter.reset()
     with patch("src.services.auth_service.supabase_select", side_effect=db.select), \
          patch("src.services.auth_service.supabase_insert", side_effect=db.insert), \
          patch("src.services.auth_service.supabase_update", side_effect=db.update), \

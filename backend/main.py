@@ -2,9 +2,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from src.lib.rate_limiter import limiter
 from dotenv import load_dotenv
 import os
 import sys
@@ -38,8 +37,9 @@ async def health_check():
     """Immediately returns status ok for Railway/Render."""
     return {"status": "ok"}
 
-# Rate Limiter Setup
-limiter = Limiter(key_func=get_remote_address)
+# Rate Limiter Setup — shared instance from src.lib.rate_limiter so route
+# modules (saas_auth.py) can also decorate their own endpoints with it
+# without a circular import back into this file.
 app.state.limiter = limiter
 
 @app.exception_handler(RateLimitExceeded)
@@ -81,10 +81,22 @@ async def widget_js():
     })
 
 # 3. Global Middleware
+# Security audit finding B6: allow_origins="*" combined with
+# allow_credentials=True is a spec-invalid, overly permissive combination.
+# allow_origins stays "*" deliberately - the embeddable chat widget
+# (v2_chat_widget.py) is called from arbitrary, unknown-in-advance merchant
+# storefront domains (every Shopify store that installs it), so a fixed
+# origin allowlist would break that core feature. allow_credentials is set
+# to False instead: this app authenticates exclusively via an explicit
+# `Authorization: Bearer <token>` header (confirmed no `set_cookie` calls
+# anywhere in the codebase), which browsers always send regardless of this
+# flag - it exists purely to control cookie/HTTP-auth credential inclusion,
+# which this app never uses. Turning it off removes the actual invalid
+# combination without restricting the widget's legitimate cross-origin use.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

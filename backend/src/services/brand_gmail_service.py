@@ -27,6 +27,14 @@ from googleapiclient.discovery import build
 logging.getLogger('googleapiclient.discovery_cache').setLevel(logging.ERROR)
 
 from src.lib.supabase_client import supabase_select, supabase_update
+# Reused as-is from shopify_service.py — generic string-in/string-out AES-256-GCM
+# helpers, not Shopify-specific. gmail_token was the one credential in this
+# codebase still written to the database in plaintext (Shopify tokens already
+# went through this). decrypt_token() already handles legacy plaintext values
+# gracefully (returns them unchanged when they don't match a known ciphertext
+# format), so existing connected brands keep working and get re-encrypted the
+# next time their token is refreshed/rewritten — no separate migration needed.
+from src.services.shopify_service import encrypt_token, decrypt_token
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +152,7 @@ class BrandGmailService:
 
             supabase_update("brands", {"id": f"eq.{brand_id}"}, {
                 "gmail_email":     email,
-                "gmail_token":     json.dumps(token_data),
+                "gmail_token":     encrypt_token(json.dumps(token_data)),
                 "gmail_connected": True,
                 "is_active":       True,  # Reactivate if deactivated during onboarding 409 flow
                 "updated_at":      datetime.now(timezone.utc).isoformat(),
@@ -173,7 +181,7 @@ class BrandGmailService:
         if not raw:
             return None
         try:
-            data = json.loads(raw)
+            data = json.loads(decrypt_token(raw))
             expiry = None
             if data.get("expiry"):
                 from datetime import datetime
@@ -199,7 +207,7 @@ class BrandGmailService:
                     data["token"] = creds.token
                     data["expiry"] = creds.expiry.isoformat() if creds.expiry else None
                     supabase_update("brands", {"id": f"eq.{brand['id']}"}, {
-                        "gmail_token": json.dumps(data)
+                        "gmail_token": encrypt_token(json.dumps(data))
                     })
                 except Exception as e:
                     err_str = str(e).lower()

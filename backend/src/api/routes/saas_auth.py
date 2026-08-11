@@ -10,6 +10,11 @@ from typing import Optional
 
 from src.services.auth_service import auth_service
 from src.api.middleware.tenant_auth import get_current_tenant, TenantContext
+# Security audit finding A3: these endpoints had no rate limiting at all,
+# despite being the primary brute-force/credential-stuffing surface. Reuses
+# the same slowapi Limiter + pattern already applied to other endpoints in
+# main.py (see src/lib/rate_limiter.py for why it's a separate module).
+from src.lib.rate_limiter import limiter
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -59,16 +64,17 @@ class AuthResponse(BaseModel):
 # ==================== Public Routes ====================
 
 @router.post("/register", response_model=AuthResponse)
-async def register(request: RegisterRequest):
+@limiter.limit("10/minute")
+async def register(request: Request, payload: RegisterRequest):
     """
     Register a new tenant account.
 
     Creates a new account and returns authentication tokens.
     """
     result = await auth_service.register(
-        email=request.email,
-        password=request.password,
-        company_name=request.company_name
+        email=payload.email,
+        password=payload.password,
+        company_name=payload.company_name
     )
 
     if not result.get("success"):
@@ -84,15 +90,16 @@ async def register(request: RegisterRequest):
 
 
 @router.post("/login", response_model=AuthResponse)
-async def login(request: LoginRequest):
+@limiter.limit("10/minute")
+async def login(request: Request, payload: LoginRequest):
     """
     Authenticate and get tokens.
 
     Returns access and refresh tokens for the authenticated user.
     """
     result = await auth_service.login(
-        email=request.email,
-        password=request.password
+        email=payload.email,
+        password=payload.password
     )
 
     if not result.get("success"):
@@ -102,11 +109,12 @@ async def login(request: LoginRequest):
 
 
 @router.post("/refresh")
-async def refresh_token(request: RefreshRequest):
+@limiter.limit("30/minute")
+async def refresh_token(request: Request, payload: RefreshRequest):
     """
     Get a new access token using refresh token.
     """
-    result = await auth_service.refresh_access_token(request.refresh_token)
+    result = await auth_service.refresh_access_token(payload.refresh_token)
 
     if not result.get("success"):
         raise HTTPException(status_code=401, detail=result.get("error", "Invalid refresh token"))
@@ -169,8 +177,10 @@ async def update_profile(
 
 
 @router.post("/change-password")
+@limiter.limit("10/minute")
 async def change_password(
-    request: ChangePasswordRequest,
+    request: Request,
+    payload: ChangePasswordRequest,
     tenant: TenantContext = Depends(get_current_tenant)
 ):
     """
@@ -178,8 +188,8 @@ async def change_password(
     """
     result = await auth_service.change_password(
         tenant_id=tenant.tenant_id,
-        current_password=request.current_password,
-        new_password=request.new_password
+        current_password=payload.current_password,
+        new_password=payload.new_password
     )
 
     if not result.get("success"):
