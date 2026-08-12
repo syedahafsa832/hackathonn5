@@ -394,12 +394,24 @@ async def approve_action(
 
         brand = brands[0]
 
-        # Update to approved
-        supabase_update("actions", {"id": f"eq.{action_id}"}, {
-            "status": "approved",
-            "approved_by": context.user.user_id,
-            "approved_at": datetime.now(timezone.utc).isoformat()
-        })
+        # Atomically claim the action (conditioned on it still being "pending")
+        # before touching Shopify. Without the "status": "eq.pending" filter in
+        # the WHERE clause, this was a check-then-act race: two concurrent
+        # approve calls (double-click, retry) could both pass the status check
+        # above and each execute a real refund/cancel against the same order.
+        # Matches the pattern actions_service.py's approve_action() already
+        # uses for the same reason.
+        claimed = supabase_update(
+            "actions",
+            {"id": f"eq.{action_id}", "status": "eq.pending"},
+            {
+                "status": "approved",
+                "approved_by": context.user.user_id,
+                "approved_at": datetime.now(timezone.utc).isoformat()
+            }
+        )
+        if not claimed:
+            raise HTTPException(status_code=400, detail="Action already actioned")
 
         # Log approval
         supabase_insert("action_logs", {

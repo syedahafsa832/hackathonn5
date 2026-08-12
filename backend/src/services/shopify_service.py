@@ -567,6 +567,32 @@ class ShopifyClient:
         result = self._request("POST", f"orders/{shopify_order_id}/refunds.json", refund_data)
         refund = result.get("data", {}).get("refund", {})
 
+        # A 200/201 here only confirms Shopify accepted the refund REQUEST —
+        # it does not confirm money actually moved. The nested transaction(s)
+        # settle against the payment gateway separately and can come back
+        # "failure"/"error" (e.g. an expired card) even though the refund
+        # record itself was created successfully. Money-refund requests
+        # (parent_transaction_id set above) must have at least one
+        # transaction, and none of them may report a non-success status —
+        # otherwise this must not be reported to the customer as a completed
+        # refund, matching the product's core safety rule (never claim an
+        # action succeeded without confirmed success).
+        refund_transactions = refund.get("transactions", [])
+        if parent_transaction_id:
+            if not refund_transactions:
+                raise ShopifyError(
+                    "Shopify did not report a payment transaction for this refund — "
+                    "it may not have actually been processed. Please verify manually in Shopify admin.",
+                    ShopifyErrorCode.UNKNOWN_ERROR,
+                )
+            failed = [t for t in refund_transactions if t.get("status") not in (None, "success")]
+            if failed:
+                raise ShopifyError(
+                    f"Shopify reported the refund transaction did not succeed "
+                    f"(status: {failed[0].get('status')}). Please verify manually in Shopify admin.",
+                    ShopifyErrorCode.UNKNOWN_ERROR,
+                )
+
         return {
             "success": True,
             "refund_id": refund.get("id"),
@@ -619,6 +645,16 @@ class ShopifyClient:
 
         result = self._request("POST", f"orders/{shopify_order_id}/cancel.json", cancel_data)
         cancelled_order = result.get("data", {}).get("order", {})
+
+        # Defense in depth: a 200/201 here should always come with a
+        # populated cancelled_at, but don't report success on the strength
+        # of the HTTP status alone if Shopify's own response doesn't
+        # corroborate it.
+        if not cancelled_order.get("cancelled_at"):
+            raise ShopifyError(
+                "Shopify did not confirm the order as cancelled. Please verify manually in Shopify admin.",
+                ShopifyErrorCode.UNKNOWN_ERROR,
+            )
 
         return {
             "success": True,

@@ -329,11 +329,28 @@ class ReturnActionsIntegration:
         result["staged"] = staged
 
         if staged.get("success"):
-            result["action_context"] = (
-                f"**ACTION STAGED FOR APPROVAL**: Your {action_type.lower()} request has been submitted for review. "
-                "Tell the customer: 'I've prepared your request for my team to review. "
-                "You'll get a confirmation as soon as they approve it (usually under 2 hours).'"
-            )
+            if size_issue:
+                # No Shopify-side exchange/swap operation exists in this integration
+                # (REST Admin API only — no draft-order or Returns-API line-item swap
+                # implemented). What's actually staged and will actually execute on
+                # approval is a REFUND (see _ACTION_TYPE_MAP), not a replacement
+                # shipment. The customer must be told that explicitly — never that
+                # "the exchange" itself is being processed, which would be false.
+                suggested_size = (exchange_suggestion or {}).get("suggested_size")
+                reorder_hint = f"in {suggested_size} " if suggested_size else ""
+                result["action_context"] = (
+                    "**REFUND STAGED FOR APPROVAL (size exchange requested — no automatic swap exists)**: "
+                    "Tell the customer: 'I've sent a refund request for this item to our team for approval "
+                    f"(usually under 2 hours). Once it's confirmed, please place a new order {reorder_hint}"
+                    "and we'll get that out to you right away.' "
+                    "Do NOT say the exchange itself is being processed or completed — only the refund is real."
+                )
+            else:
+                result["action_context"] = (
+                    f"**ACTION STAGED FOR APPROVAL**: Your {action_type.lower()} request has been submitted for review. "
+                    "Tell the customer: 'I've prepared your request for my team to review. "
+                    "You'll get a confirmation as soon as they approve it (usually under 2 hours).'"
+                )
         else:
             result["action_context"] = (
                 f"Return eligible but staging failed: {staged.get('message') or staged.get('error')}. "
