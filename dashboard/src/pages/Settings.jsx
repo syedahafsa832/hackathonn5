@@ -557,27 +557,44 @@ function KnowledgeBaseTab() {
   const [form, setForm] = useState({ title: '', content: '' });
   const [uploading, setUploading] = useState(false);
   const [uploadMsg, setUploadMsg] = useState('');
+  // Same brandId-resolution pattern as ShopifyTab above — the v1 tenant-only
+  // knowledge-base endpoints wrote rows with no brand_id, which the live
+  // agent's brand-scoped retrieval (match_brand_rag_chunks) can never see.
+  // The v2 brand-scoped endpoints are the ones the agent actually reads from.
+  const [brandId, setBrandId] = useState(null);
 
-  const fetchSources = () => {
+  useEffect(() => {
+    client.get('/api/brands').then(res => {
+      const list = Array.isArray(res.data) ? res.data : res.data?.brands || [];
+      if (list[0]?.id) setBrandId(list[0].id);
+    }).catch(() => {});
+  }, []);
+
+  const fetchSources = useCallback(() => {
+    if (!brandId) return;
     setLoading(true);
     setError('');
-    client.get('/api/v1/settings/knowledge-base/sources')
+    client.get(`/api/v2/brands/${brandId}/knowledge/sources`)
       .then(res => setSources(Array.isArray(res.data) ? res.data : (res.data?.sources || [])))
       .catch(() => setError('Failed to load knowledge base sources.'))
       .finally(() => setLoading(false));
-  };
+  }, [brandId]);
 
-  useEffect(() => { fetchSources(); }, []);
+  useEffect(() => { fetchSources(); }, [fetchSources]);
 
   const handleUpload = async () => {
     if (!form.title.trim() || !form.content.trim()) {
       setUploadMsg('Title and content are required.');
       return;
     }
+    if (!brandId) {
+      setUploadMsg("Couldn't find your workspace. Please refresh and try again.");
+      return;
+    }
     setUploading(true);
     setUploadMsg('');
     try {
-      await client.post('/api/v1/settings/knowledge-base/upload', {
+      await client.post(`/api/v2/brands/${brandId}/knowledge/upload`, {
         name: form.title.trim(),
         content: form.content.trim(),
       });
@@ -592,8 +609,9 @@ function KnowledgeBaseTab() {
   };
 
   const handleDelete = async (id) => {
+    if (!brandId) return;
     try {
-      await client.delete(`/api/v1/settings/knowledge-base/sources/${id}`);
+      await client.delete(`/api/v2/brands/${brandId}/knowledge/sources/${id}`);
       setSources(s => s.filter(src => src.id !== id));
     } catch {
       setError('Failed to delete source.');

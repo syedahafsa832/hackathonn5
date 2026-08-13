@@ -191,7 +191,7 @@ async def generate_learned_profile(brand_id: str, force: bool = False) -> Dict:
 
     messages = _build_extraction_prompt(texts[:MAX_REPLIES_FOR_PROFILE_GENERATION])
     try:
-        response, _label, _model = await ai_provider_manager.create_chat_completion(
+        response, _label, _model, _usage = await ai_provider_manager.create_chat_completion(
             messages=messages,
             temperature=0.2,
             response_format={"type": "json_object"},

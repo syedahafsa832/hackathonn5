@@ -13,10 +13,24 @@ router = APIRouter(tags=["webhooks"])
 SHOPIFY_WEBHOOK_SECRET = os.getenv("SHOPIFY_WEBHOOK_SECRET")
 
 def verify_shopify_webhook(data: bytes, hmac_header: str) -> bool:
-    """Verify that the webhook came from Shopify."""
+    """Verify that the webhook came from Shopify.
+
+    Fails closed: with no SHOPIFY_WEBHOOK_SECRET configured, every request
+    is rejected rather than accepted. The previous "accept everything when
+    unset" default meant anyone could POST an unsigned payload to this
+    endpoint and have it processed as a genuine Shopify event whenever the
+    secret wasn't set - not just in dev, in any deployment that forgot to
+    set it. No legitimate flow currently depends on the old permissive
+    default (there is no code that auto-registers Shopify webhooks against
+    this endpoint), so there is nothing working today that this could break.
+    """
     if not SHOPIFY_WEBHOOK_SECRET:
-        return True # Default to True for dev if secret not set
-    
+        logger.error("SHOPIFY_WEBHOOK_SECRET is not set — rejecting all Shopify webhook requests")
+        return False
+
+    if not hmac_header:
+        return False
+
     digest = hmac.new(
         SHOPIFY_WEBHOOK_SECRET.encode('utf-8'),
         data,

@@ -128,7 +128,10 @@ export function useActions(status = 'pending') {
 export function useApproveAction() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (id) => api.approveAction(id),
+    // Accepts either a bare id (existing callers, unchanged behavior — full
+    // refund / no amount) or { id, amount } for a human-entered partial
+    // refund override.
+    mutationFn: (arg) => typeof arg === 'object' ? api.approveAction(arg.id, arg.amount) : api.approveAction(arg),
     // onSettled (not onSuccess) — a failed approve (e.g. 409 "already
     // cancelled") still changes the action's status server-side (moves it
     // out of "pending"), so the list must refresh on error too. Without

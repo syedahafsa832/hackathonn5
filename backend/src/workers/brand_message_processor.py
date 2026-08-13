@@ -208,12 +208,16 @@ class BrandMessageProcessor:
                     })
 
             # ========== STAGE 9: LOG CONVERSATION ==========
+            # model/ai_usage come from the real provider response (whichever
+            # provider actually served this request, not always Mistral -
+            # Groq failover is real and previously got mislabeled here).
             await self._log_conversation(
                 brand_id=brand_id,
                 ticket_id=ticket_id,
                 user_message=content,
                 ai_response=reply_body,
-                model="mistral-large"
+                model=ai_result.get("model_used") or "unknown",
+                usage=ai_result.get("ai_usage"),
             )
 
             # ========== STAGE 10: RETURN RESULT ==========
@@ -489,9 +493,20 @@ class BrandMessageProcessor:
         ticket_id: str,
         user_message: str,
         ai_response: str,
-        model: str
+        model: str,
+        usage: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Log conversation for history"""
+        """Log conversation for history.
+
+        usage (from ai_provider_manager.create_chat_completion, threaded
+        through process_customer_query as structured["ai_usage"]) covers only
+        the one main-response model call - not intent_detector's or
+        email_guardian's separate, uninstrumented calls, so tokens_used here
+        is a partial-but-real figure, not total per-ticket AI cost. Left
+        unset (None) rather than fabricated as 0 when usage wasn't available
+        (e.g. the provider's response had no usage block, or every provider
+        failed and this got called with usage=None).
+        """
         try:
             # Log user message
             supabase_insert("ai_conversations", {
@@ -504,13 +519,19 @@ class BrandMessageProcessor:
 
             # Log AI response
             if ai_response:
-                supabase_insert("ai_conversations", {
+                assistant_row = {
                     "brand_id": brand_id,
                     "ticket_id": ticket_id,
                     "role": "assistant",
                     "content": ai_response,
                     "model": model
-                })
+                }
+                if usage:
+                    if usage.get("total_tokens") is not None:
+                        assistant_row["tokens_used"] = usage["total_tokens"]
+                    if usage.get("latency_ms") is not None:
+                        assistant_row["latency_ms"] = usage["latency_ms"]
+                supabase_insert("ai_conversations", assistant_row)
 
         except Exception as e:
             logger.warning(f"[BRAND-PROCESSOR] Failed to log conversation: {e}")

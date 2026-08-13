@@ -145,3 +145,67 @@ def test_cancel_order_already_fulfilled_order_fails_before_any_cancel_call():
     with patch.object(client, "_request", return_value=order_resp):
         with pytest.raises(ShopifyError):
             run(client.cancel_order("1001"))
+
+
+# ── update_shipping_address: response corroboration ──────────────────────────
+#
+# Same class of gap as cancel_order/process_refund: a 200 on the order PUT
+# doesn't guarantee Shopify actually applied every field - a partial
+# validation failure can return 200 with the old address still in place, or
+# with some fields silently dropped. Must compare what was requested against
+# what Shopify echoes back before reporting success.
+
+def test_update_shipping_address_matching_response_reports_success():
+    client = _client()
+    order_resp = _order_response()
+    update_resp = {"data": {"order": {"id": 123456789, "shipping_address": {
+        "address1": "123 New St", "city": "Springfield", "country": "US", "zip": "62704",
+    }}}}
+
+    with patch.object(client, "_request", side_effect=[order_resp, update_resp]):
+        result = run(client.update_shipping_address("1001", {
+            "address1": "123 New St", "city": "Springfield", "country": "US", "zip": "62704",
+        }))
+
+    assert result["success"] is True
+    assert result["new_address"]["address1"] == "123 New St"
+
+
+def test_update_shipping_address_stale_response_is_not_reported_as_success():
+    """Shopify's 200 response still shows the OLD address - the update was
+    silently not applied. Must not be reported as success."""
+    client = _client()
+    order_resp = _order_response()
+    # Response echoes the pre-existing address, not the requested one.
+    update_resp = {"data": {"order": {"id": 123456789, "shipping_address": {
+        "address1": "999 Old Ave", "city": "Old Town", "country": "US", "zip": "10001",
+    }}}}
+
+    with patch.object(client, "_request", side_effect=[order_resp, update_resp]):
+        with pytest.raises(ShopifyError):
+            run(client.update_shipping_address("1001", {
+                "address1": "123 New St", "city": "Springfield", "country": "US", "zip": "62704",
+            }))
+
+
+def test_update_shipping_address_missing_shipping_address_in_response_is_not_reported_as_success():
+    """Shopify's response has no shipping_address at all - never assume
+    success from an ambiguous/empty response."""
+    client = _client()
+    order_resp = _order_response()
+    update_resp = {"data": {"order": {"id": 123456789}}}
+
+    with patch.object(client, "_request", side_effect=[order_resp, update_resp]):
+        with pytest.raises(ShopifyError):
+            run(client.update_shipping_address("1001", {
+                "address1": "123 New St", "city": "Springfield", "country": "US", "zip": "62704",
+            }))
+
+
+def test_update_shipping_address_fulfilled_order_fails_before_any_update_call():
+    client = _client()
+    order_resp = _order_response(fulfillment_status="fulfilled")
+
+    with patch.object(client, "_request", return_value=order_resp):
+        with pytest.raises(ShopifyError):
+            run(client.update_shipping_address("1001", {"address1": "123 New St", "city": "Springfield"}))

@@ -5,7 +5,7 @@ Action queue management with tenant isolation.
 Core product endpoints for approve/reject workflow.
 """
 import logging
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import APIRouter, HTTPException, Depends, Request, Body
 from pydantic import BaseModel, Field
 from typing import Optional, List, Any
 
@@ -31,8 +31,14 @@ class CreateActionRequest(BaseModel):
 
 
 class ApproveActionRequest(BaseModel):
-    """Optional request body for approve endpoint."""
-    pass
+    """Optional request body for approve endpoint. `amount`, when present,
+    is a HUMAN-entered partial refund override — the approver types it in
+    the dashboard before clicking approve. It is never AI-extracted and
+    never inferred from the customer's message. Pydantic rejects <=0 here;
+    the upper bound (must not exceed the order's actual refundable amount)
+    is checked deterministically against live Shopify state inside
+    ShopifyClient.process_refund(), not guessed at this layer."""
+    amount: Optional[float] = Field(None, gt=0)
 
 
 class RejectActionRequest(BaseModel):
@@ -154,6 +160,7 @@ async def get_action(
 async def approve_action(
     action_id: str,
     request: Request,
+    body: Optional[ApproveActionRequest] = Body(default=None),
     tenant: TenantContext = Depends(get_current_tenant)
 ):
     """
@@ -167,7 +174,9 @@ async def approve_action(
 
     Returns execution result or error details. Supports an optional
     `Idempotency-Key` header for refund/cancel_order actions — a retry with
-    the same key replays the original result instead of re-executing.
+    the same key replays the original result instead of re-executing. Body
+    is optional and backward-compatible with the existing no-body approve
+    call — `amount` (refund-only) is the one new, human-entered field.
     """
     if not check_org_rate_limit(tenant.tenant_id):
         raise HTTPException(status_code=429, detail="Too many action requests. Please wait a minute and try again.")
@@ -178,6 +187,7 @@ async def approve_action(
         approved_by=tenant.email,
         idempotency_key=request.headers.get("Idempotency-Key"),
         ip_address=request.client.host if request.client else None,
+        override_amount=body.amount if body else None,
     )
 
     if not result.get("success"):

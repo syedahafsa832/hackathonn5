@@ -345,6 +345,7 @@ class ActionsService:
         approved_by: str = "admin",
         idempotency_key: Optional[str] = None,
         ip_address: Optional[str] = None,
+        override_amount: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Approve and execute an action.
@@ -363,7 +364,18 @@ class ActionsService:
         protections v2_tickets.py's execute_refund/execute_cancel_order
         already have, applied here since this is a second, equally-live
         path to the same Shopify calls.
+
+        override_amount: a HUMAN-entered partial refund amount, typed by the
+        approver at approval time in the dashboard — never AI-extracted, and
+        never inferred from the customer's message. Only meaningful for
+        action_type=refund. Positive-value validation happens here (defense
+        in depth — the API layer already rejects <=0 via Pydantic); the
+        upper bound (must not exceed the order's actual refundable amount)
+        is enforced deterministically inside ShopifyClient.process_refund()
+        against live Shopify state, never guessed here.
         """
+        if override_amount is not None and override_amount <= 0:
+            return {"success": False, "error": "Refund amount must be greater than zero", "error_code": "invalid_amount"}
         try:
             # Get action (tenant-scoped)
             action = await self.get_action(tenant_id, action_id)
@@ -425,9 +437,15 @@ class ActionsService:
             try:
                 if action_type == ActionType.REFUND.value:
                     extracted = action.get("extracted_data", {})
+                    # override_amount (human-entered at approval time) wins
+                    # over extracted_data.amount (which today is never
+                    # AI-set — staging never extracts a dollar figure from
+                    # the customer's message). Neither set means the
+                    # existing full-refund default inside process_refund().
+                    refund_amount = override_amount if override_amount is not None else extracted.get("amount")
                     execution_result = await shopify_client.process_refund(
                         order_id=order_id,
-                        amount=extracted.get("amount"),
+                        amount=refund_amount,
                         reason=f"Customer request - Action {action_id[:8]}"
                     )
 

@@ -40,6 +40,12 @@ class CreateActionRequest(BaseModel):
 
 class ApproveActionRequest(BaseModel):
     notes: Optional[str] = None
+    # HUMAN-entered partial refund override, typed by the approver at
+    # approval time — never AI-extracted, never inferred from the customer's
+    # message. Pydantic rejects <=0; the upper bound (must not exceed the
+    # order's actual refundable amount) is enforced deterministically inside
+    # ShopifyClient.process_refund() against live Shopify state.
+    amount: Optional[float] = Field(None, gt=0)
 
 
 class RejectActionRequest(BaseModel):
@@ -433,9 +439,24 @@ async def approve_action(
             client = ShopifyClient(brand["shopify_domain"], shopify_token)
 
             if action["action_type"] == "refund":
+                # Precedence: (1) amount typed by the approver right now in
+                # this request — the human-entered override; (2)
+                # extracted_data.amount — the field the other, also-live
+                # approval surface (actions_service.py / saas_actions.py)
+                # reads, kept consistent so neither surface silently drops a
+                # partial amount depending on which one executes the
+                # approval; (3) this route's own legacy top-level "amount"
+                # column, kept as a final fallback for anything already
+                # relying on it. None of the three set means the existing
+                # full-refund default inside process_refund() — unchanged.
+                refund_amount = request.amount if request else None
+                if refund_amount is None:
+                    refund_amount = action.get("extracted_data", {}).get("amount")
+                if refund_amount is None:
+                    refund_amount = action.get("amount")
                 execution_result = await client.process_refund(
                     order_id=action["order_id"],
-                    amount=action.get("amount"),
+                    amount=refund_amount,
                     reason=action.get("reason", "Customer request"),
                     restock=action.get("extracted_data", {}).get("restock", True),
                     notify_customer=False,

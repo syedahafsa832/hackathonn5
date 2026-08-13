@@ -135,11 +135,14 @@ async def _import_products(client: ShopifyClient, brand_id: str) -> Dict[str, An
         for p in batch:
             title = p.get("title", "Untitled product")
             description = _strip_html(p.get("body_html", ""))
-            price = ""
-            variants = p.get("variants") or []
-            if variants:
-                price = f"${variants[0].get('price', '')}"
-            parts.append(f"Product: {title}\nPrice: {price}\nDescription: {description}")
+            # Price is intentionally NOT included here. This text gets
+            # embedded into RAG chunks with no freshness/TTL mechanism, so a
+            # price baked in at import time goes stale the moment the
+            # merchant changes it in Shopify - and unlike order/inventory
+            # data, nothing marks this content as non-authoritative before
+            # it reaches the prompt. Live price must come from the
+            # live-Shopify product-lookup tool, never from RAG.
+            parts.append(f"Product: {title}\nDescription: {description}")
         content = "\n\n".join(parts)
         result = await brand_knowledge_service.upload_text(
             brand_id, name=f"Products (batch {i // PRODUCTS_PER_CHUNK_DOC + 1})", content=content,

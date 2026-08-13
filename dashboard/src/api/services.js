@@ -134,9 +134,13 @@ const api = {
     return Array.isArray(data) ? data : data?.actions || [];
   },
 
-  approveAction: async (id) => {
-    // v1 approve calls actions_service.approve_action() which runs _post_execution_notify
-    const res = await client.post(`/api/v1/actions/${id}/approve`);
+  approveAction: async (id, amount) => {
+    // v1 approve calls actions_service.approve_action() which runs _post_execution_notify.
+    // amount, when provided, is a human-entered partial refund override —
+    // never AI-suggested. Omitted entirely (not even sent as null) when
+    // absent, matching the existing full-refund-by-default behavior.
+    const body = amount != null ? { amount } : undefined;
+    const res = await client.post(`/api/v1/actions/${id}/approve`, body);
     return res.data;
   },
 

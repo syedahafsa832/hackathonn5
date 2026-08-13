@@ -92,43 +92,24 @@ class RAGEngine:
 
     async def get_relevant_context(self, query: str, filters: Optional[Dict[str, Any]] = None, tenant_id: Optional[str] = None) -> str:
         """
-        Embed the query and perform a vector search with metadata filtering.
-        If tenant_id is provided, uses tenant-specific search first.
+        Tenant-scoped vector search only. If tenant_id is provided, uses
+        get_tenant_context(); otherwise returns no context.
+
+        This used to fall through to an unscoped "match_rag_chunks" RPC
+        (no tenant/brand filter at all) whenever the tenant-scoped search
+        came back empty - which happens on any ordinary no-match query, not
+        just errors. That meant a ordinary empty result could silently
+        return another tenant's knowledge-base content. This module is not
+        called from any live code path today (the agent uses
+        brand_knowledge_service.get_brand_context, which is correctly
+        brand-scoped) - removed rather than fixed-in-place, since there is
+        no legitimate case where returning cross-tenant content is correct.
         """
         try:
-            # If tenant_id provided, try tenant-specific search first
-            if tenant_id:
-                tenant_context = await self.get_tenant_context(query, tenant_id)
-                if tenant_context:
-                    return tenant_context
-
-            # 1. Generate Embedding
-            embedding = await self._get_embedding(query)
-            if not embedding:
+            if not tenant_id:
+                logger.warning("[RAG] get_relevant_context called without tenant_id — refusing to run an unscoped search")
                 return ""
-
-            # 2. Perform Vector Search via Supabase RPC (match_rag_chunks)
-            # filters can be used for metadata filtering in the SQL function
-            rpc_params = {
-                "query_embedding": embedding,
-                "match_threshold": 0.5,
-                "match_count": self.top_k,
-                "filter_metadata": filters or {}
-            }
-
-            # We assume a Supabase RPC function 'match_rag_chunks' is defined
-            results = supabase_rpc("match_rag_chunks", rpc_params)
-
-            if not results:
-                logger.info(f"[RAG] No context found for query: {query[:50]}...")
-                return ""
-
-            # 3. Format context
-            context_parts = []
-            for res in results:
-                context_parts.append(f"Source: {res.get('metadata', {}).get('type', 'general')}\nContent: {res.get('content')}")
-
-            return "\n\n---\n\n".join(context_parts)
+            return await self.get_tenant_context(query, tenant_id)
 
         except Exception as e:
             logger.error(f"RAG Retrieval Error: {e}")

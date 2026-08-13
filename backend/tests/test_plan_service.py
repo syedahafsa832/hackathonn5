@@ -143,11 +143,27 @@ def test_usage_summary_does_not_flag_a_tenant_who_never_paid():
 
 
 def test_usage_summary_reports_days_remaining_for_active_paid_plan():
+    """plan_days_remaining = (activated_at + 30days - now()).days, which
+    floors any partial day. Computing plan_activated_at from a live
+    datetime.now() and then calling get_usage_summary() a moment later left
+    a real (if tiny) gap between the two `now()` calls, so this test's
+    expected day count depended on exactly how much wall-clock time elapsed
+    between them - it could floor to 24 or 25 depending on machine/test
+    speed. Freezing plan_service's clock to a single fixed instant removes
+    that gap entirely so the 5-day-elapsed -> 25-days-remaining math is
+    exact and reproducible."""
+    frozen_now = datetime(2026, 6, 15, 12, 0, 0, tzinfo=timezone.utc)
+
+    class _FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen_now
+
     tenant = {"id": "t11", "email": "user@example.com", "plan": "starter",
-              "plan_activated_at": (datetime.now(timezone.utc) - timedelta(days=5)).isoformat(),
-              "usage_date": TODAY}
+              "plan_activated_at": (frozen_now - timedelta(days=5)).isoformat(),
+              "usage_date": frozen_now.date().isoformat()}
     p1, p2 = _mocked(tenant)
-    with p1, p2:
+    with p1, p2, patch("src.services.plan_service.datetime", _FrozenDateTime):
         summary = ps.get_usage_summary("t11")
     assert summary["plan"] == "starter"
     assert summary["plan_days_remaining"] == 25

@@ -20,7 +20,19 @@ from src.services.supabase_service import SupabaseService  # noqa: E402
 
 
 def run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    # See test_chat_widget_action_staging.py's run() for why: asyncio.get_
+    # event_loop() can return an already-closed loop left behind by an
+    # earlier @pytest.mark.asyncio test in the full suite, which fails
+    # run_until_complete with "Event loop is closed" - not a logic bug in
+    # these tests, just this helper never checking loop state before reuse.
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("closed")
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop.run_until_complete(coro)
 
 
 def test_existing_customer_found_by_email_alone_no_insert():

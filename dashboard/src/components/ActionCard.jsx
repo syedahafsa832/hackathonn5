@@ -23,18 +23,32 @@ export default function ActionCard({ action, onApproved, onRejected, compact }) 
   const [rejectReason, setRejectReason] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null); // { success, message, shopify_refund_id, amount, error }
+  // Human-entered partial refund override — never AI-suggested, blank means
+  // "full refund" (unchanged existing behavior). Only shown for refunds.
+  const [amountOverride, setAmountOverride] = useState('');
+  const [amountError, setAmountError] = useState('');
 
   const handleApprove = async () => {
+    setAmountError('');
+    let body = undefined;
+    if (action.action_type === 'refund' && amountOverride.trim() !== '') {
+      const parsed = Number(amountOverride);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        setAmountError('Enter a positive amount, or leave blank for a full refund.');
+        return;
+      }
+      body = { amount: parsed };
+    }
     setLoading(true);
     try {
-      const res = await client.post(`/api/v2/actions/${action.id}/approve`);
+      const res = await client.post(`/api/v2/actions/${action.id}/approve`, body);
       const data = res.data;
       if (data?.success) {
         setResult({
           success: true,
           message: data.message || 'Action executed successfully',
           shopify_refund_id: data.execution_result?.refund_id || data.execution_result?.id,
-          amount: action.amount,
+          amount: body?.amount ?? action.amount,
         });
         onApproved?.(action.id);
       } else {
@@ -139,6 +153,23 @@ export default function ActionCard({ action, onApproved, onRejected, compact }) 
           ) : (
             <div><strong>Failed:</strong> {result.error}</div>
           )}
+        </div>
+      )}
+
+      {!result && !rejecting && action.action_type === 'refund' && (
+        <div style={{ marginBottom: '10px' }}>
+          <label style={{ display: 'block', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+            Partial refund amount (optional — leave blank for the full ${(action.amount || 0).toFixed(2)})
+          </label>
+          <input
+            type="number" min="0.01" step="0.01"
+            placeholder={`Full refund: $${(action.amount || 0).toFixed(2)}`}
+            value={amountOverride}
+            onChange={e => { setAmountOverride(e.target.value); setAmountError(''); }}
+            disabled={loading}
+            style={{ padding: '6px 10px', borderRadius: '4px', border: '1px solid var(--border)', fontSize: '13px', width: '180px' }}
+          />
+          {amountError && <div style={{ color: 'var(--danger)', fontSize: '12px', marginTop: '4px' }}>{amountError}</div>}
         </div>
       )}
 

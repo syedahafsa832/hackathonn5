@@ -34,7 +34,21 @@ from src.api.routes.v2_chat_widget import _map_action_result  # noqa: E402
 
 
 def run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    # asyncio.get_event_loop() returns the thread's previously-set loop even
+    # if it's closed - which happens here in full-suite runs after an
+    # earlier @pytest.mark.asyncio test (pytest-asyncio closes its own loop
+    # per test). A closed loop raises "Event loop is closed" on
+    # run_until_complete, which is what made this file's tests fail only in
+    # the full suite, never in isolation - not a logic bug, just this
+    # helper trusting a loop it never checked the state of.
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("closed")
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop.run_until_complete(coro)
 
 
 def _chat_query(message: str) -> str:
@@ -58,7 +72,7 @@ def _run_chat(message: str, intent_result: IntentResult, handle_return_intent_re
     lookup, and order lookup mocked out - only the staging path (the thing
     this fix changed) and its wiring into the response are real."""
     with patch("src.services.ai_provider_manager.AIProviderManager.has_providers", new_callable=PropertyMock, return_value=True), \
-         patch("src.agent.customer_success_agent.ai_provider_manager.create_chat_completion", new=AsyncMock(return_value=(_fake_ai_response(reply_body), "test_provider", "test_model"))), \
+         patch("src.agent.customer_success_agent.ai_provider_manager.create_chat_completion", new=AsyncMock(return_value=(_fake_ai_response(reply_body), "test_provider", "test_model", {"prompt_tokens": None, "completion_tokens": None, "total_tokens": None, "latency_ms": 100, "attempts": 1}))), \
          patch("src.agent.customer_success_agent.v3_tools.get_order_status", new=AsyncMock(return_value={"success": False})), \
          patch("src.services.intent_detector.intent_detector.detect", new=AsyncMock(return_value=intent_result)) as mock_detect, \
          patch("src.agent.customer_success_agent.return_actions.handle_return_intent", new=AsyncMock(return_value=handle_return_intent_result)) as mock_handle:

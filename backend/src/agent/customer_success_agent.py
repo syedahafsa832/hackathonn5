@@ -223,6 +223,63 @@ def _enforce_no_unconfirmed_action_success(structured: Dict[str, Any]) -> Dict[s
     return structured
 
 
+def _enforce_no_ambiguous_product_claim(structured: Dict[str, Any], inventory_result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """If the live Shopify product lookup couldn't resolve to a single
+    product (ambiguous=True — e.g. "Essential Hoodie V1" title-matching
+    "Essential Hoodie V10"-"V19" too before the word-boundary fix, or any
+    other genuinely ambiguous name), the system prompt already says "do not
+    guess" - but confirmed live, the model can still generate a specific
+    price/availability/variant claim anyway. Unlike that prompt instruction,
+    this always overrides the reply with a clarification built from the
+    tool's own verified matches list — it never inspects or trusts the
+    model's text, so it works even when the model ignores the instruction."""
+    if not inventory_result or not inventory_result.get("ambiguous"):
+        return structured
+
+    matches = inventory_result.get("matches") or []
+    if matches:
+        listed = ", ".join(matches[:8])
+        clarification = (
+            f"I found a few products matching that — {listed}. "
+            "Could you let me know which one you mean so I can check it for you?"
+        )
+    else:
+        clarification = (
+            "I found a few products matching that name — could you tell me "
+            "the exact one you mean so I can check it for you?"
+        )
+
+    logger.info("[Agent] Overriding reply for ambiguous product lookup — model must not guess which product the customer meant")
+    structured["reply_body"] = clarification
+    return structured
+
+
+def _enforce_no_ungrounded_recommendation(structured: Dict[str, Any], recommendation_result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Same philosophy as _enforce_no_ambiguous_product_claim, applied to
+    recommendations: the model must never present a recommended product,
+    invent a complementary/"bought together" pairing, or claim a confident
+    match when the live lookup explicitly said it doesn't have one. Whenever
+    the tool result is anything other than a genuine success with real
+    candidates, the reply is unconditionally replaced with the tool's own
+    honest message — never trusting the model's text."""
+    if not recommendation_result:
+        return structured
+
+    # Genuine success with real candidates: trust the model to summarize the
+    # verified list already placed in tool_context (same approach as a
+    # single exact inventory match) — nothing to override here.
+    if recommendation_result.get("success") and recommendation_result.get("recommendations"):
+        return structured
+
+    message = recommendation_result.get("message")
+    if not message:
+        return structured
+
+    logger.info("[Agent] Overriding reply for ungrounded recommendation result (ambiguous/no-candidates/no-pairing-data/failure) — model must not invent a recommendation")
+    structured["reply_body"] = message
+    return structured
+
+
 class CustomerSuccessAgent:
     """
     V3 Customer Success Agent (Luna) for Aurelio & Finch.
@@ -364,16 +421,96 @@ class CustomerSuccessAgent:
                         access_token=_brand_shopify_token,
                     )
 
-            # Check for inventory/product inquiry
-            if any(kw in query_lower for kw in ["in stock", "available", "inventory", "do you have"]):
-                # Extract product name
-                product_match = re.search(r'(hoodie|jacket|pants|shirt|tshirt|coat|dress|skirt)', query_lower)
-                if product_match:
-                    product = product_match.group(1)
+            # Recommendation intent is checked first so a message like "Do you
+            # have anything like the Galactic Space Boots?" is recognized as
+            # a recommendation question, not ALSO fired through the plain
+            # inventory trigger below (both keyword sets can match the same
+            # message, e.g. "do you have" + "anything like" — found live:
+            # without this, that phrasing triggered a second, wasted, lower-
+            # quality Shopify lookup for "anything like the galactic space
+            # boots" as if it were a literal product name).
+            _complementary_kw = ["goes well with", "wear with", "wear it with", "pair with", "pairs with", "pair it with", "buy with", "buy alongside"]
+            _similar_kw = ["similar", "something like", "anything like", "alternative", "recommend", "what other", "other hoodies", "other shirts", "other options"]
+            _is_recommendation_query = any(kw in query_lower for kw in _complementary_kw + _similar_kw)
+
+            # Check for inventory/product/price inquiry. The keyword gate below
+            # is what keeps unrelated messages from ever reaching Shopify — a
+            # product search only runs when both the gate AND one of the
+            # extraction patterns below actually match. Extraction used to
+            # depend on a tiny hardcoded category-word list (hoodie/jacket/
+            # pants/...), which missed any merchant-specific product name and
+            # every price question. These patterns pull the product name out
+            # of the phrasing itself instead, so "Essential Crewneck" or "how
+            # much is the Winter Parka?" reach the live tool the same as
+            # "hoodie" always did. A miss here just means no live lookup runs
+            # (falls back to normal RAG/LLM handling) — never a guess.
+            if not _is_recommendation_query and any(kw in query_lower for kw in ["in stock", "available", "inventory", "do you have", "how much", "price", "cost"]):
+                product = None
+                for pattern in (
+                    # Trigger-word variants first — non-greedy up to the FIRST
+                    # occurrence of "in stock"/"available", not end-of-string,
+                    # so trailing qualifiers ("...available in size M?") don't
+                    # get swallowed into the product name. Found live: without
+                    # this, "Is the Essential Hoodie V1 available in size M?"
+                    # extracted the entire trailing clause instead of just the
+                    # product name.
+                    r"do you have\s+(?:the |a |an )?(.+?)\s+(?:in stock|available)\b",
+                    r"do you have\s+(?:the |a |an )?(.+?)\s*\??$",
+                    r"is\s+(?:the |a |an )?(.+?)\s+(?:in stock|available)\b",
+                    r"how much (?:is|does)\s+(?:the |a |an )?(.+?)(?:\s+cost)?\s*\??$",
+                    r"what(?:'s| is) the price of\s+(?:the |a |an )?(.+?)\s*\??$",
+                ):
+                    m = re.search(pattern, query_lower)
+                    if m:
+                        candidate = m.group(1).strip(" ?.!")
+                        if len(candidate) >= 2:
+                            product = candidate
+                            break
+                if not product:
+                    # Fallback for phrasing the patterns above don't cover.
+                    fallback_match = re.search(r'(hoodie|jacket|pants|shirt|tshirt|coat|dress|skirt)', query_lower)
+                    if fallback_match:
+                        product = fallback_match.group(1)
+                if product:
                     tool_results["inventory"] = await v3_tools.get_inventory_status(
                         product,
                         shop_domain=_brand_shopify_domain,
                         access_token=_brand_shopify_token,
+                    )
+
+            # Check for a product-recommendation request ("show me something
+            # similar", "what else do you have", "what goes with this").
+            # Distinguishes "similar" (deterministic type/tag/vendor scoring —
+            # real data) from "complementary" (no real pairing data exists
+            # anywhere in this architecture — handled honestly inside
+            # get_product_recommendations, never faked as same-type results).
+            # "this"/"that" alone (no product actually named) is deliberately
+            # left unresolved — no cross-turn anchor tracking exists yet, so
+            # skipping the tool call here is the honest choice, not a guess.
+            if _is_recommendation_query:
+                rec_intent = "complementary" if any(kw in query_lower for kw in _complementary_kw) else "similar"
+                anchor = None
+                for pattern in (
+                    r"(?:goes well with|wear with|wear it with|pair(?:s)? with|pair it with|buy with|buy alongside)\s+(?:the |a |an )?(.+?)\s*\??$",
+                    r"(?:similar to|anything like|something like|alternatives? to)\s+(?:the |a |an )?(.+?)\s*\??$",
+                    r"other\s+(.+?)(?:\s+do you have|\s+available|\s+in stock)?\s*\??$",
+                ):
+                    m = re.search(pattern, query_lower)
+                    if m:
+                        candidate = m.group(1).strip(" ?.!")
+                        # A bare pronoun isn't a product name — no cross-turn
+                        # anchor tracking exists to resolve "this"/"that" to a
+                        # real product yet, so leave it unresolved rather than
+                        # searching Shopify for the literal word "this".
+                        if len(candidate) >= 2 and candidate not in ("this", "that", "it", "this one", "that one"):
+                            anchor = candidate
+                            break
+                if anchor:
+                    tool_results["recommendations"] = await v3_tools.get_product_recommendations(
+                        anchor,
+                        shop_domain=_brand_shopify_domain,
+                        access_token=_brand_shopify_token,
+                        intent=rec_intent,
                     )
 
             # 3b. Aftership live tracking — runs only when order was found and has a tracking number
@@ -441,8 +578,42 @@ class CustomerSuccessAgent:
                         tool_context += f"{inv.get('message')} Ask the customer to clarify which product before answering — do not guess or pick one.\n"
                     elif inv.get("success"):
                         tool_context += f"{inv.get('message', 'Available')}\n"
+                        # Only ever included when Shopify actually returned it —
+                        # never construct or guess a link/image the customer wasn't
+                        # given by the live lookup.
+                        if inv.get("product_url"):
+                            tool_context += f"Product link: {inv['product_url']}\n"
+                        if inv.get("image_url"):
+                            tool_context += f"Product image: {inv['image_url']}\n"
+                        variant_opts = [v.get("options") for v in (inv.get("variants") or []) if v.get("options")]
+                        if variant_opts:
+                            opt_desc = "; ".join(", ".join(f"{k} {v}" for k, v in opts.items()) for opts in variant_opts)
+                            tool_context += f"Available options: {opt_desc}\n"
                     else:
                         tool_context += f"INVENTORY LOOKUP: {inv.get('message', 'Could not verify inventory')}. Do NOT guess stock levels — use this message as-is or offer to have a team member confirm.\n"
+
+                if "recommendations" in tool_results:
+                    rec = tool_results["recommendations"]
+                    if rec.get("ambiguous"):
+                        tool_context += f"{rec.get('message')} Ask the customer to clarify which product before recommending anything — do not guess.\n"
+                    elif rec.get("no_pairing_data"):
+                        tool_context += f"{rec.get('message')} Do NOT invent a complementary/pairing suggestion — say this honestly, exactly as given.\n"
+                    elif rec.get("no_candidates"):
+                        tool_context += f"{rec.get('message')} Do NOT invent a similar product — there genuinely isn't a confident match.\n"
+                    elif rec.get("success") and rec.get("recommendations"):
+                        tool_context += f"{rec.get('message')}\n"
+                        for r in rec["recommendations"]:
+                            line = f"  - {r['title']}"
+                            if r.get("price"):
+                                line += f" (${r['price']})"
+                            line += f" — {'in stock' if r.get('available') else 'currently out of stock'}"
+                            line += f" — why it's suggested: {r.get('matching_reason') or 'similar product'}"
+                            if r.get("product_url"):
+                                line += f" — link: {r['product_url']}"
+                            tool_context += line + "\n"
+                        tool_context += "Only mention the products listed above with their actual reason/availability/link exactly as given — do not invent additional recommendations, prices, links, or claim \"customers also bought\" style behavioral claims not present here.\n"
+                    else:
+                        tool_context += f"RECOMMENDATION LOOKUP: {rec.get('message', 'Could not look up recommendations')}. Do NOT invent a recommendation — use this message as-is or offer to have a team member help.\n"
 
             # 4. Return/Exchange Action Layer — runs identically for chat and
             # Gmail. Chat used to skip this entirely (relying on the main
@@ -489,7 +660,7 @@ class CustomerSuccessAgent:
             try:
                 # Same prompt/context/temperature on every attempt — failover only
                 # changes which API key (and its paired model) serves the request.
-                response, provider_label, _model = await ai_provider_manager.create_chat_completion(
+                response, provider_label, _model, _ai_usage = await ai_provider_manager.create_chat_completion(
                     messages=same_prompt_messages,
                     temperature=0.1,
                     response_format={"type": "json_object"},
@@ -547,6 +718,16 @@ class CustomerSuccessAgent:
 
             # 5b. Safety backstop: never let a false "action completed" claim through
             structured = _enforce_no_unconfirmed_action_success(structured)
+
+            # 5c. Safety backstop: never let a specific product/price/
+            # availability claim through when the live Shopify lookup
+            # couldn't resolve to exactly one product.
+            structured = _enforce_no_ambiguous_product_claim(structured, tool_results.get("inventory"))
+
+            # 5d. Safety backstop: never let the model present a recommended
+            # product or invented pairing when the live lookup didn't
+            # actually produce a confident, grounded candidate.
+            structured = _enforce_no_ungrounded_recommendation(structured, tool_results.get("recommendations"))
 
             # 6. Signature Enforcement - Make it natural, not robotic
             name = customer_info.get("name", "there").split()[0]
@@ -614,6 +795,14 @@ class CustomerSuccessAgent:
             structured["action_taken"] = action_taken
 
             structured["model_used"] = _model
+            # Real per-call usage from the provider layer (tokens may be None
+            # if the provider's response didn't include a usage block — never
+            # fabricated). Callers that persist conversation records (e.g. the
+            # email worker's _log_conversation) can read this to populate
+            # ai_conversations.tokens_used/latency_ms instead of leaving them
+            # NULL. Only covers this one model call, not intent_detector's or
+            # email_guardian's separate (uninstrumented) calls.
+            structured["ai_usage"] = _ai_usage
             # Only the real, model-generated path sets this — both
             # _get_provider_failure_response (all providers exhausted) and
             # _get_fallback_response (empty response / JSON parse error /

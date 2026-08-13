@@ -68,6 +68,9 @@ function ActionCard({ action, onApprove, onReject }) {
   const [approving, setApproving] = useState(false);
   const [approveError, setApproveError] = useState('');
   const [hoverReject, setHoverReject] = useState(false);
+  // Human-entered partial refund override — never AI-suggested, blank means
+  // "full refund" (unchanged existing behavior). Only shown for refunds.
+  const [amountOverride, setAmountOverride] = useState('');
 
   const meta = ACTION_LABELS[action.action_type] || { label: action.action_type, color: '#0E7490', isDestructive: false };
   const execMsg = action.execution_result
@@ -76,12 +79,22 @@ function ActionCard({ action, onApprove, onReject }) {
   const failMsg = action.error_message
     ? `Action failed: ${action.error_message}. Marked for manual review.`
     : null;
+  const isRefund = action.action_type === 'refund' || action.action_type === 'REFUND';
 
   const handleApprove = async () => {
-    setApproving(true);
     setApproveError('');
+    let amount;
+    if (isRefund && amountOverride.trim() !== '') {
+      const parsed = Number(amountOverride);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        setApproveError('Enter a positive amount, or leave blank for a full refund.');
+        return;
+      }
+      amount = parsed;
+    }
+    setApproving(true);
     try {
-      await onApprove(action.id);
+      await onApprove({ id: action.id, amount });
     } catch (err) {
       const detail = err?.response?.data?.detail;
       const msg = (typeof detail === 'object' ? detail?.error : detail) || err?.message || 'Approval failed';
@@ -163,7 +176,23 @@ function ActionCard({ action, onApprove, onReject }) {
             </button>
           </div>
         ) : (
-          <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+          <div style={{ marginTop: '4px' }}>
+            {isRefund && (
+              <div style={{ marginBottom: '8px' }}>
+                <label style={{ display: 'block', fontSize: '12px', color: '#64748B', marginBottom: '4px' }}>
+                  Partial refund amount (optional — leave blank for the full ${(action.amount || 0).toFixed(2)})
+                </label>
+                <input
+                  type="number" min="0.01" step="0.01"
+                  placeholder={`Full refund: $${(action.amount || 0).toFixed(2)}`}
+                  value={amountOverride}
+                  onChange={e => setAmountOverride(e.target.value)}
+                  disabled={approving}
+                  style={{ padding: '6px 10px', borderRadius: '4px', border: '1px solid #E4E4E7', fontSize: '13px', width: '180px' }}
+                />
+              </div>
+            )}
+          <div style={{ display: 'flex', gap: '8px' }}>
             <button
               onClick={handleApprove}
               disabled={approving}
@@ -198,6 +227,7 @@ function ActionCard({ action, onApprove, onReject }) {
             >
               Reject
             </button>
+          </div>
           </div>
         )
       )}

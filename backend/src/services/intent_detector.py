@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Optional, Dict
 
@@ -81,6 +82,16 @@ class IntentResult:
     raw_address: Optional[str]
     confidence: float
     source: str = field(default="llm")  # "llm" | "fallback"
+    # Real usage from this LLM call (same shape as ai_provider_manager's
+    # usage dict: prompt_tokens/completion_tokens/total_tokens - None, never
+    # 0, if the response had no usage block - plus latency_ms). None when
+    # source="fallback" (no LLM call was made) or the call raised before a
+    # response existed. Not persisted to ai_conversations today - that table
+    # logs one row per customer-facing message, and this is a separate,
+    # internal classification call - logged instead via the existing
+    # "[Intent] LLM -> ..." line so operators can grep it without a schema
+    # change.
+    usage: Optional[dict] = field(default=None)
 
     @property
     def has_action(self) -> bool:
@@ -149,6 +160,7 @@ class IntentDetector:
 
         prompt = INTENT_PROMPT.format(message=message[:1500])
         model = os.getenv("MISTRAL_MODEL", "mistral-large-latest")
+        call_start = time.monotonic()
 
         try:
             try:
@@ -167,6 +179,15 @@ class IntentDetector:
                     max_tokens=120,
                 ))
 
+            raw_usage = getattr(response, "usage", None)
+            usage = {
+                "prompt_tokens": getattr(raw_usage, "prompt_tokens", None) if raw_usage else None,
+                "completion_tokens": getattr(raw_usage, "completion_tokens", None) if raw_usage else None,
+                "total_tokens": getattr(raw_usage, "total_tokens", None) if raw_usage else None,
+                "latency_ms": round((time.monotonic() - call_start) * 1000),
+                "model": model,
+            }
+
             raw = (response.choices[0].message.content or "").strip()
             data = json.loads(raw)
 
@@ -182,8 +203,11 @@ class IntentDetector:
             confidence = max(0.0, min(1.0, float(data.get("confidence", 0.8))))
             raw_address = data.get("raw_address") or None
 
-            logger.info(f"[Intent] LLM → {action_type} conf={confidence:.2f} order={order_id}")
-            return IntentResult(action_type, order_id, raw_address, confidence, "llm")
+            logger.info(
+                f"[Intent] LLM → {action_type} conf={confidence:.2f} order={order_id} "
+                f"tokens={usage['total_tokens']} latency_ms={usage['latency_ms']}"
+            )
+            return IntentResult(action_type, order_id, raw_address, confidence, "llm", usage)
 
         except Exception as e:
             if getattr(e, 'status_code', None) == 429 or "429" in str(e):

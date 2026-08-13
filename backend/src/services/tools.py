@@ -8,6 +8,16 @@ from src.config import SHOPIFY_API_VERSION
 
 logger = logging.getLogger(__name__)
 
+
+def _variant_in_stock(v: Dict[str, Any]) -> bool:
+    """inventory_management=None means Shopify isn't tracking stock for this
+    variant (continues selling regardless of quantity) — treating its
+    quantity as authoritative would falsely report "out of stock" for a
+    product that's actually always available. Shared by get_inventory_status
+    and get_product_recommendations — do not reimplement this check."""
+    return True if not v.get("inventory_management") else (v.get("inventory_quantity") or 0) > 0
+
+
 class V3Tools:
     """
     Production-grade tool layer for V3 AI Agent.
@@ -291,24 +301,61 @@ class V3Tools:
                 }
 
             product = products[0]
+
+            # Real option names (e.g. "Size", "Color") in position order, so
+            # variant.option1/option2/option3 can be labeled correctly instead
+            # of assuming option1 is always size — a product with Color as its
+            # first option (or no options at all, e.g. a single "Default
+            # Title" variant) must not be mislabeled.
+            option_names = [
+                (opt.get("name") or "").strip().lower()
+                for opt in (product.get("options") or [])
+            ]
+
+            def _variant_options(v: Dict[str, Any]) -> Dict[str, str]:
+                opts = {}
+                for i, name in enumerate(option_names):
+                    if not name:
+                        continue
+                    value = v.get(f"option{i + 1}")
+                    if value and value != "Default Title":
+                        opts[name] = value
+                return opts
+
             variant_info = [
                 {
+                    # Kept for backward compatibility with existing callers —
+                    # still the variant's own title (usually the size on a
+                    # single-option product). "options" below is the accurate,
+                    # named breakdown (size/color/etc) when Shopify's product
+                    # options data is available.
                     "size": v.get("title"),
+                    "options": _variant_options(v),
                     "sku": v.get("sku"),
                     "price": v.get("price"),
-                    # inventory_management=None means Shopify isn't tracking stock for
-                    # this variant (continues selling regardless of quantity) — treating
-                    # its quantity as authoritative would falsely report "out of stock"
-                    # for a product that's actually always available.
-                    "in_stock": True if not v.get("inventory_management") else (v.get("inventory_quantity") or 0) > 0,
+                    "in_stock": _variant_in_stock(v),
                     "quantity": v.get("inventory_quantity"),
                 }
                 for v in product.get("variants", [])[:10]
             ]
             any_in_stock = any(v["in_stock"] for v in variant_info)
+
+            # Handle/image/URL are only ever taken verbatim from Shopify's own
+            # response — never constructed or guessed when absent.
+            handle = product.get("handle")
+            image_url = (product.get("image") or {}).get("src")
+            if not image_url:
+                images = product.get("images") or []
+                if images:
+                    image_url = images[0].get("src")
+            product_url = f"https://{shop_domain}/products/{handle}" if handle else None
+
             return {
                 "success": True,
                 "product": product.get("title"),
+                "handle": handle,
+                "image_url": image_url,
+                "product_url": product_url,
                 "variants": variant_info,
                 "message": (
                     f"Yes, {product.get('title')} is in stock." if any_in_stock
@@ -318,6 +365,142 @@ class V3Tools:
         except Exception as e:
             logger.error(f"Tool error [get_inventory_status]: {e}")
             return {"success": False, "message": "I couldn't verify live inventory right now — let me get a team member to confirm."}
+
+    async def get_product_recommendations(
+        self,
+        anchor_product_name: str,
+        shop_domain: str = None,
+        access_token: str = None,
+        intent: str = "similar",
+        limit: int = 5,
+    ) -> Dict[str, Any]:
+        """Deterministic, live-verified product recommendations. No ML, no
+        embeddings, no per-merchant model. Resolves the anchor product by
+        name using the exact same title-match rules as get_inventory_status
+        (honest not-found / ambiguous handling — never guesses which product
+        the customer means), then scores every other active product by
+        shared product_type, tag overlap, and vendor — signals actually
+        present in the same live Shopify response, nothing invented.
+
+        intent="complementary" ("what goes with this", "what should I wear
+        with this") is handled separately and honestly: there is no real
+        pairing/bought-together data available anywhere in this
+        architecture (no Storefront API, no merchant-configured pairings),
+        so it never silently substitutes same-type results and calls them
+        complementary — it says so.
+        """
+        if not shop_domain or not access_token:
+            return {"success": False, "message": "I can't look up recommendations right now — let me get a team member to help."}
+
+        if intent == "complementary":
+            return {
+                "success": False,
+                "no_pairing_data": True,
+                "message": (
+                    "I don't have reliable data on what's specifically meant to be paired with that item, "
+                    "so I don't want to guess. I can show you similar items instead, or a team member can "
+                    "suggest a pairing."
+                ),
+            }
+
+        try:
+            from src.services.shopify_service import ShopifyClient
+            client = ShopifyClient(shop_domain, access_token)
+            result = await client.find_products_by_title(anchor_product_name)
+            products = result.get("products", [])
+
+            if not products:
+                return {
+                    "success": False,
+                    "message": f"I couldn't find '{anchor_product_name}' in our current collection, so I can't suggest anything similar yet.",
+                }
+
+            if len(products) > 1:
+                titles = [p.get("title") for p in products[:8]]
+                return {
+                    "success": True,
+                    "ambiguous": True,
+                    "matches": titles,
+                    "message": f"I found a few products matching '{anchor_product_name}': {', '.join(titles)}. Which one would you like recommendations for?",
+                }
+
+            anchor = products[0]
+            anchor_id = anchor.get("id")
+            anchor_type = (anchor.get("product_type") or "").strip().lower()
+            anchor_vendor = (anchor.get("vendor") or "").strip().lower()
+            anchor_tags = {t.strip().lower() for t in (anchor.get("tags") or "").split(",") if t.strip()}
+
+            all_products = await client.list_active_products()
+
+            scored = []
+            for p in all_products:
+                if p.get("id") == anchor_id:
+                    continue
+                p_type = (p.get("product_type") or "").strip().lower()
+                p_tags = {t.strip().lower() for t in (p.get("tags") or "").split(",") if t.strip()}
+                p_vendor = (p.get("vendor") or "").strip().lower()
+
+                score = 0
+                reasons = []
+                same_type = bool(anchor_type) and p_type == anchor_type
+                if same_type:
+                    score += 3
+                    reasons.append(f"same product type ({anchor.get('product_type')})")
+                shared_tags = anchor_tags & p_tags
+                if shared_tags:
+                    score += len(shared_tags)
+                    reasons.append(f"shares tags: {', '.join(sorted(shared_tags)[:3])}")
+                # Vendor alone is a weak signal — only cite it when type/tags
+                # didn't already establish a real similarity.
+                if anchor_vendor and p_vendor == anchor_vendor and not same_type and not shared_tags:
+                    score += 1
+                    reasons.append(f"same brand ({anchor.get('vendor')})")
+
+                if score > 0:
+                    scored.append((score, p, reasons))
+
+            if not scored:
+                return {
+                    "success": True,
+                    "no_candidates": True,
+                    "anchor_product": anchor.get("title"),
+                    "message": f"I don't have enough similar products to confidently recommend something alongside {anchor.get('title')} right now.",
+                }
+
+            scored.sort(key=lambda x: x[0], reverse=True)
+
+            recommendations = []
+            for score, p, reasons in scored[:limit]:
+                variants = p.get("variants") or []
+                any_in_stock = any(_variant_in_stock(v) for v in variants) if variants else False
+                handle = p.get("handle")
+                image_url = (p.get("image") or {}).get("src")
+                if not image_url:
+                    images = p.get("images") or []
+                    if images:
+                        image_url = images[0].get("src")
+                prices = [v.get("price") for v in variants if v.get("price")]
+                recommendations.append({
+                    "product_id": p.get("id"),
+                    "title": p.get("title"),
+                    "handle": handle,
+                    "image_url": image_url,
+                    "product_url": f"https://{shop_domain}/products/{handle}" if handle else None,
+                    "price": prices[0] if prices else None,
+                    "matching_reason": "; ".join(reasons),
+                    "available": any_in_stock,
+                })
+
+            listed = ", ".join(r["title"] for r in recommendations)
+            return {
+                "success": True,
+                "anchor_product": anchor.get("title"),
+                "recommendations": recommendations,
+                "message": f"Based on {anchor.get('title')}, you might also like: {listed}.",
+            }
+        except Exception as e:
+            logger.error(f"Tool error [get_product_recommendations]: {e}")
+            return {"success": False, "message": "I couldn't pull up recommendations right now — let me get a team member to help."}
 
     async def create_back_in_stock_alert(self, email: str, sku: str) -> Dict[str, Any]:
         """Register a customer for a back-in-stock notification."""

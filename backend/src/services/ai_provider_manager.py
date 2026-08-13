@@ -130,8 +130,17 @@ class AIProviderManager:
         """
         Tries each configured provider in order (same messages/temperature/RAG
         context for every attempt — failover changes the key, not the prompt).
-        Returns (response, provider_label, model). Raises AllProvidersFailedError
-        if every provider fails. Never retries more than len(providers) times.
+        Returns (response, provider_label, model, usage). Raises
+        AllProvidersFailedError if every provider fails. Never retries more
+        than len(providers) times.
+
+        usage is a dict: {prompt_tokens, completion_tokens, total_tokens}
+        (each None if the provider's response didn't include a `.usage`
+        block — never fabricated as 0, which would be indistinguishable from
+        a genuinely free/zero-token call), plus latency_ms (wall-clock time
+        for this whole call, including any failed attempts before the
+        successful one) and attempts (1-indexed count of providers tried,
+        so a first-try success is 1, not 0).
         """
         if not self._providers:
             raise AllProvidersFailedError([{"label": "none", "reason": "no API keys configured"}])
@@ -173,7 +182,17 @@ class AIProviderManager:
                     f"[AI_PROVIDER] success provider={provider.label} model={provider.model} "
                     f"response_time={elapsed:.2f}s total_time={total:.2f}s"
                 )
-                return response, provider.label, provider.model
+                raw_usage = getattr(response, "usage", None)
+                usage = {
+                    "prompt_tokens": getattr(raw_usage, "prompt_tokens", None) if raw_usage else None,
+                    "completion_tokens": getattr(raw_usage, "completion_tokens", None) if raw_usage else None,
+                    "total_tokens": getattr(raw_usage, "total_tokens", None) if raw_usage else None,
+                    "latency_ms": round(total * 1000),
+                    "attempts": i + 1,
+                    "provider": provider.label,
+                    "model": provider.model,
+                }
+                return response, provider.label, provider.model, usage
 
             is_last = i == len(self._providers) - 1
             if not is_last:

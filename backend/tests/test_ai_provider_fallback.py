@@ -24,9 +24,13 @@ os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test")
 from src.services.ai_provider_manager import AIProviderManager, AllProvidersFailedError, _Provider
 
 
-def _fake_response(text="ok"):
+def _fake_response(text="ok", usage=None):
     resp = MagicMock()
     resp.choices = [MagicMock(message=MagicMock(content=text))]
+    if usage is not None:
+        resp.usage = MagicMock(**usage)
+    else:
+        resp.usage = None
     return resp
 
 
@@ -51,7 +55,7 @@ async def test_primary_key_works_no_fallback():
     fallback_client = MagicMock()
     mgr._clients["fallback_1"] = fallback_client
 
-    response, label, model = await mgr.create_chat_completion(messages=[{"role": "user", "content": "hi"}])
+    response, label, model, usage = await mgr.create_chat_completion(messages=[{"role": "user", "content": "hi"}])
 
     assert label == "primary"
     assert response.choices[0].message.content == "primary reply"
@@ -70,7 +74,7 @@ async def test_primary_rate_limited_falls_back():
     mgr._clients["fallback_1"] = fallback_client
 
     with patch("src.services.ai_provider_manager.asyncio.sleep", new=AsyncMock(return_value=None)):
-        response, label, model = await mgr.create_chat_completion(messages=[{"role": "user", "content": "hi"}])
+        response, label, model, usage = await mgr.create_chat_completion(messages=[{"role": "user", "content": "hi"}])
 
     assert label == "fallback_1"
     assert response.choices[0].message.content == "fallback reply"
@@ -188,7 +192,7 @@ async def test_mistral_exhausted_falls_back_to_groq():
     mgr._clients["groq_fallback_1"] = groq_client
 
     with patch("src.services.ai_provider_manager.asyncio.sleep", new=AsyncMock(return_value=None)):
-        response, label, model = await mgr.create_chat_completion(messages=[{"role": "user", "content": "hi"}])
+        response, label, model, usage = await mgr.create_chat_completion(messages=[{"role": "user", "content": "hi"}])
 
     assert label == "groq_fallback_1"
     assert response.choices[0].message.content == "groq reply"
@@ -216,6 +220,68 @@ def test_provider_failure_escalation_copy():
     # is always non-empty here, since the customer still gets a canned
     # acknowledgment).
     assert "ai_reply_generated" not in result
+
+
+@pytest.mark.asyncio
+async def test_usage_is_captured_from_a_successful_response():
+    mgr = _manager_with("primary")
+    client = MagicMock()
+    client.chat.completions.create.return_value = _fake_response(
+        "hi", usage={"prompt_tokens": 500, "completion_tokens": 120, "total_tokens": 620}
+    )
+    mgr._clients["primary"] = client
+
+    _response, label, _model, usage = await mgr.create_chat_completion(messages=[{"role": "user", "content": "hi"}])
+
+    assert label == "primary"
+    assert usage["prompt_tokens"] == 500
+    assert usage["completion_tokens"] == 120
+    assert usage["total_tokens"] == 620
+    assert usage["attempts"] == 1
+    assert usage["provider"] == "primary"
+    assert isinstance(usage["latency_ms"], int)
+
+
+@pytest.mark.asyncio
+async def test_usage_is_none_not_zero_when_provider_omits_it():
+    """A provider response with no usage block must report None for each
+    token field - never fabricate 0, which would be indistinguishable from a
+    genuinely free/zero-token call."""
+    mgr = _manager_with("primary")
+    client = MagicMock()
+    client.chat.completions.create.return_value = _fake_response("hi", usage=None)
+    mgr._clients["primary"] = client
+
+    _response, _label, _model, usage = await mgr.create_chat_completion(messages=[{"role": "user", "content": "hi"}])
+
+    assert usage["prompt_tokens"] is None
+    assert usage["completion_tokens"] is None
+    assert usage["total_tokens"] is None
+
+
+@pytest.mark.asyncio
+async def test_usage_reflects_the_successful_attempt_after_failover_not_the_failed_one():
+    """When the primary fails and the fallback succeeds, usage/attempts must
+    describe the whole call (2 attempts) using the fallback's real token
+    counts - not the primary's (which never returned any) and not just '1
+    attempt' as if failover never happened."""
+    mgr = _manager_with("primary", "fallback_1")
+    primary_client = MagicMock()
+    primary_client.chat.completions.create.side_effect = Rate429("429 rate limit")
+    mgr._clients["primary"] = primary_client
+    fallback_client = MagicMock()
+    fallback_client.chat.completions.create.return_value = _fake_response(
+        "fallback reply", usage={"prompt_tokens": 300, "completion_tokens": 80, "total_tokens": 380}
+    )
+    mgr._clients["fallback_1"] = fallback_client
+
+    with patch("src.services.ai_provider_manager.asyncio.sleep", new=AsyncMock(return_value=None)):
+        _response, label, _model, usage = await mgr.create_chat_completion(messages=[{"role": "user", "content": "hi"}])
+
+    assert label == "fallback_1"
+    assert usage["attempts"] == 2
+    assert usage["provider"] == "fallback_1"
+    assert usage["total_tokens"] == 380
 
 
 def test_fallback_response_also_excluded_from_quota():

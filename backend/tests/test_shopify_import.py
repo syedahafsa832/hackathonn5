@@ -95,6 +95,35 @@ class TestImportCollections:
         assert result == {"found": True, "count": 1}
 
 
+class TestImportProducts:
+    @pytest.mark.asyncio
+    async def test_product_price_is_not_baked_into_rag_content(self):
+        """Price must never be embedded into the RAG-imported product text -
+        it's read once at import time with no freshness/TTL mechanism, so a
+        stale price could reach the customer via RAG retrieval instead of
+        the live Shopify price-lookup tool. Description/title are fine
+        (static merchant content); price is a dynamic Shopify fact."""
+        client = _client()
+        fake_resp = MagicMock()
+        fake_resp.status_code = 200
+        fake_resp.json.return_value = {"products": [
+            {"title": "Essential Hoodie", "body_html": "<p>Cozy fleece</p>",
+             "variants": [{"price": "49.99"}]},
+        ]}
+        fake_resp.headers = {}
+
+        with patch.object(import_mod.requests, "get", return_value=fake_resp), \
+             patch.object(import_mod.brand_knowledge_service, "upload_text", new=AsyncMock(return_value={"success": True})) as mock_upload:
+            result = await import_mod._import_products(client, "brand-1")
+
+        assert result["found"] is True
+        _, kwargs = mock_upload.call_args
+        assert "Essential Hoodie" in kwargs["content"]
+        assert "Cozy fleece" in kwargs["content"]
+        assert "49.99" not in kwargs["content"]
+        assert "Price" not in kwargs["content"]
+
+
 class TestBuildImportReport:
     def test_mixed_success_and_scope_skips(self):
         summary = {

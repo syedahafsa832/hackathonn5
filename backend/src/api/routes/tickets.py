@@ -281,7 +281,7 @@ Write exactly 3 reply variations as JSON:
 
 JSON only, no markdown."""
 
-        resp, _label, _model = await ai_provider_manager.create_chat_completion(
+        resp, _label, _model, _usage = await ai_provider_manager.create_chat_completion(
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
         )

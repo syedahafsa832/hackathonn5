@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -154,6 +155,7 @@ class EmailGuardianService:
             body=(body or "")[:2000],
         )
         model = os.getenv("MISTRAL_MODEL", "mistral-large-latest")
+        call_start = time.monotonic()
 
         try:
             # Attempt with JSON mode first; fall back without it for older models
@@ -185,7 +187,19 @@ class EmailGuardianService:
             # key never turns into a silent false-positive block.
             relevant = bool(data.get("relevant", True))
 
-            logger.info(f"[Guardian] Classifier → {classification} ({confidence:.2f}) relevant={relevant}")
+            # Usage logged (not returned - _classify_email's (classification,
+            # confidence, relevant) tuple already has real callers unpacking
+            # exactly 3 values; widening it isn't worth the churn for an
+            # internal spam/quarantine gate that never reaches ai_conversations
+            # anyway). Same "never fabricate 0" rule as the other two call
+            # sites - raw_usage may be None if the provider omitted it.
+            raw_usage = getattr(response, "usage", None)
+            total_tokens = getattr(raw_usage, "total_tokens", None) if raw_usage else None
+            latency_ms = round((time.monotonic() - call_start) * 1000)
+            logger.info(
+                f"[Guardian] Classifier → {classification} ({confidence:.2f}) relevant={relevant} "
+                f"tokens={total_tokens} latency_ms={latency_ms}"
+            )
             return (classification, confidence, relevant)
 
         except Exception as e:

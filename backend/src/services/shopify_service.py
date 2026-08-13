@@ -467,22 +467,55 @@ class ShopifyClient:
             logger.error(f"[Shopify] Error listing orders by email: {e}")
             raise ShopifyError(str(e), ShopifyErrorCode.UNKNOWN_ERROR)
 
+    # Every field any product-facing caller (title search, recommendations)
+    # currently needs, fetched once. Adding a field here makes it available
+    # everywhere without a second Shopify round trip — do not add a parallel
+    # fetch elsewhere for a field that could just be added to this list.
+    _PRODUCT_FIELDS = "id,title,variants,status,handle,images,image,options,product_type,vendor,tags"
+
+    async def list_active_products(self, limit: int = 250) -> List[Dict[str, Any]]:
+        """Shared underlying fetch for every product-listing operation
+        (title search, recommendations). One Shopify call, reused — never
+        duplicate this fetch in a second method. Public because
+        tools.get_product_recommendations() calls it directly to build its
+        own deterministic candidate scoring on top, the same way
+        get_inventory_status() already builds variant/stock logic on top of
+        find_products_by_title()'s raw data."""
+        result = self._request(
+            "GET",
+            "products.json",
+            params={"limit": limit, "fields": self._PRODUCT_FIELDS}
+        )
+        products = result.get("data", {}).get("products", [])
+        return [p for p in products if p.get("status") == "active"]
+
     async def find_products_by_title(self, query: str, limit: int = 250) -> Dict[str, Any]:
-        """Search real Shopify products by (case-insensitive, substring) title
-        match. Shopify's REST title filter is exact-match only, so this scans
-        a bounded recent page client-side, same fallback shape as get_order's
-        order_number scan. Returns every match rather than the first one —
-        an ambiguous product name (e.g. "hoodie" matching 4 products) must be
-        surfaced as a choice, never guessed."""
+        """Search real Shopify products by (case-insensitive, whole-word)
+        title match. Shopify's REST title filter is exact-match only, so this
+        scans a bounded recent page client-side, same fallback shape as
+        get_order's order_number scan. Returns every match rather than the
+        first one — an ambiguous product name (e.g. "hoodie" matching 4
+        products) must be surfaced as a choice, never guessed.
+
+        Includes handle/images/options — needed by get_inventory_status() to
+        build a real storefront product URL and label variant options (size/
+        color/etc) correctly instead of assuming option1 is always size.
+        Nothing here is fabricated: any field Shopify doesn't return for a
+        product is simply absent, never invented downstream."""
         try:
-            result = self._request(
-                "GET",
-                "products.json",
-                params={"limit": limit, "fields": "id,title,variants,status"}
-            )
-            products = result.get("data", {}).get("products", [])
+            products = await self.list_active_products(limit)
             needle = query.strip().lower()
-            matches = [p for p in products if needle in (p.get("title") or "").lower() and p.get("status") == "active"]
+            # Word-boundary match, not a bare substring: a bare `needle in
+            # title` check treats "essential hoodie v1" as present inside
+            # "essential hoodie v10" (v1 is a literal prefix of v10),
+            # producing false ambiguous matches for precisely-named products
+            # (confirmed live against a real store). \b still matches at
+            # whitespace/punctuation, so partial/prefix title searches like
+            # "hoodie" or "essential hoodie" keep matching every product that
+            # contains them as whole words, exactly as before — it only
+            # refuses to match mid-token (digit-digit, letter-letter).
+            pattern = re.compile(r'\b' + re.escape(needle) + r'\b', re.IGNORECASE) if needle else None
+            matches = [p for p in products if pattern and pattern.search(p.get("title") or "")]
             return {"success": True, "products": matches, "count": len(matches)}
         except ShopifyError:
             raise
@@ -530,6 +563,19 @@ class ShopifyClient:
             raise ShopifyError(
                 "Order has already been fully refunded.",
                 ShopifyErrorCode.ORDER_ALREADY_REFUNDED
+            )
+
+        # A caller-provided (partial) amount must never exceed what's
+        # actually still refundable on this order — Shopify's own API may or
+        # may not reject an over-amount request depending on version/gateway,
+        # so this is checked deterministically here rather than relying on
+        # that. Never inferred, never guessed: refundable_amount comes
+        # straight from this order's live total minus its existing refunds.
+        if amount > status["refundable_amount"] + 0.01:  # small epsilon for float rounding
+            raise ShopifyError(
+                f"Requested refund amount (${amount:.2f}) exceeds the refundable amount "
+                f"(${status['refundable_amount']:.2f}) for this order.",
+                ShopifyErrorCode.INVALID_REQUEST
             )
 
         # Fetch the sale/capture transaction to use as parent_id
@@ -725,12 +771,31 @@ class ShopifyClient:
 
         result = self._request("PUT", f"orders/{shopify_order_id}.json", update_data)
         updated_order = result.get("data", {}).get("order", {})
+        returned_address = updated_order.get("shipping_address") or {}
+
+        # Defense in depth (same pattern as cancel_order/process_refund):
+        # a 200 here doesn't guarantee Shopify actually applied every field —
+        # a partial validation failure can still return 200 with the old
+        # address, or with some fields silently dropped. Compare the fields
+        # we actually sent against what Shopify echoes back before reporting
+        # success; only fields we explicitly requested a change for are
+        # checked, since Shopify may reformat cosmetic fields (e.g. phone).
+        mismatched = [
+            field for field in ("address1", "city", "country", "zip")
+            if field in shipping_address and shipping_address[field] != returned_address.get(field)
+        ]
+        if mismatched:
+            raise ShopifyError(
+                f"Shopify did not confirm the address update — {', '.join(mismatched)} "
+                f"did not match the requested value. Please verify manually in Shopify admin.",
+                ShopifyErrorCode.UNKNOWN_ERROR,
+            )
 
         return {
             "success": True,
             "order_id": order_id,
             "order_name": order.get("name"),
-            "new_address": updated_order.get("shipping_address"),
+            "new_address": returned_address,
             "message": f"Successfully updated shipping address for order {order.get('name')}"
         }
 
