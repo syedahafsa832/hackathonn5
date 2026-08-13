@@ -84,9 +84,14 @@ def _map_resolution_step(intent: Optional[str], status: Optional[str]) -> str:
     return "understanding"
 
 
-def _map_action_result(intent: Optional[str], status: Optional[str], order_data: Optional[dict]) -> Optional[dict]:
-    """Build action_result dict from agent intent/status for widget ActionResultCard."""
-    if status not in ("auto_resolved", "action_taken"):
+def _map_action_result(intent: Optional[str], action_taken: Optional[dict], order_data: Optional[dict]) -> Optional[dict]:
+    """Build action_result dict from the REAL staged-action outcome
+    (customer_success_agent's "action_taken", sourced from
+    return_actions_integration._create_action's actual Supabase insert) —
+    never from the LLM's self-reported intent/status. A customer must not be
+    told a refund/cancel/address-change request was staged unless a pending
+    action row was actually created for it."""
+    if not action_taken or not action_taken.get("success"):
         return None
     order_number = (order_data or {}).get("orderNumber", "")
     if intent == "refund_request":
@@ -267,7 +272,7 @@ async def chat(request: Request, body: ChatRequest):
         agent_status = result.get("status")
         result_resolution_step = _map_resolution_step(agent_intent, agent_status)
         result_order_data = result.get("order_data")
-        result_action_result = _map_action_result(agent_intent, agent_status, result_order_data)
+        result_action_result = _map_action_result(agent_intent, result.get("action_taken"), result_order_data)
         result_resolution_complete = agent_status in ("auto_resolved", "escalated")
 
         ticket_escalate = result.get("escalate", False)

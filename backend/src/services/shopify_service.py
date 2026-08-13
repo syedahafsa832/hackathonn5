@@ -891,9 +891,20 @@ class ShopifyService:
         Checks the brands table first (multi-brand setup), then falls back to tenants table.
         """
         # --- Try brands table first (credentials stored via Brands page) ---
-        brands = supabase_select("brands", {"is_active": "eq.true", "limit": "1"})
-        if brands:
-            brand = brands[0]
+        # Must be scoped to this tenant: the old `is_active=true, limit=1`
+        # query had no tenant_id filter at all, so it could return an
+        # unrelated tenant's brand (or miss this tenant's own connected
+        # brand entirely if it wasn't the arbitrary first row). Prefer an
+        # active brand, matching the tenant-scoped lookup pattern already
+        # used elsewhere (e.g. saas_settings.py's _get_tenant_brand_async),
+        # but fall back to any brand owned by this tenant — "is_active"
+        # doesn't correlate with whether Shopify is actually connected, so a
+        # connected brand that happens to be inactive must still be found.
+        brands = supabase_select("brands", {"tenant_id": f"eq.{tenant_id}", "is_active": "is.true"})
+        if not brands:
+            brands = supabase_select("brands", {"tenant_id": f"eq.{tenant_id}"})
+        brand = next((b for b in brands if b.get("shopify_connected")), None)
+        if brand:
             shop_name = brand.get("shopify_shop_name") or brand.get("shopify_domain", "")
             raw_token = brand.get("shopify_access_token", "")
             access_token = decrypt_token(raw_token) if raw_token else ""

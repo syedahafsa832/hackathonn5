@@ -444,29 +444,35 @@ class CustomerSuccessAgent:
                     else:
                         tool_context += f"INVENTORY LOOKUP: {inv.get('message', 'Could not verify inventory')}. Do NOT guess stock levels — use this message as-is or offer to have a team member confirm.\n"
 
-            # 4. Return/Exchange Action Layer — skip LLM intent call for chat (saves API call)
+            # 4. Return/Exchange Action Layer — runs identically for chat and
+            # Gmail. Chat used to skip this entirely (relying on the main
+            # structured-response "intent" field the model self-reports),
+            # which meant chat customers could be told a refund/cancel/
+            # address-change request was "sent to our team" when no action
+            # row was ever created. Real eligibility check + staging must run
+            # on every channel — this is the only source of truth for
+            # whether an action actually exists.
             action_context = ""
-            if not _is_chat:
-                from src.services.intent_detector import intent_detector as _intent_detector
-                _intent_result = await _intent_detector.detect(query)
-                if _intent_result.has_action:
-                    logger.info(f"[ReturnActions] Intent detected: {_intent_result.action_type} (order={_intent_result.order_id}, source={_intent_result.source})")
-                    action_result = await return_actions.handle_return_intent(
-                        query=query,
-                        customer_info=customer_info,
-                        existing_tool_results=tool_results,
-                        tenant_id=tenant_id,
-                        brand_id=store_id,
-                        ticket_id=ticket_id,
-                        intent_result=_intent_result,
-                    )
-                    action_context = action_result.get("action_context", "")
-                    logger.info(f"[ReturnActions] Action context: {action_context[:200] if action_context else 'EMPTY'}")
-                    tool_results["return_action"] = action_result
-                else:
-                    logger.info(f"[ReturnActions] No action intent (source={_intent_result.source})")
+            action_taken = None
+            from src.services.intent_detector import intent_detector as _intent_detector
+            _intent_result = await _intent_detector.detect(query)
+            if _intent_result.has_action:
+                logger.info(f"[ReturnActions] Intent detected: {_intent_result.action_type} (order={_intent_result.order_id}, source={_intent_result.source})")
+                action_result = await return_actions.handle_return_intent(
+                    query=query,
+                    customer_info=customer_info,
+                    existing_tool_results=tool_results,
+                    tenant_id=tenant_id,
+                    brand_id=store_id,
+                    ticket_id=ticket_id,
+                    intent_result=_intent_result,
+                )
+                action_context = action_result.get("action_context", "")
+                logger.info(f"[ReturnActions] Action context: {action_context[:200] if action_context else 'EMPTY'}")
+                tool_results["return_action"] = action_result
+                action_taken = action_result.get("staged")
             else:
-                logger.info("[ReturnActions] Skipping intent detection for chat mode")
+                logger.info(f"[ReturnActions] No action intent (source={_intent_result.source})")
 
             # 5. Response Generation
             system_prompt = self._construct_v3_prompt(customer_info, rag_context, sizing_context, tool_context, action_context, brand_name=_brand_name, agent_name=_agent_name, style_block=_style_block)
@@ -601,6 +607,11 @@ class CustomerSuccessAgent:
                     "paymentStatus": _payment_status,
                     "cancelledAt": _os.get("cancelled_at"),
                 }
+
+            # The real staging outcome (or None if no action was created) —
+            # callers must use this, not the "intent"/"status" fields above,
+            # to decide whether to tell the customer an action was staged.
+            structured["action_taken"] = action_taken
 
             structured["model_used"] = _model
             # Only the real, model-generated path sets this — both
