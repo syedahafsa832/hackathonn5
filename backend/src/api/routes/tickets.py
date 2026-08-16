@@ -116,6 +116,14 @@ async def get_ticket(
         # Tickets use store_id as the brand FK (brand_id is a secondary alias on some rows)
         ticket_brand_id = ticket.get("brand_id") or ticket.get("store_id")
 
+        # conversation_overrides (not tickets.status) is the authoritative source
+        # for "is a human actively managing this" - send-reply overwrites
+        # tickets.status to "resolved" on every manual send (legitimate ticket-
+        # lifecycle behavior, not a takeover release), so status alone can't be
+        # trusted for this. The dashboard reads this field instead of deriving
+        # it from status.
+        ticket["human_override_active"] = await supabase_service.check_conversation_override(ticket_id)
+
         # Verify the ticket belongs to one of this tenant's brands
         brand_ids = await _get_tenant_brand_ids(tenant)
         if brand_ids is not None and ticket_brand_id not in brand_ids:

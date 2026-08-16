@@ -479,11 +479,14 @@ export default function TicketDetail() {
     );
   }
 
-  // ticket.handler was never a real field — takeover/release only ever write
-  // ticket.status ('human_managing' / 'open'), so this check always fell
-  // through to false and the reply box stayed locked even after a
-  // successful takeover.
-  const isHumanHandled = ticket.status === 'human_managing';
+  // conversation_overrides.active (surfaced by the backend as
+  // human_override_active) is the authoritative signal, not ticket.status —
+  // sending a manual reply while in Human Mode overwrites status to
+  // "resolved" (legitimate ticket-lifecycle behavior, not a takeover
+  // release), which used to make this flip back to showing "AI is handling
+  // this" even though the override was still active. status is kept as a
+  // fallback for tickets fetched before this field existed.
+  const isHumanHandled = ticket.human_override_active === true || ticket.status === 'human_managing';
 
   return (
     <div className="split-panel" style={{ padding: '24px', gap: '24px', alignItems: 'flex-start' }}>
