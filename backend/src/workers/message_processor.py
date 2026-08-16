@@ -10,6 +10,13 @@ import uuid
 from src.services.supabase_service import supabase_service
 from src.agent.customer_success_agent import customer_success_agent
 from src.lib.supabase_client import supabase_select, supabase_update
+# _log_conversation lives on brand_message_processor.py's singleton (BrandMessageProcessor
+# is stateless aside from a `running` flag - the method reads no self state), reused here
+# rather than duplicated. This module (message_processor.py, wired to the real EmailPoller
+# in main.py) is the actual live email path - brand_message_processor.py itself has no
+# other caller in production, so ai_conversations was never being written for real email
+# traffic despite the write logic existing there.
+from src.workers.brand_message_processor import brand_message_processor
 
 # SaaS Multi-Tenant Action Detection (optional - fails gracefully if not set up)
 try:
@@ -298,6 +305,22 @@ class UnifiedMessageProcessor:
             intent = ai_result.get("intent", "unknown")
             risk_level = ai_result.get("risk_level", "medium")
             reply_body = ai_result.get("reply_body", "")
+
+            # ai_conversations persistence — real per-message token/latency usage.
+            # early_ticket_id may be None on the very first message of a brand-new
+            # ticket (created later in STAGE 6/9 below); in that case there's no
+            # ticket_id yet to attach this row to, so it's skipped rather than
+            # logged with a dangling reference — the same information (model/
+            # usage) is still available via logs for that one message.
+            if early_ticket_id:
+                await brand_message_processor._log_conversation(
+                    brand_id=store_id,
+                    ticket_id=early_ticket_id,
+                    user_message=content,
+                    ai_response=reply_body,
+                    model=ai_result.get("model_used") or "unknown",
+                    usage=ai_result.get("ai_usage"),
+                )
 
             logger.info(f"[PROCESSOR] AI Result - Intent: {intent}, Confidence: {confidence:.0%}, Risk: {risk_level}")
             logger.info(f"[PROCESSOR] AI Reply Preview: {reply_body[:100]}..." if reply_body else "[PROCESSOR] No reply generated")

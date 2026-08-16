@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 import logging
 import asyncio
@@ -7,6 +8,12 @@ from src.lib.supabase_client import supabase_select, supabase_insert, supabase_u
 from src.config import SHOPIFY_API_VERSION
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_html(html: Optional[str]) -> str:
+    text = re.sub(r"<[^>]+>", " ", html or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
 def _variant_in_stock(v: Dict[str, Any]) -> bool:
@@ -489,6 +496,13 @@ class V3Tools:
                     "price": prices[0] if prices else None,
                     "matching_reason": "; ".join(reasons),
                     "available": any_in_stock,
+                    # Real merchant-written description, truncated - the model
+                    # is instructed (customer_success_agent.py tool_context) to
+                    # only cite material/fit/attribute claims found in this
+                    # text, never invent them. None (not "") when Shopify has
+                    # no body_html, so the prompt instruction can tell "nothing
+                    # to draw from" apart from "there is a description".
+                    "description": _strip_html(p.get("body_html"))[:280] or None if p.get("body_html") else None,
                 })
 
             listed = ", ".join(r["title"] for r in recommendations)
@@ -501,6 +515,93 @@ class V3Tools:
         except Exception as e:
             logger.error(f"Tool error [get_product_recommendations]: {e}")
             return {"success": False, "message": "I couldn't pull up recommendations right now — let me get a team member to help."}
+
+    async def discover_products_by_category(
+        self,
+        category: str,
+        shop_domain: str = None,
+        access_token: str = None,
+        limit: int = 6,
+    ) -> Dict[str, Any]:
+        """Category/need-based discovery for queries with no specific anchor
+        product to compare against — "I need a hoodie for winter" rather than
+        "something similar to the Essential Hoodie". get_product_recommendations()
+        can't handle this: it requires resolving one exact anchor product
+        first. This instead matches live Shopify product_type (falling back to
+        a title-word search) against the customer's stated category —
+        deterministic substring match, no ML/embeddings, same live-verified
+        philosophy as the rest of this file. Never invents a product.
+
+        If too many products match with nothing else to narrow by, this asks
+        the customer to narrow down (budget/style) rather than dumping the
+        whole catalog or guessing which one they meant — the same "ask,
+        don't guess" principle as the ambiguous-title case elsewhere. Note:
+        a follow-up reply narrowing the request (e.g. "under $50, relaxed
+        fit") is a NEW message with no cross-turn anchor tracking back to
+        "hoodie" — that's an existing, documented limitation of this
+        architecture, not something this method solves.
+        """
+        if not shop_domain or not access_token:
+            return {"success": False, "message": "I can't look up products right now — let me get a team member to help."}
+
+        try:
+            from src.services.shopify_service import ShopifyClient
+            client = ShopifyClient(shop_domain, access_token)
+            products = await client.list_active_products()
+
+            needle = category.strip().lower()
+            matches = [p for p in products if needle and needle in (p.get("product_type") or "").strip().lower()]
+            if not matches:
+                # product_type didn't match (e.g. category word isn't how this
+                # merchant labels it) — fall back to a title-word search
+                # rather than reporting "we don't carry that" prematurely.
+                title_result = await client.find_products_by_title(category)
+                matches = title_result.get("products", [])
+
+            if not matches:
+                return {
+                    "success": True,
+                    "no_candidates": True,
+                    "category": category,
+                    "message": f"I don't see any {category} in our current collection right now.",
+                }
+
+            if len(matches) > limit:
+                return {
+                    "success": True,
+                    "needs_clarification": True,
+                    "category": category,
+                    "match_count": len(matches),
+                    "message": (
+                        f"We have quite a few {category} options — could you tell me your budget, "
+                        "and whether you'd prefer a relaxed or fitted style, so I can point you to the right one?"
+                    ),
+                }
+
+            results = []
+            for p in matches[:limit]:
+                variants = p.get("variants") or []
+                any_in_stock = any(_variant_in_stock(v) for v in variants) if variants else False
+                handle = p.get("handle")
+                prices = [v.get("price") for v in variants if v.get("price")]
+                results.append({
+                    "title": p.get("title"),
+                    "product_url": f"https://{shop_domain}/products/{handle}" if handle else None,
+                    "price": prices[0] if prices else None,
+                    "available": any_in_stock,
+                    "description": _strip_html(p.get("body_html"))[:280] or None if p.get("body_html") else None,
+                })
+
+            listed = ", ".join(r["title"] for r in results)
+            return {
+                "success": True,
+                "category": category,
+                "recommendations": results,
+                "message": f"Here's what we have in {category}: {listed}.",
+            }
+        except Exception as e:
+            logger.error(f"Tool error [discover_products_by_category]: {e}")
+            return {"success": False, "message": "I couldn't pull up products right now — let me get a team member to help."}
 
     async def create_back_in_stock_alert(self, email: str, sku: str) -> Dict[str, Any]:
         """Register a customer for a back-in-stock notification."""

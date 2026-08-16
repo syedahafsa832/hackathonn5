@@ -471,7 +471,7 @@ class ShopifyClient:
     # currently needs, fetched once. Adding a field here makes it available
     # everywhere without a second Shopify round trip — do not add a parallel
     # fetch elsewhere for a field that could just be added to this list.
-    _PRODUCT_FIELDS = "id,title,variants,status,handle,images,image,options,product_type,vendor,tags"
+    _PRODUCT_FIELDS = "id,title,variants,status,handle,images,image,options,product_type,vendor,tags,body_html"
 
     async def list_active_products(self, limit: int = 250) -> List[Dict[str, Any]]:
         """Shared underlying fetch for every product-listing operation

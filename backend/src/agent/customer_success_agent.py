@@ -433,6 +433,20 @@ class CustomerSuccessAgent:
             _similar_kw = ["similar", "something like", "anything like", "alternative", "recommend", "what other", "other hoodies", "other shirts", "other options"]
             _is_recommendation_query = any(kw in query_lower for kw in _complementary_kw + _similar_kw)
 
+            # Discovery queries — "I need a hoodie for winter, what would you
+            # suggest" — have no specific anchor product to be "similar to",
+            # so they don't match _similar_kw's patterns (which all require an
+            # anchor after the keyword) and previously fell through to a plain
+            # LLM response with no live product data at all, which is exactly
+            # how the model ended up inventing material/fit details for
+            # products it never actually looked up. Handled as its own
+            # category-based path (discover_products_by_category), not routed
+            # through the anchor-based recommendation flow above.
+            _discovery_kw = ["what would you suggest", "any suggestions", "what do you suggest", "what should i get",
+                              "what should i buy", "looking for a", "looking for something", "need something for",
+                              "help me choose", "help me pick", "what would you recommend"]
+            _is_discovery_query = (not _is_recommendation_query) and any(kw in query_lower for kw in _discovery_kw)
+
             # Check for inventory/product/price inquiry. The keyword gate below
             # is what keeps unrelated messages from ever reaching Shopify — a
             # product search only runs when both the gate AND one of the
@@ -444,7 +458,7 @@ class CustomerSuccessAgent:
             # much is the Winter Parka?" reach the live tool the same as
             # "hoodie" always did. A miss here just means no live lookup runs
             # (falls back to normal RAG/LLM handling) — never a guess.
-            if not _is_recommendation_query and any(kw in query_lower for kw in ["in stock", "available", "inventory", "do you have", "how much", "price", "cost"]):
+            if not _is_recommendation_query and not _is_discovery_query and any(kw in query_lower for kw in ["in stock", "available", "inventory", "do you have", "how much", "price", "cost"]):
                 product = None
                 for pattern in (
                     # Trigger-word variants first — non-greedy up to the FIRST
@@ -511,6 +525,22 @@ class CustomerSuccessAgent:
                         shop_domain=_brand_shopify_domain,
                         access_token=_brand_shopify_token,
                         intent=rec_intent,
+                    )
+
+            # Discovery query — "I need a hoodie for winter, what would you
+            # suggest" — no anchor product to compare against, so pull a
+            # plain category word out of the message instead (same small,
+            # deterministic category list the inventory-trigger fallback
+            # already uses) and hand it to discover_products_by_category().
+            # No category word found just means no live lookup runs, same
+            # fallback-to-normal-handling rule as every other trigger here.
+            elif _is_discovery_query:
+                _category_match = re.search(r'(hoodie|jacket|pants|shirt|tshirt|coat|dress|skirt)', query_lower)
+                if _category_match:
+                    tool_results["recommendations"] = await v3_tools.discover_products_by_category(
+                        _category_match.group(1),
+                        shop_domain=_brand_shopify_domain,
+                        access_token=_brand_shopify_token,
                     )
 
             # 3b. Aftership live tracking — runs only when order was found and has a tracking number
@@ -600,6 +630,11 @@ class CustomerSuccessAgent:
                         tool_context += f"{rec.get('message')} Do NOT invent a complementary/pairing suggestion — say this honestly, exactly as given.\n"
                     elif rec.get("no_candidates"):
                         tool_context += f"{rec.get('message')} Do NOT invent a similar product — there genuinely isn't a confident match.\n"
+                    elif rec.get("needs_clarification"):
+                        tool_context += (
+                            f"TOO MANY MATCHES for '{rec.get('category')}' ({rec.get('match_count')} products) — "
+                            f"do not list them. Ask the customer this exact clarifying question instead: {rec.get('message')}\n"
+                        )
                     elif rec.get("success") and rec.get("recommendations"):
                         tool_context += f"{rec.get('message')}\n"
                         for r in rec["recommendations"]:
@@ -607,11 +642,22 @@ class CustomerSuccessAgent:
                             if r.get("price"):
                                 line += f" (${r['price']})"
                             line += f" — {'in stock' if r.get('available') else 'currently out of stock'}"
-                            line += f" — why it's suggested: {r.get('matching_reason') or 'similar product'}"
+                            if r.get("matching_reason"):
+                                line += f" — why it's suggested: {r['matching_reason']}"
+                            if r.get("description"):
+                                line += f" — description: {r['description']}"
                             if r.get("product_url"):
                                 line += f" — link: {r['product_url']}"
                             tool_context += line + "\n"
-                        tool_context += "Only mention the products listed above with their actual reason/availability/link exactly as given — do not invent additional recommendations, prices, links, or claim \"customers also bought\" style behavioral claims not present here.\n"
+                        tool_context += (
+                            "Only mention the products listed above with their actual reason/availability/link "
+                            "exactly as given — do not invent additional recommendations, prices, or links. "
+                            "CRITICAL: only state material, warmth, fit, fabric, or other physical/quality attributes "
+                            "that are explicitly written in the \"description\" field above for that exact product — "
+                            "if a product has no description field, do NOT invent one (no \"soft\", \"breathable\", "
+                            "\"relaxed fit\", \"Merino wool\", etc. unless that exact word appears in its description). "
+                            "Never claim \"customers also bought\" style behavioral claims not present here.\n"
+                        )
                     else:
                         tool_context += f"RECOMMENDATION LOOKUP: {rec.get('message', 'Could not look up recommendations')}. Do NOT invent a recommendation — use this message as-is or offer to have a team member help.\n"
 
@@ -874,6 +920,11 @@ class CustomerSuccessAgent:
         3. NEVER use words like "processed", "approved", "completed", "done"
         4. Always say the request is "being reviewed" or "sent for confirmation"
         5. If not eligible - be honest and offer alternatives
+        6. NEVER invent a specific policy detail - a time window ("within 2 hours of ordering"),
+           a cutoff, a fee, a percentage, or any other concrete rule - unless that exact detail
+           appears in KNOWLEDGE BASE or RETURN/EXCHANGE STATUS below. If asked how a policy works
+           and no grounded detail is available, say you'll need to confirm the specifics rather
+           than guessing a number.
 
         COMMON SENSE — READ ORDER STATUS BEFORE RESPONDING:
         - If ORDER DATA says "CANCELLED" — do NOT offer cancellation. Acknowledge it is cancelled already.
