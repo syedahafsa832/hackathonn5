@@ -117,6 +117,7 @@ class UnifiedMessageProcessor:
 
             # ========== STAGE 1.8: CREATE TICKET IMMEDIATELY (visible in dashboard now) ==========
             early_ticket_id = None
+            early_ticket = None
             try:
                 early_ticket = await supabase_service.create_ticket({
                     "store_id": store_id,
@@ -274,6 +275,23 @@ class UnifiedMessageProcessor:
                     }
 
             # ========== STAGE 5: AI ANALYSIS ==========
+            # customer_info["history"] - _construct_v3_prompt() defaults this to
+            # the literal string "New customer" whenever it's absent, which is
+            # what it always was here: get_or_create_customer() returns a
+            # customers-table row (id/email/name/phone) with no message
+            # content at all. Populated from the ticket already created above
+            # (STAGE 1.8) - same conversation only, not other tickets from this
+            # customer (a separate, larger product decision). Kept short/
+            # truncated on purpose: this is a compact hint for the model, not a
+            # transcript dump.
+            _history_messages = (early_ticket or {}).get("messages") or []
+            if _history_messages:
+                _history_lines = [
+                    f"{'Customer' if m.get('direction') == 'inbound' else 'Support'}: {(m.get('body') or '')[:200]}"
+                    for m in _history_messages[-6:]
+                ]
+                customer["history"] = "\n".join(_history_lines)
+
             t_ai_start = time.monotonic()
             logger.info(f"[PROCESSOR] Generating AI response (tenant_id={tenant_id})...")
             ai_result = await customer_success_agent.generate_channel_appropriate_response(

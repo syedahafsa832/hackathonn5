@@ -458,7 +458,7 @@ class CustomerSuccessAgent:
             # much is the Winter Parka?" reach the live tool the same as
             # "hoodie" always did. A miss here just means no live lookup runs
             # (falls back to normal RAG/LLM handling) — never a guess.
-            if not _is_recommendation_query and not _is_discovery_query and any(kw in query_lower for kw in ["in stock", "available", "inventory", "do you have", "how much", "price", "cost"]):
+            if not _is_recommendation_query and not _is_discovery_query and any(kw in query_lower for kw in ["in stock", "available", "inventory", "do you have", "how much", "price", "cost", "tell me about", "describe"]):
                 product = None
                 for pattern in (
                     # Trigger-word variants first — non-greedy up to the FIRST
@@ -473,6 +473,14 @@ class CustomerSuccessAgent:
                     r"is\s+(?:the |a |an )?(.+?)\s+(?:in stock|available)\b",
                     r"how much (?:is|does)\s+(?:the |a |an )?(.+?)(?:\s+cost)?\s*\??$",
                     r"what(?:'s| is) the price of\s+(?:the |a |an )?(.+?)\s*\??$",
+                    # Product-detail requests ("tell me about the Premium Hoodie
+                    # V23", "describe the Essential Hoodie") — previously
+                    # matched nothing, so this class of question got only
+                    # whatever RAG happened to retrieve (frozen at last import,
+                    # no live price/availability, no signal to the model that
+                    # it might be stale) instead of a live lookup.
+                    r"tell me (?:more )?about\s+(?:the |a |an )?(.+?)\s*\??$",
+                    r"describe\s+(?:the |a |an )?(.+?)\s*\??$",
                 ):
                     m = re.search(pattern, query_lower)
                     if m:
@@ -491,6 +499,34 @@ class CustomerSuccessAgent:
                         shop_domain=_brand_shopify_domain,
                         access_token=_brand_shopify_token,
                     )
+
+            # "what is X" is deliberately NOT in the keyword gate above — it's
+            # also the single most common phrasing for policy/account
+            # questions ("what is your return policy", "what is my order
+            # status"), which would otherwise get a wasted, wrong Shopify
+            # lookup and an honest-but-unhelpful "couldn't find that" instead
+            # of their real answer from RAG/order lookup. Only fires here when
+            # the extracted phrase itself looks product-like — contains a
+            # digit (e.g. "V23") or one of the known category words — narrow
+            # enough to catch "what is the Premium Hoodie V23" without
+            # catching ordinary policy questions.
+            if (
+                "inventory" not in tool_results
+                and not _is_recommendation_query and not _is_discovery_query
+                and "what is" in query_lower
+            ):
+                m = re.search(r"what is\s+(?:the |a |an )?(.+?)\s*\??$", query_lower)
+                if m:
+                    candidate = m.group(1).strip(" ?.!")
+                    looks_product_like = bool(re.search(r'\d', candidate)) or bool(
+                        re.search(r'(hoodie|jacket|pants|shirt|tshirt|coat|dress|skirt)', candidate)
+                    )
+                    if len(candidate) >= 2 and looks_product_like:
+                        tool_results["inventory"] = await v3_tools.get_inventory_status(
+                            candidate,
+                            shop_domain=_brand_shopify_domain,
+                            access_token=_brand_shopify_token,
+                        )
 
             # Check for a product-recommendation request ("show me something
             # similar", "what else do you have", "what goes with this").
@@ -897,7 +933,9 @@ class CustomerSuccessAgent:
         - WRONG: "I'd love to help—could you share your order number?"
         - RIGHT: "I'd love to help! Could you share your order number?"
 
-        KNOWLEDGE BASE:
+        KNOWLEDGE BASE (authoritative ONLY for claims explicitly present in the text below —
+        do NOT invent material, fit, texture, quality, popularity, durability, price,
+        availability, or marketing claims that aren't written here):
         {rag_context}
 
         SIZING:
