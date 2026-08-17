@@ -6,8 +6,9 @@ export default function PricingCard({ plan, isCurrent, isPopular, foundingActive
   const [hover, setHover] = useState(false);
   const isScale = plan.id === 'enterprise';
   const features = FEATURES[plan.id] ? FEATURES[plan.id](plan) : [];
-  const showFounding = foundingActive && plan.price_monthly_original != null;
-  const displayPrice = showFounding ? plan.price_monthly : (plan.price_monthly_original ?? plan.price_monthly);
+  // "Founding price" is a plain limited-spots label, not a struck-through
+  // discount — Scale never carries it (no founding price for that plan).
+  const showFounding = foundingActive && (plan.id === 'starter' || plan.id === 'growth');
 
   const cta = isCurrent
     ? { label: 'Current Plan', disabled: true }
@@ -48,20 +49,29 @@ export default function PricingCard({ plan, isCurrent, isPopular, foundingActive
         {SHORT_DESCRIPTIONS[plan.id]}
       </div>
 
+      {showFounding && (
+        <div style={{
+          alignSelf: 'flex-start', marginTop: '14px', fontSize: '11px', fontWeight: '700',
+          color: 'var(--cyan-700, #0E7490)', background: 'var(--cyan-50, #ECFEFF)',
+          border: '1px solid var(--cyan-200, #A5F3FC)', borderRadius: '999px', padding: '3px 10px',
+        }}>
+          {plan.id === 'starter' ? 'Founding price — limited founding spots' : 'Founding price'}
+        </div>
+      )}
+
       <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', margin: '18px 0 4px' }}>
-        {isScale ? (
+        {plan.price_monthly == null ? (
           <span style={{ fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)' }}>Custom</span>
         ) : (
           <>
-            {showFounding && (
-              <span style={{ fontSize: '15px', color: 'var(--text-tertiary)', textDecoration: 'line-through', fontFamily: 'DM Mono, monospace' }}>
-                ${plan.price_monthly_original}
+            <span style={{ fontSize: '32px', fontWeight: '700', color: 'var(--text-primary)', fontFamily: 'DM Mono, monospace', letterSpacing: '-0.02em' }}>
+              {plan.price_monthly === 0 ? 'Free' : `$${plan.price_monthly}`}
+            </span>
+            {plan.price_monthly !== 0 && (
+              <span style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>
+                {isScale ? '/month+' : '/month'}
               </span>
             )}
-            <span style={{ fontSize: '32px', fontWeight: '700', color: 'var(--text-primary)', fontFamily: 'DM Mono, monospace', letterSpacing: '-0.02em' }}>
-              {plan.price_monthly === 0 ? 'Free' : `$${displayPrice}`}
-            </span>
-            {plan.price_monthly !== 0 && <span style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>/month</span>}
           </>
         )}
       </div>

@@ -11,39 +11,58 @@ export function fmt(n) {
 
 export const SHORT_DESCRIPTIONS = {
   free: 'For testing tResolv before you commit',
-  starter: 'For a growing Shopify store',
-  growth: 'Best for a store using AI every day',
-  enterprise: 'For high-volume stores needing custom infrastructure',
+  starter: 'For founders who are tired of answering the same customer questions',
+  growth: 'For Shopify brands ready to stop managing their inbox themselves',
+  enterprise: 'For brands where support is becoming a real operational bottleneck',
 };
 
 // Qualitative capabilities only — numeric caps live in limitsSummary() so
 // the two don't get visually jumbled into one long checklist. tResolv is
 // single-store-per-account, so brand/store count is never a plan dimension
-// here — usage limits and feature tier are what differ.
+// here — usage limits and feature tier are what differ. Growth's list is
+// what it adds ON TOP of Starter (matches the landing page's "Includes
+// everything in Starter, plus:" framing) — the value difference between
+// Starter and Growth isn't extra conversations, it's autopilot taking
+// responsibility for routine tickets instead of just assisting.
 export const FEATURES = {
   free: () => [
     'Supervised AI support',
     'Gmail + Shopify integration',
   ],
   starter: () => [
-    'Supervised AI support',
-    'Gmail + Shopify integration',
-    'Chat widget',
-    'Email support',
+    'Gmail + Shopify',
+    'AI email support',
+    'Live chat widget',
+    'Live Shopify order lookup',
+    'Shipping & tracking questions',
+    'Product/order questions',
+    'Returns & policy questions',
+    'AI-drafted replies',
+    'Human approval before replies/actions',
+    'Confidence scoring',
+    'Email quarantine / loop protection',
   ],
   growth: () => [
-    'Autopilot mode',
-    'Shopify actions (refunds, cancellations, updates)',
-    'Chat widget',
-    'AfterShip tracking',
+    'Autopilot for high-confidence routine tickets',
+    'Shopify action workflows',
+    'Refund approval workflows',
+    'Cancellation approval workflows',
+    'Address-change workflows',
+    'AfterShip live tracking',
+    'Live storefront chat',
+    'Customizable Luna identity',
     'Priority support',
   ],
   enterprise: () => [
-    'Dedicated account manager',
-    'Chat widget',
-    'Custom agent name and branding',
-    'SLA guarantee',
+    'Higher/custom conversation volume',
+    'Full autopilot where supported',
+    'Shopify action execution with existing approval safeguards',
     'Custom integrations',
+    'Custom agent identity/branding',
+    'AfterShip',
+    'Priority support',
+    'Dedicated onboarding',
+    'Custom SLA options',
   ],
 };
 
@@ -56,7 +75,7 @@ export function limitsSummary(planId, p) {
     case 'growth':
       return p.tickets_per_month == null ? 'Unlimited conversations' : `${fmt(p.tickets_per_month)} conversations/mo`;
     case 'enterprise':
-      return 'Unlimited conversations';
+      return 'Higher/custom conversation volume';
     default:
       return '';
   }

@@ -45,8 +45,8 @@ async def list_plans():
 
 @router.get("/founding-status")
 async def founding_status():
-    """Whether founding (struck-through) pricing should still be shown on
-    the pricing page — mirrors the landing page's "first 20 brands" framing.
+    """Whether the "Founding price" badge should still be shown on the
+    pricing page — mirrors the landing page's "first 20 brands" framing.
     Public: no info here beyond a remaining-slot count."""
     remaining = get_founding_slots_remaining()
     return {"slots_remaining": remaining, "cap": FOUNDING_PAID_CAP, "active": remaining > 0}

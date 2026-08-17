@@ -114,10 +114,10 @@ async def activate_upgrade_request(request_id: str, tenant: TenantContext = Depe
             # free/trial/founding_free don't, so no activation timestamp needed for those.
             if plan in PAID_PLANS:
                 update["plan_activated_at"] = datetime.now(timezone.utc).isoformat()
-            # Founding price only applies to starter/growth (see PLAN_LIMITS'
-            # price_monthly_original) — scale has no founding discount. Only
-            # claim a slot the first time; a lapsed-and-reactivated tenant
-            # keeps their original claim, doesn't take a second one.
+            # Founding price badge only applies to starter/growth — scale has
+            # no founding price (see FOUNDING_PAID_CAP in plan_service.py).
+            # Only claim a slot the first time; a lapsed-and-reactivated
+            # tenant keeps their original claim, doesn't take a second one.
             if plan in ("starter", "growth"):
                 existing = supabase_select("tenants", {"id": f"eq.{target_tenant_id}", "select": "founding_pricing_claimed_at"})
                 if existing and not existing[0].get("founding_pricing_claimed_at"):

@@ -43,9 +43,12 @@ PAID_PLAN_DURATION_DAYS = 30
 # Landing page: "Founding Launch Pricing... Locked in for our first 20
 # brands." Separate from FOUNDING_COHORT_CAP in auth_service.py, which caps
 # free signups onto the legacy founding_free plan — this cap is about the
-# discounted Starter/Growth price, tracked via tenants.founding_pricing_claimed_at
-# (set once, kept forever, even if the plan later lapses — a claimed slot
-# stays claimed). Scale has no founding price, so it never sets this.
+# "Founding price" badge shown on Starter/Growth, tracked via
+# tenants.founding_pricing_claimed_at (set once, kept forever, even if the
+# plan later lapses — a claimed slot stays claimed). Scale has no founding
+# price, so it never sets this. There is no separate non-founding price
+# tier — price_monthly below is the one real price either way; the badge
+# is a limited-spots marketing label, not a "was $X now $Y" discount.
 FOUNDING_PAID_CAP = 20
 
 
@@ -123,27 +126,26 @@ PLAN_LIMITS: Dict[str, Dict[str, Optional[int]]] = {
         "label": "Free",
     },
     "starter": {
-        # Landing page: "500 conversations per month" — a real monthly cap,
+        # Landing page: "100 conversations per month" — a real monthly cap,
         # not daily. tickets_per_month (not tickets_per_day) is what tells
         # check_limit()/record_usage() to use the monthly counter instead of
         # the daily one; see usage_month/usage_tickets_this_month (migration
         # 034). ai_replies_per_day is uncapped so it can never become a
         # surprise second bottleneck undercutting the advertised number —
         # the monthly conversation cap is the only real constraint.
-        "tickets_per_month": 500,
+        "tickets_per_month": 100,
         "ai_replies_per_day": None,
         "emails_per_day": 2000,
         "shopify_actions_per_day": 200,
         "brands": 1,
         "users": 1,
         "gmail_accounts": 1,
-        "price_monthly": 99,
-        "price_monthly_original": 149,
+        "price_monthly": 49,
         "label": "Starter",
     },
     "growth": {
-        # Landing page: "unlimited conversations".
-        "tickets_per_month": None,
+        # Landing page: "250 conversations per month".
+        "tickets_per_month": 250,
         "ai_replies_per_day": None,
         "emails_per_day": 20000,
         "shopify_actions_per_day": 2000,
@@ -156,8 +158,7 @@ PLAN_LIMITS: Dict[str, Dict[str, Optional[int]]] = {
         "brands": 1,
         "users": 1,
         "gmail_accounts": 3,
-        "price_monthly": 249,
-        "price_monthly_original": 349,
+        "price_monthly": 99,
         "label": "Growth",
     },
     "enterprise": {
@@ -171,13 +172,14 @@ PLAN_LIMITS: Dict[str, Dict[str, Optional[int]]] = {
         "brands": 1,
         "users": None,
         "gmail_accounts": None,
-        # None here means "custom / contact us", same convention as the
-        # other None values on this plan meaning "uncapped" — the pricing
-        # page renders this plan with no fixed numbers at all. Internal plan
-        # id kept as "enterprise" (DB rows, PAID_PLANS, etc. all reference
-        # this string) — only the customer-facing label changed to match
-        # the landing page's rename to "Scale".
-        "price_monthly": None,
+        # $249/month is the anchor/starting price shown on the pricing page
+        # ("$249/month+") for this higher/custom-volume plan — actual usage
+        # limits stay uncapped/custom above (None), never a fixed invented
+        # number. Internal plan id kept as "enterprise" (DB rows,
+        # PAID_PLANS, etc. all reference this string) — only the
+        # customer-facing label changed to match the landing page's rename
+        # to "Scale". No founding price for this plan (see FOUNDING_PAID_CAP).
+        "price_monthly": 249,
         "label": "Scale",
     },
     # Legacy plan predating this system (migration 021) — kept so existing

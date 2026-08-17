@@ -1,12 +1,13 @@
 """
-Starter's "500 conversations per month" cap (landing page pricing table).
+Starter's "100 conversations per month" and Growth's "250 conversations per
+month" caps (landing page pricing table).
 
-Unlike every other daily-resetting resource, Starter's ticket/conversation
-limit resets monthly, not daily — plan_service.check_limit()/record_usage()
-route "tickets" through a separate usage_month/usage_tickets_this_month
-counter (migration 034) whenever the plan defines tickets_per_month instead
-of tickets_per_day. Growth and Scale are unlimited (tickets_per_month=None),
-so they're never gated at all.
+Unlike every other daily-resetting resource, Starter's and Growth's
+ticket/conversation limit resets monthly, not daily —
+plan_service.check_limit()/record_usage() route "tickets" through a separate
+usage_month/usage_tickets_this_month counter (migration 034) whenever the
+plan defines tickets_per_month instead of tickets_per_day. Scale is
+unlimited/custom (tickets_per_month unset), so it's never gated at all.
 """
 import os
 import sys
@@ -36,19 +37,19 @@ def _mocked(tenant):
 
 def test_starter_allows_usage_under_the_monthly_cap():
     tenant = {"id": "t1", "email": "user@example.com", "plan": "starter",
-              "usage_month": THIS_MONTH, "usage_tickets_this_month": 499}
+              "usage_month": THIS_MONTH, "usage_tickets_this_month": 99}
     p1, p2 = _mocked(tenant)
     with p1, p2:
         result = ps.check_limit("t1", "tickets")
     assert result["allowed"] is True
-    assert result["limit"] == 500
-    assert result["used"] == 499
+    assert result["limit"] == 100
+    assert result["used"] == 99
     assert result["remaining"] == 1
 
 
 def test_starter_blocks_at_the_monthly_cap():
     tenant = {"id": "t2", "email": "user@example.com", "plan": "starter",
-              "usage_month": THIS_MONTH, "usage_tickets_this_month": 500}
+              "usage_month": THIS_MONTH, "usage_tickets_this_month": 100}
     p1, p2 = _mocked(tenant)
     with p1, p2:
         result = ps.check_limit("t2", "tickets")
@@ -59,9 +60,9 @@ def test_starter_blocks_at_the_monthly_cap():
 
 def test_starter_monthly_counter_resets_on_a_new_month_not_a_new_day():
     # A stale usage_month (not this month) should reset to 0, even though
-    # this tenant already "used" 500 under last month's counter.
+    # this tenant already "used" 100 under last month's counter.
     tenant = {"id": "t3", "email": "user@example.com", "plan": "starter",
-              "usage_month": "2020-01", "usage_tickets_this_month": 500}
+              "usage_month": "2020-01", "usage_tickets_this_month": 100}
     p1, p2 = _mocked(tenant)
     with p1, p2:
         result = ps.check_limit("t3", "tickets")
@@ -83,12 +84,34 @@ def test_starter_record_usage_increments_the_monthly_counter_not_the_daily_one()
     assert tenant["usage_tickets_today"] == 0  # untouched — starter doesn't use the daily counter
 
 
-def test_growth_has_no_conversation_cap():
+def test_growth_allows_usage_under_its_monthly_cap():
     tenant = {"id": "t5", "email": "user@example.com", "plan": "growth",
-              "usage_month": THIS_MONTH, "usage_tickets_this_month": 999999}
+              "usage_month": THIS_MONTH, "usage_tickets_this_month": 249}
     p1, p2 = _mocked(tenant)
     with p1, p2:
         result = ps.check_limit("t5", "tickets")
+    assert result["allowed"] is True
+    assert result["limit"] == 250
+    assert result["remaining"] == 1
+
+
+def test_growth_blocks_at_its_monthly_cap():
+    tenant = {"id": "t5b", "email": "user@example.com", "plan": "growth",
+              "usage_month": THIS_MONTH, "usage_tickets_this_month": 250}
+    p1, p2 = _mocked(tenant)
+    with p1, p2:
+        result = ps.check_limit("t5b", "tickets")
+    assert result["allowed"] is False
+    assert result["reason"] == "monthly_limit_reached"
+    assert result["upgrade_required"] is True
+
+
+def test_scale_has_no_conversation_cap():
+    tenant = {"id": "t5c", "email": "user@example.com", "plan": "enterprise",
+              "usage_date": datetime.now(timezone.utc).date().isoformat(), "usage_tickets_today": 999999}
+    p1, p2 = _mocked(tenant)
+    with p1, p2:
+        result = ps.check_limit("t5c", "tickets")
     assert result["allowed"] is True
     assert result["limit"] is None
 
