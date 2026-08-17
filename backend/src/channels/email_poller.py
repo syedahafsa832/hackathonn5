@@ -303,45 +303,31 @@ class EmailPoller:
 
                 auto_reply_enabled = guardian_result.auto_reply_enabled
 
-                # ── Thread match: append to existing ticket ──────────────
-                existing_ticket = None
+                # ── Thread-risk check only — the actual thread-match/append
+                # decision now lives entirely in message_processor.py's own
+                # STAGE 1.5, which (unlike this poller previously) continues
+                # on into AI generation instead of silently appending the
+                # message and stopping. A same-thread customer reply used to
+                # never receive any AI response at all because of that early
+                # stop — this poller and message_processor.py each did their
+                # own separate thread-match check, and only the poller's
+                # (append-then-continue-the-loop, no AI call) actually ran.
                 if thread_id:
                     try:
                         results = await asyncio.to_thread(
                             supabase_select, "tickets", {"gmail_thread_id": f"eq.{thread_id}"}
                         )
-                        if results:
-                            existing_ticket = results[0]
-                            logger.info(f"[Poller] Thread match: appending to ticket {existing_ticket['id']}")
+                        if results and results[0].get("loop_risk"):
+                            logger.info(
+                                f"[Poller] Loop-risk thread {thread_id} — suppressing further processing"
+                            )
+                            continue
                     except Exception as te:
-                        logger.warning(f"[Poller] Thread lookup failed: {te}")
+                        logger.warning(f"[Poller] Thread risk lookup failed (continuing): {te}")
 
-                if existing_ticket:
-                    # Stop processing threads already flagged as loop risk
-                    if existing_ticket.get("loop_risk"):
-                        logger.info(
-                            f"[Poller] Loop-risk thread {thread_id} — suppressing further processing"
-                        )
-                        continue
-
-                    current_msgs = existing_ticket.get("messages") or []
-                    current_msgs.append({
-                        "from":        email.get("sender_email"),
-                        "body":        email.get("body"),
-                        "received_at": datetime.now(timezone.utc).isoformat(),
-                        "direction":   "inbound",
-                    })
-                    await asyncio.to_thread(
-                        supabase_update, "tickets", {"id": f"eq.{existing_ticket['id']}"}, {
-                            "messages":   current_msgs,
-                            "status":     "open",
-                            "updated_at": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
-                    logger.info(f"[email_filter] ticket_updated ticket_id={existing_ticket['id']} gmail_message_id={gmail_msg_id}")
-                    continue
-
-                # ── New ticket ───────────────────────────────────────────
+                # ── New ticket, or thread continuation (message_processor.py
+                # appends to the existing ticket and generates a real reply
+                # for it — see STAGE 1.5 there) ──────────────────────────
                 payload = {
                     "channel":            "email",
                     "content":            email["body"],

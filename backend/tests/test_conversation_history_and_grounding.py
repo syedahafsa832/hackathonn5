@@ -140,10 +140,12 @@ def test_no_prior_messages_leaves_history_unset_not_fabricated():
         for m in mocks:
             m.stop()
 
-    # Only the current message exists - history is just that one line, not
-    # fabricated multi-turn content.
+    # Only the current message exists - history is just that one line
+    # (wrapped in the standard "Current conversation:" section used by
+    # _build_customer_history, the same formatting cross-ticket history
+    # sections use), not fabricated multi-turn content.
     history = captured["customer_info"].get("history")
-    assert history == "Customer: Hello"
+    assert history == "Current conversation:\nCustomer: Hello"
 
 
 # ── 2. "Tell me about X" reaches the live product tool ──────────────────────

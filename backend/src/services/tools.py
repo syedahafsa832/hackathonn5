@@ -357,6 +357,8 @@ class V3Tools:
                     image_url = images[0].get("src")
             product_url = f"https://{shop_domain}/products/{handle}" if handle else None
 
+            prices = [v["price"] for v in variant_info if v.get("price")]
+
             return {
                 "success": True,
                 "product": product.get("title"),
@@ -364,6 +366,16 @@ class V3Tools:
                 "image_url": image_url,
                 "product_url": product_url,
                 "variants": variant_info,
+                # Real merchant-written description (truncated) and live
+                # price - both previously absent from this return value even
+                # though body_html/variant prices were already being fetched
+                # from Shopify. Without them, the agent had no authoritative
+                # material/fit/price facts to answer with for an exact,
+                # correctly-identified product, and would fill the gap by
+                # inventing plausible-sounding ones (e.g. a material never
+                # present in the actual Shopify data).
+                "description": _strip_html(product.get("body_html"))[:400] or None if product.get("body_html") else None,
+                "price": prices[0] if prices else None,
                 "message": (
                     f"Yes, {product.get('title')} is in stock." if any_in_stock
                     else f"{product.get('title')} is currently out of stock in all variants."

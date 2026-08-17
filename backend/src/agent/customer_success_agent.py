@@ -528,6 +528,50 @@ class CustomerSuccessAgent:
                             access_token=_brand_shopify_token,
                         )
 
+            # General product-mention fallback — catches product-specific
+            # questions in any phrasing the more specific triggers above
+            # miss: "Is Premium Hoodie V23 soft and durable?", "What
+            # material is Premium Hoodie V23?", "How does it fit?", "Does
+            # Hoodie V23 come in cotton?", "Is Hoodie V23 good for winter?".
+            # Enumerating every possible question phrasing doesn't scale;
+            # this instead looks for a product-name-shaped mention anywhere
+            # in the message (a category word, optionally with one
+            # preceding qualifier and/or a version suffix) and always
+            # attempts a live lookup when one is found. Reuses the exact
+            # same get_inventory_status()/find_products_by_title() search
+            # and its existing exact/ambiguous handling — this only decides
+            # WHETHER to look something up, never WHAT the answer is.
+            if "inventory" not in tool_results and not _is_recommendation_query and not _is_discovery_query:
+                _mention = re.search(
+                    r'\b(\w+\s+)?(hoodie|jacket|pants|shirt|tshirt|coat|dress|skirt)(\s+v\d+)?\b',
+                    query_lower,
+                )
+                if _mention:
+                    # The preceding-word group is meant to catch a real
+                    # product qualifier ("Premium"/"Essential"/"Signature"
+                    # Hoodie) — filter out common question/verb words that
+                    # happen to sit immediately before the category word
+                    # ("Does Hoodie V23...", "Is Hoodie V23...") so they
+                    # don't get folded into the search term and cause an
+                    # honest but wrong "not found" (find_products_by_title
+                    # requires the whole captured phrase to appear in the
+                    # title).
+                    _prefix = (_mention.group(1) or "").strip()
+                    _prefix_stopwords = {
+                        "does", "do", "is", "are", "was", "were", "can", "could",
+                        "will", "would", "should", "the", "a", "an", "this", "that",
+                        "your", "our", "my", "have", "has", "had",
+                    }
+                    if _prefix in _prefix_stopwords:
+                        _prefix = ""
+                    _candidate = " ".join(g for g in (_prefix, _mention.group(2), (_mention.group(3) or "").strip()) if g)
+                    if _candidate:
+                        tool_results["inventory"] = await v3_tools.get_inventory_status(
+                            _candidate,
+                            shop_domain=_brand_shopify_domain,
+                            access_token=_brand_shopify_token,
+                        )
+
             # Check for a product-recommendation request ("show me something
             # similar", "what else do you have", "what goes with this").
             # Distinguishes "similar" (deterministic type/tag/vendor scoring —
@@ -651,10 +695,34 @@ class CustomerSuccessAgent:
                             tool_context += f"Product link: {inv['product_url']}\n"
                         if inv.get("image_url"):
                             tool_context += f"Product image: {inv['image_url']}\n"
+                        if inv.get("price") is not None:
+                            tool_context += f"LIVE Shopify price: {inv['price']}\n"
+                        if inv.get("description"):
+                            tool_context += f"LIVE Shopify description: {inv['description']}\n"
                         variant_opts = [v.get("options") for v in (inv.get("variants") or []) if v.get("options")]
                         if variant_opts:
                             opt_desc = "; ".join(", ".join(f"{k} {v}" for k, v in opts.items()) for opts in variant_opts)
                             tool_context += f"Available options: {opt_desc}\n"
+                        # Explicit source hierarchy for this exact, identified
+                        # product: this live Shopify data is authoritative for
+                        # price/description/attributes — it overrides anything
+                        # KNOWLEDGE BASE below says about the same product if
+                        # the two ever disagree (e.g. an older RAG-imported
+                        # price). Any attribute the customer asks about that
+                        # isn't in this data or in KNOWLEDGE BASE must be
+                        # answered as unverified — never inferred from what
+                        # the material/category "usually" means (Organic
+                        # Cotton does NOT imply soft, breathable, durable, or
+                        # warm unless that word is actually written above).
+                        tool_context += (
+                            "This live Shopify data is the AUTHORITATIVE source for this product's price, "
+                            "description, and attributes — it overrides KNOWLEDGE BASE below if they conflict. "
+                            "Only state material/fit/quality/softness/durability/warmth/popularity claims that "
+                            "are explicitly written above. If the customer asks about an attribute not shown "
+                            "here (e.g. softness, durability, warmth) and it isn't written above, say you don't "
+                            "have verified information about it rather than guessing or inferring it from the "
+                            "material name.\n"
+                        )
                     else:
                         tool_context += f"INVENTORY LOOKUP: {inv.get('message', 'Could not verify inventory')}. Do NOT guess stock levels — use this message as-is or offer to have a team member confirm.\n"
 

@@ -3,7 +3,7 @@ import logging
 import os
 import re
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from datetime import datetime, timezone
 import uuid
 
@@ -86,22 +86,37 @@ class UnifiedMessageProcessor:
                 return {"ticket_id": None, "status": "skipped", "reason": "automated"}
 
             # ========== STAGE 1.5: EMAIL THREAD DEDUP ==========
-            # If this email belongs to an existing Gmail thread, append to existing ticket
+            # If this email belongs to an existing Gmail thread, reuse that
+            # ticket (append the message) instead of creating a new one.
+            # Previously this returned early with no AI response at all for
+            # every same-thread customer reply — a real conversation-memory
+            # gap (and a support gap on its own): the customer's follow-up
+            # was silently appended and never answered. Now it continues
+            # into the same pipeline as a new ticket, just with an existing
+            # early_ticket_id/early_ticket instead of a freshly created one.
+            early_ticket_id = None
+            early_ticket = None
+            is_thread_continuation = False
             if gmail_thread_id and channel == "email":
                 try:
                     existing = supabase_select("tickets", {"gmail_thread_id": f"eq.{gmail_thread_id}"})
                     if existing:
                         existing_ticket = existing[0]
-                        ticket_id = existing_ticket.get("id")
-                        logger.info(f"[PROCESSOR] Thread match found — appending to ticket {ticket_id}")
-                        # Reopen if closed, update timestamp
-                        updates = {"updated_at": datetime.now(timezone.utc).isoformat()}
+                        early_ticket_id = existing_ticket.get("id")
+                        is_thread_continuation = True
+                        current_msgs = existing_ticket.get("messages") or []
+                        current_msgs.append({
+                            "from": customer_email, "body": content,
+                            "received_at": datetime.now(timezone.utc).isoformat(), "direction": "inbound",
+                        })
+                        updates = {"messages": current_msgs, "updated_at": datetime.now(timezone.utc).isoformat()}
                         if existing_ticket.get("status") in ("closed", "resolved"):
                             updates["status"] = "open"
-                        supabase_update("tickets", {"id": f"eq.{ticket_id}"}, updates)
-                        return {"ticket_id": ticket_id, "status": "thread_appended"}
+                        supabase_update("tickets", {"id": f"eq.{early_ticket_id}"}, updates)
+                        early_ticket = {**existing_ticket, **updates}
+                        logger.info(f"[PROCESSOR] Thread match found — appended message, continuing with ticket {early_ticket_id}")
                 except Exception as thread_err:
-                    logger.warning(f"[PROCESSOR] Thread check failed (continuing): {thread_err}")
+                    logger.warning(f"[PROCESSOR] Thread check failed (treating as new ticket): {thread_err}")
 
             # ========== STAGE 1.6: ORDER DETECTION ==========
             detected_order_id = None
@@ -116,31 +131,32 @@ class UnifiedMessageProcessor:
             logger.info(f"[PROCESSOR] Sentiment: {customer_sentiment}, Tags: {ticket_tags}")
 
             # ========== STAGE 1.8: CREATE TICKET IMMEDIATELY (visible in dashboard now) ==========
-            early_ticket_id = None
-            early_ticket = None
-            try:
-                early_ticket = await supabase_service.create_ticket({
-                    "store_id": store_id,
-                    "customer_email": customer_email,
-                    "customer_name": customer_name,
-                    "subject": subject,
-                    "message": content,
-                    "messages": [{"from": customer_email, "body": content,
-                                  "received_at": datetime.now(timezone.utc).isoformat(), "direction": "inbound"}],
-                    "channel": channel,
-                    "status": "processing",
-                    "gmail_thread_id": gmail_thread_id,
-                    "gmail_message_id": gmail_message_id,
-                    "detected_order_id": detected_order_id,
-                    "customer_sentiment": customer_sentiment,
-                    "tags": ticket_tags,
-                    "email_category": email_category,
-                    "sender_type": sender_type,
-                })
-                early_ticket_id = early_ticket.get("id") if early_ticket else None
-                logger.info(f"[PROCESSOR] ✓ Ticket created immediately: {early_ticket_id} (status=processing)")
-            except Exception as early_err:
-                logger.warning(f"[PROCESSOR] Early ticket creation failed (non-blocking): {early_err}")
+            # Skipped entirely for a thread continuation — early_ticket(_id)
+            # already points at the existing, just-updated ticket.
+            if not is_thread_continuation:
+                try:
+                    early_ticket = await supabase_service.create_ticket({
+                        "store_id": store_id,
+                        "customer_email": customer_email,
+                        "customer_name": customer_name,
+                        "subject": subject,
+                        "message": content,
+                        "messages": [{"from": customer_email, "body": content,
+                                      "received_at": datetime.now(timezone.utc).isoformat(), "direction": "inbound"}],
+                        "channel": channel,
+                        "status": "processing",
+                        "gmail_thread_id": gmail_thread_id,
+                        "gmail_message_id": gmail_message_id,
+                        "detected_order_id": detected_order_id,
+                        "customer_sentiment": customer_sentiment,
+                        "tags": ticket_tags,
+                        "email_category": email_category,
+                        "sender_type": sender_type,
+                    })
+                    early_ticket_id = early_ticket.get("id") if early_ticket else None
+                    logger.info(f"[PROCESSOR] ✓ Ticket created immediately: {early_ticket_id} (status=processing)")
+                except Exception as early_err:
+                    logger.warning(f"[PROCESSOR] Early ticket creation failed (non-blocking): {early_err}")
             logger.info(f"[TIMING] Ticket intake: {time.monotonic() - t_start:.2f}s")
 
             # ========== STAGE 2: SYSTEM SETTINGS ==========
@@ -213,7 +229,10 @@ class UnifiedMessageProcessor:
                         "status": "daily_limit_reached",
                         "limit_info": limit_check,
                     }
-            else:
+            elif not is_thread_continuation:
+                # A thread continuation reuses an already-counted ticket -
+                # counting it again here would inflate daily/plan ticket
+                # totals for what's really the same conversation.
                 plan_service.record_ticket_created(tenant_id)
 
             # ========== STAGE 3: RESOLVE CUSTOMER ==========
@@ -279,18 +298,15 @@ class UnifiedMessageProcessor:
             # the literal string "New customer" whenever it's absent, which is
             # what it always was here: get_or_create_customer() returns a
             # customers-table row (id/email/name/phone) with no message
-            # content at all. Populated from the ticket already created above
-            # (STAGE 1.8) - same conversation only, not other tickets from this
-            # customer (a separate, larger product decision). Kept short/
-            # truncated on purpose: this is a compact hint for the model, not a
-            # transcript dump.
-            _history_messages = (early_ticket or {}).get("messages") or []
-            if _history_messages:
-                _history_lines = [
-                    f"{'Customer' if m.get('direction') == 'inbound' else 'Support'}: {(m.get('body') or '')[:200]}"
-                    for m in _history_messages[-6:]
-                ]
-                customer["history"] = "\n".join(_history_lines)
+            # content at all. Now includes both the current ticket's own
+            # messages AND up to _HISTORY_MAX_PRIOR_TICKETS earlier tickets
+            # from this same customer email within this same store/brand
+            # (never across brands - see _build_customer_history).
+            _history = await self._build_customer_history(
+                customer_email, store_id, early_ticket_id, (early_ticket or {}).get("messages"),
+            )
+            if _history:
+                customer["history"] = _history
 
             t_ai_start = time.monotonic()
             logger.info(f"[PROCESSOR] Generating AI response (tenant_id={tenant_id})...")
@@ -404,10 +420,19 @@ class UnifiedMessageProcessor:
             # ========== STAGE 9: UPDATE TICKET with AI results (was created at Stage 1.8) ==========
             logger.info(f"[PROCESSOR] Finalising ticket with status: {ticket_payload.get('status')}")
             if early_ticket_id:
+                # "messages" is deliberately excluded here too: ticket_payload
+                # rebuilds it (STAGE 6) as a fresh single-item array containing
+                # only the current inbound message. For a thread continuation,
+                # STAGE 1.5 already appended this message onto the ticket's
+                # real accumulated history - overwriting it here would wipe
+                # that history back down to one message on every single reply,
+                # breaking both current-ticket history and any thread
+                # continuation the moment it's ever read back.
                 update_fields = {k: v for k, v in ticket_payload.items()
                                  if k not in ("store_id", "customer_email", "customer_name",
                                               "subject", "message", "channel", "gmail_thread_id",
-                                              "email_category", "sender_type", "customer_sentiment", "tags")}
+                                              "email_category", "sender_type", "customer_sentiment",
+                                              "tags", "messages")}
                 update_fields["updated_at"] = datetime.now(timezone.utc).isoformat()
                 supabase_update("tickets", {"id": f"eq.{early_ticket_id}"}, update_fields)
                 ticket_id = early_ticket_id
@@ -585,6 +610,67 @@ class UnifiedMessageProcessor:
         # in ticket_payload gets set here; process_message's own default ("status"
         # from ticket_payload dict init) is preserved rather than guessing.
         return {"should_auto_reply": False, "status": None, "log_message": f"Unrecognized ai_mode={ai_mode!r} - no routing rule matched"}
+
+    # Bounds for _build_customer_history — deliberately small and fixed
+    # (not configurable per-tenant) so history stays a compact hint, never a
+    # transcript dump. Tune here, not per-call, if these ever need changing.
+    _HISTORY_MAX_PRIOR_TICKETS = 3
+    _HISTORY_MAX_MESSAGES_PER_TICKET = 4
+    _HISTORY_MAX_CHARS_PER_MESSAGE = 150
+    _HISTORY_MAX_TOTAL_CHARS = 1500
+
+    def _format_history_messages(self, messages: list, limit: int) -> List[str]:
+        return [
+            f"{'Customer' if m.get('direction') == 'inbound' else 'Support'}: {(m.get('body') or '')[:self._HISTORY_MAX_CHARS_PER_MESSAGE]}"
+            for m in (messages or [])[-limit:]
+        ]
+
+    async def _build_customer_history(
+        self, customer_email: str, store_id: str, current_ticket_id: Optional[str], current_ticket_messages: list,
+    ) -> Optional[str]:
+        """Compact, bounded conversation history for the prompt: the current
+        ticket's own messages, plus up to _HISTORY_MAX_PRIOR_TICKETS earlier
+        tickets from the SAME customer email AND SAME store/brand - tenant
+        isolation is structural here (store_id is a hard filter in the
+        query itself, not a post-filter), never cross-brand even when the
+        same email exists under a different brand. Returns None when there
+        is genuinely nothing to report (fresh customer, first message),
+        so the prompt's existing "New customer" default stays honest
+        rather than claiming false familiarity - never says "I remember"
+        just because a customer row exists with no real message content.
+        Uses the existing tickets/supabase_select architecture; no new
+        memory store."""
+        sections = []
+
+        current_lines = self._format_history_messages(current_ticket_messages, 6)
+        if current_lines:
+            sections.append("Current conversation:\n" + "\n".join(current_lines))
+
+        if customer_email and store_id:
+            try:
+                prior = supabase_select("tickets", {
+                    "customer_email": f"eq.{customer_email}",
+                    "store_id": f"eq.{store_id}",
+                    "order": "updated_at.desc",
+                    "limit": str(self._HISTORY_MAX_PRIOR_TICKETS + 1),  # +1: current ticket may be in this page
+                })
+                prior = [t for t in (prior or []) if t.get("id") != current_ticket_id][:self._HISTORY_MAX_PRIOR_TICKETS]
+                for t in prior:
+                    lines = self._format_history_messages(t.get("messages"), self._HISTORY_MAX_MESSAGES_PER_TICKET)
+                    if not lines:
+                        continue
+                    subject = t.get("subject") or "prior conversation"
+                    sections.append(f"Previous conversation ({subject}):\n" + "\n".join(lines))
+            except Exception as e:
+                logger.warning(f"[PROCESSOR] Prior-ticket history lookup failed (non-blocking): {e}")
+
+        if not sections:
+            return None
+
+        history = "\n\n".join(sections)
+        if len(history) > self._HISTORY_MAX_TOTAL_CHARS:
+            history = history[:self._HISTORY_MAX_TOTAL_CHARS] + "..."
+        return history
 
     async def _check_thread_override(self, customer_email: str, subject: str) -> bool:
         """Check if there's an active human override for this specific email thread."""
