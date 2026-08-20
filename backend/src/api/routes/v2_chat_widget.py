@@ -414,6 +414,29 @@ async def chat(request: Request, body: ChatRequest, stream: Optional[int] = None
             suggested_actions=[],
         )
 
+    # ── Human takeover gate — checked fresh on every request (never cached),
+    # right before generation, so a merchant who took over mid-conversation
+    # can never have this turn overridden by a reply the AI started composing
+    # before the takeover. Same authoritative signal (conversation_overrides)
+    # the email channel already gates on in message_processor.py; the chat
+    # widget previously had no equivalent check at all. ─────────────────────
+    from src.services.supabase_service import supabase_service
+    try:
+        is_overridden = await supabase_service.check_conversation_override(ticket_id)
+    except Exception as e:
+        # Fail CLOSED, not open: if we can't confirm a human hasn't taken
+        # over, don't gamble the customer's conversation on the AI. Costs
+        # one turn of "team is looking into this" during a transient outage
+        # rather than risking an AI reply landing on a human-owned ticket.
+        logger.warning(f"[ChatWidget] Takeover check failed for ticket {ticket_id} ({e}) — failing closed")
+        is_overridden = True
+    if ticket.get("status") == "human_managing" or is_overridden:
+        return ChatResponse(
+            reply="A member of our team is already looking into this for you and will respond shortly.",
+            session_id=body.session_id,
+            suggested_actions=[],
+        )
+
     if stream != 1:
         return await _generate_reply(body, brand, ticket, ticket_id, tenant_id)
 
