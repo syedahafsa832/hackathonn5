@@ -210,8 +210,42 @@ class UnifiedMessageProcessor:
                 except Exception as tenant_error:
                     logger.warning(f"[PROCESSOR] Tenant lookup failed: {tenant_error}")
 
-            # ========== STAGE 2.6: PLAN / TRIAL / DAILY LIMIT ==========
+            # ========== STAGE 2.55: AI ENTITLEMENT (trial/subscription gate) ==========
+            # Runs as early as possible once the tenant is known — before the
+            # daily/AI-quota checks below, before customer resolution, before
+            # any RAG/LLM/Shopify-tool work. An expired trial with no active
+            # paid plan (or a lapsed paid plan) must never reach any of that:
+            # check_limit(tenant_id, "ai_replies") below is a *quota* gate and
+            # would otherwise silently let an expired trial through on the
+            # "free" plan's own leftover daily allowance (the actual bug this
+            # closes) — see plan_service.check_ai_entitlement's docstring.
+            # The ticket itself (already created in STAGE 1.8) is left intact
+            # and untouched here — only escalated to a human, never deleted —
+            # so existing conversations/data are unaffected.
             from src.services import plan_service
+            entitlement = plan_service.check_ai_entitlement(tenant_id)
+            if not entitlement["allowed"]:
+                logger.info(
+                    f"[PROCESSOR] AI entitlement denied for tenant {tenant_id} "
+                    f"(plan={entitlement['plan']} reason={entitlement['reason']}) — routing to human, no AI call made"
+                )
+                if early_ticket_id:
+                    escalation_reason = (
+                        "Your free trial has ended. Upgrade to a paid plan to resume AI-powered replies."
+                        if entitlement["reason"] == "trial_expired"
+                        else "No active AI plan on this account. Upgrade to enable AI-powered replies."
+                    )
+                    supabase_update("tickets", {"id": f"eq.{early_ticket_id}"}, {
+                        "status": "requires_human",
+                        "escalation_reason": escalation_reason,
+                    })
+                return {
+                    "ticket_id": early_ticket_id,
+                    "status": "trial_expired",
+                    "entitlement": entitlement,
+                }
+
+            # ========== STAGE 2.6: PLAN / TRIAL / DAILY LIMIT ==========
             plan_service.record_email_processed(tenant_id)
             limit_check = plan_service.can_process_ticket(tenant_id)
             if not limit_check["allowed"]:

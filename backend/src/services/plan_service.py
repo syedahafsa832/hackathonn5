@@ -448,6 +448,66 @@ def check_limit(tenant_id: Optional[str], resource: str, email: Optional[str] = 
         return base
 
 
+def check_ai_entitlement(tenant_id: Optional[str], email: Optional[str] = None) -> Dict[str, Any]:
+    """Whether this tenant may use AI generation AT ALL right now — call this
+    FIRST, before any RAG/LLM/Shopify-tool work and before check_limit(...,
+    "ai_replies"), so every AI-generating entry point (Gmail/webform/
+    WhatsApp via message_processor.py, the chat widget) rejects an expired
+    trial outright instead of falling through to the "free" plan's own
+    10/day quota.
+
+    This is deliberately a different question than check_limit("ai_replies"):
+    that function asks "how many replies does this tenant have left on
+    their current plan" and, for a tenant _resolve_plan() has downgraded to
+    "free" (the automatic landing spot for both an expired trial and a
+    lapsed paid plan — see _resolve_plan), it still answers "allowed" up to
+    the Free tier's own quota. Free is a real, separately-purchasable
+    product tier (see PLAN_LIMITS["free"], upgrade_requests.py's public
+    /plans listing, and platform_admin.py's manual-activation flow) — this
+    function does not touch it or its numbers. It only distinguishes an
+    active entitlement (trial still running, an active paid plan, or the
+    legacy always-on founding_free grant) from having none, which is what
+    "expired trial with no paid subscription" collapses to today.
+
+    Returns a check_limit()-shaped dict (allowed/reason/plan) so callers can
+    reuse the same "if not result['allowed']: ..." handling they already
+    have. Fails open on any DB error — consistent with check_limit() and
+    every other guardrail in this module; a billing bug must never be why a
+    real, entitled customer is dropped.
+    """
+    base = {"allowed": True, "reason": None, "plan": "trial", "trial_expired": False}
+    if not tenant_id:
+        return base  # unresolvable tenant — fail open, matches check_limit()
+
+    try:
+        tenants = supabase_select("tenants", {"id": f"eq.{tenant_id}"})
+        if not tenants:
+            return base
+        tenant = tenants[0]
+
+        if is_super_admin(email) or is_super_admin(tenant.get("email")):
+            base["plan"] = "super_admin"
+            return base
+
+        plan = _resolve_plan(tenant)
+        base["plan"] = plan
+        _, trial_end = get_trial_dates(tenant)
+        base["trial_expired"] = bool(trial_end) and datetime.now(timezone.utc) >= trial_end
+
+        # founding_free is a legacy, always-on grant (see PLAN_LIMITS) that
+        # _resolve_plan() never expires and never downgrades into — distinct
+        # from "free", which is exactly what an expired trial/lapsed paid
+        # plan becomes.
+        base["allowed"] = plan == "trial" or plan in PAID_PLANS or plan == "founding_free"
+        if not base["allowed"]:
+            base["reason"] = "trial_expired" if base["trial_expired"] else "no_active_plan"
+        return base
+
+    except Exception as e:
+        logger.warning(f"[Plan] check_ai_entitlement failed for tenant {tenant_id}: {e} — allowing")
+        return base
+
+
 def record_usage(tenant_id: Optional[str], resource: str) -> None:
     """Increment the usage counter for a daily (or, for tickets on a
     tickets_per_month plan, monthly) resource. No-op for count-based

@@ -69,6 +69,7 @@ def _base_mocks(ai_result):
         patch("src.services.plan_service.can_process_ticket", return_value={"allowed": True}),
         patch("src.services.plan_service.record_ticket_created"),
         patch("src.services.plan_service.check_limit", return_value={"allowed": True}),
+        patch("src.services.plan_service.check_ai_entitlement", return_value={"allowed": True, "reason": None, "plan": "trial", "trial_expired": False}),
         patch("src.services.plan_service.record_ai_reply_event"),
         patch("src.workers.message_processor.customer_success_agent.generate_channel_appropriate_response", new=AsyncMock(return_value=ai_result)),
     ]

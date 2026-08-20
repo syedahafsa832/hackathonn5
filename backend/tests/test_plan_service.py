@@ -431,3 +431,125 @@ def test_usage_summary_trial_expired_flag_independent_of_current_plan():
 
     assert summary["plan"] == "free"  # auto-downgraded
     assert summary["trial_expired"] is True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# check_ai_entitlement — the free-trial AI-cost gate.
+#
+# Distinct from check_limit("ai_replies"): that's a *quota* check, and for a
+# tenant _resolve_plan() has already downgraded to "free" (what both an
+# expired trial and a lapsed paid plan become), it still says "allowed" up
+# to the Free plan's own 10/day AI-reply quota. That's the actual bug this
+# closes - an expired trial customer emailing in still got a real,
+# model-generated reply, at real API cost, because nothing distinguished
+# "still has quota left" from "has no active entitlement at all". This
+# function is the earlier, correctness-not-quota question every AI entry
+# point must ask first.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_ai_entitlement_active_trial_is_allowed():
+    tenant = {"id": "ai1", "email": "user@example.com", "plan": "trial",
+              "trial_end_at": (datetime.now(timezone.utc) + timedelta(days=5)).isoformat()}
+    p1, p2 = _mocked(tenant)
+    with p1, p2:
+        result = ps.check_ai_entitlement("ai1")
+    assert result["allowed"] is True
+    assert result["plan"] == "trial"
+    assert result["reason"] is None
+
+
+def test_ai_entitlement_active_paid_plan_is_allowed():
+    for plan in ("starter", "growth", "enterprise"):
+        tenant = {"id": f"ai2-{plan}", "email": "user@example.com", "plan": plan,
+                  "plan_activated_at": (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()}
+        p1, p2 = _mocked(tenant)
+        with p1, p2:
+            result = ps.check_ai_entitlement(f"ai2-{plan}")
+        assert result["allowed"] is True, f"{plan} should allow AI"
+        assert result["plan"] == plan
+
+
+def test_ai_entitlement_expired_trial_with_no_paid_plan_is_blocked():
+    """The exact production bug: trial_end_at in the past, tenant never
+    upgraded. _resolve_plan() silently downgrades this to 'free' -
+    check_ai_entitlement must reject it outright rather than deferring to
+    the Free plan's own leftover AI quota."""
+    tenant = {"id": "ai3", "email": "user@example.com", "plan": "trial",
+              "trial_end_at": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+              "usage_date": TODAY, "usage_ai_replies_today": 0}
+    p1, p2 = _mocked(tenant)
+    with p1, p2:
+        result = ps.check_ai_entitlement("ai3")
+    assert result["allowed"] is False
+    assert result["reason"] == "trial_expired"
+    assert result["plan"] == "free"
+    # The tenant genuinely has zero AI usage today, so check_limit("ai_replies")
+    # alone would say "allowed" - proving this is a different, stricter gate.
+    with p1, p2:
+        quota_result = ps.check_limit("ai3", "ai_replies")
+    assert quota_result["allowed"] is True
+
+
+def test_ai_entitlement_lapsed_paid_plan_with_no_trial_data_is_blocked():
+    """Legacy row: no trial_end_at at all (paid directly), plan lapsed 30+
+    days after activation. Must still block - 'no active paid plan' is the
+    correct reason since there's no trial to have expired."""
+    tenant = {"id": "ai4", "email": "user@example.com", "plan": "growth",
+              "plan_activated_at": (datetime.now(timezone.utc) - timedelta(days=45)).isoformat()}
+    p1, p2 = _mocked(tenant)
+    with p1, p2:
+        result = ps.check_ai_entitlement("ai4")
+    assert result["allowed"] is False
+    assert result["reason"] == "no_active_plan"
+    assert result["plan"] == "free"
+
+
+def test_ai_entitlement_founding_free_legacy_plan_is_always_allowed():
+    """founding_free is a legacy, always-on grant - never routed through the
+    trial/paid expiry machinery, so it must never be blocked."""
+    tenant = {"id": "ai5", "email": "user@example.com", "plan": "founding_free"}
+    p1, p2 = _mocked(tenant)
+    with p1, p2:
+        result = ps.check_ai_entitlement("ai5")
+    assert result["allowed"] is True
+    assert result["plan"] == "founding_free"
+
+
+def test_ai_entitlement_super_admin_always_allowed_regardless_of_plan():
+    tenant = {"id": "ai6", "email": "syedahafsa772@gmail.com", "plan": "free"}
+    p1, p2 = _mocked(tenant)
+    with p1, p2:
+        result = ps.check_ai_entitlement("ai6")
+    assert result["allowed"] is True
+    assert result["plan"] == "super_admin"
+
+
+def test_ai_entitlement_unresolvable_tenant_fails_open():
+    with patch("src.services.plan_service.supabase_select", return_value=[]):
+        result = ps.check_ai_entitlement("does-not-exist")
+    assert result["allowed"] is True
+
+
+def test_ai_entitlement_none_tenant_id_fails_open():
+    result = ps.check_ai_entitlement(None)
+    assert result["allowed"] is True
+
+
+def test_ai_entitlement_db_error_fails_open():
+    with patch("src.services.plan_service.supabase_select", side_effect=RuntimeError("db down")):
+        result = ps.check_ai_entitlement("ai7")
+    assert result["allowed"] is True
+
+
+def test_ai_entitlement_never_upgraded_free_signup_is_blocked():
+    """A tenant currently resolving to 'free' with trial_end_at unset
+    (hypothetical direct-to-free assignment, no trial ever recorded) is
+    blocked too, with the 'no_active_plan' reason - 'free' carries no AI
+    entitlement of its own under this gate regardless of how the tenant
+    got there."""
+    tenant = {"id": "ai8", "email": "user@example.com", "plan": "free"}
+    p1, p2 = _mocked(tenant)
+    with p1, p2:
+        result = ps.check_ai_entitlement("ai8")
+    assert result["allowed"] is False
+    assert result["reason"] == "no_active_plan"

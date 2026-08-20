@@ -366,10 +366,34 @@ async def chat(request: Request, body: ChatRequest, stream: Optional[int] = None
     )
     ticket_id = ticket.get("id")
 
-    # ── Founding cohort daily limit ─────────────────────────────────────────
     from src.services.auth_service import auth_service
     from src.services import plan_service
     tenant_id = brand.get("tenant_id")
+
+    # ── AI entitlement (trial/subscription gate) — checked as early as
+    # possible, right after the tenant is known and before any other
+    # Supabase/AI work. An expired trial with no active paid plan (or a
+    # lapsed paid plan) must never reach the model, mirroring the same gate
+    # in message_processor.py's Gmail/webform/WhatsApp path — see
+    # plan_service.check_ai_entitlement's docstring for why this is a
+    # different, stricter question than the AI-reply *quota* check below. ──
+    entitlement = plan_service.check_ai_entitlement(tenant_id)
+    if not entitlement["allowed"]:
+        supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {
+            "status": "requires_human",
+            "escalation_reason": (
+                "Your free trial has ended. Upgrade to a paid plan to resume AI-powered replies."
+                if entitlement["reason"] == "trial_expired"
+                else "No active AI plan on this account. Upgrade to enable AI-powered replies."
+            ),
+        })
+        return ChatResponse(
+            reply="✨ Luna's free trial has ended.\n\nThe store owner can upgrade to continue AI-powered support.",
+            session_id=body.session_id,
+            suggested_actions=[],
+        )
+
+    # ── Founding cohort daily limit ─────────────────────────────────────────
     if not await auth_service.check_daily_ticket_limit(tenant_id):
         limit_reply = (
             "We've hit today's free ticket limit on this plan — your message has been "

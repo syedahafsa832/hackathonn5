@@ -76,6 +76,14 @@ function TrialCard({ usage }) {
   const limit = ai_replies_trial_limit ?? 25;
   const remaining = ai_replies_trial_remaining ?? Math.max(0, limit - used);
 
+  // Urgency ramps up as the trial nears its end — same card, just a louder
+  // countdown badge, so the days-remaining number is unmissable without a
+  // second component or a redesign.
+  const isUrgent = typeof trial_days_remaining === 'number' && trial_days_remaining <= 3;
+  const daysBadge = isUrgent
+    ? { background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)', color: '#DC2626' }
+    : { background: 'var(--bg-tertiary, #F1F5F9)', border: '1px solid transparent', color: '#64748B' };
+
   return (
     <div style={card}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
@@ -84,8 +92,13 @@ function TrialCard({ usage }) {
           <span style={{ fontSize: '14px', fontWeight: '700', color: 'var(--text-primary, #0F172A)' }}>Free Trial</span>
         </div>
         {typeof trial_days_remaining === 'number' && (
-          <span style={{ fontSize: '12px', color: '#64748B' }}>
-            {trial_days_remaining} day{trial_days_remaining === 1 ? '' : 's'} remaining
+          <span style={{
+            fontSize: '12px', fontWeight: isUrgent ? '700' : '500', padding: '4px 10px', borderRadius: '999px',
+            ...daysBadge,
+          }}>
+            {trial_days_remaining === 0
+              ? 'Ends today'
+              : `${trial_days_remaining} day${trial_days_remaining === 1 ? '' : 's'} remaining`}
           </span>
         )}
       </div>
@@ -136,6 +149,16 @@ function TrialEndedCard({ variant }) {
           ? "You've used all 25 AI replies included in your free trial. Your workspace is still available, but Luna needs an upgraded plan to continue handling customer conversations."
           : 'Upgrade to continue using Luna and automate your customer support.'}
       </p>
+
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px',
+        background: 'rgba(239, 68, 68, 0.12)', border: '1px solid rgba(239, 68, 68, 0.25)', borderRadius: '8px',
+      }}>
+        <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#F87171', flexShrink: 0 }} />
+        <span style={{ fontSize: '12px', color: '#FCA5A5', fontWeight: '600' }}>
+          AI replies are paused — new customer emails are still received, but Luna won't respond until you upgrade.
+        </span>
+      </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', fontSize: '12px', color: '#94A3B8' }}>
         <span>✓ Shopify remains connected</span>

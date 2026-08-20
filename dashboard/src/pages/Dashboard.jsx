@@ -129,6 +129,11 @@ export default function Dashboard() {
   return (
     <div style={{ padding: '28px 32px', display: 'flex', flexDirection: 'column', gap: '28px' }}>
 
+      {/* Trial/plan status — first thing on the page so an ending/expired
+          trial is seen immediately, not buried below onboarding/notification
+          banners. */}
+      <PlanUsageWidget />
+
       {/* Onboarding checklist — stays visible through the completion/celebration
           state (not hidden the instant allDone flips true) so there's actually
           something to celebrate; the user dismisses it for good afterwards. */}
@@ -163,8 +168,6 @@ export default function Dashboard() {
           </div>
         </div>
       )}
-
-      <PlanUsageWidget />
 
       {/* Content header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
