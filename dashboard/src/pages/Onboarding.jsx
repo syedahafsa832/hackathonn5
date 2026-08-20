@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import client, { extractErrorMessage } from '../api/client';
 import Alert from '../components/Alert';
 import GmailUnverifiedNotice from '../components/GmailUnverifiedNotice';
+import { gmailOAuthErrorMessage } from '../components/gmailOAuthErrors';
 
 const STEP_LABELS = ['Connect Shopify', 'Import your store', 'Connect inbox', 'Customize Luna', 'Test AI', 'Go Live'];
 
@@ -310,9 +311,17 @@ function StepGmail({ brandId, onNext }) {
     try {
       const res = await client.get(`/api/brands/${brandId}/gmail/auth-url`);
       const authUrl = res.data?.auth_url || res.data?.url;
-      if (authUrl) window.location.href = authUrl;
+      if (authUrl) {
+        window.location.href = authUrl;
+      } else {
+        setGmailError("tResolv couldn't generate a Google sign-in link. Try again, or skip this step and connect from Settings later.");
+        setPolling(false);
+      }
     } catch (err) {
-      setGmailError(extractErrorMessage(err, 'Could not start Gmail connection.'));
+      const fallback = err.response
+        ? 'Could not start Gmail connection. Try again, or skip this step and connect from Settings later.'
+        : "Couldn't reach tResolv's server. Check your internet connection and try again.";
+      setGmailError(extractErrorMessage(err, fallback));
       setPolling(false);
     }
   };
@@ -321,6 +330,9 @@ function StepGmail({ brandId, onNext }) {
     const params = new URLSearchParams(window.location.search);
     if (params.get('gmail_connected') === '1') {
       onNext();
+    } else if (params.get('gmail_error')) {
+      setGmailError(gmailOAuthErrorMessage(params.get('gmail_error')));
+      window.history.replaceState({}, '', window.location.pathname);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

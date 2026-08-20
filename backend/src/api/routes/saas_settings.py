@@ -481,6 +481,7 @@ async def get_gmail_status(tenant: TenantContext = Depends(get_current_tenant)):
                 "email": b.get("gmail_email"),
                 "brand_id": b.get("id"),
                 "last_polled_at": b.get("updated_at"),
+                "needs_reconnect": False,
             }
 
         # Fallback: match via shopify_domain (rows created before tenant_id migration)
@@ -506,12 +507,34 @@ async def get_gmail_status(tenant: TenantContext = Depends(get_current_tenant)):
                         "email": b.get("gmail_email"),
                         "brand_id": b.get("id"),
                         "last_polled_at": b.get("updated_at"),
+                        "needs_reconnect": False,
                     }
 
-        return {"connected": False, "email": None}
+        # Neither lookup found a brand with gmail_connected=true — but that's
+        # also what a REVOKED connection looks like (brand_gmail_service's
+        # token refresh flips gmail_connected to False on invalid_grant while
+        # deliberately leaving gmail_email in place). Check for that case
+        # before reporting a plain "never connected": a tenant whose Gmail
+        # access was revoked needs a distinct "reconnect" prompt, not the
+        # same first-time "Connect Gmail" copy.
+        stale_brands = supabase_select("brands", {
+            "tenant_id": f"eq.{tenant.tenant_id}",
+            "gmail_email": "not.is.null",
+        })
+        if stale_brands:
+            b = stale_brands[0]
+            return {
+                "connected": False,
+                "email": b.get("gmail_email"),
+                "brand_id": b.get("id"),
+                "last_polled_at": b.get("updated_at"),
+                "needs_reconnect": True,
+            }
+
+        return {"connected": False, "email": None, "needs_reconnect": False}
     except Exception as e:
         logger.error(f"Gmail status error: {e}")
-        return {"connected": False, "email": None}
+        return {"connected": False, "email": None, "needs_reconnect": False}
 
 
 @router.get("/gmail/connect")

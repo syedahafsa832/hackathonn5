@@ -162,8 +162,25 @@ class BrandGmailService:
             return {"success": True, "email": email}
 
         except Exception as e:
+            # The full exception (which can include request/response detail
+            # from Google's token endpoint) is logged server-side only — it
+            # must never reach the frontend, since the caller (the /gmail/
+            # callback route) puts this "error" value straight into the
+            # redirect URL's query string. A raw exception string there would
+            # both leak internals and produce an unpredictable, often
+            # URL-unsafe value the frontend can't map to a clear message.
+            # A stable code is returned instead; Settings/Onboarding show
+            # their own specific copy for it.
             logger.error(f"[BrandGmail] Callback error for brand {brand_id}: {e}")
-            return {"success": False, "error": str(e)}
+            err_str = str(e).lower()
+            if "scope" in err_str:
+                # Google granted a different/narrower scope set than requested
+                # (e.g. mismatch after a user edits consent) — token exchange
+                # itself raises here rather than silently connecting.
+                code = "scope_mismatch"
+            else:
+                code = "connection_failed"
+            return {"success": False, "error": code}
 
     def disconnect(self, brand_id: str):
         supabase_update("brands", {"id": f"eq.{brand_id}"}, {

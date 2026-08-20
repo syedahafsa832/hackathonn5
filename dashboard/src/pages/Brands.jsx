@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, Link } from 'react-router-dom';
 import client, { extractErrorMessage } from '../api/client';
+import { gmailOAuthErrorMessage } from '../components/gmailOAuthErrors';
 
 function Dot({ connected }) {
   return (
@@ -404,8 +405,12 @@ export default function Brands() {
         </div>
       )}
       {gmailError && (
-        <div style={{ padding: '12px 16px', background: 'var(--danger-light)', border: '1px solid #FCA5A5', borderRadius: '6px', color: 'var(--danger)', fontSize: '13px', marginBottom: '16px' }}>
-          Gmail connection failed: {gmailError}
+        <div style={{ padding: '12px 16px', background: 'var(--danger-light)', border: '1px solid #FCA5A5', borderRadius: '6px', color: 'var(--danger)', fontSize: '13px', marginBottom: '16px', lineHeight: '1.5' }}>
+          <div style={{ fontWeight: '600', marginBottom: '4px' }}>Gmail connection failed</div>
+          {gmailOAuthErrorMessage(gmailError)}{' '}
+          <Link to="/settings" style={{ color: 'var(--danger)', fontWeight: '600', textDecoration: 'underline' }}>
+            Go to Settings to try again →
+          </Link>
         </div>
       )}
       {error && (

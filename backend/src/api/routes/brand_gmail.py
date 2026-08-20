@@ -101,7 +101,16 @@ async def gmail_status(
 ):
     """Check Gmail connection status for a brand (tenant-scoped)."""
     brand = _get_owned_brand(brand_id, tenant)
+    connected = bool(brand.get("gmail_connected"))
+    email = brand.get("gmail_email")
+    # A revoked/expired refresh token (see brand_gmail_service._build_service)
+    # flips gmail_connected to False but deliberately leaves gmail_email in
+    # place — the only signal that distinguishes "never connected" from "was
+    # connected, needs reconnecting". A manual disconnect() clears both, so
+    # this is False there, correctly falling back to the plain not-connected
+    # state.
     return {
-        "connected": bool(brand.get("gmail_connected")),
-        "email":     brand.get("gmail_email"),
+        "connected": connected,
+        "email": email,
+        "needs_reconnect": (not connected) and bool(email),
     }

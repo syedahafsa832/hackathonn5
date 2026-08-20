@@ -4,6 +4,7 @@ import client from '../api/client';
 import ChatWidget from '../components/ChatWidget';
 import Alert from '../components/Alert';
 import GmailUnverifiedNotice from '../components/GmailUnverifiedNotice';
+import { gmailOAuthErrorMessage } from '../components/gmailOAuthErrors';
 
 const inputStyle = {
   width: '100%',
@@ -31,6 +32,15 @@ function EmailTab() {
   const [gmailStatus, setGmailStatus] = useState(null);
   const [loadingStatus, setLoadingStatus] = useState(true);
   const [disconnecting, setDisconnecting] = useState(false);
+  // True from the moment "Connect"/"Reconnect" is clicked until the browser
+  // actually navigates to Google (or the request fails) — the one window
+  // where the user has clicked something but sees no other feedback yet.
+  const [connecting, setConnecting] = useState(false);
+  // Raw gmail_error code from the OAuth redirect, mapped to specific copy via
+  // gmailOAuthErrorMessage() below — kept separate from `msg` (used for
+  // unrelated success/failure toasts elsewhere on this tab) so the Gmail
+  // card can render its own distinct "Connection Failed" state.
+  const [gmailErrorCode, setGmailErrorCode] = useState(null);
   // Same brandId-resolution pattern as ShopifyTab/ReplyStyleTab below and
   // Onboarding.jsx's Go Live step: /api/ai-mode defaults to the global
   // DEFAULT_STORE server-side when store_id is omitted, which silently
@@ -89,24 +99,37 @@ function EmailTab() {
       setMsg('Gmail connected successfully!');
       window.history.replaceState({}, '', window.location.pathname);
     } else if (params.get('gmail_error')) {
-      setMsg(`Gmail connection failed: ${params.get('gmail_error')}`);
+      setGmailErrorCode(params.get('gmail_error'));
       window.history.replaceState({}, '', window.location.pathname);
     }
   }, [loadStatus]);
 
   const handleConnect = async () => {
+    setConnecting(true);
+    setGmailErrorCode(null);
     try {
       // Get the Google OAuth URL via authenticated API call (Bearer token sent by axios)
       const res = await client.get('/api/v1/settings/gmail/connect');
       const authUrl = res.data?.auth_url;
       if (!authUrl) {
         setMsg('Could not get Gmail auth URL. Check GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET env vars.');
+        setConnecting(false);
         return;
       }
-      // Navigate the browser directly to Google's consent screen
+      // Navigate the browser directly to Google's consent screen — leaves
+      // `connecting` true until the page actually unloads, so the button
+      // reads "Connecting..." right up to the redirect.
       window.location.href = authUrl;
     } catch (err) {
-      setMsg(err.response?.data?.detail || 'Failed to start Gmail connection. Make sure a brand exists first.');
+      setConnecting(false);
+      // No response at all (network down / backend unreachable) reads very
+      // differently from a clean 4xx/5xx with a real detail message — worth
+      // telling apart rather than falling through to the same generic line.
+      if (!err.response) {
+        setMsg("Couldn't reach tResolv's server to start the connection. Check your internet connection and try again.");
+      } else {
+        setMsg(err.response?.data?.detail || 'Failed to start Gmail connection. Make sure a brand exists first.');
+      }
     }
   };
 
@@ -159,22 +182,61 @@ function EmailTab() {
     );
   }
 
+  // Five distinct, unambiguous states — never just "connected: true/false".
+  // connecting takes priority (a click just happened); otherwise the
+  // freshest server-confirmed state (connected) wins over a possibly-stale
+  // error from an earlier attempt; then a fresh OAuth failure; then the
+  // needs_reconnect signal computed backend-side from a revoked token
+  // (brand_gmail.py / saas_settings.py — gmail_connected=false but
+  // gmail_email still on file); otherwise the plain first-time state.
+  const connectionState = connecting
+    ? 'connecting'
+    : gmailStatus?.connected
+    ? 'connected'
+    : gmailErrorCode
+    ? 'failed'
+    : gmailStatus?.needs_reconnect
+    ? 'needs_reconnect'
+    : 'not_connected';
+
+  const dotColor = {
+    connected: '#10B981', connecting: '#06B6D4', failed: '#EF4444',
+    needs_reconnect: '#F59E0B', not_connected: '#94A3B8',
+  }[connectionState];
+
+  const statusLabel = {
+    connected: 'Connected', connecting: 'Connecting…', failed: 'Connection Failed',
+    needs_reconnect: 'Connection Expired', not_connected: 'Not Connected',
+  }[connectionState];
+
+  const statusLabelColor = {
+    connected: '#10B981', connecting: '#06B6D4', failed: '#EF4444',
+    needs_reconnect: '#B45309', not_connected: '#64748B',
+  }[connectionState];
+
+  const connectButtonLabel = {
+    connecting: 'Connecting…', needs_reconnect: 'Reconnect Gmail →', failed: 'Try Again →',
+  }[connectionState] || 'Connect Gmail →';
+
   return (
     <div style={{ maxWidth: '520px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
-      <Alert variant={msg.includes('Failed') ? 'error' : 'success'}>{msg}</Alert>
+      <Alert variant={msg.includes('Failed') || msg.includes("Couldn't") ? 'error' : 'success'}>{msg}</Alert>
 
       {/* Gmail Connection */}
       <div style={{ background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', padding: '24px' }}>
         <div style={{ fontSize: '16px', fontWeight: '600', color: '#1E293B', marginBottom: '16px' }}>Gmail Connection</div>
-        {gmailStatus?.connected ? (
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: connectionState === 'connected' ? '12px' : '4px' }}>
+          <div style={{
+            width: '10px', height: '10px', borderRadius: '50%', background: dotColor, flexShrink: 0,
+            animation: connectionState === 'connecting' ? 'pulse 1.2s ease-in-out infinite' : 'none',
+          }} />
+          <div style={{ fontSize: '14px', fontWeight: '600', color: statusLabelColor }}>{statusLabel}</div>
+        </div>
+
+        {connectionState === 'connected' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#10B981', flexShrink: 0 }} />
-              <div>
-                <div style={{ fontSize: '14px', fontWeight: '600', color: '#10B981' }}>Connected</div>
-                <div style={{ fontSize: '13px', color: '#475569' }}>{gmailStatus.email}</div>
-              </div>
-            </div>
+            <div style={{ fontSize: '13px', color: '#475569', marginTop: '-8px' }}>{gmailStatus.email}</div>
             {gmailStatus.last_polled_at && (
               <div style={{ fontSize: '12px', color: '#94A3B8' }}>
                 Inbox checked every 60 seconds
@@ -190,12 +252,31 @@ function EmailTab() {
               {disconnecting ? 'Disconnecting...' : 'Disconnect'}
             </button>
           </div>
-        ) : (
+        )}
+
+        {connectionState !== 'connected' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', alignItems: 'flex-start' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
-              <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#94A3B8', flexShrink: 0 }} />
-              <div style={{ fontSize: '14px', fontWeight: '600', color: '#64748B' }}>Not Connected</div>
-            </div>
+            {connectionState === 'failed' && (
+              <div style={{
+                width: '100%', padding: '12px 14px', background: '#FEF2F2', border: '1px solid #FECACA',
+                borderRadius: '6px', fontSize: '13px', color: '#991B1B', lineHeight: '1.5',
+              }}>
+                {gmailOAuthErrorMessage(gmailErrorCode)}
+              </div>
+            )}
+
+            {connectionState === 'needs_reconnect' && (
+              <div style={{
+                width: '100%', padding: '12px 14px', background: '#FFFBEB', border: '1px solid #FDE68A',
+                borderRadius: '6px', fontSize: '13px', color: '#92400E', lineHeight: '1.5',
+              }}>
+                Google access for <strong>{gmailStatus?.email}</strong> was revoked or expired — this can
+                happen after a password change, a Google security review, or removing tResolv's access in
+                your Google Account. tResolv has stopped monitoring this inbox. Reconnect to resume — your
+                settings and past conversations are unaffected.
+              </div>
+            )}
+
             <div style={{ fontSize: '14px', color: '#475569', lineHeight: '1.5' }}>
               Resolv will monitor this inbox every 60 seconds for new customer emails and send replies from it — directly from your address.
             </div>
@@ -204,11 +285,12 @@ function EmailTab() {
             </div>
             <button
               onClick={handleConnect}
-              style={{ padding: '9px 18px', borderRadius: '6px', background: '#06B6D4', color: 'white', fontWeight: '600', fontSize: '14px', border: 'none', cursor: 'pointer', transition: 'background 0.15s' }}
-              onMouseEnter={e => e.target.style.background = '#0891B2'}
-              onMouseLeave={e => e.target.style.background = '#06B6D4'}
+              disabled={connecting}
+              style={{ padding: '9px 18px', borderRadius: '6px', background: connecting ? '#94A3B8' : '#06B6D4', color: 'white', fontWeight: '600', fontSize: '14px', border: 'none', cursor: connecting ? 'not-allowed' : 'pointer', transition: 'background 0.15s' }}
+              onMouseEnter={e => { if (!connecting) e.target.style.background = '#0891B2'; }}
+              onMouseLeave={e => { if (!connecting) e.target.style.background = '#06B6D4'; }}
             >
-              Connect Gmail →
+              {connectButtonLabel}
             </button>
             <div style={{ fontSize: '12px', color: '#94A3B8' }}>
               Google permissions required: read emails, send emails, mark as read
