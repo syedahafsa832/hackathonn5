@@ -26,6 +26,8 @@ type Props = {
   sessionId: string
   apiBaseUrl: string
   hasSavedSession?: boolean
+  activityLabel?: string
+  activitySlow?: boolean
   onClose: () => void
   onSend: (message: string) => void
 }
@@ -40,6 +42,8 @@ export function ResolutionCanvas({
   sessionId,
   apiBaseUrl,
   hasSavedSession = false,
+  activityLabel,
+  activitySlow,
   onClose,
   onSend,
 }: Props) {
@@ -203,6 +207,9 @@ export function ResolutionCanvas({
             sessionId={sessionId}
             apiBaseUrl={apiBaseUrl}
             hasSavedSession={hasSavedSession}
+            activityLabel={activityLabel}
+            activitySlow={activitySlow}
+            onRetry={onSend}
           />
         </div>
 

@@ -3,7 +3,7 @@ import json
 import re
 import logging
 from datetime import datetime
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Callable, Awaitable
 
 # Set OPENAI_API_KEY for compatibility with Mistral's OpenAI-compatible API
 if not os.getenv("OPENAI_API_KEY"):
@@ -293,7 +293,7 @@ class CustomerSuccessAgent:
             f"Initializing V3 Agent — AI providers configured: {ai_provider_manager.has_providers}"
         )
 
-    async def process_customer_query(self, query: str, customer_info: Dict[str, Any], tenant_id: Optional[str] = None, store_id: Optional[str] = None, ticket_id: Optional[str] = None) -> Dict[str, Any]:
+    async def process_customer_query(self, query: str, customer_info: Dict[str, Any], tenant_id: Optional[str] = None, store_id: Optional[str] = None, ticket_id: Optional[str] = None, on_progress: Optional[Callable[[str, str], Awaitable[None]]] = None) -> Dict[str, Any]:
         """
         V3 Orchestration:
         1. RAG Retrieval (Policies, Brand, Product Info) - tenant-specific if tenant_id provided
@@ -301,9 +301,26 @@ class CustomerSuccessAgent:
         3. Tool Calls (Order/Shipping/Inventory) - REAL TIME
         4. Structured Response Generation
         5. Confidence & Escalation Enforcement
+
+        on_progress(stage, label), when provided, is called synchronously at
+        each real dispatch point below - immediately before the tool call or
+        model call it describes actually runs. It never decides which stage
+        happened; it only reports the branch this function already took, so
+        the caller can surface accurate activity status to the customer
+        without inventing progress that isn't real. Best-effort: a broken
+        callback must never break query processing.
         """
+        async def _emit(stage: str, label: str) -> None:
+            if not on_progress:
+                return
+            try:
+                await on_progress(stage, label)
+            except Exception:
+                logger.debug("[Agent] on_progress callback failed (non-blocking)", exc_info=True)
+
         try:
             _is_chat = "[CHAT MODE" in query
+            await _emit("thinking", "Reading your message…")
 
             # 1. RAG Retrieval - brand_knowledge_service.get_brand_context() is scoped
             # correctly by brand_id via match_brand_rag_chunks. rag_engine.get_relevant_context's
@@ -395,6 +412,7 @@ class CustomerSuccessAgent:
                 order_match = re.search(r'#?(\d{3,6})', query)
                 if order_match:
                     order_id = order_match.group(1)
+                    await _emit("order_lookup", "Looking up your order…")
                     tool_results["order_status"] = await v3_tools.get_order_status(
                         order_id,
                         shop_domain=_brand_shopify_domain,
@@ -415,6 +433,8 @@ class CustomerSuccessAgent:
                     customer_email = customer_info.get("email")
 
                 if customer_email:
+                    if "order_status" not in tool_results:
+                        await _emit("order_lookup", "Looking up your order…")
                     tool_results["orders_by_email"] = await v3_tools.get_orders_by_email(
                         customer_email,
                         shop_domain=_brand_shopify_domain,
@@ -494,6 +514,7 @@ class CustomerSuccessAgent:
                     if fallback_match:
                         product = fallback_match.group(1)
                 if product:
+                    await _emit("product_lookup", "Finding the right product…")
                     tool_results["inventory"] = await v3_tools.get_inventory_status(
                         product,
                         shop_domain=_brand_shopify_domain,
@@ -522,6 +543,7 @@ class CustomerSuccessAgent:
                         re.search(r'(hoodie|jacket|pants|shirt|tshirt|coat|dress|skirt)', candidate)
                     )
                     if len(candidate) >= 2 and looks_product_like:
+                        await _emit("product_lookup", "Finding the right product…")
                         tool_results["inventory"] = await v3_tools.get_inventory_status(
                             candidate,
                             shop_domain=_brand_shopify_domain,
@@ -566,6 +588,7 @@ class CustomerSuccessAgent:
                         _prefix = ""
                     _candidate = " ".join(g for g in (_prefix, _mention.group(2), (_mention.group(3) or "").strip()) if g)
                     if _candidate:
+                        await _emit("product_lookup", "Finding the right product…")
                         tool_results["inventory"] = await v3_tools.get_inventory_status(
                             _candidate,
                             shop_domain=_brand_shopify_domain,
@@ -600,6 +623,7 @@ class CustomerSuccessAgent:
                             anchor = candidate
                             break
                 if anchor:
+                    await _emit("product_search", "Finding products…")
                     tool_results["recommendations"] = await v3_tools.get_product_recommendations(
                         anchor,
                         shop_domain=_brand_shopify_domain,
@@ -617,6 +641,7 @@ class CustomerSuccessAgent:
             elif _is_discovery_query:
                 _category_match = re.search(r'(hoodie|jacket|pants|shirt|tshirt|coat|dress|skirt)', query_lower)
                 if _category_match:
+                    await _emit("product_search", "Finding products…")
                     tool_results["recommendations"] = await v3_tools.discover_products_by_category(
                         _category_match.group(1),
                         shop_domain=_brand_shopify_domain,
@@ -637,6 +662,7 @@ class CustomerSuccessAgent:
                         )
                         _slug = shopify_carrier_to_aftership_slug(_tc)
                         if _slug:
+                            await _emit("shipping_lookup", "Checking shipping details…")
                             _tracking_info = await get_tracking_status(_tn, _slug, _brand_aftership_key)
                             tool_results["tracking_info"] = _tracking_info
                             logger.info(f"[Agent] Aftership tracking fetched: status={(_tracking_info or {}).get('status')}")
@@ -796,6 +822,13 @@ class CustomerSuccessAgent:
                 logger.info(f"[ReturnActions] No action intent (source={_intent_result.source})")
 
             # 5. Response Generation
+            # Only announce a policy check when no live Shopify tool ran and we
+            # actually have knowledge-base content to ground the answer in —
+            # otherwise this is just "Preparing your answer…" like any other
+            # query with nothing brand-specific to check.
+            if not tool_results and rag_context:
+                await _emit("policy_check", "Checking our policies…")
+            await _emit("preparing", "Preparing your answer…")
             system_prompt = self._construct_v3_prompt(customer_info, rag_context, sizing_context, tool_context, action_context, brand_name=_brand_name, agent_name=_agent_name, style_block=_style_block)
 
             # Defensive check - ensure at least one AI provider is configured

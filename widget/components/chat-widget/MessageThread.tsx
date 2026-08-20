@@ -16,6 +16,12 @@ type Props = {
   sessionId: string
   apiBaseUrl: string
   hasSavedSession?: boolean
+  /** Current real backend activity label shown in place of the typing bubble. */
+  activityLabel?: string
+  /** True once the in-flight turn has run long enough to show a generic reassurance. */
+  activitySlow?: boolean
+  /** Resend a previously failed message. */
+  onRetry?: (text: string) => void
 }
 
 export function MessageThread({
@@ -25,16 +31,17 @@ export function MessageThread({
   sessionId,
   apiBaseUrl,
   hasSavedSession = false,
+  activityLabel = 'Thinking…',
+  activitySlow = false,
+  onRetry,
 }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const [ratingShown, setRatingShown] = useState(false)
+  const isLoading = messages.some((m) => m.isTyping)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
-
-  // Find the last user message text (for ThinkingIndicator)
-  const lastUserText = [...messages].reverse().find((m) => m.role === 'user' && !m.isTyping)?.text ?? ''
 
   // Find last assistant message with resolutionComplete flag
   const lastResolutionIdx = messages.reduce((acc, m, i) =>
@@ -106,7 +113,7 @@ export function MessageThread({
 
               {/* Bubble or thinking indicator */}
               {msg.isTyping ? (
-                <ThinkingIndicator userMessage={lastUserText} />
+                <ThinkingIndicator label={activityLabel} slow={activitySlow} />
               ) : (
                 <div
                   style={{
@@ -143,6 +150,28 @@ export function MessageThread({
               {/* Confidence badge */}
               {!isUser && !msg.isTyping && (
                 <ConfidenceBadge confidence={msg.confidence} />
+              )}
+
+              {/* Retry — only on a message that actually failed to send */}
+              {!isUser && !msg.isTyping && msg.retryText && onRetry && (
+                <button
+                  onClick={() => onRetry(msg.retryText as string)}
+                  disabled={isLoading}
+                  style={{
+                    marginTop: '4px',
+                    padding: '4px 10px',
+                    fontSize: '11px',
+                    fontWeight: 500,
+                    color: accentColor,
+                    background: 'transparent',
+                    border: `1px solid ${accentColor}55`,
+                    borderRadius: '8px',
+                    cursor: isLoading ? 'default' : 'pointer',
+                    opacity: isLoading ? 0.5 : 1,
+                  }}
+                >
+                  Try again
+                </button>
               )}
 
               {/* Satisfaction rating — shows once after resolution_complete */}

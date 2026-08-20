@@ -13,7 +13,62 @@ import type {
   WidgetProps,
   ApiResponse,
   ResolutionStepId,
+  ChatStreamEvent,
 } from './types'
+
+/* ── Timing ──────────────────────────────────────────────────── */
+
+const REQUEST_TIMEOUT_MS = 45_000   // hard cap — treated as a failure, not an endless spinner
+const SLOW_RESPONSE_MS = 8_000      // no new activity update by this point -> show generic reassurance
+
+/* ── NDJSON stream reader ───────────────────────────────────────
+ * Reads the `?stream=1` response body one line at a time. Each line is a
+ * ChatStreamEvent. `onStatus` fires for every real backend-reported activity
+ * stage; the final `result` line resolves the returned promise. A `type:
+ * "error"` line (already sanitized server-side — no internals) rejects. */
+async function readChatStream(
+  body: ReadableStream<Uint8Array>,
+  onStatus: (label: string) => void
+): Promise<ApiResponse> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  const handleLine = (line: string): ApiResponse | null => {
+    if (!line.trim()) return null
+    let evt: ChatStreamEvent
+    try {
+      evt = JSON.parse(line)
+    } catch {
+      return null
+    }
+    if (evt.type === 'status') {
+      onStatus(evt.label)
+      return null
+    }
+    if (evt.type === 'error') {
+      throw new Error(evt.message)
+    }
+    const { type: _type, ...rest } = evt
+    return rest as ApiResponse
+  }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let idx: number
+    while ((idx = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, idx)
+      buffer = buffer.slice(idx + 1)
+      const result = handleLine(line)
+      if (result) return result
+    }
+  }
+  const trailing = handleLine(buffer)
+  if (trailing) return trailing
+  throw new Error('Connection closed before a reply arrived')
+}
 
 /* ── Constants ───────────────────────────────────────────────── */
 
@@ -185,6 +240,8 @@ export function ChatWidget({
   const [orderData, setOrderData]             = useState<OrderData | null>(null)
   const [customerName, setCustomerName]       = useState<string | null>(null)
   const [unreadCount, setUnreadCount]         = useState(0)
+  const [activityLabel, setActivityLabel]     = useState('Thinking…')
+  const [activitySlow, setActivitySlow]       = useState(false)
 
   // Persist to sessionStorage whenever messages change
   useEffect(() => {
@@ -229,6 +286,8 @@ export function ChatWidget({
 
       setMessages((prev) => [...prev, userMsg, typingMsg])
       setOrbState('thinking')
+      setActivityLabel('Thinking…')
+      setActivitySlow(false)
       advanceSteps('understanding')
 
       const history = [...messages, userMsg]
@@ -237,6 +296,18 @@ export function ChatWidget({
 
       const userMsgCount = messages.filter((m) => m.role === 'user').length
 
+      // No new activity update by SLOW_RESPONSE_MS -> generic reassurance,
+      // never a fresh fabricated stage. Hard-aborts at REQUEST_TIMEOUT_MS so
+      // a stalled request never leaves a dead spinner on screen.
+      let slowTimer: ReturnType<typeof setTimeout> | null = null
+      const armSlowTimer = () => {
+        if (slowTimer) clearTimeout(slowTimer)
+        slowTimer = setTimeout(() => setActivitySlow(true), SLOW_RESPONSE_MS)
+      }
+      armSlowTimer()
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+
       try {
         let data: ApiResponse
 
@@ -244,9 +315,10 @@ export function ChatWidget({
           await new Promise((r) => setTimeout(r, 1200))
           data = getMockResponse(text, userMsgCount)
         } else {
-          const res = await fetch(`${apiBaseUrl}/api/v2/widget/chat`, {
+          const res = await fetch(`${apiBaseUrl}/api/v2/widget/chat?stream=1`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal,
             body: JSON.stringify({
               message: text.trim(),
               session_id: sessionId,
@@ -258,7 +330,19 @@ export function ChatWidget({
             }),
           })
           if (!res.ok) throw new Error(`API ${res.status}`)
-          data = await res.json()
+
+          const contentType = res.headers.get('content-type') || ''
+          if (contentType.includes('ndjson') && res.body) {
+            data = await readChatStream(res.body, (label) => {
+              setActivityLabel(label)
+              setActivitySlow(false)
+              armSlowTimer()
+            })
+          } else {
+            // Server short-circuited before any tool ran (rate limit, plan
+            // limit) — plain JSON, no activity stages to show.
+            data = await res.json()
+          }
         }
 
         if (data.customer_name && !customerName) setCustomerName(data.customer_name)
@@ -292,18 +376,26 @@ export function ChatWidget({
         setMessages((prev) => [...prev.filter((m) => m.id !== 'typing'), replyMsg])
 
         if (!isOpen) setUnreadCount((c) => c + 1)
-      } catch {
+      } catch (err) {
+        const isTimeout = err instanceof DOMException && err.name === 'AbortError'
         setOrbState('error')
         setMessages((prev) => [
           ...prev.filter((m) => m.id !== 'typing'),
           {
             id: `err_${Date.now()}`,
             role: 'assistant',
-            text: 'Sorry, I had a little trouble there. Please try again!',
+            text: isTimeout
+              ? "This is taking longer than expected. Please try again in a moment."
+              : 'Sorry, I had a little trouble there. Please try again!',
             timestamp: Date.now(),
+            retryText: text.trim(),
           },
         ])
         setTimeout(() => setOrbState('idle'), 3500)
+      } finally {
+        clearTimeout(timeoutId)
+        if (slowTimer) clearTimeout(slowTimer)
+        setActivitySlow(false)
       }
     },
     [messages, sessionId, brandId, orgId, customerName, isOpen, advanceSteps, apiBaseUrl]
@@ -386,6 +478,8 @@ export function ChatWidget({
                       sessionId={sessionId}
                       apiBaseUrl={apiBaseUrl}
                       hasSavedSession={hasSavedSession}
+                      activityLabel={activityLabel}
+                      activitySlow={activitySlow}
                       onClose={handleClose}
                       onSend={sendMessage}
                     />

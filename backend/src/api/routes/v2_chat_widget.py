@@ -8,13 +8,15 @@ Sessions are stored as tickets with channel='chat'.
 import re
 import time
 import uuid
+import json
+import asyncio
 import logging
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import Optional, List, Callable, Awaitable
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
 from src.lib.supabase_client import supabase_select, supabase_insert, supabase_update
@@ -158,56 +160,32 @@ def _build_history_context(messages: list, agent_name: str = "Luna") -> str:
 
 # ── Endpoints ──────────────────────────────────────────────────────────────
 
-@router.post("/widget/chat", response_model=ChatResponse)
-async def chat(request: Request, body: ChatRequest):
-    """Receive a chat message and return the AI agent's reply."""
-    ip = request.client.host if request.client else "unknown"
-    if not _allow(ip):
-        raise HTTPException(status_code=429, detail="Rate limit exceeded. Please wait a moment.")
+async def _generate_reply(
+    body: ChatRequest,
+    brand: dict,
+    ticket: dict,
+    ticket_id: str,
+    tenant_id: Optional[str],
+    on_progress: Optional[Callable[[str, str], Awaitable[None]]] = None,
+) -> ChatResponse:
+    """Run the agent for one chat turn and persist the outcome.
 
-    message = _sanitize(body.message)
-    if not message:
-        raise HTTPException(status_code=400, detail="Message cannot be empty")
+    Shared by the plain-JSON and streaming (`?stream=1`) paths in `chat()`
+    below so both stay identical in behavior — only how the caller receives
+    the result differs. `on_progress`, when given, is forwarded to the agent
+    so real dispatch stages (order lookup, product lookup, ...) can be
+    surfaced to the customer as they actually happen; it is None on the
+    plain-JSON path, which does not stream and needs no progress events.
+    """
+    from src.services import plan_service
 
-    brand = _get_brand(body.brand_id)
     brand_name = brand.get("name", "our store")
     agent_name = brand.get("agent_name") or "Luna"
-
-    ticket = _get_or_create_session(
-        body.session_id, body.brand_id,
-        customer_email=body.customer_email,
-        customer_name=body.customer_name,
-    )
-    ticket_id = ticket.get("id")
-
-    # ── Founding cohort daily limit ─────────────────────────────────────────
-    from src.services.auth_service import auth_service
-    from src.services import plan_service
-    tenant_id = brand.get("tenant_id")
-    if not await auth_service.check_daily_ticket_limit(tenant_id):
-        limit_reply = (
-            "We've hit today's free ticket limit on this plan — your message has been "
-            "saved and our team will follow up. Upgrade anytime to remove this limit."
-        )
-        supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {"status": "requires_human"})
-        return ChatResponse(reply=limit_reply, session_id=body.session_id, suggested_actions=[])
-
-    # ── AI-reply quota (shared with the Gmail channel — same tenant-scoped
-    # counter, checked before calling the model so an exhausted quota never
-    # spends an API call) ───────────────────────────────────────────────────
-    ai_limit_check = plan_service.check_limit(tenant_id, "ai_replies")
-    if not ai_limit_check["allowed"]:
-        supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {"status": "requires_human"})
-        return ChatResponse(
-            reply="✨ Luna's free trial replies have been used.\n\nThe store owner can upgrade to continue AI-powered support.",
-            session_id=body.session_id,
-            suggested_actions=[],
-        )
+    message = _sanitize(body.message)
 
     # Parse stored messages
     stored_msgs = ticket.get("messages") or []
     if isinstance(stored_msgs, str):
-        import json
         try:
             stored_msgs = json.loads(stored_msgs)
         except Exception:
@@ -256,6 +234,7 @@ async def chat(request: Request, body: ChatRequest):
             tenant_id=tenant_id,
             store_id=body.brand_id,
             ticket_id=ticket_id,
+            on_progress=on_progress,
         )
 
         reply_body = result.get("reply_body", "Hey! Let me look into that for you.")
@@ -305,6 +284,14 @@ async def chat(request: Request, body: ChatRequest):
         ticket_escalate = True
         ticket_escalation_reason = f"Agent error: {e}"
 
+    # The reply text is ready — what's left (persisting the ticket, building
+    # the response) is real, if brief, work of its own.
+    if on_progress:
+        try:
+            await on_progress("sending", "Sending your reply…")
+        except Exception:
+            pass
+
     # Append the agent's reply
     stored_msgs.append({
         "direction": "outbound",
@@ -346,6 +333,100 @@ async def chat(request: Request, body: ChatRequest):
         action_result=result_action_result,
         resolution_complete=result_resolution_complete,
     )
+
+
+@router.post("/widget/chat")
+async def chat(request: Request, body: ChatRequest, stream: Optional[int] = None):
+    """Receive a chat message and return the AI agent's reply.
+
+    Pass `?stream=1` to receive newline-delimited JSON activity events
+    (`{"type": "status", "stage": ..., "label": ...}`) followed by a final
+    `{"type": "result", ...}` frame carrying the same fields as the plain
+    ChatResponse below. Used by the widget to show real backend-driven
+    activity states (which tool is running) instead of a blank or invented
+    loading indicator. The early-exit responses right below (rate limit,
+    plan limits) are always plain JSON regardless of `stream` — only the
+    slow agent-processing path actually streams, since those short-circuit
+    before any tool would run.
+    """
+    ip = request.client.host if request.client else "unknown"
+    if not _allow(ip):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Please wait a moment.")
+
+    message = _sanitize(body.message)
+    if not message:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    brand = _get_brand(body.brand_id)
+
+    ticket = _get_or_create_session(
+        body.session_id, body.brand_id,
+        customer_email=body.customer_email,
+        customer_name=body.customer_name,
+    )
+    ticket_id = ticket.get("id")
+
+    # ── Founding cohort daily limit ─────────────────────────────────────────
+    from src.services.auth_service import auth_service
+    from src.services import plan_service
+    tenant_id = brand.get("tenant_id")
+    if not await auth_service.check_daily_ticket_limit(tenant_id):
+        limit_reply = (
+            "We've hit today's free ticket limit on this plan — your message has been "
+            "saved and our team will follow up. Upgrade anytime to remove this limit."
+        )
+        supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {"status": "requires_human"})
+        return ChatResponse(reply=limit_reply, session_id=body.session_id, suggested_actions=[])
+
+    # ── AI-reply quota (shared with the Gmail channel — same tenant-scoped
+    # counter, checked before calling the model so an exhausted quota never
+    # spends an API call) ───────────────────────────────────────────────────
+    ai_limit_check = plan_service.check_limit(tenant_id, "ai_replies")
+    if not ai_limit_check["allowed"]:
+        supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {"status": "requires_human"})
+        return ChatResponse(
+            reply="✨ Luna's free trial replies have been used.\n\nThe store owner can upgrade to continue AI-powered support.",
+            session_id=body.session_id,
+            suggested_actions=[],
+        )
+
+    if stream != 1:
+        return await _generate_reply(body, brand, ticket, ticket_id, tenant_id)
+
+    async def event_stream():
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def on_progress(stage: str, label: str) -> None:
+            await queue.put({"type": "status", "stage": stage, "label": label})
+
+        async def run() -> None:
+            try:
+                resp = await _generate_reply(body, brand, ticket, ticket_id, tenant_id, on_progress=on_progress)
+                await queue.put({"type": "result", **resp.model_dump()})
+            except Exception as e:
+                # Generic message only — never leak stack traces, prompts,
+                # or tool arguments to the customer. Real detail goes to
+                # the log line, not the wire.
+                logger.error(f"[ChatWidget] Streaming error: {e}")
+                await queue.put({
+                    "type": "error",
+                    "message": "Sorry, something went wrong on our end. Please try again.",
+                })
+            finally:
+                await queue.put(None)
+
+        task = asyncio.create_task(run())
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                yield (json.dumps(item) + "\n").encode("utf-8")
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
 @router.post("/widget/feedback")

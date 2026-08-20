@@ -30,6 +30,8 @@ export type Message = {
   orderData?: OrderData
   actionResult?: ActionResult
   resolutionComplete?: boolean
+  /** Original user text to resend — set only on a failed assistant message, renders a "Try again" affordance. */
+  retryText?: string
 }
 
 export type OrderItem = {
@@ -89,3 +91,9 @@ export type ApiResponse = {
   resolution_complete?: boolean
   customer_name?: string
 }
+
+/** One line of the `?stream=1` newline-delimited JSON response from /widget/chat. */
+export type ChatStreamEvent =
+  | { type: 'status'; stage: string; label: string }
+  | ({ type: 'result' } & ApiResponse)
+  | { type: 'error'; message: string }
