@@ -256,6 +256,12 @@ strong, b, h1, h2, h3, h4, h5, h6, th {
   .mobile-sidebar-overlay.open {
     display: block;
   }
+  /* Icon-only topbar buttons (Help, Sign out) on narrow screens — same
+     breakpoint as the sidebar collapse. The topbar's title + button group
+     would otherwise overflow the viewport on mobile. */
+  .topbar-btn-label {
+    display: none;
+  }
 }
 
 /* Title/actions header rows — stack on narrow screens */

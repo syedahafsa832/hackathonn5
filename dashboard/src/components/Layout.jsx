@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import Avatar from './Avatar';
+import HelpContactLink from './HelpContactLink';
 import { useAuth } from '../hooks/useAuth';
 import { useMe } from '../hooks/useApi';
 import { LogOut, ChevronDown, Store, Menu } from 'lucide-react';
@@ -11,6 +12,7 @@ const PAGE_TITLES = {
   '/tickets': 'Conversations',
   '/actions': 'Escalations',
   '/quarantine': 'Quarantine Queue',
+  '/brands': 'Store',
   '/settings': 'Settings',
   '/admin': 'Admin',
   '/upgrade': 'Upgrade',
@@ -24,14 +26,19 @@ export default function Layout({ children }) {
   const { data: me, isLoading: meLoading } = useMe();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  const title = Object.entries(PAGE_TITLES).find(([path]) =>
+  const matchedTitle = Object.entries(PAGE_TITLES).find(([path]) =>
     location.pathname.startsWith(path)
-  )?.[1] || (
+  )?.[1];
+  const title = matchedTitle || (
     <>
       <span style={{ color: '#06B6D4' }}>t</span>
       <span style={{ color: 'var(--text-primary)' }}>Resolv</span>
     </>
   );
+  // Plain-string version of the page name for HelpContactLink's mailto
+  // subject — `title` above can be JSX (the tResolv logo fallback), which
+  // isn't usable there.
+  const pageLabel = matchedTitle || 'tResolv';
 
   useEffect(() => {
     setMobileMenuOpen(false);
@@ -72,6 +79,7 @@ export default function Layout({ children }) {
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <HelpContactLink context={pageLabel} />
             <button
               onClick={() => navigate('/profile')}
               aria-label="Profile"
@@ -86,6 +94,8 @@ export default function Layout({ children }) {
             </button>
             <button
               onClick={logout}
+              aria-label="Sign out"
+              title="Sign out"
               style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -101,7 +111,7 @@ export default function Layout({ children }) {
               }}
             >
               <LogOut size={14} />
-              Sign out
+              <span className="topbar-btn-label">Sign out</span>
             </button>
           </div>
         </header>

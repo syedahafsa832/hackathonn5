@@ -4,6 +4,7 @@ import client, { extractErrorMessage } from '../api/client';
 import Alert from '../components/Alert';
 import GmailUnverifiedNotice from '../components/GmailUnverifiedNotice';
 import { gmailOAuthErrorMessage } from '../components/gmailOAuthErrors';
+import HelpContactLink from '../components/HelpContactLink';
 
 const STEP_LABELS = ['Connect Shopify', 'Import your store', 'Connect inbox', 'Customize Luna', 'Test AI', 'Go Live'];
 
@@ -748,6 +749,9 @@ export default function Onboarding() {
           <button onClick={() => navigate('/login')} style={{ padding: '10px 24px', borderRadius: '4px', fontSize: '14px', fontWeight: '600', background: 'var(--accent)', color: 'white', cursor: 'pointer' }}>
             Go to login
           </button>
+          <div style={{ marginTop: '14px', fontSize: '12px', color: 'var(--text-muted)' }}>
+            <HelpContactLink variant="inline" context="Onboarding — signed out" label="Need help instead?" />
+          </div>
         </div>
       </div>
     );
@@ -764,13 +768,19 @@ export default function Onboarding() {
           <button onClick={loadBrand} style={{ padding: '10px 24px', borderRadius: '4px', fontSize: '14px', fontWeight: '600', background: 'var(--accent)', color: 'white', cursor: 'pointer' }}>
             Retry
           </button>
+          <div style={{ marginTop: '14px', fontSize: '12px', color: 'var(--text-muted)' }}>
+            Still stuck? <HelpContactLink variant="inline" context="Onboarding — couldn't load account" label="Email us" />
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
+    <div style={{ minHeight: '100vh', background: 'var(--bg-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px', position: 'relative' }}>
+      <div style={{ position: 'absolute', top: '20px', right: '24px' }}>
+        <HelpContactLink context={`Onboarding — step ${step}`} />
+      </div>
       <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '40px', width: '100%', maxWidth: '600px' }}>
         <div style={{ marginBottom: '32px' }}>
           <div style={{ fontWeight: '800', fontSize: '18px', letterSpacing: '-0.5px', marginBottom: '4px' }}>

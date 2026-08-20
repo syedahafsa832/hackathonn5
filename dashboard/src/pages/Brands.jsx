@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import client, { extractErrorMessage } from '../api/client';
 import { gmailOAuthErrorMessage } from '../components/gmailOAuthErrors';
+import HelpContactLink from '../components/HelpContactLink';
 
 function Dot({ connected }) {
   return (
@@ -427,7 +428,8 @@ export default function Brands() {
         <div style={{ padding: '48px', textAlign: 'center', border: '1px solid var(--border)', borderRadius: '6px', background: 'var(--bg-primary)' }}>
           <div style={{ fontWeight: '600', marginBottom: '6px' }}>We couldn't find your store</div>
           <div style={{ color: 'var(--text-muted)', fontSize: '13px' }}>
-            This can happen briefly right after signup — try refreshing. If it persists, contact support.
+            This can happen briefly right after signup — try refreshing. If it persists,{' '}
+            <HelpContactLink variant="inline" context="Store — couldn't find store" label="contact support" />.
           </div>
         </div>
       )}

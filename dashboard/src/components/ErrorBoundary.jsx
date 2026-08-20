@@ -1,4 +1,5 @@
 import { Component } from 'react';
+import HelpContactLink from './HelpContactLink';
 
 // No page in this app had any error boundary — a single uncaught render error
 // (bad/unexpected API data, a null field, etc.) unmounts the whole React tree,
@@ -33,6 +34,9 @@ export default class ErrorBoundary extends Component {
           >
             Reload
           </button>
+          <div style={{ marginTop: '16px', fontSize: '12px', color: 'var(--text-muted)' }}>
+            Still stuck? <HelpContactLink variant="inline" context="App render error" label="Email us" />
+          </div>
         </div>
       );
     }
