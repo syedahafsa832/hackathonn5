@@ -5,22 +5,15 @@ Live bug: "hi cancel my order #1012" in the chat widget got the generic
 "I'm unable to pull up your order... share your email or order confirmation
 number?" reply, even though the customer had already given an explicit
 order number. Root cause: return_actions_integration.py's shared
-REFUND/CANCEL block gated real Shopify lookup on `not order_id or not
-email` - so a chat visitor who gave an order number but (as is normal for
-an unverified widget session) hadn't shared an email got the same
-"ask for everything" fallback as someone who'd given nothing at all.
-order_id alone is enough to ATTEMPT a real lookup; email is for ownership
-verification, which check_return_eligibility already performs downstream
-(missing/mismatched email -> staged for manual review, never silently
-treated as eligible - sender verification is preserved, not weakened).
-Fixed by gating only on `not order_id`.
-
-Also fixes two related, directly-adjacent bugs found while tracing this
-path: an unverified/not-found order was wrongly treated as "unfulfilled ->
-cancel" (order_data was empty but fulfillment_status defaulted to
-not-"fulfilled" -> is_unfulfilled=True), and an already-cancelled order
-(still "unfulfilled" since it never shipped) could get queued for a SECOND
-cancellation.
+RETURN/REFUND/CANCEL block gated real Shopify lookup on
+`not order_id or not email` - so a chat visitor who gave an order number
+but (as is normal for an unverified widget session) hadn't shared an email
+got the same "ask for everything" fallback as someone who'd given nothing
+at all. order_id alone is enough to ATTEMPT a real lookup; email is for
+ownership verification, which check_return_eligibility already performs
+downstream (missing/mismatched email -> staged for manual review, never
+silently treated as eligible - sender verification is preserved, not
+weakened). Fixed by gating only on `not order_id`.
 
 Also covers: real activity/progress events emitted at the actual
 cancellation execution points (order lookup, eligibility check, staging),
@@ -121,7 +114,7 @@ def _eligible_unfulfilled(**overrides):
 
 
 def _run_cancel(query, order_id="1012", email="customer@example.com", eligibility=None,
-                 create_result=None):
+                 existing_action=None, create_result=None):
     integration = ReturnActionsIntegration()
     intent = IntentResult(action_type="cancel", order_id=order_id, raw_address=None, confidence=0.9)
     events = []
@@ -131,6 +124,7 @@ def _run_cancel(query, order_id="1012", email="customer@example.com", eligibilit
 
     with patch.object(integration.actions, "check_return_eligibility",
                        new=AsyncMock(return_value=eligibility if eligibility is not None else _eligible_unfulfilled())) as mock_elig, \
+         patch.object(integration, "_find_active_action", new=AsyncMock(return_value=existing_action)), \
          patch.object(integration, "_create_action", new=AsyncMock(return_value=create_result or {"success": True, "action_id": "a1"})) as mock_create:
         result = run(integration.handle_return_intent(
             query=query, customer_info={"name": "Jane", "email": email},
@@ -210,6 +204,16 @@ def test_already_cancelled_order_does_not_get_another_cancel_action():
     )
     mock_create.assert_not_called()
     assert "NOT NEEDED" in result["action_context"]
+
+
+def test_existing_pending_cancel_action_is_not_duplicated():
+    result, mock_elig, mock_create, _ = _run_cancel(
+        "hi cancel my order #1012",
+        existing_action={"action_type": "cancel_order", "status": "pending"},
+    )
+    mock_elig.assert_not_called()
+    mock_create.assert_not_called()
+    assert "ALREADY PENDING" in result["action_context"]
 
 
 # 8. Cancellation requiring approval remains staged, not executed
@@ -305,6 +309,7 @@ def test_reported_bug_hi_cancel_my_order_1012_no_longer_falls_back_to_generic_as
          patch("src.agent.customer_success_agent.brand_knowledge_service.get_brand_context", new=AsyncMock(return_value="")), \
          patch("src.lib.supabase_client.supabase_select", return_value=[]), \
          patch("src.services.shopify_service.shopify_service.get_client_for_tenant", new=AsyncMock(return_value=mock_client)), \
+         patch.object(return_actions, "_find_active_action", new=AsyncMock(return_value=None)), \
          patch.object(return_actions, "_create_action", new=AsyncMock(return_value={"success": True, "action_id": "a1"})) as mock_create:
         result = run(customer_success_agent.process_customer_query(
             query="hi cancel my order #1012",

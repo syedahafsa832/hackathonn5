@@ -45,6 +45,14 @@ const CONFIGS: Record<ActionResult['type'], Config> = {
     border: '1px solid rgba(245,158,11,0.2)',
     badgeColor: '#F59E0B',
   },
+  exchange_staged: {
+    icon: '⇄',
+    title: 'Exchange Requested',
+    badge: 'STAGED',
+    bg: 'rgba(99,102,241,0.06)',
+    border: '1px solid rgba(99,102,241,0.2)',
+    badgeColor: '#6366F1',
+  },
 }
 
 export function ActionResultCard({ data }: { data: ActionResult }) {
@@ -120,6 +128,17 @@ export function ActionResultCard({ data }: { data: ActionResult }) {
 
       {data.type === 'restore_staged' && (
         <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.38)' }}>Reship request sent for review</div>
+      )}
+
+      {data.type === 'exchange_staged' && (
+        <>
+          {data.order_number && (
+            <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.75)', marginBottom: '4px' }}>
+              Order #{data.order_number}
+            </div>
+          )}
+          <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.38)' }}>Awaiting merchant approval</div>
+        </>
       )}
     </motion.div>
   )

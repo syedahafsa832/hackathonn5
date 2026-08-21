@@ -189,8 +189,8 @@ PROVIDER_OUTAGE_REASON = "AI reply limit reached — every connected AI model is
 # instructs the model to never claim these are done (see ACTION RULES in
 # _construct_v3_prompt), but that is a prompt instruction, not a guarantee.
 # This is the code-level check for when the model ignores it anyway.
-_UNCONFIRMED_ACTION_INTENTS = {"refund_request", "cancellation_request", "address_change"}
-_UNCONFIRMED_ACTION_DETECTED = {"refund", "cancel_order", "change_address"}
+_UNCONFIRMED_ACTION_INTENTS = {"refund_request", "return_request", "exchange_request", "cancellation_request", "address_change"}
+_UNCONFIRMED_ACTION_DETECTED = {"refund", "return", "exchange", "cancel_order", "change_address"}
 _FALSE_SUCCESS_RE = re.compile(
     r"\b(has been|have been|is|was)\s+(processed|approved|completed|confirmed|issued|refunded|cancell?ed|updated)\b"
     r"|\b(successfully|already)\s+(processed|approved|completed|refunded|cancell?ed|updated)\b",
@@ -1055,16 +1055,21 @@ class CustomerSuccessAgent:
         History: {customer_info.get('history', 'New customer')}
 
         ACTION RULES (IMPORTANT - DO NOT AUTO-CONFIRM):
-        1. For refunds, cancellations, or address changes - NEVER say it's done
+        1. For refunds, returns, exchanges, cancellations, or address changes - NEVER say it's done
         2. Instead say: "I've prepared your request and sent it to our team for confirmation. You'll receive an update shortly!"
-        3. NEVER use words like "processed", "approved", "completed", "done"
+        3. NEVER use words like "processed", "approved", "completed", "done", "exchanged"
         4. Always say the request is "being reviewed" or "sent for confirmation"
         5. If not eligible - be honest and offer alternatives
         6. NEVER invent a specific policy detail - a time window ("within 2 hours of ordering"),
-           a cutoff, a fee, a percentage, or any other concrete rule - unless that exact detail
-           appears in KNOWLEDGE BASE or RETURN/EXCHANGE STATUS below. If asked how a policy works
-           and no grounded detail is available, say you'll need to confirm the specifics rather
-           than guessing a number.
+           a cutoff, a fee, a percentage, a return/exchange window, a restocking fee, or any other
+           concrete rule - unless that exact detail appears in KNOWLEDGE BASE or RETURN/EXCHANGE
+           STATUS below. If asked how a policy works and no grounded detail is available, say
+           you'll need to confirm the specifics rather than guessing a number.
+        7. For an exchange: RETURN/EXCHANGE STATUS below already reflects LIVE Shopify stock/price -
+           never say a size/color/product is available or unavailable except exactly as stated there.
+           Never invent a replacement item, variant, or price difference that isn't given to you.
+        8. If RETURN/EXCHANGE STATUS says a request is already pending, approved, or completed - do
+           NOT say a new request was sent. Reflect the real, current status truthfully instead.
 
         COMMON SENSE — READ ORDER STATUS BEFORE RESPONDING:
         - If ORDER DATA says "CANCELLED" — do NOT offer cancellation. Acknowledge it is cancelled already.
@@ -1075,11 +1080,11 @@ class CustomerSuccessAgent:
 
         RESPONSE (JSON only):
         {{
-            "intent": "what they want (refund_request|cancellation_request|address_change|order_status_inquiry|shipping_inquiry|sizing_inquiry|product_inquiry|general_inquiry)",
+            "intent": "what they want (refund_request|return_request|exchange_request|cancellation_request|address_change|order_status_inquiry|shipping_inquiry|sizing_inquiry|product_inquiry|general_inquiry)",
             "sentiment": "positive|neutral|negative",
             "risk_level": "low|medium|high",
             "escalate": false,
-            "action_detected": "refund|cancel_order|change_address|none",
+            "action_detected": "refund|return|exchange|cancel_order|change_address|none",
             "confidence_score": 80,
             "reply_body": "your friendly response - NEVER confirm actions are done, only say they're being reviewed",
             "suggested_actions": []

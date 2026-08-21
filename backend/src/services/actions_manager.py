@@ -3,6 +3,7 @@ ActionsManager - Action-Oriented Layer for Revenue Recovery
 Handles return eligibility verification and exchange suggestions using Shopify Admin API.
 """
 import os
+import re
 import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
@@ -475,24 +476,28 @@ class ActionsManager:
             }
 
     def _extract_size(self, text: str) -> Optional[str]:
-        """Extract size from text (e.g., 'Medium', 'M', 'Large')."""
+        """Extract size from text (e.g., 'Medium', 'M', 'Large'). Whole-word
+        matched only — plain substring matching previously misread any word
+        merely CONTAINING an 's'/'m'/'l' (e.g. "leather jacket" -> "L",
+        "canvas tote" -> "S") as a size request. Multi-word/longer patterns
+        are checked before the bare single-letter ones so "size XL" resolves
+        to XL rather than the first substring hit."""
         if not text:
             return None
 
         text = text.lower()
 
-        # Common size mappings
-        size_patterns = {
-            "extra small": "XS", "xs": "XS",
-            "small": "S", "s": "S",
-            "medium": "M", "m": "M",
-            "large": "L", "l": "L",
-            "extra large": "XL", "xl": "XL",
-            "xxl": "XXL", "extra extra large": "XXL"
-        }
+        # Ordered: more specific/longer patterns first so e.g. "xl" is found
+        # before the bare "l" gets a chance to match.
+        size_patterns = [
+            ("extra extra large", "XXL"), ("extra small", "XS"), ("extra large", "XL"),
+            ("xxl", "XXL"), ("xs", "XS"), ("xl", "XL"),
+            ("small", "S"), ("medium", "M"), ("large", "L"),
+            ("s", "S"), ("m", "M"), ("l", "L"),
+        ]
 
-        for pattern, size in size_patterns.items():
-            if pattern in text:
+        for pattern, size in size_patterns:
+            if re.search(r'\b' + re.escape(pattern) + r'\b', text):
                 return size
 
         return None
@@ -576,6 +581,207 @@ class ActionsManager:
         # Multiple suggestions
         items = [f"{s['original_item']} ({s['current_size']} → {s['suggested_size']})" for s in suggestions]
         return f"Great news—I can offer exchanges on your items! Here's what we have available: {', '.join(items)}. Which would you prefer?"
+
+    # =========================================================================
+    # Real exchange target resolution — LIVE Shopify data only
+    # =========================================================================
+    #
+    # find_exchange_target() is the one place a requested replacement (a
+    # size, a color, or a different product) is looked up. It never guesses:
+    # every branch either returns a real, live, in-stock Shopify variant, or
+    # a specific reason it couldn't (not specified, product gone, variant
+    # doesn't exist, out of stock, ambiguous, target product not found).
+    # Both PART 3 exchange cases this system genuinely supports come through
+    # here:
+    #   - same product, different size/color -> re-fetches the ORIGINAL
+    #     product by its real Shopify product_id (never a title-search
+    #     guess) and matches a variant on it.
+    #   - a different product entirely -> title-searches for the named
+    #     product, same lookup find_products_by_title() already uses
+    #     everywhere else in this codebase (inventory Q&A, recommendations).
+
+    _COLOR_WORDS = [
+        "black", "white", "red", "blue", "green", "yellow", "pink", "purple", "orange",
+        "grey", "gray", "brown", "navy", "beige", "maroon", "teal", "cream", "olive",
+    ]
+
+    def _extract_color(self, text: str) -> Optional[str]:
+        if not text:
+            return None
+        t = text.lower()
+        for color in self._COLOR_WORDS:
+            if re.search(r'\b' + re.escape(color) + r'\b', t):
+                return "Grey" if color == "gray" else color.capitalize()
+        return None
+
+    def _variant_named_options(self, variant: Dict, option_names: List[str]) -> Dict[str, str]:
+        """Same option-labeling approach as tools.get_inventory_status() —
+        variant.option1/2/3 mapped by the product's real, ordered option
+        names (Size, Color, ...) rather than assuming position 1 is size."""
+        opts = {}
+        for i, name in enumerate(option_names):
+            if not name:
+                continue
+            value = variant.get(f"option{i + 1}")
+            if value and value != "Default Title":
+                opts[name] = value
+        return opts
+
+    async def find_exchange_target(
+        self,
+        tenant_id: Optional[str],
+        original_item: Dict[str, Any],
+        target_description: Optional[str],
+    ) -> Dict[str, Any]:
+        """Resolve a customer's described replacement against LIVE Shopify
+        data. original_item needs product_id (from the real order line
+        item) and variant_title/price for same-product matching.
+
+        Returns exactly one of:
+          {"found": False, "reason": "no_shopify_connection"}
+          {"found": False, "reason": "target_not_specified"}
+          {"found": False, "reason": "product_unavailable"}
+          {"found": False, "reason": "variant_not_found", "product_title", "available_options"}
+          {"found": False, "reason": "out_of_stock", "product_title", "variant_title"}
+          {"found": False, "reason": "target_not_found", "query"}
+          {"found": False, "reason": "ambiguous", "matches": [titles]}
+          {"found": True, "same_product": bool, "product_id", "product_title",
+           "variant_id", "variant_title", "price": float, "product_url"}
+        """
+        if not tenant_id:
+            return {"found": False, "reason": "no_shopify_connection"}
+        if not target_description or not target_description.strip():
+            return {"found": False, "reason": "target_not_specified"}
+
+        from src.services.shopify_service import shopify_service
+        from src.services.tools import _variant_in_stock
+
+        try:
+            client = await shopify_service.get_client_for_tenant(tenant_id)
+        except Exception as e:
+            logger.warning(f"[ActionsManager] Could not get Shopify client for exchange lookup: {e}")
+            return {"found": False, "reason": "no_shopify_connection"}
+
+        requested_size = self._extract_size(target_description)
+        requested_color = self._extract_color(target_description)
+
+        def _product_url(product: Dict) -> Optional[str]:
+            handle = product.get("handle")
+            return f"https://{client.shop_domain}/products/{handle}" if handle else None
+
+        # ── Same product, different size/color ──────────────────────────
+        if requested_size or requested_color:
+            product_id = original_item.get("product_id")
+            product = await client.get_product_by_id(product_id) if product_id else None
+            if not product:
+                return {"found": False, "reason": "product_unavailable"}
+
+            option_names = [(o.get("name") or "").strip() for o in (product.get("options") or [])]
+            original_options = {}
+            # Fill in the attribute(s) the customer DIDN'T mention from the
+            # original variant, so "just get me an L" on a Size+Color product
+            # keeps the same color rather than matching any color in that size.
+            for v in product.get("variants", []):
+                if str(v.get("title")) == str(original_item.get("variant_title")) or \
+                   v.get("id") == original_item.get("variant_id"):
+                    original_options = self._variant_named_options(v, option_names)
+                    break
+
+            def _matches(variant: Dict) -> bool:
+                opts = self._variant_named_options(variant, option_names)
+                opts_lower = {k.lower(): (v or "").lower() for k, v in opts.items()}
+                if requested_size:
+                    size_val = opts_lower.get("size") or ""
+                    if self._extract_size(size_val) != requested_size and requested_size.lower() not in size_val:
+                        return False
+                if requested_color:
+                    color_val = opts_lower.get("color") or ""
+                    if requested_color.lower() not in color_val:
+                        return False
+                # Any attribute not requested must match the ORIGINAL
+                # variant's value — never silently pick an unrelated
+                # combination on a product with 3+ options.
+                for name, orig_val in original_options.items():
+                    name_l = name.lower()
+                    if name_l == "size" and requested_size:
+                        continue
+                    if name_l == "color" and requested_color:
+                        continue
+                    if opts_lower.get(name_l) != (orig_val or "").lower():
+                        return False
+                return True
+
+            candidates = [v for v in product.get("variants", []) if _matches(v)]
+
+            if not candidates:
+                available = sorted({
+                    (self._variant_named_options(v, option_names).get("Size")
+                     or self._variant_named_options(v, option_names).get("size") or v.get("title") or "")
+                    for v in product.get("variants", [])
+                } - {""})
+                return {
+                    "found": False, "reason": "variant_not_found",
+                    "product_title": product.get("title"), "available_options": available,
+                }
+
+            variant = candidates[0]
+            if not _variant_in_stock(variant):
+                return {
+                    "found": False, "reason": "out_of_stock",
+                    "product_title": product.get("title"), "variant_title": variant.get("title"),
+                }
+
+            return {
+                "found": True, "same_product": True,
+                "product_id": product.get("id"), "product_title": product.get("title"),
+                "variant_id": variant.get("id"), "variant_title": variant.get("title"),
+                "price": float(variant.get("price") or 0), "product_url": _product_url(product),
+            }
+
+        # ── Different product entirely ───────────────────────────────────
+        try:
+            result = await client.find_products_by_title(target_description)
+        except Exception as e:
+            logger.warning(f"[ActionsManager] Exchange target product search failed: {e}")
+            return {"found": False, "reason": "target_not_found", "query": target_description}
+
+        products = result.get("products", [])
+        if not products:
+            return {"found": False, "reason": "target_not_found", "query": target_description}
+        if len(products) > 1:
+            return {"found": False, "reason": "ambiguous", "matches": [p.get("title") for p in products[:8]]}
+
+        product = products[0]
+        variants = product.get("variants", [])
+        in_stock_variants = [v for v in variants if _variant_in_stock(v)]
+        real_variants = [v for v in variants if v.get("title") != "Default Title"] or variants
+
+        if len(real_variants) > 1:
+            # A product with real size/color options and no attribute named —
+            # never guess which one. Ask instead.
+            option_names = [(o.get("name") or "").strip() for o in (product.get("options") or [])]
+            available = sorted({
+                (self._variant_named_options(v, option_names).get("Size") or v.get("title") or "")
+                for v in variants
+            } - {""})
+            return {
+                "found": False, "reason": "variant_not_found",
+                "product_title": product.get("title"), "available_options": available,
+            }
+
+        if not in_stock_variants:
+            return {
+                "found": False, "reason": "out_of_stock",
+                "product_title": product.get("title"), "variant_title": (variants[0].get("title") if variants else None),
+            }
+
+        variant = in_stock_variants[0]
+        return {
+            "found": True, "same_product": False,
+            "product_id": product.get("id"), "product_title": product.get("title"),
+            "variant_id": variant.get("id"), "variant_title": variant.get("title"),
+            "price": float(variant.get("price") or 0), "product_url": _product_url(product),
+        }
 
     # =========================================================================
     # LLM Function Calling Definitions

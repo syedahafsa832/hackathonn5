@@ -15,10 +15,13 @@ from src.services.financial_audit import get_cached_result, record_financial_act
 
 logger = logging.getLogger(__name__)
 
-# financial_action_audit_log's action_type CHECK constraint only allows these
-# two — change_address/reship/restore_order don't move money, so they're
+# financial_action_audit_log's action_type CHECK constraint allows these
+# three — change_address/reship/restore_order don't move money, so they're
 # outside the "financial action" audit/idempotency system by design.
-_AUDITED_ACTION_TYPES = {"refund", "cancel_order"}
+# exchange is included: create_exchange_draft_order() creates a real
+# Shopify order (free or invoiced) and must not fire twice on a retried
+# approval any more than a refund or cancel may.
+_AUDITED_ACTION_TYPES = {"refund", "cancel_order", "exchange"}
 
 
 class ActionType(str, Enum):
@@ -27,6 +30,7 @@ class ActionType(str, Enum):
     CHANGE_ADDRESS = "change_address"
     RESHIP = "reship"
     RESTORE_ORDER = "restore_order"
+    EXCHANGE = "exchange"
 
 
 class ActionStatus(str, Enum):
@@ -47,8 +51,19 @@ class ActionDetector:
         if not result.has_action:
             return None
 
+        # "exchange" is deliberately absent — like restore_order, it needs
+        # the rich, live-Shopify-grounded target-variant resolution that
+        # only return_actions_integration.py's primary agent path does
+        # (this fallback's own eligibility pre-filter below has no way to
+        # know what replacement the customer wants). Creating a bare
+        # exchange action here with no target data would just be a dead
+        # action a human approver can't act on. "return" maps to the same
+        # "refund" action_type as "refund" itself — a return and a refund
+        # resolve to the exact same Shopify mutation (there is no separate
+        # Returns-API call in this integration), so they share one path.
         action_map = {
             "refund": "refund",
+            "return": "refund",
             "cancel": "cancel_order",
             "address_change": "change_address",
             "reship": "reship",
@@ -485,6 +500,51 @@ class ActionsService:
                         "order_name": f"#{order_id}",
                     }
 
+                elif action_type == ActionType.EXCHANGE.value:
+                    extracted = action.get("extracted_data", {})
+                    target = extracted.get("target") or {}
+                    original_item = extracted.get("original_item") or {}
+                    price_difference = extracted.get("price_difference")
+
+                    if not target.get("variant_id") or price_difference is None:
+                        # Staged without a resolved live target — return_actions_integration.py
+                        # never stages an exchange without one, but this is the same
+                        # defense-in-depth every other branch here has for malformed data.
+                        raise ShopifyError(
+                            "This exchange has no resolved replacement item on file. "
+                            "Please verify the requested size/color/product manually in Shopify admin.",
+                            ShopifyErrorCode.INVALID_REQUEST,
+                        )
+
+                    if price_difference < 0:
+                        # A cheaper replacement means money is potentially owed back to
+                        # the customer — no store policy exists anywhere in this system
+                        # for whether that's refunded, credited, or absorbed. This must
+                        # never be auto-decided; return_actions_integration.py already
+                        # stages this case as manual-review-required, but this is the
+                        # same safety net every other execution branch has.
+                        execution_result = {
+                            "success": True,
+                            "manual_action_required": True,
+                            "message": (
+                                f"Replacement item is ${abs(price_difference):.2f} cheaper than the original. "
+                                "Decide how to handle the difference (refund, store credit, or none) and "
+                                "create the replacement order manually in Shopify admin."
+                            ),
+                            "order_id": order_id,
+                            "order_name": f"#{order_id}",
+                            "price_difference": price_difference,
+                        }
+                    else:
+                        execution_result = await shopify_client.create_exchange_draft_order(
+                            customer_email=action.get("customer_email"),
+                            variant_id=target["variant_id"],
+                            quantity=original_item.get("quantity") or 1,
+                            price_difference=float(price_difference),
+                            order_name=f"#{order_id}",
+                            note=f"Exchange for order #{order_id} - Action {action_id[:8]}",
+                        )
+
                 elif action_type == ActionType.RESTORE_ORDER.value:
                     # Check restocked status in real time, then try Shopify reopen.json
                     order_resp = await shopify_client.get_order(order_id)
@@ -670,6 +730,39 @@ class ActionsService:
                     f"If you have any questions, just reply to this email.\n\n"
                     f"Luna\n{brand_name}"
                 )
+            elif action_type == ActionType.EXCHANGE.value:
+                if execution_result.get("manual_action_required"):
+                    body = (
+                        f"Hey {customer_name},\n\n"
+                        f"We've received your exchange request for order {order_name} and our team "
+                        f"is finishing it up now.\n\n"
+                        f"You'll get a confirmation once your replacement order is ready.\n\n"
+                        f"If you have any questions, just reply to this email.\n\n"
+                        f"Luna\n{brand_name}"
+                    )
+                elif execution_result.get("completed"):
+                    body = (
+                        f"Hey {customer_name},\n\n"
+                        f"Your exchange for order {order_name} is confirmed, no additional payment needed. "
+                        f"We've created your replacement order and it'll ship the same way your original order did.\n\n"
+                        f"Once we receive your original item back, you're all set.\n\n"
+                        f"If you have any questions, just reply to this email.\n\n"
+                        f"Luna\n{brand_name}"
+                    )
+                else:
+                    invoice_url = execution_result.get("invoice_url")
+                    balance = execution_result.get("balance_due")
+                    balance_str = f"${balance:.2f}" if isinstance(balance, (int, float)) else str(balance)
+                    link_line = f"Complete it here: {invoice_url}\n\n" if invoice_url else ""
+                    body = (
+                        f"Hey {customer_name},\n\n"
+                        f"Your exchange for order {order_name} is ready, there's a {balance_str} difference "
+                        f"for the new item.\n\n"
+                        f"{link_line}"
+                        f"Once we receive your original item back, you're all set.\n\n"
+                        f"If you have any questions, just reply to this email.\n\n"
+                        f"Luna\n{brand_name}"
+                    )
             else:
                 return  # no standard confirmation for other types
 
@@ -747,7 +840,8 @@ class ActionsService:
                 "by_type": {
                     "refund": len([a for a in actions if a.get("action_type") == ActionType.REFUND.value]),
                     "cancel_order": len([a for a in actions if a.get("action_type") == ActionType.CANCEL_ORDER.value]),
-                    "change_address": len([a for a in actions if a.get("action_type") == ActionType.CHANGE_ADDRESS.value])
+                    "change_address": len([a for a in actions if a.get("action_type") == ActionType.CHANGE_ADDRESS.value]),
+                    "exchange": len([a for a in actions if a.get("action_type") == ActionType.EXCHANGE.value])
                 }
             }
 
@@ -773,6 +867,11 @@ class ActionsService:
         elif action_type == ActionType.CANCEL_ORDER.value:
             risk_score += 20
             factors.append("Cancellation request")
+        elif action_type == ActionType.EXCHANGE.value:
+            # Creates a real (possibly free) Shopify order — comparable
+            # financial/inventory weight to a refund.
+            risk_score += 30
+            factors.append("Exchange request")
         else:
             risk_score += 10
             factors.append("Address change")

@@ -494,6 +494,46 @@ async def approve_action(
                     "order_id": action["order_id"],
                     "order_name": f"#{action['order_id']}",
                 }
+            elif action["action_type"] == "exchange":
+                # Mirrors actions_service.approve_action()'s EXCHANGE branch —
+                # this route duplicates that service's execution logic for
+                # every action type (see refund/cancel_order/change_address
+                # above), so exchange must not be the one type that falls
+                # through to the generic "no execution needed" else-branch
+                # below and gets silently marked executed with no real
+                # Shopify mutation.
+                extracted = action.get("extracted_data", {})
+                target = extracted.get("target") or {}
+                original_item = extracted.get("original_item") or {}
+                price_difference = extracted.get("price_difference")
+
+                if not target.get("variant_id") or price_difference is None:
+                    raise Exception(
+                        "This exchange has no resolved replacement item on file. "
+                        "Please verify the requested size/color/product manually in Shopify admin."
+                    )
+                if price_difference < 0:
+                    execution_result = {
+                        "success": True,
+                        "manual_action_required": True,
+                        "message": (
+                            f"Replacement item is ${abs(price_difference):.2f} cheaper than the original. "
+                            "Decide how to handle the difference and create the replacement order manually "
+                            "in Shopify admin."
+                        ),
+                        "order_id": action["order_id"],
+                        "order_name": f"#{action['order_id']}",
+                        "price_difference": price_difference,
+                    }
+                else:
+                    execution_result = await client.create_exchange_draft_order(
+                        customer_email=action.get("customer_email"),
+                        variant_id=target["variant_id"],
+                        quantity=original_item.get("quantity") or 1,
+                        price_difference=float(price_difference),
+                        order_name=f"#{action['order_id']}",
+                        note=f"Exchange for order #{action['order_id']} - Action {action_id[:8]}",
+                    )
             elif action["action_type"] == "restore_order":
                 # Check restocked status in real time, then try Shopify reopen.json
                 order_resp = await client.get_order(action["order_id"])

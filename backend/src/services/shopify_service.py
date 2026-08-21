@@ -489,6 +489,25 @@ class ShopifyClient:
         products = result.get("data", {}).get("products", [])
         return [p for p in products if p.get("status") == "active"]
 
+    async def get_product_by_id(self, product_id) -> Optional[Dict[str, Any]]:
+        """Fetch one product directly by its Shopify product_id (as found on
+        a real order's line_items) — precise, never a title-search guess.
+        Used by exchange handling to re-fetch an order's original product's
+        live variants (current stock/price) without the ambiguity risk of
+        matching by title when multiple similarly-named products exist.
+        Returns None (not an error) if the product no longer exists."""
+        try:
+            result = self._request(
+                "GET",
+                f"products/{product_id}.json",
+                params={"fields": self._PRODUCT_FIELDS},
+            )
+            return result.get("data", {}).get("product")
+        except ShopifyError as e:
+            if e.error_code == ShopifyErrorCode.ORDER_NOT_FOUND:
+                return None
+            raise
+
     async def find_products_by_title(self, query: str, limit: int = 250) -> Dict[str, Any]:
         """Search real Shopify products by (case-insensitive, whole-word)
         title match. Shopify's REST title filter is exact-match only, so this
@@ -823,6 +842,121 @@ class ShopifyClient:
             "order_id": order_id,
             "order_name": order.get("name"),
             "message": f"Order {order.get('name')} has been restored and is active again."
+        }
+
+    async def create_exchange_draft_order(
+        self,
+        customer_email: str,
+        variant_id: int,
+        quantity: int,
+        price_difference: float,
+        order_name: str,
+        note: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create the replacement item for an exchange as a real Shopify draft
+        order — the only exchange/line-item-swap primitive this REST Admin
+        API integration has (there is no Returns-API or Order-Edit call
+        implemented here; see return_actions_integration.py for why this is
+        the honest automation boundary).
+
+        price_difference is the caller's already-computed, live-data-derived
+        difference between the new variant's price and the original item's
+        price — never guessed here:
+          - <= 0: nothing owed. A 100% line discount is applied and the
+            draft order is completed immediately — Shopify requires no
+            payment for a $0 order, so this leg needs no customer action at
+            all and results in a real, confirmed replacement order.
+          - > 0: the customer owes the difference. The draft order is left
+            uncompleted with that balance, and Shopify's own invoice email
+            is sent so the customer pays through Shopify's real checkout —
+            this method never collects, waives, or guesses a payment amount
+            itself.
+
+        A negative difference (replacement cheaper — money potentially owed
+        back to the customer) must never reach this method: whether to
+        refund it, issue store credit, or absorb it is a real business
+        decision with no configured store policy anywhere in this system.
+        Callers must escalate that case for manual merchant handling instead
+        of calling this.
+        """
+        if price_difference < 0:
+            raise ShopifyError(
+                "A cheaper-replacement exchange cannot be auto-completed — "
+                "the price difference decision requires merchant review.",
+                ShopifyErrorCode.INVALID_REQUEST,
+            )
+
+        draft_order_payload: Dict[str, Any] = {
+            "draft_order": {
+                "email": customer_email,
+                "note": note or f"Exchange replacement for order {order_name}",
+                "line_items": [{"variant_id": variant_id, "quantity": quantity}],
+                "use_customer_default_address": True,
+            }
+        }
+        no_balance_due = price_difference <= 0
+        if no_balance_due:
+            draft_order_payload["draft_order"]["applied_discount"] = {
+                "description": "Exchange — no additional cost",
+                "value_type": "percentage",
+                "value": "100.0",
+            }
+
+        result = self._request("POST", "draft_orders.json", draft_order_payload)
+        draft_order = result.get("data", {}).get("draft_order", {})
+        draft_order_id = draft_order.get("id")
+
+        if not draft_order_id:
+            raise ShopifyError(
+                "Shopify did not return a draft order id — the exchange replacement order "
+                "may not have been created. Please verify manually in Shopify admin.",
+                ShopifyErrorCode.UNKNOWN_ERROR,
+            )
+
+        if no_balance_due:
+            # Nothing owed — complete immediately, no customer action needed.
+            complete_result = self._request("POST", f"draft_orders/{draft_order_id}/complete.json", {})
+            completed = complete_result.get("data", {}).get("draft_order", {})
+            if completed.get("status") != "completed" or not completed.get("order_id"):
+                raise ShopifyError(
+                    "Shopify did not confirm the exchange replacement order as completed. "
+                    "Please verify manually in Shopify admin.",
+                    ShopifyErrorCode.UNKNOWN_ERROR,
+                )
+            return {
+                "success": True,
+                "completed": True,
+                "invoice_sent": False,
+                "draft_order_id": draft_order_id,
+                "draft_order_name": draft_order.get("name"),
+                "replacement_order_id": completed.get("order_id"),
+                "balance_due": 0.0,
+                "message": f"Exchange replacement order {draft_order.get('name')} created and confirmed — no additional payment needed.",
+            }
+
+        # Balance due — send Shopify's own invoice; the customer pays through
+        # Shopify's real checkout. Never mark this completed/paid ourselves.
+        invoice_sent = False
+        try:
+            self._request("POST", f"draft_orders/{draft_order_id}/send_invoice.json", {"draft_order_invoice": {}})
+            invoice_sent = True
+        except ShopifyError as e:
+            logger.warning(f"[Shopify] Exchange draft order {draft_order_id} created but invoice send failed: {e.message}")
+
+        return {
+            "success": True,
+            "completed": False,
+            "invoice_sent": invoice_sent,
+            "draft_order_id": draft_order_id,
+            "draft_order_name": draft_order.get("name"),
+            "invoice_url": draft_order.get("invoice_url"),
+            "balance_due": price_difference,
+            "message": (
+                f"Exchange draft order {draft_order.get('name')} created for the ${price_difference:.2f} difference — "
+                + ("invoice emailed to the customer to complete payment." if invoice_sent
+                   else "invoice could not be sent automatically, send it manually from Shopify admin.")
+            ),
         }
 
 

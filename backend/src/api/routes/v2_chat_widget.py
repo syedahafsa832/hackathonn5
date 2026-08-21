@@ -76,10 +76,10 @@ class FeedbackRequest(BaseModel):
 def _map_resolution_step(intent: Optional[str], status: Optional[str]) -> str:
     """Map agent intent/status to widget resolution_step."""
     if status == "auto_resolved":
-        if intent in ("refund_request", "cancellation_request", "address_change"):
+        if intent in ("refund_request", "return_request", "exchange_request", "cancellation_request", "address_change"):
             return "verifying"
         return "resolved"
-    if intent in ("refund_request", "cancellation_request", "address_change"):
+    if intent in ("refund_request", "return_request", "exchange_request", "cancellation_request", "address_change"):
         return "acting"
     if intent in ("order_status_inquiry", "shipping_inquiry"):
         return "gathering"
@@ -91,18 +91,20 @@ def _map_action_result(intent: Optional[str], action_taken: Optional[dict], orde
     (customer_success_agent's "action_taken", sourced from
     return_actions_integration._create_action's actual Supabase insert) —
     never from the LLM's self-reported intent/status. A customer must not be
-    told a refund/cancel/address-change request was staged unless a pending
-    action row was actually created for it."""
+    told a refund/return/exchange/cancel/address-change request was staged
+    unless a pending action row was actually created for it."""
     if not action_taken or not action_taken.get("success"):
         return None
     order_number = (order_data or {}).get("orderNumber", "")
-    if intent == "refund_request":
+    if intent in ("refund_request", "return_request"):
         amount = None
         if order_data:
             items = order_data.get("items", [])
             if items:
                 amount = items[0].get("price")
         return {"type": "refund_staged", "amount": amount, "order_number": order_number}
+    if intent == "exchange_request":
+        return {"type": "exchange_staged", "order_number": order_number}
     if intent == "cancellation_request":
         return {"type": "cancel_staged", "order_number": order_number}
     if intent == "address_change":

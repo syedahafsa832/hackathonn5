@@ -14,7 +14,7 @@ export type ResolutionStep = {
 }
 
 export type ActionResult = {
-  type: 'cancel_staged' | 'refund_staged' | 'address_updated' | 'restore_staged'
+  type: 'cancel_staged' | 'refund_staged' | 'address_updated' | 'restore_staged' | 'exchange_staged'
   order_number?: string
   amount?: string
   new_address?: string
