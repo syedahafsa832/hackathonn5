@@ -85,8 +85,10 @@ export function MessageThread({
                 alignItems: isUser ? 'flex-end' : 'flex-start',
               }}
             >
-              {/* Agent name label */}
-              {!isUser && !msg.isTyping && (
+              {/* Agent name label — also shown while typing so every activity
+                  state (real backend progress label) stays visually tied to
+                  Luna, never a detached/anonymous bubble. */}
+              {!isUser && (
                 <span
                   style={{
                     fontSize: '10px',
