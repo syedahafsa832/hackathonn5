@@ -43,6 +43,23 @@ def _known_customer_name(raw_name: Optional[str]) -> Optional[str]:
     return name
 
 
+# Kept as a plain (non-f) string, assigned to a local variable before use in
+# _construct_v3_prompt's f-string, never inlined directly into an f-string
+# {..} expression - Python's f-string grammar (pre-3.12) rejects ANY
+# backslash inside the {} part, including escaped quotes in a nested string
+# literal, which is exactly what a `\"Dear {name},\"`-style inline string
+# would need. This was a real deploy-breaking SyntaxError under the
+# production Python version even though it parsed fine locally.
+_UNKNOWN_NAME_PROMPT_TEXT = (
+    "Not known - do NOT guess or invent one, and never derive one from the "
+    "email address or an order number. If the greeting style above calls "
+    "for a name (e.g. 'Dear {name},'), use a neutral opening instead - "
+    "'Hi there,' or 'Thanks for reaching out,' - and NEVER write "
+    "'Dear There' or treat any placeholder word as if it were the "
+    "customer's real name."
+)
+
+
 def _format_address(addr: dict) -> str:
     if not addr:
         return "No shipping address"
@@ -1033,6 +1050,9 @@ class CustomerSuccessAgent:
             return self._get_fallback_response(str(e), brand_name=_brand_name, agent_name=_agent_name, email_signature=_email_signature)
 
     def _construct_v3_prompt(self, customer_info: Dict[str, Any], rag_context: str, sizing_context: str, tool_context: str = "", action_context: str = "", brand_name: str = "our store", agent_name: str = "Luna", style_block: str = "") -> str:
+        # Computed as a plain local variable, not inlined into the f-string
+        # below - see _UNKNOWN_NAME_PROMPT_TEXT's comment for why.
+        _customer_name_line = _known_customer_name(customer_info.get('name')) or _UNKNOWN_NAME_PROMPT_TEXT
         order_critical = (
             "\n⚠ LIVE DATA FROM SHOPIFY — USE ONLY THESE DETAILS:\n"
             "• Reference ONLY the product names, quantities, and totals listed below.\n"
@@ -1080,7 +1100,7 @@ class CustomerSuccessAgent:
         {action_context}
 
         CUSTOMER:
-        Name: {_known_customer_name(customer_info.get('name')) or "Not known - do NOT guess or invent one, and never derive one from the email address or an order number. If the greeting style above calls for a name (e.g. \"Dear {name},\"), use a neutral opening instead - \"Hi there,\" or \"Thanks for reaching out,\" - and NEVER write \"Dear There\" or treat any placeholder word as if it were the customer's real name."}
+        Name: {_customer_name_line}
         Email: {customer_info.get('email')}
         History: {customer_info.get('history', 'New customer')}
 
