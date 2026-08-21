@@ -813,6 +813,7 @@ class CustomerSuccessAgent:
                     brand_id=store_id,
                     ticket_id=ticket_id,
                     intent_result=_intent_result,
+                    on_progress=on_progress,
                 )
                 action_context = action_result.get("action_context", "")
                 logger.info(f"[ReturnActions] Action context: {action_context[:200] if action_context else 'EMPTY'}")

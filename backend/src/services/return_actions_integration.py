@@ -7,7 +7,7 @@ Uses AI intent detection — no static keyword lists.
 """
 import asyncio
 import logging
-from typing import Dict, Any, Optional, TYPE_CHECKING
+from typing import Dict, Any, Optional, TYPE_CHECKING, Callable, Awaitable
 
 from src.services.intent_detector import intent_detector, IntentResult
 
@@ -47,6 +47,7 @@ class ReturnActionsIntegration:
         brand_id: Optional[str] = None,
         ticket_id: Optional[str] = None,
         intent_result: Optional[IntentResult] = None,
+        on_progress: Optional[Callable[[str, str], Awaitable[None]]] = None,
     ) -> Dict[str, Any]:
         result = {
             "return_checked": False,
@@ -54,6 +55,17 @@ class ReturnActionsIntegration:
             "exchange": None,
             "action_context": "",
         }
+
+        async def _emit(stage: str, label: str) -> None:
+            # Real backend-driven activity states, not a fake spinner - only
+            # called right before/after the actual work each label describes
+            # (see call sites below), never speculatively.
+            if not on_progress:
+                return
+            try:
+                await on_progress(stage, label)
+            except Exception:
+                logger.debug("[ReturnActions] on_progress callback failed (non-blocking)", exc_info=True)
 
         # Detect intent if not already provided
         if intent_result is None:
@@ -240,29 +252,63 @@ class ReturnActionsIntegration:
 
         # ── REFUND / CANCEL — needs eligibility check ───────────────────────
         result["return_checked"] = True
+        _noun = "cancellation" if intent_type == "cancel" else "refund"
 
-        if not order_id or not email:
+        # Only the order number is required to ATTEMPT a real lookup - email
+        # is for ownership verification, not for finding the order, and
+        # check_return_eligibility already verifies it (missing/mismatched
+        # email -> staged for manual review, never silently treated as
+        # eligible). Previously this gated on `not order_id or not email`,
+        # which meant a chat visitor who gave an explicit order number but
+        # hasn't shared their email (the common case for an unverified
+        # widget session) got the generic "ask for your order number and
+        # email" reply even though the order number WAS understood - the bug
+        # reported live as "hi cancel my order #1012" -> "I'm unable to pull
+        # up your order... could you share your email or order number?"
+        if not order_id:
             result["action_context"] = (
                 "ACTION REQUIRED: Ask customer for their order number and email to verify eligibility. "
                 "Do NOT assume or guess order details."
             )
             return result
 
+        await _emit("order_lookup", "Finding your order…")
         eligibility = await self.actions.check_return_eligibility(
             order_id, email, tenant_id=tenant_id, brand_id=brand_id
         )
         result["eligibility"] = eligibility
+        await _emit("eligibility_check", f"Checking {_noun} eligibility…")
 
         order_data = eligibility.get("order", {}) or {}
         fulfillment_status = order_data.get("fulfillment_status")
         is_unfulfilled = fulfillment_status != "fulfilled"
 
-        # UNFULFILLED → cancel is right (not refund)
-        if is_unfulfilled and not eligibility.get("eligible"):
+        # Already handled — never re-stage a cancel/refund for an order the
+        # eligibility check itself says was already cancelled/refunded. An
+        # already-cancelled order is typically still "unfulfilled" (it never
+        # shipped), so without this check the branch right below would
+        # incorrectly queue a SECOND cancellation for it.
+        already_handled_reason = eligibility.get("reason") or ""
+        if not eligibility.get("eligible") and any(
+            phrase in already_handled_reason.lower()
+            for phrase in ("already been refunded", "already been cancelled", "already refunded", "already cancelled")
+        ):
+            result["action_context"] = (
+                f"**{intent_type.upper()} NOT NEEDED**: {already_handled_reason} "
+                f"Do NOT process the {intent_type} again. Tell the customer the truthful current status."
+            )
+            return result
+
+        # UNFULFILLED → cancel is right (not refund). Only when we actually
+        # HAVE order data confirming this - an unverified/not-found order
+        # (order_data empty) must fall through to manual review below, never
+        # be assumed unfulfilled-therefore-cancel.
+        if order_data and is_unfulfilled and not eligibility.get("eligible"):
             ai_reasoning = (
                 f"Customer requests {intent_type} for order #{order_id}. "
                 f"Order is unfulfilled — cancel + auto-refund is appropriate."
             )
+            await _emit("staging_action", f"Preparing your {_noun} request…")
             staged = await self._create_action(
                 tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
                 action_type="cancel_order", order_id=order_id, email=email,
@@ -281,6 +327,7 @@ class ReturnActionsIntegration:
         if not eligibility.get("eligible"):
             if eligibility.get("staging_required") or eligibility.get("requires_manual_review"):
                 ai_reasoning = f"Customer requests refund for order #{order_id}. Manual review required: {eligibility.get('reason')}"
+                await _emit("staging_action", f"Preparing your {_noun} request…")
                 staged = await self._create_action(
                     tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
                     action_type="refund", order_id=order_id, email=email,
@@ -319,6 +366,7 @@ class ReturnActionsIntegration:
         item_names = ", ".join([i.get("title", "item") for i in items[:2]])
         ai_reasoning = f"Customer requests {action_type.lower()} for order #{order_id}: {item_names}"
 
+        await _emit("staging_action", f"Preparing your {_noun} request…")
         staged = await self._create_action(
             tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
             action_type=action_type, order_id=order_id, email=email,

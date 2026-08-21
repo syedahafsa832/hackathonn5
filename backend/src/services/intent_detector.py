@@ -44,7 +44,7 @@ action_type options:
 - "reship" — package not received, lost, stolen, missing, marked delivered but not arrived
 - "cancel" — customer wants to CANCEL an active order they no longer want (NOT restore — they want it stopped)
 - "refund" — customer wants money back, to return an item, exchange, item damaged or wrong
-- "none" — general question, tracking inquiry, product question (no financial action needed)
+- "none" — general question, tracking inquiry, product question (no financial action needed), a POLICY question ("what is your cancellation policy?"), a past-tense statement or question about a cancellation that already happened ("why was my order cancelled?", "my order was cancelled"), or a hypothetical ("what happens if I cancel?") — the customer is not asking to cancel anything right now.
 
 Required JSON format:
 {{"action_type": "...", "order_id": "...", "raw_address": "...", "confidence": 0.0}}
@@ -73,6 +73,19 @@ _ADDRESS_FRAGS = ['address', 'new address', 'delivery address', 'shipping addres
 _RESHIP_FRAGS = ['not received', 'never received', 'not arrived', 'never arrived', 'missing', 'lost', 'stolen',
                  'not delivered', 'says delivered', "didn't receive", 'didnt receive', 'havent received',
                  "haven't received", 'never got', 'never came']
+# 'cancel' above is a single broad fragment (so "cancel #1012" reliably
+# matches every real phrasing) - which means a policy question, a past-tense
+# status statement, or a hypothetical about cancelling would otherwise ALSO
+# match it and get misrouted into the mutation workflow just because they
+# share that word. Checked first in the fallback - if present, always
+# "none", never a cancel action.
+_CANCEL_NON_ACTION_FRAGS = [
+    'cancellation policy', 'cancel policy', 'cancelation policy',
+    'why was my order cancel', 'why is my order cancel', 'why did you cancel',
+    'why was it cancel', 'my order was cancel', 'my order got cancel',
+    'order has been cancel', 'order got cancel', 'what happens if i cancel',
+    'what if i cancel',
+]
 
 
 @dataclass
@@ -113,6 +126,8 @@ def _keyword_fallback(message: str) -> IntentResult:
     """Broad fragment matching — short tokens match across any phrasing."""
     m = message.lower()
     order_id = _extract_order_id(message)
+    if any(f in m for f in _CANCEL_NON_ACTION_FRAGS):
+        return IntentResult("none", order_id, None, 0.85, "fallback")
     if any(f in m for f in _ADDRESS_FRAGS):
         addr_match = re.search(
             r'(?:to|at|address[:\s]+|change to|update to)\s+(.{10,120})',
