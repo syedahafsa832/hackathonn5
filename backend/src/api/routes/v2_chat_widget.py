@@ -219,7 +219,10 @@ async def _generate_reply(
         from src.agent.customer_success_agent import customer_success_agent
 
         customer_info = {
-            "name": body.customer_name or "there",
+            # No placeholder like "there" here - customer_success_agent.py's
+            # _known_customer_name() treats a missing/placeholder name as
+            # "not known" and uses a neutral greeting instead of guessing.
+            "name": body.customer_name or ticket.get("customer_name"),
             "email": body.customer_email or ticket.get("customer_email") or "",
             "channel": "chat",
         }

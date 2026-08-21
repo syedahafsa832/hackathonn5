@@ -107,7 +107,7 @@ def _run(query: str, *, order_status=None, inventory=None, recommendations=None,
 def test_activity_state_appears_immediately_for_every_query():
     _, events = _run("what are your store hours?")
     assert events, "on_progress was never called - customer would see a dead loading state"
-    assert events[0] == ("thinking", "Reading your message…")
+    assert events[0] == ("thinking", "Analyzing request…")
 
 
 # ── 2. The stage shown matches what actually ran ──────────────────────────
@@ -179,6 +179,46 @@ def test_product_question_surfaces_product_lookup_stage_only():
     assert "policy_check" not in stages
 
 
+def test_product_found_only_appears_when_shopify_lookup_actually_succeeded():
+    _, events = _run(
+        "do you have the Essential Hoodie in stock?",
+        inventory={"success": True, "message": "In stock"},
+    )
+    stages = [s for s, _ in events]
+    assert "product_found" in stages
+    assert stages.index("product_found") > stages.index("product_lookup")
+
+
+def test_product_not_found_never_claims_shopify_product_found():
+    _, events = _run(
+        "do you have the Essential Hoodie in stock?",
+        inventory={"success": False, "message": "I couldn't find that."},
+    )
+    stages = [s for s, _ in events]
+    assert "product_lookup" in stages
+    assert "product_found" not in stages
+
+
+def test_order_found_only_appears_when_shopify_lookup_actually_succeeded():
+    _, events = _run(
+        "where is my order #1234?",
+        order_status={"success": True, "order_number": "1234", "status": "fulfilled", "items": [], "financial_status": "paid"},
+    )
+    stages = [s for s, _ in events]
+    assert "order_found" in stages
+    assert stages.index("order_found") > stages.index("order_lookup")
+
+
+def test_failed_order_lookup_never_claims_shopify_order_found():
+    _, events = _run(
+        "where is my order #1234?",
+        order_status={"success": False, "message": "Order not found"},
+    )
+    stages = [s for s, _ in events]
+    assert "order_lookup" in stages
+    assert "order_found" not in stages
+
+
 def test_recommendation_question_surfaces_product_search_stage_only():
     _, events = _run(
         "do you have anything similar to the Essential Hoodie?",
@@ -220,13 +260,18 @@ def test_final_generation_stage_always_precedes_the_model_call():
 # ── 3. No internal details ever leak into a label ─────────────────────────
 
 def test_activity_labels_never_leak_internal_details():
+    """The order number is expected in the label now ("Finding order
+    #98765...") - it's customer-supplied, public-facing, and the resolution
+    activity UI is specifically designed to show it (see
+    test_cancel_order_number_routing.py's progress-event tests). What must
+    never leak is anything actually sensitive/internal: the customer's
+    email, system/prompt/implementation details, or an oversized dump."""
     _, events = _run(
         "where is my order #98765, my email is secret@customer.com?",
         order_status={"success": True, "order_number": "98765", "status": "fulfilled", "items": [], "financial_status": "paid"},
     )
     assert events
     for stage, label in events:
-        assert "98765" not in label
         assert "secret@customer.com" not in label
         assert "system" not in label.lower()
         assert "prompt" not in label.lower()

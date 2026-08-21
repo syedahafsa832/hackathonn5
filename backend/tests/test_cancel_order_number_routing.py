@@ -235,9 +235,10 @@ def test_cancel_remains_staged_never_claims_it_was_executed():
 def test_progress_events_for_a_staged_cancellation_are_correct_and_in_order():
     _, _, _, events = _run_cancel("hi cancel my order #1012")
     stages = [s for s, _ in events]
-    assert stages == ["order_lookup", "eligibility_check", "staging_action"]
+    assert stages == ["order_lookup", "order_found", "eligibility_check", "staging_action"]
     labels = dict(events)
-    assert "Finding your order" in labels["order_lookup"]
+    assert "1012" in labels["order_lookup"]
+    assert "found" in labels["order_found"].lower()
     assert "eligibility" in labels["eligibility_check"].lower()
     assert "cancellation" in labels["staging_action"].lower() or "request" in labels["staging_action"].lower()
 
@@ -329,3 +330,70 @@ def test_reported_bug_hi_cancel_my_order_1012_no_longer_falls_back_to_generic_as
     # action_taken is the real, non-fabricated staged-action outcome
     # (customer_success_agent.py: action_taken = action_result.get("staged")).
     assert result.get("action_taken", {}).get("success") is True
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Refund activity steps + policy-verified gating (test list items 7, 11)
+# ══════════════════════════════════════════════════════════════════════════
+
+def _eligible_fulfilled(**overrides):
+    e = {
+        "eligible": True, "reason": "within return window",
+        "order": {"fulfillment_status": "fulfilled"},
+        "items": [{"title": "Essential Hoodie", "variant_title": "M", "price": "45.00"}],
+        "order_total": "45.00",
+    }
+    e.update(overrides)
+    return e
+
+
+def test_refund_activity_shows_real_refund_steps_and_policy_verified():
+    integration = ReturnActionsIntegration()
+    intent = IntentResult(action_type="refund", order_id="1012", raw_address=None, confidence=0.9)
+    events = []
+
+    async def on_progress(stage, label):
+        events.append((stage, label))
+
+    with patch.object(integration.actions, "check_return_eligibility", new=AsyncMock(return_value=_eligible_fulfilled())), \
+         patch.object(integration, "_find_active_action", new=AsyncMock(return_value=None)), \
+         patch.object(integration, "_create_action", new=AsyncMock(return_value={"success": True, "action_id": "a1"})):
+        result = run(integration.handle_return_intent(
+            query="I want a refund for order #1012", customer_info={"name": "Jane", "email": "jane@example.com"},
+            existing_tool_results={}, tenant_id="tenant-1", brand_id="brand-1",
+            intent_result=intent, on_progress=on_progress,
+        ))
+
+    stages = [s for s, _ in events]
+    assert stages == ["order_lookup", "order_found", "eligibility_check", "policy_verified", "staging_action"]
+    labels = dict(events)
+    assert "refund" in labels["eligibility_check"].lower()
+    assert "refund" in labels["policy_verified"].lower()
+    assert "refund" in labels["staging_action"].lower()
+
+
+def test_policy_verified_never_appears_for_an_ineligible_refund():
+    """Policy step must only appear once eligibility genuinely passed - an
+    ineligible order (e.g. outside the return window) never gets a
+    'policy verified' claim."""
+    integration = ReturnActionsIntegration()
+    intent = IntentResult(action_type="refund", order_id="1012", raw_address=None, confidence=0.9)
+    events = []
+
+    async def on_progress(stage, label):
+        events.append((stage, label))
+
+    with patch.object(integration.actions, "check_return_eligibility", new=AsyncMock(return_value={
+        "eligible": False, "reason": "Outside the 30-day return window.",
+        "order": {"fulfillment_status": "fulfilled"}, "items": [],
+    })), \
+         patch.object(integration, "_find_active_action", new=AsyncMock(return_value=None)):
+        run(integration.handle_return_intent(
+            query="I want a refund for order #1012", customer_info={"name": "Jane", "email": "jane@example.com"},
+            existing_tool_results={}, tenant_id="tenant-1", brand_id="brand-1",
+            intent_result=intent, on_progress=on_progress,
+        ))
+
+    stages = [s for s, _ in events]
+    assert "policy_verified" not in stages
+    assert "staging_action" not in stages

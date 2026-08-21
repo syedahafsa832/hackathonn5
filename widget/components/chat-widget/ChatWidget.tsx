@@ -14,6 +14,7 @@ import type {
   ApiResponse,
   ResolutionStepId,
   ChatStreamEvent,
+  ActivityStep,
 } from './types'
 
 /* ── Timing ──────────────────────────────────────────────────── */
@@ -24,11 +25,12 @@ const SLOW_RESPONSE_MS = 8_000      // no new activity update by this point -> s
 /* ── NDJSON stream reader ───────────────────────────────────────
  * Reads the `?stream=1` response body one line at a time. Each line is a
  * ChatStreamEvent. `onStatus` fires for every real backend-reported activity
- * stage; the final `result` line resolves the returned promise. A `type:
- * "error"` line (already sanitized server-side — no internals) rejects. */
+ * stage (stage key + label); the final `result` line resolves the returned
+ * promise. A `type: "error"` line (already sanitized server-side — no
+ * internals) rejects. */
 async function readChatStream(
   body: ReadableStream<Uint8Array>,
-  onStatus: (label: string) => void
+  onStatus: (stage: string, label: string) => void
 ): Promise<ApiResponse> {
   const reader = body.getReader()
   const decoder = new TextDecoder()
@@ -43,7 +45,7 @@ async function readChatStream(
       return null
     }
     if (evt.type === 'status') {
-      onStatus(evt.label)
+      onStatus(evt.stage, evt.label)
       return null
     }
     if (evt.type === 'error') {
@@ -240,7 +242,11 @@ export function ChatWidget({
   const [orderData, setOrderData]             = useState<OrderData | null>(null)
   const [customerName, setCustomerName]       = useState<string | null>(null)
   const [unreadCount, setUnreadCount]         = useState(0)
-  const [activityLabel, setActivityLabel]     = useState('Thinking…')
+  // Real resolution steps for the in-flight turn, built only from actual
+  // backend `status` events — starts empty every turn, never pre-seeded
+  // with a guessed stage. Consecutive events sharing a `stage` update that
+  // same step in place instead of appending a duplicate line.
+  const [activitySteps, setActivitySteps]     = useState<ActivityStep[]>([])
   const [activitySlow, setActivitySlow]       = useState(false)
 
   // Persist to sessionStorage whenever messages change
@@ -286,7 +292,7 @@ export function ChatWidget({
 
       setMessages((prev) => [...prev, userMsg, typingMsg])
       setOrbState('thinking')
-      setActivityLabel('Thinking…')
+      setActivitySteps([])
       setActivitySlow(false)
       advanceSteps('understanding')
 
@@ -333,8 +339,16 @@ export function ChatWidget({
 
           const contentType = res.headers.get('content-type') || ''
           if (contentType.includes('ndjson') && res.body) {
-            data = await readChatStream(res.body, (label) => {
-              setActivityLabel(label)
+            data = await readChatStream(res.body, (stage, label) => {
+              setActivitySteps((prev) => {
+                // Same stage as the current (last) step -> it's a refinement
+                // of the same real operation, update in place. A new stage
+                // -> the previous step is done, append the new one.
+                if (prev.length > 0 && prev[prev.length - 1].stage === stage) {
+                  return [...prev.slice(0, -1), { stage, label }]
+                }
+                return [...prev, { stage, label }]
+              })
               setActivitySlow(false)
               armSlowTimer()
             })
@@ -478,7 +492,7 @@ export function ChatWidget({
                       sessionId={sessionId}
                       apiBaseUrl={apiBaseUrl}
                       hasSavedSession={hasSavedSession}
-                      activityLabel={activityLabel}
+                      activitySteps={activitySteps}
                       activitySlow={activitySlow}
                       onClose={handleClose}
                       onSend={sendMessage}

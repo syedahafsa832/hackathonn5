@@ -7,7 +7,7 @@ import { OrderCard } from './OrderCard'
 import { ActionResultCard } from './ActionResultCard'
 import { ThinkingIndicator } from './ThinkingIndicator'
 import { SatisfactionRating } from './SatisfactionRating'
-import type { Message } from './types'
+import type { Message, ActivityStep } from './types'
 
 type Props = {
   messages: Message[]
@@ -16,8 +16,8 @@ type Props = {
   sessionId: string
   apiBaseUrl: string
   hasSavedSession?: boolean
-  /** Current real backend activity label shown in place of the typing bubble. */
-  activityLabel?: string
+  /** Real resolution steps for the in-flight turn, shown in place of the typing bubble. */
+  activitySteps?: ActivityStep[]
   /** True once the in-flight turn has run long enough to show a generic reassurance. */
   activitySlow?: boolean
   /** Resend a previously failed message. */
@@ -31,7 +31,7 @@ export function MessageThread({
   sessionId,
   apiBaseUrl,
   hasSavedSession = false,
-  activityLabel = 'Thinking…',
+  activitySteps = [],
   activitySlow = false,
   onRetry,
 }: Props) {
@@ -115,7 +115,7 @@ export function MessageThread({
 
               {/* Bubble or thinking indicator */}
               {msg.isTyping ? (
-                <ThinkingIndicator label={activityLabel} slow={activitySlow} />
+                <ThinkingIndicator steps={activitySteps} slow={activitySlow} />
               ) : (
                 <div
                   style={{

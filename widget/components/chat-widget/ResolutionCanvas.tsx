@@ -5,7 +5,7 @@ import { AiOrb } from './AiOrb'
 import { MessageThread } from './MessageThread'
 import { ResolutionTracker } from './ResolutionTracker'
 import { OrderContextCard } from './OrderContextCard'
-import type { Message, OrbState, ResolutionStep, OrderData } from './types'
+import type { Message, OrbState, ResolutionStep, OrderData, ActivityStep } from './types'
 
 const ORB_STATUS: Record<OrbState, string> = {
   idle:      'Online · AI Support',
@@ -26,7 +26,7 @@ type Props = {
   sessionId: string
   apiBaseUrl: string
   hasSavedSession?: boolean
-  activityLabel?: string
+  activitySteps?: ActivityStep[]
   activitySlow?: boolean
   onClose: () => void
   onSend: (message: string) => void
@@ -42,7 +42,7 @@ export function ResolutionCanvas({
   sessionId,
   apiBaseUrl,
   hasSavedSession = false,
-  activityLabel,
+  activitySteps,
   activitySlow,
   onClose,
   onSend,
@@ -207,7 +207,7 @@ export function ResolutionCanvas({
             sessionId={sessionId}
             apiBaseUrl={apiBaseUrl}
             hasSavedSession={hasSavedSession}
-            activityLabel={activityLabel}
+            activitySteps={activitySteps}
             activitySlow={activitySlow}
             onRetry={onSend}
           />

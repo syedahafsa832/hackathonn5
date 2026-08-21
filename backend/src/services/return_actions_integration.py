@@ -257,7 +257,7 @@ class ReturnActionsIntegration:
         if intent_type == "exchange":
             return await self._handle_exchange(
                 query, customer_info, order_id, email, intent_result,
-                tenant_id, brand_id, ticket_id, result,
+                tenant_id, brand_id, ticket_id, result, _emit,
             )
 
         # ── RETURN / REFUND / CANCEL — needs eligibility check ──────────────
@@ -307,11 +307,13 @@ class ReturnActionsIntegration:
             result["action_context"] = self._duplicate_status_context(existing_action, intent_type)
             return result
 
-        await _emit("order_lookup", "Finding your order…")
+        await _emit("order_lookup", f"Finding order #{order_id}…")
         eligibility = await self.actions.check_return_eligibility(
             order_id, email, tenant_id=tenant_id, brand_id=brand_id
         )
         result["eligibility"] = eligibility
+        if eligibility.get("order"):
+            await _emit("order_found", "Shopify order found")
         await _emit("eligibility_check", f"Checking {_noun} eligibility…")
 
         order_data = eligibility.get("order", {}) or {}
@@ -385,6 +387,7 @@ class ReturnActionsIntegration:
 
         # ELIGIBLE → stage the refund (a "return" IS a refund here — see
         # this block's header comment for why there's no separate action type)
+        await _emit("policy_verified", f"{_noun.capitalize()} policy verified")
         items = eligibility.get("items", [])
         item_names = ", ".join([i.get("title", "item") for i in items[:2]])
 
@@ -517,6 +520,7 @@ class ReturnActionsIntegration:
         brand_id: Optional[str],
         ticket_id: Optional[str],
         result: Dict[str, Any],
+        _emit: Callable[[str, str], Awaitable[None]],
     ) -> Dict[str, Any]:
         """Full exchange workflow: order + customer verification, the exact
         same eligibility/policy check returns and refunds use, item
@@ -540,14 +544,19 @@ class ReturnActionsIntegration:
             result["action_context"] = self._duplicate_status_context(existing_action, "exchange")
             return result
 
+        await _emit("order_lookup", f"Finding order #{order_id}…")
         eligibility = await self.actions.check_return_eligibility(
             order_id, email, tenant_id=tenant_id, brand_id=brand_id
         )
         result["eligibility"] = eligibility
+        if (eligibility.get("order") or {}):
+            await _emit("order_found", "Shopify order found")
+        await _emit("eligibility_check", "Checking return eligibility…")
 
         if not eligibility.get("eligible"):
             if eligibility.get("staging_required") or eligibility.get("requires_manual_review"):
                 ai_reasoning = f"Customer requests exchange for order #{order_id}. Manual review required: {eligibility.get('reason')}"
+                await _emit("staging_action", "Preparing your exchange request…")
                 staged = await self._create_action(
                     tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
                     # We can't safely verify eligibility automatically (order
@@ -572,6 +581,7 @@ class ReturnActionsIntegration:
                 )
             return result
 
+        await _emit("policy_verified", "Return policy verified")
         items = eligibility.get("items", [])
         if not items:
             result["action_context"] = (
@@ -616,6 +626,7 @@ class ReturnActionsIntegration:
             )
             return result
 
+        await _emit("exchange_search", "Finding eligible replacement…")
         target = await self.actions.find_exchange_target(tenant_id, raw_item, target_description)
         result["exchange"] = target
 
@@ -637,6 +648,7 @@ class ReturnActionsIntegration:
                 f"{target.get('product_title')} ({target.get('variant_title')}). "
                 f"Replacement is ${abs(price_difference):.2f} cheaper — needs merchant decision on the difference."
             )
+            await _emit("staging_action", "Preparing your exchange request…")
             staged = await self._create_action(
                 tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
                 action_type="exchange", order_id=order_id, email=email,
@@ -661,6 +673,7 @@ class ReturnActionsIntegration:
             f"{target.get('product_title')} ({target.get('variant_title')}). "
             f"Price difference: ${price_difference:.2f}."
         )
+        await _emit("staging_action", "Preparing your exchange request…")
         staged = await self._create_action(
             tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
             action_type="exchange", order_id=order_id, email=email,

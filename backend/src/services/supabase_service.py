@@ -25,7 +25,12 @@ class SupabaseService:
             new_customer = {
                 "email": email,
                 "store_id": store_id,
-                "name": name or email.split("@")[0],
+                # Never derive a name from the email local-part (e.g.
+                # "customer10@example.com" -> "Customer10") - that's not a
+                # real name and gets echoed straight into greetings.
+                # "Customer" is a known placeholder customer_success_agent.py
+                # treats as "no name known", not a real one to greet by.
+                "name": name or "Customer",
                 "phone": phone,
                 "created_at": datetime.now(timezone.utc).isoformat()
             }

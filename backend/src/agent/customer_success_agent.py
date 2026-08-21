@@ -23,6 +23,26 @@ from ..services.ai_provider_manager import ai_provider_manager, AllProvidersFail
 logger = logging.getLogger(__name__)
 
 
+# Placeholder/fallback values that mean "we don't actually know this
+# customer's name" - never a real name to greet someone by. Single source
+# used by _construct_v3_prompt (the one shared prompt builder for every
+# channel/response type) so a placeholder can never be handed to the model
+# as if it were the customer's real name (root cause of "Dear There").
+_UNKNOWN_NAME_PLACEHOLDERS = {"there", "customer", "website visitor", "unknown", "guest", "friend"}
+
+
+def _known_customer_name(raw_name: Optional[str]) -> Optional[str]:
+    """Returns a real customer name, or None if it's missing/a placeholder.
+    Never derives a name from an email address or order number - callers
+    only ever pass what was actually verified/provided."""
+    if not raw_name:
+        return None
+    name = str(raw_name).strip()
+    if not name or name.lower() in _UNKNOWN_NAME_PLACEHOLDERS:
+        return None
+    return name
+
+
 def _format_address(addr: dict) -> str:
     if not addr:
         return "No shipping address"
@@ -320,7 +340,7 @@ class CustomerSuccessAgent:
 
         try:
             _is_chat = "[CHAT MODE" in query
-            await _emit("thinking", "Reading your message…")
+            await _emit("thinking", "Analyzing request…")
 
             # 1. RAG Retrieval - brand_knowledge_service.get_brand_context() is scoped
             # correctly by brand_id via match_brand_rag_chunks. rag_engine.get_relevant_context's
@@ -412,7 +432,7 @@ class CustomerSuccessAgent:
                 order_match = re.search(r'#?(\d{3,6})', query)
                 if order_match:
                     order_id = order_match.group(1)
-                    await _emit("order_lookup", "Looking up your order…")
+                    await _emit("order_lookup", f"Finding order #{order_id}…")
                     tool_results["order_status"] = await v3_tools.get_order_status(
                         order_id,
                         shop_domain=_brand_shopify_domain,
@@ -422,6 +442,8 @@ class CustomerSuccessAgent:
                         # unverified chat-widget visitor, which always fails the check.
                         customer_email=customer_info.get("email") or "",
                     )
+                    if tool_results["order_status"].get("success"):
+                        await _emit("order_found", "Shopify order found")
 
                 # Also try to look up by customer email if provided in query
                 email_match = re.search(r'[\w.-]+@[\w.-]+\.\w+', query)
@@ -514,12 +536,14 @@ class CustomerSuccessAgent:
                     if fallback_match:
                         product = fallback_match.group(1)
                 if product:
-                    await _emit("product_lookup", "Finding the right product…")
+                    await _emit("product_lookup", "Finding product…")
                     tool_results["inventory"] = await v3_tools.get_inventory_status(
                         product,
                         shop_domain=_brand_shopify_domain,
                         access_token=_brand_shopify_token,
                     )
+                    if tool_results["inventory"].get("success"):
+                        await _emit("product_found", "Shopify product found")
 
             # "what is X" is deliberately NOT in the keyword gate above — it's
             # also the single most common phrasing for policy/account
@@ -543,12 +567,14 @@ class CustomerSuccessAgent:
                         re.search(r'(hoodie|jacket|pants|shirt|tshirt|coat|dress|skirt)', candidate)
                     )
                     if len(candidate) >= 2 and looks_product_like:
-                        await _emit("product_lookup", "Finding the right product…")
+                        await _emit("product_lookup", "Finding product…")
                         tool_results["inventory"] = await v3_tools.get_inventory_status(
                             candidate,
                             shop_domain=_brand_shopify_domain,
                             access_token=_brand_shopify_token,
                         )
+                        if tool_results["inventory"].get("success"):
+                            await _emit("product_found", "Shopify product found")
 
             # General product-mention fallback — catches product-specific
             # questions in any phrasing the more specific triggers above
@@ -588,12 +614,14 @@ class CustomerSuccessAgent:
                         _prefix = ""
                     _candidate = " ".join(g for g in (_prefix, _mention.group(2), (_mention.group(3) or "").strip()) if g)
                     if _candidate:
-                        await _emit("product_lookup", "Finding the right product…")
+                        await _emit("product_lookup", "Finding product…")
                         tool_results["inventory"] = await v3_tools.get_inventory_status(
                             _candidate,
                             shop_domain=_brand_shopify_domain,
                             access_token=_brand_shopify_token,
                         )
+                        if tool_results["inventory"].get("success"):
+                            await _emit("product_found", "Shopify product found")
 
             # Check for a product-recommendation request ("show me something
             # similar", "what else do you have", "what goes with this").
@@ -662,7 +690,7 @@ class CustomerSuccessAgent:
                         )
                         _slug = shopify_carrier_to_aftership_slug(_tc)
                         if _slug:
-                            await _emit("shipping_lookup", "Checking shipping details…")
+                            await _emit("shipping_lookup", "Checking shipping status…")
                             _tracking_info = await get_tracking_status(_tn, _slug, _brand_aftership_key)
                             tool_results["tracking_info"] = _tracking_info
                             logger.info(f"[Agent] Aftership tracking fetched: status={(_tracking_info or {}).get('status')}")
@@ -913,8 +941,10 @@ class CustomerSuccessAgent:
             # actually produce a confident, grounded candidate.
             structured = _enforce_no_ungrounded_recommendation(structured, tool_results.get("recommendations"))
 
-            # 6. Signature Enforcement - Make it natural, not robotic
-            name = customer_info.get("name", "there").split()[0]
+            # 6. Signature Enforcement - Make it natural, not robotic. Falls
+            # back to the neutral idiom "there" ("Hey there,") - never a
+            # placeholder treated as a real name - when none is known.
+            name = (_known_customer_name(customer_info.get("name")) or "there").split()[0]
             reply = structured.get("reply_body", "")
 
             # Post-process: ensure each sentence is on its own line for readability
@@ -1050,7 +1080,7 @@ class CustomerSuccessAgent:
         {action_context}
 
         CUSTOMER:
-        Name: {customer_info.get('name')}
+        Name: {_known_customer_name(customer_info.get('name')) or "Not known - do NOT guess or invent one, and never derive one from the email address or an order number. If the greeting style above calls for a name (e.g. \"Dear {name},\"), use a neutral opening instead - \"Hi there,\" or \"Thanks for reaching out,\" - and NEVER write \"Dear There\" or treat any placeholder word as if it were the customer's real name."}
         Email: {customer_info.get('email')}
         History: {customer_info.get('history', 'New customer')}
 
@@ -1070,6 +1100,9 @@ class CustomerSuccessAgent:
            Never invent a replacement item, variant, or price difference that isn't given to you.
         8. If RETURN/EXCHANGE STATUS says a request is already pending, approved, or completed - do
            NOT say a new request was sent. Reflect the real, current status truthfully instead.
+        9. Only greet the customer by name if CUSTOMER Name above gives you a real one. If it says
+           "Not known", use a neutral opening instead - never write "Dear There" or greet them by
+           any placeholder word as if it were their real name.
 
         COMMON SENSE — READ ORDER STATUS BEFORE RESPONDING:
         - If ORDER DATA says "CANCELLED" — do NOT offer cancellation. Acknowledge it is cancelled already.

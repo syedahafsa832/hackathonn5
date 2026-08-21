@@ -391,3 +391,92 @@ def test_no_shopify_connection_escalates_instead_of_guessing():
     )
     mock_create.assert_not_called()
     assert "CAN'T CHECK LIVE AVAILABILITY" in result["action_context"]
+
+
+# ── Real activity/progress events for a staged exchange ──────────────────────
+
+def test_exchange_activity_events_reflect_the_real_steps_actually_taken():
+    integration = ReturnActionsIntegration()
+    events = []
+
+    async def on_progress(stage, label):
+        events.append((stage, label))
+
+    with patch.object(integration.actions, "check_return_eligibility", new=AsyncMock(return_value=_eligible())), \
+         patch.object(integration, "_find_active_action", new=AsyncMock(return_value=None)), \
+         patch.object(integration, "_get_raw_line_item", new=AsyncMock(return_value=_raw_line_item())), \
+         patch.object(integration.actions, "find_exchange_target", new=AsyncMock(return_value=_found_target())), \
+         patch.object(integration, "_create_action", new=AsyncMock(return_value={"success": True, "action_id": "a1"})):
+        run(integration.handle_return_intent(
+            query="I bought the hoodie in M but need L.",
+            customer_info={"name": "Jane", "email": "jane@example.com"},
+            existing_tool_results={}, tenant_id="tenant-1", brand_id="brand-1",
+            intent_result=_intent(), on_progress=on_progress,
+        ))
+
+    stages = [s for s, _ in events]
+    # Every stage is a real operation this call path actually performed -
+    # order lookup, confirmation it was found, eligibility, policy
+    # confirmation, the live replacement search, then staging. Nothing
+    # about product/shipping/refund appears since those never ran.
+    assert stages == [
+        "order_lookup", "order_found", "eligibility_check",
+        "policy_verified", "exchange_search", "staging_action",
+    ]
+    labels = dict(events)
+    assert "1001" in labels["order_lookup"]
+    assert "found" in labels["order_found"].lower()
+    assert "replacement" in labels["exchange_search"].lower()
+    assert "exchange" in labels["staging_action"].lower()
+
+
+def test_exchange_activity_has_no_policy_verified_or_staging_when_not_eligible():
+    """Policy step (and staging) must only appear when eligibility actually
+    passed - an ineligible order must not claim its policy was verified."""
+    integration = ReturnActionsIntegration()
+    events = []
+
+    async def on_progress(stage, label):
+        events.append((stage, label))
+
+    with patch.object(integration.actions, "check_return_eligibility", new=AsyncMock(return_value={
+        "eligible": False, "reason": "This order contains a Final Sale item.",
+        "order": {"fulfillment_status": "fulfilled"}, "items": [],
+    })), \
+         patch.object(integration, "_find_active_action", new=AsyncMock(return_value=None)):
+        run(integration.handle_return_intent(
+            query="Can I exchange this?",
+            customer_info={"name": "Jane", "email": "jane@example.com"},
+            existing_tool_results={}, tenant_id="tenant-1", brand_id="brand-1",
+            intent_result=_intent(), on_progress=on_progress,
+        ))
+
+    stages = [s for s, _ in events]
+    assert "policy_verified" not in stages
+    assert "staging_action" not in stages
+    assert "exchange_search" not in stages
+
+
+def test_exchange_activity_no_order_found_event_when_lookup_fails():
+    integration = ReturnActionsIntegration()
+    events = []
+
+    async def on_progress(stage, label):
+        events.append((stage, label))
+
+    with patch.object(integration.actions, "check_return_eligibility", new=AsyncMock(return_value={
+        "eligible": False, "reason": "Order #1001 was not found in our system.",
+        "order": None, "items": [], "requires_manual_review": True, "staging_required": True,
+    })), \
+         patch.object(integration, "_find_active_action", new=AsyncMock(return_value=None)), \
+         patch.object(integration, "_create_action", new=AsyncMock(return_value={"success": True, "action_id": "a1"})):
+        run(integration.handle_return_intent(
+            query="Can I exchange this?",
+            customer_info={"name": "Jane", "email": "jane@example.com"},
+            existing_tool_results={}, tenant_id="tenant-1", brand_id="brand-1",
+            intent_result=_intent(), on_progress=on_progress,
+        ))
+
+    stages = [s for s, _ in events]
+    assert "order_found" not in stages
+    assert "order_lookup" in stages

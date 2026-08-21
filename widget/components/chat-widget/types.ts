@@ -97,3 +97,14 @@ export type ChatStreamEvent =
   | { type: 'status'; stage: string; label: string }
   | ({ type: 'result' } & ApiResponse)
   | { type: 'error'; message: string }
+
+/**
+ * One real resolution step, built directly from a backend `status` event
+ * (never fabricated). `stage` is the backend's stable key (e.g.
+ * "order_lookup") — consecutive events sharing the same stage update the
+ * same step in place rather than appending a new one.
+ */
+export type ActivityStep = {
+  stage: string
+  label: string
+}

@@ -669,11 +669,19 @@ class ActionsService:
                 return
             brand = brand_rows[0]
 
+            # Never derive a name from the email local-part (e.g.
+            # "customer10@example.com" -> "Customer10"), and never greet by
+            # a placeholder ("Website Visitor", "Customer", ...) as if it
+            # were real - same placeholder set customer_success_agent.py's
+            # _known_customer_name() treats as "no name known". Falls back
+            # to the neutral idiom "there" ("Hey there,") in that case.
+            _unknown_name_placeholders = {"there", "customer", "website visitor", "unknown", "guest", "friend"}
+            _raw_customer_name = action.get("customer_name") or (ticket.get("customer_name") if ticket else None)
             customer_name = (
-                action.get("customer_name")
-                or (ticket.get("customer_name") if ticket else None)
-                or customer_email.split("@")[0]
-            ).capitalize()
+                _raw_customer_name.capitalize()
+                if _raw_customer_name and _raw_customer_name.strip().lower() not in _unknown_name_placeholders
+                else "there"
+            )
             brand_name = brand.get("name", "our team")
             order_name = execution_result.get("order_name") or f"your order"
 
