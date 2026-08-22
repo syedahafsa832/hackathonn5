@@ -1,3 +1,8 @@
+# Local-only — raw Gmail OAuth screenshots with real personal PII (emails,
+# name, photo). Never commit these; sanitized copies live at
+# dashboard/public/gmail-onboarding/.
+gmail_connection_ss/
+
 # Dependencies
 node_modules/
 __pycache__/
