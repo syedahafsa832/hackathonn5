@@ -2,15 +2,41 @@
 Multi-Brand Actions API Routes
 ===============================
 Endpoints for managing action approval queue across multiple brands.
+
+SECURITY: every route here was previously registered with zero
+authentication (no `Depends(...)` anywhere in this file) despite being
+mounted live at /api/brand-actions/* (see main.py) and covering real
+Shopify-executing actions (refund, cancel_order, change_address) plus
+customer PII (email, name, order id). Fixed by requiring an authenticated
+agent/admin on every route and enforcing brand ownership the same way
+v2_actions.py already does for the parallel `actions` table - see
+tests/test_brand_actions_security.py.
 """
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 import logging
 import uuid
 
+from src.api.middleware.auth_middleware import (
+    AuthenticatedContext,
+    require_agent_or_admin,
+)
+
 router = APIRouter(prefix="/brand-actions", tags=["brand-actions"])
 logger = logging.getLogger(__name__)
+
+
+def _require_brand_access(brand_id: Optional[str], context: AuthenticatedContext):
+    """Raise 403 unless the authenticated caller has access to brand_id.
+
+    context.brand_ids is already scoped to every brand in the caller's own
+    org (see supabase_auth_service.get_user_context) - admin or not - so
+    there is no separate "is_admin" bypass here, matching the fix applied to
+    the same bug class in v2_actions.py (see test_actions_brand_isolation.py).
+    """
+    if not brand_id or brand_id not in context.brand_ids:
+        raise HTTPException(status_code=403, detail="Access denied to this brand")
 
 
 # ============== Request/Response Models ==============
@@ -48,16 +74,45 @@ class ManualActionRequest(BaseModel):
 
 @router.get("/stats")
 async def get_action_stats(
-    brand_id: Optional[str] = Query(None, description="Filter by brand ID")
+    brand_id: Optional[str] = Query(None, description="Filter by brand ID"),
+    context: AuthenticatedContext = Depends(require_agent_or_admin),
 ):
     """
-    Get action statistics across all brands or for a specific brand.
+    Get action statistics for a specific brand, or across every brand the
+    caller has access to (never every brand on the platform).
     """
     try:
         from src.services.multi_brand_actions import multi_brand_actions
 
-        stats = await multi_brand_actions.get_action_stats(brand_id=brand_id)
-        return stats
+        if brand_id:
+            _require_brand_access(brand_id, context)
+            return await multi_brand_actions.get_action_stats(brand_id=brand_id)
+
+        # No brand_id given - previously returned platform-wide stats across
+        # every tenant's brands. Scope to only the caller's own brands.
+        if not context.brand_ids:
+            return {
+                "total": 0, "pending": 0, "executed": 0, "rejected": 0, "failed": 0,
+                "by_type": {"refund": 0, "cancel_order": 0, "change_address": 0},
+                "by_risk": {"low": 0, "medium": 0, "high": 0},
+            }
+
+        merged: Dict[str, Any] = {
+            "total": 0, "pending": 0, "executed": 0, "rejected": 0, "failed": 0,
+            "by_type": {"refund": 0, "cancel_order": 0, "change_address": 0},
+            "by_risk": {"low": 0, "medium": 0, "high": 0},
+        }
+        for bid in context.brand_ids:
+            stats = await multi_brand_actions.get_action_stats(brand_id=bid)
+            for key in ("total", "pending", "executed", "rejected", "failed"):
+                merged[key] += stats.get(key, 0)
+            for key in merged["by_type"]:
+                merged["by_type"][key] += stats.get("by_type", {}).get(key, 0)
+            for key in merged["by_risk"]:
+                merged["by_risk"][key] += stats.get("by_risk", {}).get(key, 0)
+        return merged
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"[BrandActions API] Error getting stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -68,19 +123,27 @@ async def list_pending_actions(
     brand_id: Optional[str] = Query(None, description="Filter by brand ID"),
     status: Optional[str] = Query(None, description="Filter by status"),
     risk_level: Optional[str] = Query(None, description="Filter by risk level"),
-    limit: int = Query(50, description="Max results")
+    limit: int = Query(50, description="Max results"),
+    context: AuthenticatedContext = Depends(require_agent_or_admin),
 ):
     """
     List pending actions for approval queue.
     Returns actions sorted by creation date (newest first).
     """
     try:
-        from src.services.multi_brand_actions import multi_brand_actions
         from src.lib.supabase_client import supabase_select
 
-        filters = {}
         if brand_id:
-            filters["brand_id"] = f"eq.{brand_id}"
+            _require_brand_access(brand_id, context)
+            allowed_brand_ids = [brand_id]
+        else:
+            # No brand_id given - previously returned every tenant's actions
+            # (including customer PII). Scope to only the caller's own brands.
+            allowed_brand_ids = list(context.brand_ids or [])
+            if not allowed_brand_ids:
+                return {"actions": [], "count": 0}
+
+        filters = {"brand_id": f"in.({','.join(allowed_brand_ids)})"}
         if status:
             filters["status"] = f"eq.{status}"
         else:
@@ -135,6 +198,8 @@ async def list_pending_actions(
             "count": len(enriched)
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"[BrandActions API] Error listing actions: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -144,12 +209,15 @@ async def list_pending_actions(
 async def list_actions_by_brand(
     brand_id: str,
     status: Optional[str] = Query(None, description="Filter by status"),
-    limit: int = Query(50, description="Max results")
+    limit: int = Query(50, description="Max results"),
+    context: AuthenticatedContext = Depends(require_agent_or_admin),
 ):
     """
     List all actions for a specific brand.
     """
     try:
+        _require_brand_access(brand_id, context)
+
         from src.lib.supabase_client import supabase_select
 
         filters = {"brand_id": f"eq.{brand_id}"}
@@ -165,13 +233,18 @@ async def list_actions_by_brand(
             "brand_id": brand_id
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"[BrandActions API] Error listing by brand: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/{action_id}")
-async def get_action(action_id: str):
+async def get_action(
+    action_id: str,
+    context: AuthenticatedContext = Depends(require_agent_or_admin),
+):
     """
     Get a specific action by ID.
     """
@@ -190,6 +263,7 @@ async def get_action(action_id: str):
             raise HTTPException(status_code=404, detail="Action not found")
 
         action = actions[0]
+        _require_brand_access(action.get("brand_id"), context)
 
         # Get brand info
         brand = await brand_manager.get_brand(action.get("brand_id"))
@@ -206,12 +280,17 @@ async def get_action(action_id: str):
 
 
 @router.post("/detect")
-async def detect_and_stage_action(request: StageActionRequest):
+async def detect_and_stage_action(
+    request: StageActionRequest,
+    context: AuthenticatedContext = Depends(require_agent_or_admin),
+):
     """
     Detect action from message and stage for approval.
     Used by the AI agent when it detects an action request.
     """
     try:
+        _require_brand_access(request.brand_id, context)
+
         from src.services.multi_brand_actions import multi_brand_actions
 
         result = await multi_brand_actions.detect_and_stage_action(
@@ -234,18 +313,25 @@ async def detect_and_stage_action(request: StageActionRequest):
             **result
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"[BrandActions API] Error detecting action: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/manual")
-async def create_manual_action(request: ManualActionRequest):
+async def create_manual_action(
+    request: ManualActionRequest,
+    context: AuthenticatedContext = Depends(require_agent_or_admin),
+):
     """
     Create a manual action (for dashboard use).
     Allows support agents to create actions without AI detection.
     """
     try:
+        _require_brand_access(request.brand_id, context)
+
         from src.lib.supabase_client import supabase_insert
         from datetime import datetime, timezone
 
@@ -300,7 +386,11 @@ async def create_manual_action(request: ManualActionRequest):
 
 
 @router.post("/approve/{action_id}")
-async def approve_action(action_id: str, request: ApproveActionRequest = None):
+async def approve_action(
+    action_id: str,
+    request: ApproveActionRequest = None,
+    context: AuthenticatedContext = Depends(require_agent_or_admin),
+):
     """
     Approve and execute an action.
     This triggers the Shopify API to perform the actual action.
@@ -312,9 +402,17 @@ async def approve_action(action_id: str, request: ApproveActionRequest = None):
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid action ID format")
 
+        from src.lib.supabase_client import supabase_select
         from src.services.multi_brand_actions import multi_brand_actions
 
-        approved_by = request.approved_by if request else "admin"
+        # Ownership check happens before any state-changing call - approving
+        # executes a real Shopify refund/cancellation/address-change.
+        actions = supabase_select("brand_actions", {"id": f"eq.{action_id}"})
+        if not actions:
+            raise HTTPException(status_code=404, detail="Action not found")
+        _require_brand_access(actions[0].get("brand_id"), context)
+
+        approved_by = request.approved_by if request else context.user.email
         result = await multi_brand_actions.approve_action(action_id, approved_by)
 
         if result.get("success"):
@@ -330,7 +428,11 @@ async def approve_action(action_id: str, request: ApproveActionRequest = None):
 
 
 @router.post("/reject/{action_id}")
-async def reject_action(action_id: str, request: RejectActionRequest):
+async def reject_action(
+    action_id: str,
+    request: RejectActionRequest,
+    context: AuthenticatedContext = Depends(require_agent_or_admin),
+):
     """
     Reject an action.
     """
@@ -341,12 +443,18 @@ async def reject_action(action_id: str, request: RejectActionRequest):
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid action ID format")
 
+        from src.lib.supabase_client import supabase_select
         from src.services.multi_brand_actions import multi_brand_actions
+
+        actions = supabase_select("brand_actions", {"id": f"eq.{action_id}"})
+        if not actions:
+            raise HTTPException(status_code=404, detail="Action not found")
+        _require_brand_access(actions[0].get("brand_id"), context)
 
         result = await multi_brand_actions.reject_action(
             action_id=action_id,
             rejection_reason=request.rejection_reason,
-            rejected_by=request.rejected_by
+            rejected_by=request.rejected_by or context.user.email
         )
 
         if result.get("success"):
@@ -362,12 +470,22 @@ async def reject_action(action_id: str, request: RejectActionRequest):
 
 
 @router.get("/logs/{action_id}")
-async def get_action_logs(action_id: str):
+async def get_action_logs(
+    action_id: str,
+    context: AuthenticatedContext = Depends(require_agent_or_admin),
+):
     """
     Get audit logs for an action.
     """
     try:
         from src.lib.supabase_client import supabase_select
+
+        # Logs don't carry brand_id themselves - resolve ownership via the
+        # parent action, same as get_action/approve/reject above.
+        actions = supabase_select("brand_actions", {"id": f"eq.{action_id}"})
+        if not actions:
+            raise HTTPException(status_code=404, detail="Action not found")
+        _require_brand_access(actions[0].get("brand_id"), context)
 
         logs = supabase_select("action_logs", {"action_id": f"eq.{action_id}"})
         logs = sorted(logs, key=lambda x: x.get("timestamp", ""), reverse=True)
@@ -377,13 +495,18 @@ async def get_action_logs(action_id: str):
             "count": len(logs)
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"[BrandActions API] Error getting logs: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.delete("/{action_id}")
-async def delete_action(action_id: str):
+async def delete_action(
+    action_id: str,
+    context: AuthenticatedContext = Depends(require_agent_or_admin),
+):
     """
     Delete a pending action.
     Only works for actions that are still pending.
@@ -402,6 +525,8 @@ async def delete_action(action_id: str):
             raise HTTPException(status_code=404, detail="Action not found")
 
         action = actions[0]
+        _require_brand_access(action.get("brand_id"), context)
+
         if action["status"] != "pending":
             raise HTTPException(
                 status_code=400,
