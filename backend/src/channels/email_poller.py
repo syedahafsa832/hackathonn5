@@ -6,6 +6,7 @@ Polls every connected brand's Gmail inbox (per-brand OAuth).
 Falls back to the global Gmail handler if no brands have Gmail connected.
 """
 import asyncio
+import json
 import logging
 import os
 import re
@@ -428,37 +429,104 @@ class EmailPoller:
 </body></html>"""
         return plain, html
 
+    # Post-resolution buffer: long enough that the customer has actually seen
+    # the resolution before being asked to rate it, short enough that the
+    # poller (running every _CSAT_POLL_INTERVAL) reliably catches every
+    # ticket at least once. Same spirit as the old 30-60min window, now keyed
+    # off the real resolved_at signal instead of a status-string heuristic.
+    _CSAT_MIN_AGE = timedelta(minutes=30)
+    _CSAT_MAX_AGE = timedelta(minutes=90)
+    _CSAT_CUSTOMER_COOLDOWN = timedelta(days=30)
+
+    @staticmethod
+    def _is_ticket_csat_eligible(ticket: Dict[str, Any], now: datetime) -> bool:
+        """Pure eligibility check - deterministic, no AI call, no I/O.
+        Genuinely resolved (resolved_at set, see message_processor.py /
+        v2_tickets.py::close_ticket), inside the post-resolution window,
+        not already sent, and not an abandoned/one-sided exchange (needs at
+        least a customer message and a reply for feedback to make sense)."""
+        if ticket.get("csat_sent"):
+            return False
+        resolved_at_raw = ticket.get("resolved_at")
+        if not resolved_at_raw:
+            return False
+        try:
+            resolved_at = datetime.fromisoformat(resolved_at_raw.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            return False
+        age = now - resolved_at
+        if age < EmailPoller._CSAT_MIN_AGE or age > EmailPoller._CSAT_MAX_AGE:
+            return False
+
+        messages = ticket.get("messages") or []
+        if isinstance(messages, str):
+            try:
+                messages = json.loads(messages)
+            except (ValueError, TypeError):
+                messages = []
+        if len(messages) < 2:
+            return False  # abandoned / one-sided - nothing to rate
+
+        return bool(ticket.get("customer_email") and ticket.get("gmail_thread_id") and
+                    (ticket.get("store_id") or ticket.get("brand_id")))
+
+    @staticmethod
+    async def _customer_in_csat_cooldown(customer_email: str, brand_id: str, now: datetime) -> bool:
+        """Has this customer (scoped to this brand - a different merchant's
+        survey to the same address is a separate relationship) already
+        received a CSAT survey within the last 30 days, for any ticket?"""
+        cutoff = (now - EmailPoller._CSAT_CUSTOMER_COOLDOWN).isoformat()
+        recent = await asyncio.to_thread(supabase_select, "tickets", {
+            "customer_email": f"eq.{customer_email}",
+            "store_id": f"eq.{brand_id}",
+            "csat_sent_at": f"gte.{cutoff}",
+            "limit": "1",
+        })
+        return bool(recent)
+
+    @staticmethod
+    async def _claim_csat_send(ticket_id: str, now: datetime) -> bool:
+        """Atomically claim this ticket for sending - conditioned on
+        csat_sent still being false, exactly like actions_service.py's
+        approve_action() claims a pending action before touching Shopify.
+        Closes the race between two overlapping poller runs (or a slow
+        first run still finishing when the next poll fires) double-sending
+        the same survey."""
+        claimed = await asyncio.to_thread(
+            supabase_update, "tickets",
+            {"id": f"eq.{ticket_id}", "csat_sent": "is.false"},
+            {"csat_sent": True, "csat_sent_at": now.isoformat()},
+        )
+        return bool(claimed)
+
     async def _send_csat_surveys(self):
-        """Send a one-question satisfaction survey to tickets resolved 30-60 min ago."""
+        """Send a one-question satisfaction survey once a ticket is
+        genuinely resolved - never repeatedly, never for an abandoned
+        conversation, at most one per customer per 30 days. Deterministic
+        eligibility only - no AI/model call anywhere in this path."""
         try:
             from src.services.brand_gmail_service import brand_gmail_service
             now = datetime.now(timezone.utc)
-            window_start = (now - timedelta(minutes=60)).isoformat()
-            window_end = (now - timedelta(minutes=30)).isoformat()
+            window_start = (now - self._CSAT_MAX_AGE).isoformat()
 
-            # Fetch recently resolved tickets
-            resolved = await asyncio.to_thread(supabase_select, "tickets", {
-                "status": "in.(auto_resolved,resolved)",
-                "email_sent": "is.true",
-                "updated_at": f"gte.{window_start}",
+            candidates = await asyncio.to_thread(supabase_select, "tickets", {
+                "channel": "eq.email",
+                "csat_sent": "is.false",
+                "resolved_at": f"gte.{window_start}",
             })
-            if not resolved:
+            if not candidates:
                 return
 
-            for ticket in resolved:
-                # Skip if CSAT already sent (column may not exist yet — handled by KeyError)
-                if ticket.get("csat_sent"):
-                    continue
-                # Skip tickets outside the 30-60 min window
-                updated = ticket.get("updated_at", "")
-                if not updated or updated < window_start or updated > window_end:
+            for ticket in candidates:
+                if not self._is_ticket_csat_eligible(ticket, now):
                     continue
 
                 brand_id = ticket.get("store_id") or ticket.get("brand_id")
                 customer_email = ticket.get("customer_email")
                 thread_id = ticket.get("gmail_thread_id")
                 subject = ticket.get("subject") or "Your inquiry"
-                if not brand_id or not customer_email or not thread_id:
+
+                if await self._customer_in_csat_cooldown(customer_email, brand_id, now):
                     continue
 
                 brands = await asyncio.to_thread(
@@ -467,6 +535,13 @@ class EmailPoller:
                 if not brands:
                     continue
                 brand = brands[0]
+
+                # Claim before sending, not after - a send that fails after a
+                # successful claim just doesn't get retried this cycle (safe
+                # failure mode: at most one survey per ticket, never zero
+                # protection against a genuine double-send).
+                if not await self._claim_csat_send(ticket["id"], now):
+                    continue
 
                 brand_name = brand.get("name", "us")
                 plain_body, html_body = self._build_csat_email(ticket["id"], brand_name)
@@ -480,13 +555,6 @@ class EmailPoller:
                         plain_text_body=plain_body,
                         thread_id=thread_id,
                     )
-                    # Mark csat_sent — safe if column doesn't exist yet
-                    try:
-                        await asyncio.to_thread(
-                            supabase_update, "tickets", {"id": f"eq.{ticket['id']}"}, {"csat_sent": True}
-                        )
-                    except Exception:
-                        pass
                     logger.info(f"[CSAT] Sent survey for ticket {ticket['id']} to {customer_email}")
                 except Exception as e:
                     logger.warning(f"[CSAT] Could not send survey for ticket {ticket['id']}: {e}")

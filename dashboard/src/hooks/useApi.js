@@ -136,6 +136,19 @@ export function useBrandFeedback(brandId, rating) {
 }
 
 /**
+ * Resolution analytics + Autopilot readiness for a brand — real
+ * aggregations only (see GET /brands/{id}/analytics).
+ */
+export function useBrandAnalytics(brandId) {
+  return useQuery({
+    queryKey: ['brand-analytics', brandId],
+    queryFn: () => api.getBrandAnalytics(brandId),
+    enabled: !!brandId,
+    refetchInterval: 60000,
+  });
+}
+
+/**
  * Mutation to approve an action
  */
 export function useApproveAction() {

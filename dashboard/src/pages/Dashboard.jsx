@@ -25,7 +25,8 @@ export default function Dashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [slowLoad, setSlowLoad] = useState(false);
   const [activeBrand, setActiveBrand] = useState(null);
-  const { data: feedback } = useBrandFeedback(activeBrand?.id);
+  const { data: feedbackResponse } = useBrandFeedback(activeBrand?.id);
+  const feedback = feedbackResponse?.feedback;
   const [knowledgeImported, setKnowledgeImported] = useState(false);
   // null = not yet known. Real backend state (same /api/ai-mode endpoint the
   // Onboarding Go Live step and Settings' AI Mode toggle use) — never

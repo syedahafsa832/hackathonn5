@@ -11,7 +11,7 @@ import logging
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel, Field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from src.api.middleware.tenant_auth import get_current_tenant, TenantContext
 from src.lib.supabase_client import supabase_select, supabase_insert, supabase_update, supabase_delete, supabase_rpc
@@ -182,25 +182,143 @@ async def list_brand_feedback(
     rating: Optional[str] = None,
     tenant: TenantContext = Depends(get_current_tenant),
 ):
-    """Recent customer feedback (rating + optional written comment) for this
-    brand — powers the dashboard's feedback view and the testimonials/trust
-    section (rating=positive filter, real comments only, never fabricated)."""
+    """Customer feedback for this brand — powers the dashboard's Customer
+    Voice view and the testimonials/trust section (rating=positive filter,
+    real comments only, never fabricated). Returns the most recent 50 rows
+    for display plus a `summary` (average rating, total, 1-5 breakdown)
+    computed over ALL of the brand's feedback, not just the page shown —
+    pure aggregation over real rows, omitted entirely when there's none."""
     try:
         _get_owned_brand(brand_id, tenant.tenant_id)
         params = {
             "brand_id": f"eq.{brand_id}",
             "order": "created_at.desc",
-            "limit": "50",
+            "limit": "1000",
         }
         if rating:
             params["rating"] = f"eq.{rating}"
-        feedback = supabase_select("chat_feedback", params)
-        return {"feedback": feedback or []}
+        all_feedback = supabase_select("chat_feedback", params) or []
+
+        # Attach each row's ticket channel (chat vs email) — one batch
+        # lookup, not N+1 queries.
+        ticket_ids = list({f["ticket_id"] for f in all_feedback if f.get("ticket_id")})
+        channel_by_ticket = {}
+        if ticket_ids:
+            id_list = ",".join(ticket_ids)
+            tickets = supabase_select("tickets", {"id": f"in.({id_list})"}) or []
+            channel_by_ticket = {t["id"]: t.get("channel") for t in tickets}
+        for f in all_feedback:
+            f["channel"] = channel_by_ticket.get(f.get("ticket_id"), "unknown")
+
+        starred = [f["rating_stars"] for f in all_feedback if f.get("rating_stars")]
+        summary = None
+        if starred:
+            breakdown = {n: 0 for n in range(1, 6)}
+            for s in starred:
+                if 1 <= s <= 5:
+                    breakdown[s] += 1
+            summary = {
+                "average": round(sum(starred) / len(starred), 1),
+                "total": len(starred),
+                "breakdown": breakdown,
+            }
+
+        return {"feedback": all_feedback[:50], "summary": summary}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error listing brand feedback: {e}")
         raise HTTPException(status_code=500, detail="Failed to list feedback")
+
+
+_ANALYTICS_WINDOW_DAYS = 30
+# Below this many ever-executed cancel_order actions, an "approval rate" is
+# too noisy to call a readiness signal (e.g. 1/1 = 100% is not evidence of
+# anything) — the card is omitted entirely rather than shown misleadingly.
+_AUTOPILOT_MIN_SAMPLE = 5
+
+
+@router.get("/{brand_id}/analytics")
+async def get_brand_analytics(
+    brand_id: str,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    """Resolution analytics + Autopilot readiness — every number here is a
+    real aggregation over this brand's own tickets/actions/feedback in the
+    last 30 days (autopilot readiness looks at all-time executed actions,
+    a track record, not a recent window). Nothing is estimated or
+    invented; a metric that can't be reliably computed from current data
+    (e.g. response time when no ticket has first_response_at set) is
+    omitted rather than guessed."""
+    try:
+        _get_owned_brand(brand_id, tenant.tenant_id)
+        window_start = (datetime.now(timezone.utc) - timedelta(days=_ANALYTICS_WINDOW_DAYS)).isoformat()
+
+        tickets = supabase_select("tickets", {
+            "store_id": f"eq.{brand_id}",
+            "created_at": f"gte.{window_start}",
+        }) or []
+        conversations_handled = len(tickets)
+        resolved_by_luna = sum(1 for t in tickets if t.get("status") == "auto_resolved")
+        escalated_to_human = sum(1 for t in tickets if t.get("status") == "escalated")
+
+        response_times = []
+        for t in tickets:
+            if t.get("channel") == "email" and t.get("first_response_at") and t.get("created_at"):
+                try:
+                    created = datetime.fromisoformat(t["created_at"].replace("Z", "+00:00"))
+                    responded = datetime.fromisoformat(t["first_response_at"].replace("Z", "+00:00"))
+                    response_times.append((responded - created).total_seconds())
+                except (ValueError, AttributeError):
+                    pass
+        avg_response_time_seconds = round(sum(response_times) / len(response_times)) if response_times else None
+
+        actions = supabase_select("actions", {
+            "brand_id": f"eq.{brand_id}",
+            "created_at": f"gte.{window_start}",
+        }) or []
+        executed = sum(1 for a in actions if a.get("status") == "executed")
+        rejected = sum(1 for a in actions if a.get("status") == "rejected")
+        approval_rate = round(100 * executed / (executed + rejected), 1) if (executed + rejected) > 0 else None
+        cancellation_count = sum(1 for a in actions if a.get("action_type") == "cancel_order")
+        refund_count = sum(1 for a in actions if a.get("action_type") == "refund")
+
+        feedback = supabase_select("chat_feedback", {"brand_id": f"eq.{brand_id}", "created_at": f"gte.{window_start}"}) or []
+        starred = [f["rating_stars"] for f in feedback if f.get("rating_stars")]
+        csat = round(sum(starred) / len(starred), 1) if starred else None
+
+        # Autopilot readiness: all-time track record for cancel_order,
+        # independent of the 30-day analytics window above.
+        all_cancel_actions = supabase_select("actions", {
+            "brand_id": f"eq.{brand_id}",
+            "action_type": "eq.cancel_order",
+        }) or []
+        cancel_executed = sum(1 for a in all_cancel_actions if a.get("status") == "executed")
+        cancel_rejected = sum(1 for a in all_cancel_actions if a.get("status") == "rejected")
+        autopilot_readiness = None
+        if cancel_executed + cancel_rejected >= _AUTOPILOT_MIN_SAMPLE:
+            autopilot_readiness = {
+                "eligible_cancellations": cancel_executed,
+                "approval_rate": round(100 * cancel_executed / (cancel_executed + cancel_rejected), 1),
+            }
+
+        return {
+            "window_days": _ANALYTICS_WINDOW_DAYS,
+            "conversations_handled": conversations_handled,
+            "resolved_by_luna": resolved_by_luna,
+            "escalated_to_human": escalated_to_human,
+            "avg_response_time_seconds": avg_response_time_seconds,
+            "approval_rate": approval_rate,
+            "cancellation_count": cancellation_count,
+            "refund_count": refund_count,
+            "csat": csat,
+            "autopilot_readiness": autopilot_readiness,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error computing brand analytics: {e}")
+        raise HTTPException(status_code=500, detail="Failed to compute analytics")
 
 
 @router.patch("/{brand_id}")

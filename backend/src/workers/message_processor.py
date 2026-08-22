@@ -445,6 +445,14 @@ class UnifiedMessageProcessor:
             should_auto_reply = routing["should_auto_reply"]
             if routing["status"] is not None:
                 ticket_payload["status"] = routing["status"]
+                # Deterministic "genuinely resolved" signal for the CSAT
+                # trigger (see email_poller.py) - reuses tickets.resolved_at,
+                # which previously only POST /{id}/close ever set. Strictly
+                # "auto_resolved" only (high confidence, no escalation, no
+                # review needed) - "auto_resolved_review" explicitly still
+                # needs a human look and isn't a real resolution signal.
+                if routing["status"] == "auto_resolved":
+                    ticket_payload["resolved_at"] = datetime.now(timezone.utc).isoformat()
             if routing.get("ai_reply") is not None:
                 ticket_payload["ai_reply"] = routing["ai_reply"]
             if routing.get("ai_draft") is not None:

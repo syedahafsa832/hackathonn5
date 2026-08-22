@@ -165,10 +165,16 @@ const api = {
   // brand — powers the dashboard's Recent Feedback section and the
   // testimonials block (rating: 'positive' to filter to real quotes only).
   getBrandFeedback: async (brandId, rating) => {
-    if (!brandId) return [];
+    if (!brandId) return { feedback: [], summary: null };
     const params = rating ? { rating } : {};
-    const res = await client.get(`/api/v2/brands/${brandId}/feedback`, { params }).catch(() => ({ data: { feedback: [] } }));
-    return res.data?.feedback || [];
+    const res = await client.get(`/api/v2/brands/${brandId}/feedback`, { params }).catch(() => ({ data: { feedback: [], summary: null } }));
+    return res.data || { feedback: [], summary: null };
+  },
+
+  getBrandAnalytics: async (brandId) => {
+    if (!brandId) return null;
+    const res = await client.get(`/api/v2/brands/${brandId}/analytics`).catch(() => ({ data: null }));
+    return res.data;
   },
 
   // --- CANNED RESPONSES ---

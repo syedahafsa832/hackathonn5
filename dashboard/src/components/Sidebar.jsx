@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Inbox, ShieldAlert, Store, Settings, ShieldQuestion, ShieldCheck, ChevronLeft, ChevronRight, Zap } from 'lucide-react';
+import { LayoutDashboard, Inbox, ShieldAlert, Store, Settings, ShieldQuestion, ShieldCheck, ChevronLeft, ChevronRight, Zap, Star } from 'lucide-react';
 import { useEscalations, useActions, useQuarantineCount, useMe } from '../hooks/useApi';
 
 const NAV = [
   { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { path: '/tickets', label: 'Conversations', icon: Inbox },
+  { path: '/customer-voice', label: 'Customer Voice', icon: Star },
   { path: '/brands', label: 'Store', icon: Store },
   { path: '/actions', label: 'Escalations', icon: ShieldAlert, badge: true },
   { path: '/quarantine', label: 'Quarantine', icon: ShieldQuestion, quarantineBadge: true },
