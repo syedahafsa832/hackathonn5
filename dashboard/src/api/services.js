@@ -161,6 +161,16 @@ const api = {
 
   // --- BRANDS ---
 
+  // Recent post-ticket customer feedback (rating + optional comment) for a
+  // brand — powers the dashboard's Recent Feedback section and the
+  // testimonials block (rating: 'positive' to filter to real quotes only).
+  getBrandFeedback: async (brandId, rating) => {
+    if (!brandId) return [];
+    const params = rating ? { rating } : {};
+    const res = await client.get(`/api/v2/brands/${brandId}/feedback`, { params }).catch(() => ({ data: { feedback: [] } }));
+    return res.data?.feedback || [];
+  },
+
   // --- CANNED RESPONSES ---
   getCannedResponses: async () => {
     const res = await client.get('/api/v1/canned-responses').catch(() => ({ data: { items: [] } }));

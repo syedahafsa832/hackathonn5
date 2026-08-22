@@ -68,6 +68,16 @@ function ActionCard({ action, onApprove, onReject }) {
   const [approving, setApproving] = useState(false);
   const [approveError, setApproveError] = useState('');
   const [hoverReject, setHoverReject] = useState(false);
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
+  // Bounded excerpt (<=800 chars, see return_actions_integration.py's
+  // _policy_evidence_excerpt) - never the full multi-page RAG dump. Real
+  // data only: no fabricated "recommendation" text, this is either the
+  // actual retrieved excerpt or, if none was safely identifiable, the
+  // honest fallback line below.
+  const policyEvidence = action.extracted_data?.policy_evidence;
+  const requiresPolicyCheck = !!policyEvidence ||
+    !!(action.extracted_data?.eligibility && !action.extracted_data.eligibility.eligible &&
+       (action.extracted_data.eligibility.staging_required || action.extracted_data.eligibility.requires_manual_review));
   // Human-entered partial refund override — never AI-suggested, blank means
   // "full refund" (unchanged existing behavior). Only shown for refunds.
   const [amountOverride, setAmountOverride] = useState('');
@@ -131,15 +141,54 @@ function ActionCard({ action, onApprove, onReject }) {
         <span style={{ fontSize: '11px', color: '#94A3B8', fontFamily: 'DM Mono, monospace' }}>{formatDate(action.created_at)}</span>
       </div>
 
-      <div style={{ fontSize: '13px', color: '#64748B' }}>
-        <strong style={{ fontSize: '14px', fontWeight: '500', color: '#0F172A' }}>{action.customer_name || action.customer_email}</strong>
-        {action.order_total && ` · $${action.order_total}`}
-        {action.ai_reasoning && (
-          <div style={{ marginTop: '4px', color: '#64748B', fontSize: '13px' }}>{decodeHtml(action.ai_reasoning)}</div>
-        )}
+      <div style={{ fontSize: '13px', color: '#64748B', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        <div>
+          <strong style={{ fontSize: '14px', fontWeight: '500', color: '#0F172A' }}>{action.customer_name || action.customer_email}</strong>
+          {action.order_total && ` · $${action.order_total}`}
+        </div>
+
         {action.original_message && (
-          <div style={{ marginTop: '8px', padding: '8px 12px', background: '#F8FAFC', borderRadius: '0 4px 4px 0', fontSize: '13px', color: '#64748B', fontStyle: 'italic', borderLeft: '3px solid #E2E8F0' }}>
-            "{decodeHtml(action.original_message).slice(0, 200)}"
+          <div>
+            <div style={{ fontSize: '10.5px', fontWeight: '600', color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '3px' }}>
+              Customer request
+            </div>
+            <div style={{ padding: '8px 12px', background: '#F8FAFC', borderRadius: '0 4px 4px 0', fontSize: '13px', color: '#475569', fontStyle: 'italic', borderLeft: '3px solid #E2E8F0' }}>
+              "{decodeHtml(action.original_message).slice(0, 200)}"
+            </div>
+          </div>
+        )}
+
+        {action.ai_reasoning && (
+          <div>
+            <div style={{ fontSize: '10.5px', fontWeight: '600', color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '3px' }}>
+              Why approval is needed
+            </div>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', flexWrap: 'wrap' }}>
+              <span style={{ color: '#334155', fontSize: '13px', flex: 1, minWidth: '160px' }}>{decodeHtml(action.ai_reasoning)}</span>
+              {requiresPolicyCheck && (
+                <span style={{ flexShrink: 0, fontSize: '10.5px', fontWeight: '600', color: '#0E7490', background: '#ECFEFF', border: '1px solid #A5F3FC', borderRadius: '999px', padding: '2px 9px' }}>
+                  Policy check required
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {requiresPolicyCheck && (
+          <div>
+            <button
+              onClick={() => setEvidenceOpen(o => !o)}
+              style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: '12.5px', fontWeight: '600', color: '#0E7490', display: 'flex', alignItems: 'center', gap: '4px' }}
+            >
+              {evidenceOpen ? '▾' : '▸'} {evidenceOpen ? 'Hide' : 'View'} policy evidence
+            </button>
+            {evidenceOpen && (
+              <div style={{ marginTop: '6px', padding: '10px 12px', background: '#F8FAFC', border: '1px solid #E4E4E7', borderRadius: '6px', fontSize: '12.5px', color: '#475569', lineHeight: '1.55', whiteSpace: 'pre-wrap' }}>
+                {policyEvidence
+                  ? decodeHtml(policyEvidence)
+                  : 'Merchant policy information was found and requires human review.'}
+              </div>
+            )}
           </div>
         )}
       </div>

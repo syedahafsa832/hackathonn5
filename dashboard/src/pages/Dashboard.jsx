@@ -7,7 +7,7 @@ import FilteredEmailsWidget from '../components/FilteredEmailsWidget';
 import PlanUsageWidget from '../components/PlanUsageWidget';
 import OnboardingChecklistCard from '../components/OnboardingChecklistCard';
 import { useNotifications } from '../hooks/useNotifications';
-import { useStats, useConversations } from '../hooks/useApi';
+import { useStats, useConversations, useBrandFeedback } from '../hooks/useApi';
 
 function formatTime(iso) {
   if (!iso) return '—';
@@ -25,6 +25,7 @@ export default function Dashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [slowLoad, setSlowLoad] = useState(false);
   const [activeBrand, setActiveBrand] = useState(null);
+  const { data: feedback } = useBrandFeedback(activeBrand?.id);
   const [knowledgeImported, setKnowledgeImported] = useState(false);
   // null = not yet known. Real backend state (same /api/ai-mode endpoint the
   // Onboarding Go Live step and Settings' AI Mode toggle use) — never
@@ -355,6 +356,53 @@ export default function Dashboard() {
           </div>
         )}
       </section>
+
+      {/* Recent Feedback — real thumbs+comments left via the chat widget's
+          post-conversation rating, not a fabricated metric. */}
+      <section>
+        <h2 style={{ margin: '0 0 12px', fontSize: '15px', fontWeight: '600', color: '#0F172A' }}>Recent Feedback</h2>
+        {!feedback || feedback.length === 0 ? (
+          <div style={{ padding: '32px', textAlign: 'center', border: '1px solid #E4E4E7', borderRadius: '8px', background: 'white', color: '#64748B', fontSize: '14px' }}>
+            No customer feedback yet — it'll show up here once customers rate a conversation.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {feedback.slice(0, 5).map(f => (
+              <div
+                key={f.id}
+                onClick={() => f.ticket_id && navigate(`/tickets/${f.ticket_id}`)}
+                style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '14px 16px', border: '1px solid #E4E4E7', borderRadius: '8px', background: 'white', cursor: f.ticket_id ? 'pointer' : 'default' }}
+              >
+                <span style={{ fontSize: '16px', lineHeight: 1 }}>{f.rating === 'positive' ? '👍' : '👎'}</span>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  {f.feedback_text ? (
+                    <div style={{ fontSize: '13px', color: '#0F172A', lineHeight: 1.5 }}>"{f.feedback_text}"</div>
+                  ) : (
+                    <div style={{ fontSize: '13px', color: '#94A3B8', fontStyle: 'italic' }}>No comment left</div>
+                  )}
+                  <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '4px' }}>{formatTime(f.created_at)}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* Customer Testimonials — trust/beta foundation. Only ever shows real
+          positive feedback with a written comment; never fabricated. This
+          is also the integration point for a future Trustpilot pull. */}
+      {feedback && feedback.filter(f => f.rating === 'positive' && f.feedback_text).length > 0 && (
+        <section>
+          <h2 style={{ margin: '0 0 12px', fontSize: '15px', fontWeight: '600', color: '#0F172A' }}>Customer Testimonials</h2>
+          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+            {feedback.filter(f => f.rating === 'positive' && f.feedback_text).slice(0, 4).map(f => (
+              <div key={f.id} style={{ flex: '1 1 220px', padding: '16px', border: '1px solid #E4E4E7', borderRadius: '8px', background: '#F8FAFC', fontSize: '13px', color: '#0F172A', lineHeight: 1.5 }}>
+                "{f.feedback_text}"
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   );
 }

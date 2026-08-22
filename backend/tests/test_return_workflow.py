@@ -84,7 +84,10 @@ def test_eligible_return_is_staged_for_approval():
 
     mock_create.assert_awaited_once()
     _, kwargs = mock_create.call_args
-    assert kwargs["action_type"] == "Refund"  # a return IS a refund mutation here
+    # Was "Refund" (capital R) - a real casing bug fixed alongside the
+    # Phase 3 duplicate-action fix: it silently defeated the exact-match
+    # dedup guard and made this action unapprovable ("Unknown action type").
+    assert kwargs["action_type"] == "refund"  # a return IS a refund mutation here
     assert result["staged"]["success"] is True
     assert "ACTION STAGED FOR APPROVAL" in result["action_context"]
     # Truthful wording: staged, not completed.

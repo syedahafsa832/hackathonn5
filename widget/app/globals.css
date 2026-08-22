@@ -30,25 +30,17 @@
 /* ── Resolution Panel ──────────────────────────────────────────── */
 
 .resolution-panel {
-  background: linear-gradient(145deg, rgba(14, 18, 32, 0.97) 0%, rgba(8, 11, 20, 0.99) 100%);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-top-color: rgba(255, 255, 255, 0.15);
-  border-radius: 20px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 18px;
   box-shadow:
-    0 0 0 1px rgba(0, 0, 0, 0.5),
-    0 24px 48px rgba(0, 0, 0, 0.7),
-    0 8px 16px rgba(0, 0, 0, 0.4),
-    0 0 80px rgba(99, 102, 241, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  transition: transform 0.4s cubic-bezier(0.23, 1, 0.32, 1);
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 12px 32px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
   overflow: hidden;
   display: flex;
   flex-direction: column;
   font-family: var(--font-geist-sans, system-ui, -apple-system, sans-serif);
-}
-
-.resolution-panel:hover {
-  transform: perspective(1200px) rotateX(0.5deg) translateY(-2px);
 }
 
 /* ── Animations ───────────────────────────────────────────────── */

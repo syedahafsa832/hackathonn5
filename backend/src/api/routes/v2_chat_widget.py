@@ -6,6 +6,9 @@ No tenant auth — brand_id (UUID) in request identifies the brand.
 Sessions are stored as tickets with channel='chat'.
 """
 import re
+import os
+import hmac
+import hashlib
 import time
 import uuid
 import json
@@ -15,8 +18,8 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Optional, List, Callable, Awaitable
 
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi import APIRouter, HTTPException, Request, Form
+from fastapi.responses import PlainTextResponse, StreamingResponse, HTMLResponse
 from pydantic import BaseModel
 
 from src.lib.supabase_client import supabase_select, supabase_insert, supabase_update
@@ -71,6 +74,7 @@ class ChatResponse(BaseModel):
 class FeedbackRequest(BaseModel):
     session_id: str
     rating: str  # 'positive' | 'negative'
+    feedback_text: Optional[str] = None
 
 
 def _map_resolution_step(intent: Optional[str], status: Optional[str]) -> str:
@@ -96,17 +100,18 @@ def _map_action_result(intent: Optional[str], action_taken: Optional[dict], orde
     if not action_taken or not action_taken.get("success"):
         return None
     order_number = (order_data or {}).get("orderNumber", "")
+    action_id = action_taken.get("action_id")
     if intent in ("refund_request", "return_request"):
         amount = None
         if order_data:
             items = order_data.get("items", [])
             if items:
                 amount = items[0].get("price")
-        return {"type": "refund_staged", "amount": amount, "order_number": order_number}
+        return {"type": "refund_staged", "amount": amount, "order_number": order_number, "action_id": action_id}
     if intent == "exchange_request":
-        return {"type": "exchange_staged", "order_number": order_number}
+        return {"type": "exchange_staged", "order_number": order_number, "action_id": action_id}
     if intent == "cancellation_request":
-        return {"type": "cancel_staged", "order_number": order_number}
+        return {"type": "cancel_staged", "order_number": order_number, "action_id": action_id}
     if intent == "address_change":
         return {"type": "address_updated", "new_address": None}
     return None
@@ -227,14 +232,14 @@ async def _generate_reply(
             "channel": "chat",
         }
 
-        # Prepend chat-mode instruction to query so the agent knows context
-        chat_query = (
-            "[CHAT MODE — reply in 1-3 short sentences, conversational tone, no bullet points]\n"
-            f"{full_query}"
-        )
-
+        # Chat-mode formatting (short replies, no bullets) is driven by
+        # customer_info["channel"]="chat" inside the prompt builder now, not
+        # a text prefix on the query - that prefix used to leak verbatim
+        # into anything that persists `query` (e.g. actions.original_message,
+        # shown to merchants on the Escalations page as the customer's own
+        # words).
         result = await customer_success_agent.process_customer_query(
-            query=chat_query,
+            query=full_query,
             customer_info=customer_info,
             tenant_id=tenant_id,
             store_id=body.brand_id,
@@ -483,20 +488,188 @@ async def chat(request: Request, body: ChatRequest, stream: Optional[int] = None
 
 @router.post("/widget/feedback")
 async def submit_feedback(body: FeedbackRequest):
-    """Store thumbs-up / thumbs-down rating for a chat session."""
+    """Store thumbs-up / thumbs-down rating (with optional written comment)
+    for a chat session, enriched with ticket_id/brand_id so a merchant can
+    see their own feedback with proper tenant scoping."""
     if body.rating not in ("positive", "negative"):
         raise HTTPException(status_code=400, detail="rating must be 'positive' or 'negative'")
 
+    feedback_text = _sanitize(body.feedback_text, max_len=1000) if body.feedback_text else None
+
     try:
+        tickets = supabase_select("tickets", {"gmail_thread_id": f"eq.{body.session_id}", "channel": "eq.chat"})
+        ticket = tickets[0] if tickets else None
+
         supabase_insert("chat_feedback", {
-            "session_id": body.session_id,
-            "rating":     body.rating,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "session_id":    body.session_id,
+            "rating":        body.rating,
+            "feedback_text": feedback_text,
+            "ticket_id":     ticket.get("id") if ticket else None,
+            "brand_id":      ticket.get("brand_id") if ticket else None,
+            "created_at":    datetime.now(timezone.utc).isoformat(),
         })
     except Exception as e:
         logger.warning(f"[ChatWidget] Feedback insert failed (non-blocking): {e}")
 
     return {"success": True}
+
+
+# ── Post-ticket CSAT email: tap-a-star rating ────────────────────────────
+# Each star in the CSAT email (see email_poller.py's _send_csat_surveys) is
+# its own link straight to this GET endpoint - clicking star N means "rate
+# N stars", recorded immediately into the same chat_feedback table the chat
+# widget's thumbs rating uses. A signed token (HMAC over ticket_id+stars,
+# reusing the same SECRET_KEY/JWT_SECRET convention as brand_gmail_service.py
+# and shopify_oauth.py) stops a link for one ticket/rating being replayed
+# for another - no new secret, no DB-stored token needed.
+
+def _star_signing_key() -> bytes:
+    return os.getenv("SECRET_KEY", os.getenv("JWT_SECRET", "change-me-in-production")).encode()
+
+
+def sign_star_rating(ticket_id: str, stars: int) -> str:
+    return hmac.new(_star_signing_key(), f"{ticket_id}:{stars}".encode(), hashlib.sha256).hexdigest()[:20]
+
+
+def _verify_star_rating_token(ticket_id: str, stars: int, token: str) -> bool:
+    return hmac.compare_digest(sign_star_rating(ticket_id, stars), token or "")
+
+
+def star_rating_email_url(ticket_id: str, stars: int) -> str:
+    base_url = os.getenv("API_BASE_URL", "http://localhost:8001")
+    token = sign_star_rating(ticket_id, stars)
+    return f"{base_url}/api/v2/widget/feedback/rate?ticket_id={ticket_id}&stars={stars}&token={token}"
+
+
+_FEEDBACK_PAGE_STYLE = """
+  body { margin:0; padding:0; background:#FFFBF5; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; box-sizing:border-box; }
+  .card { max-width:420px; width:100%; background:#ffffff; border-radius:16px; padding:40px 32px; text-align:center; box-shadow:0 1px 2px rgba(15,23,42,0.04), 0 8px 24px rgba(15,23,42,0.06); }
+  .emoji { font-size:40px; line-height:1; margin-bottom:14px; }
+  h1 { font-size:19px; font-weight:700; color:#1F2937; margin:0 0 8px; }
+  p { font-size:14px; color:#6B7280; line-height:1.6; margin:0 0 20px; }
+  textarea { width:100%; box-sizing:border-box; border:1px solid #E5E7EB; border-radius:10px; padding:12px; font-size:14px; font-family:inherit; resize:vertical; min-height:80px; margin-bottom:14px; }
+  button { background:#F59E0B; color:#ffffff; border:none; border-radius:10px; padding:11px 22px; font-size:14px; font-weight:600; cursor:pointer; }
+  .label { font-size:13px; font-weight:600; color:#374151; margin-bottom:8px; text-align:left; }
+"""
+
+
+def _feedback_page(title: str, emoji: str, heading: str, body_html: str) -> str:
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{title}</title><style>{_FEEDBACK_PAGE_STYLE}</style></head>
+<body><div class="wrap"><div class="card">
+<div class="emoji">{emoji}</div><h1>{heading}</h1>{body_html}
+</div></div></body></html>"""
+
+
+def _render_star_thanks_page(stars: int, ticket_id: str, token: str) -> str:
+    stars_display = "⭐" * stars
+    warm = stars >= 4
+    body = f"""
+<p>You gave us {stars_display} — thank you for taking a moment to let us know!</p>
+<form method="POST" action="/api/v2/widget/feedback/comment">
+  <input type="hidden" name="ticket_id" value="{ticket_id}">
+  <input type="hidden" name="token" value="{token}">
+  <div class="label">Want to tell us more? (optional)</div>
+  <textarea name="comment" maxlength="1000" placeholder="Tell us more…"></textarea>
+  <button type="submit">Leave feedback</button>
+</form>"""
+    return _feedback_page("Thanks for rating us!", "💛" if warm else "🙏", "How did we do?", body)
+
+
+def _render_comment_thanks_page() -> str:
+    return _feedback_page("Thanks!", "✅", "Feedback received", "<p>Got it — we really appreciate you taking the time.</p>")
+
+
+def _render_invalid_feedback_link_page() -> str:
+    return _feedback_page("Feedback link invalid", "🤔", "Hmm, that link didn't work",
+                           "<p>This feedback link is invalid or has expired.</p>")
+
+
+@router.get("/widget/feedback/rate", response_class=HTMLResponse)
+async def rate_via_email(ticket_id: str, stars: int, token: str):
+    """Landing page for a tapped star in the CSAT email. Records the rating
+    immediately (idempotent — re-clicking the same or a different star for
+    the same ticket updates the one row rather than creating duplicates),
+    then offers the same optional-comment step described in the product
+    brief, never a second rating prompt."""
+    if not (1 <= stars <= 5) or not _verify_star_rating_token(ticket_id, stars, token):
+        return HTMLResponse(_render_invalid_feedback_link_page(), status_code=400)
+
+    tickets = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
+    if not tickets:
+        return HTMLResponse(_render_invalid_feedback_link_page(), status_code=404)
+    ticket = tickets[0]
+    brand_id = ticket.get("brand_id") or ticket.get("store_id")
+    rating = "positive" if stars >= 4 else "negative"
+
+    try:
+        existing = supabase_select("chat_feedback", {"ticket_id": f"eq.{ticket_id}", "limit": "1"})
+        if existing:
+            supabase_update("chat_feedback", {"id": f"eq.{existing[0]['id']}"}, {"rating": rating, "rating_stars": stars})
+        else:
+            supabase_insert("chat_feedback", {
+                "session_id":   ticket_id,
+                "ticket_id":    ticket_id,
+                "brand_id":     brand_id,
+                "rating":       rating,
+                "rating_stars": stars,
+                "created_at":   datetime.now(timezone.utc).isoformat(),
+            })
+    except Exception as e:
+        logger.warning(f"[ChatWidget] Star rating save failed (non-blocking): {e}")
+
+    return HTMLResponse(_render_star_thanks_page(stars, ticket_id, token))
+
+
+@router.post("/widget/feedback/comment", response_class=HTMLResponse)
+async def add_star_rating_comment(ticket_id: str = Form(...), token: str = Form(...), comment: str = Form("")):
+    """Optional second step after a star rating — adds a written comment to
+    the same chat_feedback row. The token must match the rating actually on
+    file (re-derived from the stored rating_stars, not trusted from the
+    form) so a comment can't be attached without a real prior rating."""
+    existing = supabase_select("chat_feedback", {"ticket_id": f"eq.{ticket_id}", "limit": "1"})
+    if not existing or existing[0].get("rating_stars") is None:
+        return HTMLResponse(_render_invalid_feedback_link_page(), status_code=404)
+
+    row = existing[0]
+    if not _verify_star_rating_token(ticket_id, row["rating_stars"], token):
+        return HTMLResponse(_render_invalid_feedback_link_page(), status_code=400)
+
+    text = _sanitize(comment, max_len=1000)
+    if text:
+        try:
+            supabase_update("chat_feedback", {"id": f"eq.{row['id']}"}, {"feedback_text": text})
+        except Exception as e:
+            logger.warning(f"[ChatWidget] Star rating comment save failed (non-blocking): {e}")
+
+    return HTMLResponse(_render_comment_thanks_page())
+
+
+# Fields safe to expose to an unauthenticated customer polling their own
+# action's outcome - never customer_email/reason/risk_* /ai_reasoning, which
+# live on the same `actions` row.
+_ACTION_STATUS_FIELDS = {"status", "action_type", "order_number", "error_message"}
+
+
+@router.get("/widget/actions/{action_id}/status")
+async def get_widget_action_status(action_id: str, request: Request):
+    """Poll target for the chat widget: once a merchant approves/rejects a
+    staged action, this reports the real outcome (executed/failed) recorded
+    by actions_service.approve_action() so the widget can show a confirmed
+    'Order cancelled' state instead of leaving 'Awaiting merchant approval'
+    up forever. Read-only, rate-limited like the rest of this public router."""
+    client_ip = request.client.host if request.client else "unknown"
+    if not _allow(client_ip):
+        raise HTTPException(status_code=429, detail="Too many requests")
+
+    rows = supabase_select("actions", {"id": f"eq.{action_id}"})
+    if not rows:
+        raise HTTPException(status_code=404, detail="Action not found")
+
+    action = rows[0]
+    return {k: action.get(k) for k in _ACTION_STATUS_FIELDS}
 
 
 @router.get("/widget/chat/{session_id}")

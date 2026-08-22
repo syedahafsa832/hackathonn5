@@ -84,7 +84,7 @@ export function ActionCards({ agentName, accentColor, orbState, onClose, onSend 
           background: 'linear-gradient(180deg, rgba(99,102,241,0.07) 0%, transparent 100%)',
         }}
       >
-        <AiOrb state={orbState} size={28} />
+        <AiOrb state={orbState} size={28} accentColor={accentColor} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div
             style={{

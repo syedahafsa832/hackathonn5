@@ -83,20 +83,37 @@ export function ResolutionCanvas({
           gap: '10px',
           borderBottom: '1px solid rgba(255,255,255,0.07)',
           flexShrink: 0,
-          background: 'linear-gradient(180deg, rgba(99,102,241,0.07) 0%, transparent 100%)',
         }}
       >
-        <AiOrb state={orbState} size={28} />
+        <AiOrb state={orbState} size={28} accentColor={accentColor} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div
-            style={{
-              fontSize: '14px',
-              fontWeight: 500,
-              color: 'rgba(255,255,255,0.95)',
-              letterSpacing: '-0.01em',
-            }}
-          >
-            {agentName}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span
+              style={{
+                fontSize: '14px',
+                fontWeight: 500,
+                color: 'rgba(255,255,255,0.95)',
+                letterSpacing: '-0.01em',
+              }}
+            >
+              {agentName}
+            </span>
+            {/* Static status label — no claims, no numbers. Foundation for
+                a future public trust surface (see Dashboard testimonials). */}
+            <span
+              style={{
+                fontSize: '9px',
+                fontWeight: 600,
+                letterSpacing: '0.06em',
+                color: 'rgba(255,255,255,0.4)',
+                border: '1px solid rgba(255,255,255,0.14)',
+                borderRadius: '4px',
+                padding: '1px 5px',
+                textTransform: 'uppercase',
+              }}
+            >
+              Beta
+            </span>
           </div>
           <div
             style={{
@@ -174,7 +191,7 @@ export function ResolutionCanvas({
           style={{
             height: '100%',
             width: `${progressPct}%`,
-            background: progressPct === 100 ? '#10B981' : '#6366F1',
+            background: progressPct === 100 ? '#10B981' : accentColor,
             transition: 'width 0.5s ease, background 0.3s',
           }}
         />

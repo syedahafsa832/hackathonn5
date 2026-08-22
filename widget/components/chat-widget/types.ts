@@ -18,7 +18,13 @@ export type ActionResult = {
   order_number?: string
   amount?: string
   new_address?: string
+  /** Opaque id of the underlying `actions` row — present once staged, used to poll /widget/actions/{id}/status for the real merchant-approved outcome. */
+  action_id?: string
+  /** Real outcome of a staged action, learned by polling — never set optimistically. Absent/'pending' means still awaiting merchant review. */
+  status?: 'pending' | 'executed' | 'failed'
 }
+
+export type SatisfactionRatingValue = 'positive' | 'negative'
 
 export type Message = {
   id: string

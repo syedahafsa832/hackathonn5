@@ -3,6 +3,10 @@
 import { motion, type Variants } from 'framer-motion'
 import type { OrbState } from './types'
 
+// 'idle' is the brand/accent state (overridden by the merchant's configured
+// accentColor below); the rest are meaningful status colors and stay fixed
+// regardless of accent so thinking/acting/resolved/escalated/error remain
+// recognizable across every merchant's theme.
 const STATE_COLORS: Record<OrbState, string> = {
   idle:      '#6366F1',
   thinking:  '#3B82F6',
@@ -68,10 +72,11 @@ const outerRingVariants: Variants = {
 type Props = {
   state: OrbState
   size?: number
+  accentColor?: string
 }
 
-export function AiOrb({ state, size = 32 }: Props) {
-  const color = STATE_COLORS[state]
+export function AiOrb({ state, size = 32, accentColor = '#6366F1' }: Props) {
+  const color = state === 'idle' ? accentColor : STATE_COLORS[state]
   const midInset = Math.max(2, Math.round(size * 0.1))
   const innerInset = Math.max(4, Math.round(size * 0.2))
 

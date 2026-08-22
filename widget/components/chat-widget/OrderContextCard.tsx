@@ -3,10 +3,13 @@
 import type { OrderData } from './types'
 
 const STATUS_COLORS: Record<OrderData['status'], string> = {
-  fulfilled:  '#10B981',
-  pending:    '#F59E0B',
-  cancelled:  '#EF4444',
-  processing: '#3B82F6',
+  fulfilled:   '#10B981',
+  pending:     '#F59E0B',
+  cancelled:   '#EF4444',
+  processing:  '#3B82F6',
+  refunded:    '#3B82F6',
+  restocked:   '#6B7280',
+  unfulfilled: '#F59E0B',
 }
 
 const PAYMENT_LABEL: Record<OrderData['paymentStatus'], string> = {

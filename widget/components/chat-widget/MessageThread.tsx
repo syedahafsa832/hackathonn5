@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ConfidenceBadge } from './ConfidenceBadge'
 import { OrderCard } from './OrderCard'
@@ -36,7 +36,6 @@ export function MessageThread({
   onRetry,
 }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null)
-  const [ratingShown, setRatingShown] = useState(false)
   const isLoading = messages.some((m) => m.isTyping)
 
   useEffect(() => {
@@ -176,11 +175,15 @@ export function MessageThread({
                 </button>
               )}
 
-              {/* Satisfaction rating — shows once after resolution_complete */}
-              {!isUser && !msg.isTyping && msg.resolutionComplete && idx === lastResolutionIdx && !ratingShown && (
-                <div onClick={() => setRatingShown(true)}>
-                  <SatisfactionRating sessionId={sessionId} apiBaseUrl={apiBaseUrl} />
-                </div>
+              {/* Satisfaction rating — shown on the latest resolved message.
+                  Owns its own idle -> picked -> sent lifecycle internally
+                  (see SatisfactionRating), so nothing here needs to hide it
+                  on click — that used to fire on any click inside it,
+                  including the rating buttons themselves, cutting the
+                  "Thanks for your feedback!" confirmation off before it
+                  could show. */}
+              {!isUser && !msg.isTyping && msg.resolutionComplete && idx === lastResolutionIdx && (
+                <SatisfactionRating sessionId={sessionId} apiBaseUrl={apiBaseUrl} />
               )}
             </motion.div>
           )

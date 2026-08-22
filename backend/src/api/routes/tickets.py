@@ -136,6 +136,15 @@ async def get_ticket(
                     return ticket
             raise HTTPException(status_code=404, detail="Ticket not found")
 
+        # Post-conversation customer feedback (rating + optional written
+        # comment), if the customer left any via SatisfactionRating.
+        feedback_rows = supabase_select("chat_feedback", {
+            "ticket_id": f"eq.{ticket_id}",
+            "order": "created_at.desc",
+            "limit": "1",
+        })
+        ticket["feedback"] = feedback_rows[0] if feedback_rows else None
+
         return ticket
     except HTTPException:
         raise

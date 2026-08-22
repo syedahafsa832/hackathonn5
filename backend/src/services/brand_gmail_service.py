@@ -377,6 +377,33 @@ class BrandGmailService:
             logger.error(f"[BrandGmail] Send error for brand {brand.get('name')}: {e}")
             return {"success": False, "error": str(e)}
 
+    async def send_html_reply_in_thread(self, brand: dict, to_email: str, subject: str, html_body: str, plain_text_body: str, thread_id: str) -> Dict[str, Any]:
+        """Like send_reply_in_thread, but with a caller-supplied HTML part
+        instead of the shared auto-styled-from-plain-text layout
+        (email_layout.py escapes text into <p> blocks with no linkified
+        buttons — fine for ordinary reply copy, not enough for a real
+        tappable-star CTA). Used only by the CSAT star-rating email; every
+        other outbound email keeps using the shared plain-text pipeline
+        unchanged."""
+        svc = self._build_service(brand)
+        if not svc:
+            return {"success": False, "error": "Gmail not connected for this brand"}
+        try:
+            msg = MIMEMultipart("alternative")
+            msg.attach(MIMEText(plain_text_body, "plain"))
+            msg.attach(MIMEText(html_body, "html"))
+            msg["to"]      = to_email
+            msg["subject"] = subject if subject.startswith("Re:") else f"Re: {subject}"
+            raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+            sent = svc.users().messages().send(
+                userId="me",
+                body={"raw": raw, "threadId": thread_id},
+            ).execute()
+            return {"success": True, "id": sent.get("id")}
+        except Exception as e:
+            logger.error(f"[BrandGmail] HTML thread reply error for brand {brand.get('name')}: {e}")
+            return {"success": False, "error": str(e)}
+
     async def send_reply_in_thread(self, brand: dict, to_email: str, subject: str, body: str, thread_id: str) -> Dict[str, Any]:
         """Send a reply in an existing Gmail thread (e.g. CSAT follow-up)."""
         svc = self._build_service(brand)

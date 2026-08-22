@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
+import type { CSSProperties } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { LauncherButton } from './LauncherButton'
 import { ActionCards } from './ActionCards'
@@ -256,6 +257,55 @@ export function ChatWidget({
     }
   }, [messages, brandId, sessionId])
 
+  /* ── Poll for the real merchant-approved outcome of a staged cancellation ──
+   * A `cancel_staged` action_result only ever reflects what the customer
+   * asked for — approval/execution happens later, out-of-band, in the
+   * merchant dashboard. This never flips a message to "cancelled"
+   * optimistically; it only reflects what /widget/actions/{id}/status
+   * reports the backend has actually confirmed with Shopify. One stable
+   * interval for the widget's lifetime (reading fresh messages via a ref)
+   * avoids restarting/losing polls every time an unrelated message arrives. */
+  const messagesRef = useRef(messages)
+  useEffect(() => { messagesRef.current = messages }, [messages])
+
+  useEffect(() => {
+    if (apiBaseUrl === 'demo') return
+    const POLL_INTERVAL_MS = 4000
+    const MAX_POLL_MS = 5 * 60 * 1000
+    const startedAt = new Map<string, number>()
+
+    const interval = setInterval(() => {
+      const now = Date.now()
+      const toCheck = messagesRef.current.filter((m) => {
+        const ar = m.actionResult
+        if (ar?.type !== 'cancel_staged' || !ar.action_id) return false
+        if (ar.status === 'executed' || ar.status === 'failed') return false
+        if (!startedAt.has(ar.action_id)) startedAt.set(ar.action_id, now)
+        return now - (startedAt.get(ar.action_id) as number) < MAX_POLL_MS
+      })
+
+      toCheck.forEach((msg) => {
+        const actionId = msg.actionResult!.action_id!
+        fetch(`${apiBaseUrl}/api/v2/widget/actions/${actionId}/status`)
+          .then((res) => (res.ok ? res.json() : null))
+          .then((data: { status?: string } | null) => {
+            if (data?.status !== 'executed' && data?.status !== 'failed') return
+            const finalStatus = data.status
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === msg.id && m.actionResult
+                  ? { ...m, actionResult: { ...m.actionResult, status: finalStatus } }
+                  : m
+              )
+            )
+          })
+          .catch(() => { /* transient network error — next tick retries */ })
+      })
+    }, POLL_INTERVAL_MS)
+
+    return () => clearInterval(interval)
+  }, [apiBaseUrl])
+
   /* ── Step helper ── */
   const advanceSteps = useCallback((upTo: ResolutionStepId) => {
     const upToIdx = STEP_ORDER.indexOf(upTo)
@@ -432,7 +482,11 @@ export function ChatWidget({
         right: 0,
         zIndex: 9999,
         pointerEvents: 'none',
-      }}
+        // Exposed as a CSS custom property so every descendant can theme
+        // off the merchant's configured accent color via var(--accent-color)
+        // instead of each component hardcoding its own hex value.
+        ['--accent-color' as string]: accentColor,
+      } as CSSProperties}
     >
       {/* ── Panel ── */}
       <AnimatePresence>

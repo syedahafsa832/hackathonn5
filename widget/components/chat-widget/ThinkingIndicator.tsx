@@ -28,13 +28,13 @@ function ActiveDot() {
       <span
         style={{
           position: 'absolute', inset: 0, borderRadius: '50%',
-          border: '1.5px solid #6366F1', background: 'rgba(99,102,241,0.15)',
+          border: '1.5px solid var(--accent-color, #6366F1)', background: 'rgba(99,102,241,0.15)',
         }}
       />
       <motion.span
         animate={{ scale: [1, 1.9, 1], opacity: [0.6, 0, 0.6] }}
         transition={{ duration: 1.3, repeat: Infinity, ease: 'easeInOut' }}
-        style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '1.5px solid #6366F1' }}
+        style={{ position: 'absolute', inset: 0, borderRadius: '50%', border: '1.5px solid var(--accent-color, #6366F1)' }}
       />
     </span>
   )

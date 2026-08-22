@@ -381,6 +381,53 @@ class EmailPoller:
 
     # ── CSAT surveys ──────────────────────────────────────────────────────
 
+    @staticmethod
+    def _build_csat_email(ticket_id: str, brand_name: str) -> tuple:
+        """(plain_text, html) for the tap-a-star CSAT email. Pure/testable —
+        no I/O, no ticket/brand lookups here. Each star links straight to
+        GET /widget/feedback/rate?ticket_id=...&stars=N&token=... (see
+        v2_chat_widget.py) — tapping one records that rating immediately,
+        no reply-parsing needed (the old YES/NO version never actually
+        recorded a customer's reply anywhere)."""
+        from src.api.routes.v2_chat_widget import star_rating_email_url
+
+        star_links = "\n".join(
+            f"{'⭐' * n}  —  {star_rating_email_url(ticket_id, n)}" for n in range(1, 6)
+        )
+        plain = (
+            f"Hey!\n\n"
+            f"How did we do?\n\n"
+            f"Tap a star to rate your experience:\n\n"
+            f"{star_links}\n\n"
+            f"Takes two seconds and really helps us out. Thank you!\n\n"
+            f"Luna\n{brand_name}"
+        )
+
+        star_rows_html = "".join(
+            f'<tr><td style="padding:4px 0;"><a href="{star_rating_email_url(ticket_id, n)}" '
+            f'style="display:block;text-decoration:none;font-size:22px;letter-spacing:4px;'
+            f'padding:10px 16px;border-radius:10px;background:#FFFBF5;">{"⭐" * n}</a></td></tr>'
+            for n in range(1, 6)
+        )
+        html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f5;">
+<tr><td align="center" style="padding:32px 16px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:420px;width:100%;background:#ffffff;border-radius:16px;">
+<tr><td style="padding:40px 32px;text-align:center;">
+<div style="font-size:15px;color:#374151;margin-bottom:4px;">Hey! 👋</div>
+<h1 style="font-size:20px;font-weight:700;color:#1F2937;margin:0 0 4px;">How did we do?</h1>
+<p style="font-size:13px;color:#9CA3AF;margin:0 0 20px;">Tap a star to rate your experience.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0">{star_rows_html}</table>
+<p style="font-size:12.5px;color:#9CA3AF;margin:20px 0 0;">Takes two seconds and really helps us out. Thank you!</p>
+</td></tr>
+</table>
+</td></tr>
+</table>
+</body></html>"""
+        return plain, html
+
     async def _send_csat_surveys(self):
         """Send a one-question satisfaction survey to tickets resolved 30-60 min ago."""
         try:
@@ -422,22 +469,15 @@ class EmailPoller:
                 brand = brands[0]
 
                 brand_name = brand.get("name", "us")
-                csat_body = (
-                    f"Hey,\n\n"
-                    f"Just following up — was your issue resolved to your satisfaction?\n\n"
-                    f"Reply with:\n"
-                    f"YES — all sorted, thanks!\n"
-                    f"NO — still need help\n\n"
-                    f"Your feedback helps us improve.\n\n"
-                    f"Luna\n{brand_name}"
-                )
+                plain_body, html_body = self._build_csat_email(ticket["id"], brand_name)
 
                 try:
-                    await brand_gmail_service.send_reply_in_thread(
+                    await brand_gmail_service.send_html_reply_in_thread(
                         brand=brand,
                         to_email=customer_email,
                         subject=f"Re: {subject}",
-                        body=csat_body,
+                        html_body=html_body,
+                        plain_text_body=plain_body,
                         thread_id=thread_id,
                     )
                     # Mark csat_sent — safe if column doesn't exist yet

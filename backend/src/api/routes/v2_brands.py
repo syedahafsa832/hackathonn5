@@ -176,6 +176,33 @@ async def get_brand(
         raise HTTPException(status_code=500, detail="Failed to get brand")
 
 
+@router.get("/{brand_id}/feedback")
+async def list_brand_feedback(
+    brand_id: str,
+    rating: Optional[str] = None,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    """Recent customer feedback (rating + optional written comment) for this
+    brand — powers the dashboard's feedback view and the testimonials/trust
+    section (rating=positive filter, real comments only, never fabricated)."""
+    try:
+        _get_owned_brand(brand_id, tenant.tenant_id)
+        params = {
+            "brand_id": f"eq.{brand_id}",
+            "order": "created_at.desc",
+            "limit": "50",
+        }
+        if rating:
+            params["rating"] = f"eq.{rating}"
+        feedback = supabase_select("chat_feedback", params)
+        return {"feedback": feedback or []}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing brand feedback: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list feedback")
+
+
 @router.patch("/{brand_id}")
 async def update_brand(
     brand_id: str,
@@ -790,12 +817,12 @@ async def test_reply(
         brand = _get_owned_brand(brand_id, tenant.tenant_id)
 
         from src.agent.customer_success_agent import customer_success_agent
-        chat_query = (
-            "[CHAT MODE — reply in 1-3 short sentences, conversational tone, no bullet points]\n"
-            f"Customer: {request.message}"
-        )
+        # Chat-mode formatting is driven by customer_info["channel"]="chat"
+        # inside the prompt builder - no text prefix, so it can never leak
+        # into a stored action's original_message if this test message
+        # happens to trigger real staging.
         result = await customer_success_agent.process_customer_query(
-            query=chat_query,
+            query=f"Customer: {request.message}",
             customer_info={"name": "Test Customer", "email": "test@example.com", "channel": "chat"},
             tenant_id=brand.get("tenant_id"),
             store_id=brand_id,

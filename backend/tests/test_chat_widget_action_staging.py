@@ -52,7 +52,10 @@ def run(coro):
 
 
 def _chat_query(message: str) -> str:
-    return f"[CHAT MODE — reply in 1-3 short sentences, conversational tone, no bullet points]\nCustomer: {message}"
+    # No "[CHAT MODE ...]" text prefix - chat formatting is now driven by
+    # customer_info["channel"]="chat" alone (see the leak this fixed:
+    # that prefix used to persist verbatim into actions.original_message).
+    return f"Customer: {message}"
 
 
 def _fake_ai_response(reply_body: str, intent: str = "cancellation_request"):
@@ -161,7 +164,7 @@ def test_chat_ambiguous_address_does_not_report_a_staged_action():
 
 def test_map_action_result_reports_staged_only_when_action_taken_succeeded():
     order_data = {"orderNumber": "1011"}
-    assert _map_action_result("cancellation_request", {"success": True, "action_id": "x"}, order_data) == {"type": "cancel_staged", "order_number": "1011"}
+    assert _map_action_result("cancellation_request", {"success": True, "action_id": "x"}, order_data) == {"type": "cancel_staged", "order_number": "1011", "action_id": "x"}
 
 
 def test_map_action_result_returns_none_when_action_taken_is_missing():

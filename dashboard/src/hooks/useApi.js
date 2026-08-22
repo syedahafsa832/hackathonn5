@@ -123,6 +123,19 @@ export function useActions(status = 'pending') {
 }
 
 /**
+ * Recent post-ticket customer feedback for a brand. `rating` optionally
+ * filters to 'positive' | 'negative' (used to source real testimonials).
+ */
+export function useBrandFeedback(brandId, rating) {
+  return useQuery({
+    queryKey: ['brand-feedback', brandId, rating],
+    queryFn: () => api.getBrandFeedback(brandId, rating),
+    enabled: !!brandId,
+    refetchInterval: 30000,
+  });
+}
+
+/**
  * Mutation to approve an action
  */
 export function useApproveAction() {

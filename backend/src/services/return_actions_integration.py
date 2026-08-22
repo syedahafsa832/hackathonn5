@@ -31,6 +31,28 @@ _ACTION_TYPE_MAP = {
     "restore_order": "restore_order",
 }
 
+# get_custom_policy_text() can return up to several full RAG chunks (Store
+# Pages / FAQ Pages) joined together - never dumped into the short,
+# merchant-facing "reason" a human reads in ~5-10 seconds. Bounded here for
+# the dashboard's expandable "View policy evidence" section instead; the
+# untruncated eligibility dict (which still holds the raw text) is never
+# deleted from extracted_data, only not surfaced as the primary reason.
+_POLICY_EVIDENCE_MAX_CHARS = 800
+
+
+def _policy_evidence_excerpt(raw_policy_text: Optional[str]) -> Optional[str]:
+    """Bound a possibly multi-document policy/RAG lookup to a reasonable
+    excerpt. Returns None (never an empty-but-present blob) when there's
+    nothing to show, so the frontend can fall back to a safe, honest
+    "policy information was found and requires human review" message
+    instead of rendering nothing or the full dump."""
+    text = (raw_policy_text or "").strip()
+    if not text:
+        return None
+    if len(text) <= _POLICY_EVIDENCE_MAX_CHARS:
+        return text
+    return text[:_POLICY_EVIDENCE_MAX_CHARS].rstrip() + "…"
+
 
 class ReturnActionsIntegration:
 
@@ -353,21 +375,36 @@ class ReturnActionsIntegration:
             # None = the check couldn't be completed (unknown, not
             # confirmed-empty) - treated the same as real policy text.
             if cancel_policy_text != "":
-                policy_line = (
-                    f" | Store policy on file: {cancel_policy_text}" if cancel_policy_text
-                    else " | Store policy details could not be confirmed just now."
-                )
+                # Merchant-facing reason stays short (a card a human can read
+                # in 5-10 seconds) - the raw, possibly multi-document RAG
+                # lookup (Store Pages/FAQ Pages) never goes in this field.
+                # It's still not discarded: a bounded excerpt goes into
+                # extracted_data.policy_evidence for the dashboard's
+                # expandable "View policy evidence" section (see
+                # _policy_evidence_excerpt below and _create_action).
                 ai_reasoning = (
-                    f"Customer requests {intent_type} for order #{order_id}. Order is unfulfilled, but this "
-                    f"store has additional policy details on file that need a quick human check before "
-                    f"cancelling.{policy_line}"
+                    f"Customer requests {intent_type} for order #{order_id}. "
+                    "Store policy requires a human check before cancelling."
+                    if cancel_policy_text else
+                    f"Customer requests {intent_type} for order #{order_id}. "
+                    "Store policy details could not be confirmed just now — needs a human check before cancelling."
                 )
+                policy_evidence = _policy_evidence_excerpt(cancel_policy_text)
                 await _emit("staging_action", f"Preparing your {_noun} request…")
+                # Unfulfilled order -> Shopify cancel_order (which also
+                # refunds the payment), never a separate "refund" action -
+                # same convention as the no-custom-policy branch just below.
+                # Getting this wrong here previously broke dedup too: a
+                # mismatched action_type meant the guard above could not
+                # recognize this as "already handled" on a repeat request,
+                # letting a second (correctly-typed) action get created for
+                # the same order.
                 staged = await self._create_action(
                     tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
-                    action_type="refund", order_id=order_id, email=email,
+                    action_type="cancel_order", order_id=order_id, email=email,
                     customer_name=customer_info.get("name"), query=query,
                     ai_reasoning=ai_reasoning, eligibility=eligibility,
+                    policy_evidence=policy_evidence,
                 )
                 result["staged"] = staged
                 result["action_context"] = (
@@ -400,15 +437,20 @@ class ReturnActionsIntegration:
         # NOT ELIGIBLE and fulfilled
         if not eligibility.get("eligible"):
             if eligibility.get("staging_required") or eligibility.get("requires_manual_review"):
+                # eligibility["reason"] is a short, deterministic string from
+                # check_return_eligibility (e.g. "order not yet fulfilled")
+                # - safe to keep here. custom_policy_text is the raw,
+                # possibly multi-document RAG lookup - never appended to
+                # this short reason (see _policy_evidence_excerpt below).
                 ai_reasoning = f"Customer requests {intent_type} for order #{order_id}. Manual review required: {eligibility.get('reason')}"
-                if eligibility.get("custom_policy_text"):
-                    ai_reasoning += f" | Store policy on file: {eligibility['custom_policy_text']}"
+                policy_evidence = _policy_evidence_excerpt(eligibility.get("custom_policy_text"))
                 await _emit("staging_action", f"Preparing your {_noun} request…")
                 staged = await self._create_action(
                     tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
                     action_type="refund", order_id=order_id, email=email,
                     customer_name=customer_info.get("name"), query=query,
                     ai_reasoning=ai_reasoning, eligibility=eligibility,
+                    policy_evidence=policy_evidence,
                 )
                 result["staged"] = staged
                 result["action_context"] = (
@@ -450,9 +492,20 @@ class ReturnActionsIntegration:
             ai_reasoning = f"Customer requests {intent_type} for order #{order_id}: {item_names}"
 
         await _emit("staging_action", f"Preparing your {_noun} request…")
+        # This "eligible" happy-path is reached for BOTH fulfilled orders
+        # (only a refund is possible) and unfulfilled orders that eligibility
+        # itself didn't flag as ineligible (the unfulfilled-specific branch
+        # above only intercepts the *not*-eligible case) - so is_unfulfilled
+        # still has to decide the action type here, exactly like it does
+        # above, or a "cancel my order" request for an eligible-but-
+        # unfulfilled order would wrongly stage a refund action instead of
+        # a cancellation. (Previously also had a literal casing bug -
+        # "Refund" instead of "refund" - which broke both dedup matching
+        # above and approval in actions_service.py, since neither compares
+        # against the exact stored string case-insensitively.)
         staged = await self._create_action(
             tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
-            action_type="Refund", order_id=order_id, email=email,
+            action_type="cancel_order" if is_unfulfilled else "refund", order_id=order_id, email=email,
             customer_name=customer_info.get("name"), query=query,
             ai_reasoning=ai_reasoning, eligibility=eligibility,
         )
@@ -888,6 +941,7 @@ class ReturnActionsIntegration:
         exchange_target: Optional[dict] = None,
         original_item: Optional[dict] = None,
         price_difference: Optional[float] = None,
+        policy_evidence: Optional[str] = None,
     ) -> dict:
         """Create action in `actions` table (new system) when tenant_id is available,
         otherwise fall back to legacy `pending_actions` via stage_pending_action."""
@@ -918,6 +972,8 @@ class ReturnActionsIntegration:
                     extracted["original_item"] = original_item
                 if price_difference is not None:
                     extracted["price_difference"] = price_difference
+                if policy_evidence:
+                    extracted["policy_evidence"] = policy_evidence
                 return await actions_service.create_action(
                     tenant_id=tenant_id,
                     brand_id=brand_id,

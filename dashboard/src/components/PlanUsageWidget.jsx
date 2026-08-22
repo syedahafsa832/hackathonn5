@@ -8,11 +8,11 @@ const LAST_SEEN_PLAN_KEY = 'resolv_last_seen_plan';
 const CHANNEL_LABELS = { gmail: 'Gmail', chat_widget: 'Chat Widget', web_form: 'Web Form' };
 
 const card = {
-  padding: '24px 28px',
-  borderRadius: '12px',
+  padding: '26px 30px',
+  borderRadius: '16px',
   background: 'var(--bg-primary, #FFFFFF)',
   border: '1px solid var(--border, #E4E4E7)',
-  boxShadow: '0 1px 3px rgba(15, 23, 42, 0.04)',
+  boxShadow: '0 1px 2px rgba(15, 23, 42, 0.03), 0 8px 24px rgba(15, 23, 42, 0.04)',
   display: 'flex',
   flexDirection: 'column',
   gap: '16px',
@@ -20,13 +20,15 @@ const card = {
 
 const upgradeLink = {
   alignSelf: 'flex-start',
-  padding: '9px 20px',
-  borderRadius: '8px',
+  padding: '10px 22px',
+  borderRadius: '10px',
   background: '#06B6D4',
   color: 'white',
   fontSize: '13px',
-  fontWeight: '700',
+  fontWeight: '600',
+  letterSpacing: '0.01em',
   textDecoration: 'none',
+  transition: 'opacity 0.15s ease',
 };
 
 function progressColor(pct) {

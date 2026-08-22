@@ -520,6 +520,23 @@ export default function TicketDetail() {
           </div>
         </div>
 
+        {/* Customer feedback — only shown when the customer actually left one */}
+        {ticket.feedback && (
+          <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '6px', padding: '14px 20px', display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+            <span style={{ fontSize: '18px', lineHeight: 1 }}>{ticket.feedback.rating === 'positive' ? '👍' : '👎'}</span>
+            <div>
+              <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)' }}>
+                Customer feedback: {ticket.feedback.rating === 'positive' ? 'Helpful' : 'Not helpful'}
+              </div>
+              {ticket.feedback.feedback_text && (
+                <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '4px', lineHeight: 1.5 }}>
+                  "{ticket.feedback.feedback_text}"
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Message thread */}
         <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '6px', overflow: 'hidden' }}>
           <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--border)', fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)' }}>

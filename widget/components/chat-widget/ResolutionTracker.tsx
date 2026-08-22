@@ -46,8 +46,8 @@ export function ResolutionTracker({ steps }: Props) {
         {steps.map((step, i) => {
           const isComplete = step.status === 'complete'
           const isActive   = step.status === 'active'
-          const dotColor   = isComplete ? '#10B981' : isActive ? '#6366F1' : 'transparent'
-          const dotBorder  = isComplete ? '#10B981' : isActive ? '#6366F1' : 'rgba(255,255,255,0.2)'
+          const dotColor   = isComplete ? '#10B981' : isActive ? 'var(--accent-color, #6366F1)' : 'transparent'
+          const dotBorder  = isComplete ? '#10B981' : isActive ? 'var(--accent-color, #6366F1)' : 'rgba(255,255,255,0.2)'
           const lineColor  = isComplete ? '#10B981' : 'rgba(255,255,255,0.08)'
 
           return (
@@ -98,7 +98,7 @@ export function ResolutionTracker({ steps }: Props) {
                       position: 'absolute',
                       inset: '-3px',
                       borderRadius: '50%',
-                      border: '1px solid #6366F1',
+                      border: '1px solid var(--accent-color, #6366F1)',
                       pointerEvents: 'none',
                     }}
                   />
