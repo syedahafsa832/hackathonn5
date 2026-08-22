@@ -68,6 +68,37 @@ class ActionsManager:
             logger.warning(f"[ActionsManager] Failed to load refund policy for brand {brand_id}, using defaults: {e}")
         return policy
 
+    async def get_custom_policy_text(self, brand_id: Optional[str], policy_notes: Optional[str] = None) -> Optional[str]:
+        """Free-text merchant policy that structured fields (window_days,
+        final_sale_tags, exclusions) don't capture — the "notes" field on
+        the refund policy form, or (when that's empty) whatever the brand's
+        Knowledge Base has on file about returns/refunds/cancellations/
+        exchanges. Shared by every action type (refund, return, cancel,
+        exchange) so none of them silently skip a merchant's written policy
+        just because it lives outside the structured fields. Reuses the
+        existing Knowledge Base RAG lookup — no separate policy system.
+
+        Returns "" when it was actually checked and confirmed empty (never
+        invents a policy). Returns None when the check itself couldn't be
+        completed (e.g. the Knowledge Base lookup errored) — genuinely
+        unknown, not confirmed-empty, and callers must treat that the same
+        as "a policy exists" (escalate for human confirmation) rather than
+        guessing "no policy" from a failed check."""
+        text = (policy_notes or "").strip()
+        if text or not brand_id:
+            return text
+        try:
+            from src.services.brand_knowledge_service import brand_knowledge_service
+            text = (await brand_knowledge_service.get_brand_context(
+                brand_id=brand_id,
+                query="return refund cancellation exchange policy window eligibility rules",
+                top_k=3,
+            ) or "").strip()
+        except Exception as e:
+            logger.warning(f"[ActionsManager] Knowledge base policy lookup failed for brand {brand_id}: {e}")
+            return None
+        return text
+
     async def _get_product_collection_ids(self, tenant_id: Optional[str], product_id) -> List[int]:
         """Which collections a product belongs to. Shopify's order line items
         don't carry collection membership, so this is a small extra lookup
@@ -283,6 +314,46 @@ class ActionsManager:
                         "items": items,
                         "policy_snapshot": policy,
                     }
+
+            # Every structured check passed. Before auto-approving, check
+            # whether the merchant has a free-text policy restriction (the
+            # "notes" field on the policy form, or a Knowledge Base article)
+            # that the structured fields above (window_days/final_sale_tags/
+            # exclusions) don't capture — e.g. "orders cannot be refunded
+            # after 24 hours" written only as a note, with return_policy_days
+            # left at its default. A deterministic check has no reliable way
+            # to verify compliance with free text against this specific
+            # order, so rather than silently trust the structured fields
+            # alone and risk a false "eligible", this is escalated for a
+            # human to confirm — never auto-approved past policy text that
+            # was never actually checked against it. Never invents a policy:
+            # when no free-text policy exists anywhere (the common case),
+            # nothing changes and eligibility is granted exactly as before.
+            custom_policy_text = await self.get_custom_policy_text(brand_id, policy.get("notes"))
+
+            # None means the check itself couldn't be completed (e.g. the
+            # Knowledge Base lookup errored) — genuinely unknown, not
+            # confirmed-empty. Treated the same as real policy text: never
+            # guess "no policy" from a failed/ambiguous check.
+            if custom_policy_text != "":
+                reason = (
+                    "This order meets the standard return window and item rules, but this store has "
+                    "additional policy details on file that need a quick human check before approving."
+                    if custom_policy_text is not None else
+                    "This order meets the standard return window and item rules, but we couldn't confirm "
+                    "this store's full policy details just now, so this needs a quick human check before approving."
+                )
+                return {
+                    "eligible": False,
+                    "eligibility_verified": False,
+                    "reason": reason,
+                    "order": self._extract_order_summary(order),
+                    "items": items,
+                    "policy_snapshot": policy,
+                    "custom_policy_text": custom_policy_text,
+                    "requires_manual_review": True,
+                    "staging_required": True,
+                }
 
             # All checks passed - eligible for return
             return {

@@ -124,6 +124,7 @@ def _run_cancel(query, order_id="1012", email="customer@example.com", eligibilit
 
     with patch.object(integration.actions, "check_return_eligibility",
                        new=AsyncMock(return_value=eligibility if eligibility is not None else _eligible_unfulfilled())) as mock_elig, \
+         patch.object(integration.actions, "get_custom_policy_text", new=AsyncMock(return_value="")), \
          patch.object(integration, "_find_active_action", new=AsyncMock(return_value=existing_action)), \
          patch.object(integration, "_create_action", new=AsyncMock(return_value=create_result or {"success": True, "action_id": "a1"})) as mock_create:
         result = run(integration.handle_return_intent(

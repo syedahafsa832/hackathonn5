@@ -65,7 +65,8 @@ async def _run(order, brand=None, excluded_products=None, excluded_collections=N
     with patch.object(actions_manager, "_get_order_from_shopify", side_effect=fake_get_order), \
          patch("src.services.actions_manager.supabase_select", side_effect=fake_select), \
          patch("src.services.brand_manager.brand_manager.get_brand", side_effect=fake_get_brand), \
-         patch.object(actions_manager, "_get_product_collection_ids", side_effect=fake_get_collections):
+         patch.object(actions_manager, "_get_product_collection_ids", side_effect=fake_get_collections), \
+         patch("src.services.brand_knowledge_service.brand_knowledge_service.get_brand_context", new=AsyncMock(return_value="")):
         return await actions_manager.check_return_eligibility(
             "1001", sender_email,
             tenant_id="t1", brand_id="b1" if brand is not None else None,

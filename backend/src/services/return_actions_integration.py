@@ -342,6 +342,42 @@ class ReturnActionsIntegration:
         # (order_data empty) must fall through to manual review below, never
         # be assumed unfulfilled-therefore-cancel.
         if order_data and is_unfulfilled and not eligibility.get("eligible"):
+            # This branch returns before check_return_eligibility ever loads
+            # a refund policy (it exits at the fulfillment-status check), so
+            # a merchant's free-text cancellation restriction (e.g. "orders
+            # can only be cancelled within 1 hour") would otherwise never be
+            # consulted at all. Same safety check the eligible-return path
+            # uses — never auto-approved past policy text that was never
+            # actually checked.
+            cancel_policy_text = await self.actions.get_custom_policy_text(brand_id)
+            # None = the check couldn't be completed (unknown, not
+            # confirmed-empty) - treated the same as real policy text.
+            if cancel_policy_text != "":
+                policy_line = (
+                    f" | Store policy on file: {cancel_policy_text}" if cancel_policy_text
+                    else " | Store policy details could not be confirmed just now."
+                )
+                ai_reasoning = (
+                    f"Customer requests {intent_type} for order #{order_id}. Order is unfulfilled, but this "
+                    f"store has additional policy details on file that need a quick human check before "
+                    f"cancelling.{policy_line}"
+                )
+                await _emit("staging_action", f"Preparing your {_noun} request…")
+                staged = await self._create_action(
+                    tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
+                    action_type="refund", order_id=order_id, email=email,
+                    customer_name=customer_info.get("name"), query=query,
+                    ai_reasoning=ai_reasoning, eligibility=eligibility,
+                )
+                result["staged"] = staged
+                result["action_context"] = (
+                    "**REQUEST SUBMITTED FOR MANUAL REVIEW**: This store has additional cancellation policy "
+                    "details on file that need a human check. "
+                    "Tell the customer: 'I've sent your cancellation request to our team for a quick review "
+                    "given our store policy. They'll follow up shortly.'"
+                )
+                return result
+
             ai_reasoning = (
                 f"Customer requests {intent_type} for order #{order_id}. "
                 f"Order is unfulfilled — cancel + auto-refund is appropriate."
@@ -365,6 +401,8 @@ class ReturnActionsIntegration:
         if not eligibility.get("eligible"):
             if eligibility.get("staging_required") or eligibility.get("requires_manual_review"):
                 ai_reasoning = f"Customer requests {intent_type} for order #{order_id}. Manual review required: {eligibility.get('reason')}"
+                if eligibility.get("custom_policy_text"):
+                    ai_reasoning += f" | Store policy on file: {eligibility['custom_policy_text']}"
                 await _emit("staging_action", f"Preparing your {_noun} request…")
                 staged = await self._create_action(
                     tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
@@ -556,6 +594,8 @@ class ReturnActionsIntegration:
         if not eligibility.get("eligible"):
             if eligibility.get("staging_required") or eligibility.get("requires_manual_review"):
                 ai_reasoning = f"Customer requests exchange for order #{order_id}. Manual review required: {eligibility.get('reason')}"
+                if eligibility.get("custom_policy_text"):
+                    ai_reasoning += f" | Store policy on file: {eligibility['custom_policy_text']}"
                 await _emit("staging_action", "Preparing your exchange request…")
                 staged = await self._create_action(
                     tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,

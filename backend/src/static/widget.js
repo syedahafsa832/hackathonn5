@@ -83,6 +83,64 @@
     xhr.send();
   }
 
+  /* Reads the `?stream=1` newline-delimited JSON response one line at a
+   * time as bytes arrive (XHR readystate 3 / onprogress, since responseText
+   * grows cumulatively). `onStatus(stage, label)` fires for every real
+   * backend activity event; `cb(err, result)` fires once with the final
+   * result - either the streamed "result" frame, a streamed "error" frame,
+   * or (when the server short-circuited before any tool ran - rate limit,
+   * plan limit, human takeover) the plain non-streamed JSON body. */
+  function apiPostStream(path, data, onStatus, cb) {
+    var xhr = new XMLHttpRequest();
+    var sep = path.indexOf('?') === -1 ? '?' : '&';
+    xhr.open('POST', API_BASE + path + sep + 'stream=1', true);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+
+    var lastLen = 0;
+    var buffer = '';
+    var done = false;
+
+    function finish(err, result) {
+      if (done) return;
+      done = true;
+      cb(err, result);
+    }
+
+    function consume() {
+      var text = xhr.responseText || '';
+      if (text.length <= lastLen) return;
+      buffer += text.slice(lastLen);
+      lastLen = text.length;
+      var idx;
+      while ((idx = buffer.indexOf('\n')) !== -1) {
+        var line = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 1);
+        if (!line) continue;
+        var evt;
+        try { evt = JSON.parse(line); } catch (e) { continue; }
+        if (evt.type === 'status') {
+          onStatus(evt.stage, evt.label);
+        } else if (evt.type === 'result') {
+          finish(null, evt);
+        } else if (evt.type === 'error') {
+          finish(new Error(evt.message || 'error'), null);
+        }
+      }
+    }
+
+    xhr.onprogress = consume;
+    xhr.onload = function () {
+      consume();
+      if (!done) {
+        // No NDJSON envelope arrived at all - plain JSON short-circuit.
+        try { finish(null, JSON.parse(buffer || xhr.responseText)); }
+        catch (e) { finish(e, null); }
+      }
+    };
+    xhr.onerror = function () { finish(new Error('Network error'), null); };
+    xhr.send(JSON.stringify(data));
+  }
+
   /* ── Helpers ─────────────────────────────────────────────────────── */
   function hexToRgba(hex, alpha) {
     hex = (hex || '#6366F1').replace('#', '');
@@ -251,19 +309,34 @@
     '}' +
     '.resolv-ts{font-size:10px;color:rgba(255,255,255,.22);margin-top:3px;padding:0 4px}' +
 
-    /* ── SMART TYPING ── */
-    '.resolv-thinking{' +
-      'display:flex;align-items:center;gap:8px;' +
-      'padding:10px 14px;' +
+    /* ── RESOLUTION TIMELINE (persistent, built from real backend events) ── */
+    '.resolv-resolution{' +
+      'display:flex;flex-direction:column;gap:10px;' +
+      'padding:12px 14px;min-width:200px;' +
       'background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);' +
       'border-radius:18px;border-bottom-left-radius:6px' +
     '}' +
-    '.resolv-thinking-dots{display:flex;gap:4px;flex-shrink:0}' +
-    '.resolv-thinking-dots span{width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.4);animation:resolv-bounce 1.2s ease-in-out infinite}' +
-    '.resolv-thinking-dots span:nth-child(2){animation-delay:.2s}' +
-    '.resolv-thinking-dots span:nth-child(3){animation-delay:.4s}' +
-    '@keyframes resolv-bounce{0%,60%,100%{transform:translateY(0);opacity:.4}30%{transform:translateY(-5px);opacity:1}}' +
-    '.resolv-thinking-text{font-size:11px;color:rgba(255,255,255,.35);font-style:italic;transition:opacity .3s}' +
+    '.resolv-resolution-header{display:flex;align-items:center;gap:8px}' +
+    '.resolv-resolution-brand{font-size:11px;font-weight:700;color:rgba(255,255,255,.85)}' +
+    '.resolv-resolution-badge{' +
+      'font-size:9px;font-weight:600;padding:2px 8px;border-radius:999px;' +
+      'background:rgba(16,185,129,.15);color:#10B981' +
+    '}' +
+    '.resolv-resolution-steps{display:flex;flex-direction:column;gap:8px}' +
+    '.resolv-resolution-step{display:flex;align-items:flex-start;gap:8px}' +
+    '.resolv-resolution-dot{' +
+      'width:15px;height:15px;flex-shrink:0;margin-top:1px;border-radius:50%;' +
+      'display:flex;align-items:center;justify-content:center' +
+    '}' +
+    '.resolv-resolution-dot.complete{background:#10B981;color:#fff;font-size:9px;line-height:1}' +
+    '.resolv-resolution-dot.active{border:2px solid ' + ACCENT + ';background:rgba(99,102,241,.12);position:relative}' +
+    '.resolv-resolution-dot.active::after{' +
+      'content:"";position:absolute;inset:-3px;border-radius:50%;border:1.5px solid ' + ACCENT + ';' +
+      'animation:resolv-pulse 1.3s ease-in-out infinite' +
+    '}' +
+    '@keyframes resolv-pulse{0%{transform:scale(1);opacity:.6}70%{transform:scale(1.9);opacity:0}100%{opacity:0}}' +
+    '.resolv-resolution-label{font-size:12px;font-weight:600;color:rgba(255,255,255,.85);line-height:1.4}' +
+    '.resolv-resolution-sub{font-size:11px;color:#10B981;margin-top:2px;line-height:1.4}' +
 
     /* ── ORDER CARD ── */
     '@keyframes resolv-slide-up{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}' +
@@ -502,18 +575,23 @@
     return wrap;
   }
 
-  /* ── Smart thinking indicator ────────────────────────────────────── */
-  var typingEl = null;
-  var thinkingInterval = null;
+  /* ── Resolution timeline ──────────────────────────────────────────
+   * A persistent, accumulating timeline built ONLY from real backend
+   * `status` events (see apiPostStream below) - never a fake/timed
+   * animation. Steps never disappear or get replaced: each new stage
+   * freezes the previous step as complete and appends a new active one.
+   * A handful of stages are the real "confirmation" of the step right
+   * before them (a lookup, then a found/verified result for that same
+   * lookup) - those are shown as a subtext line under that same step
+   * rather than as their own row, matching how the backend actually
+   * sequences them. */
+  var resolutionEl = null;
+  var resolutionStepsEl = null;
+  var resolutionSteps = [];
+  var RESOLUTION_CONFIRMATION_STAGES = { order_found: 1, product_found: 1, policy_verified: 1 };
 
-  function showSmartTyping(userMessage) {
-    if (typingEl) return;
-    var hasOrderNum = /\b\d{3,6}\b/.test(userMessage || '');
-    var steps = hasOrderNum
-      ? ['Reading your message…', 'Checking order details…', 'Pulling Shopify data…', 'Writing reply…']
-      : ['Reading your message…', 'Writing reply…'];
-    var stepIdx = 0;
-
+  function startResolutionTimeline() {
+    resolutionSteps = [];
     var wrap = document.createElement('div');
     wrap.className = 'resolv-msg bot';
     var row = document.createElement('div');
@@ -521,31 +599,118 @@
     var av = document.createElement('div');
     av.className = 'resolv-msg-avatar';
     av.textContent = BOT_NAME.charAt(0);
-    var t = document.createElement('div');
-    t.className = 'resolv-thinking';
-    t.innerHTML = '<div class="resolv-thinking-dots"><span></span><span></span><span></span></div>' +
-                  '<div class="resolv-thinking-text">' + steps[0] + '</div>';
+    var card = document.createElement('div');
+    card.className = 'resolv-resolution';
+
+    var header = document.createElement('div');
+    header.className = 'resolv-resolution-header';
+    var brand = document.createElement('span');
+    brand.className = 'resolv-resolution-brand';
+    brand.textContent = 'tResolv';
+    var badge = document.createElement('span');
+    badge.className = 'resolv-resolution-badge';
+    badge.textContent = 'Resolving';
+    header.appendChild(brand);
+    header.appendChild(badge);
+
+    var stepsWrap = document.createElement('div');
+    stepsWrap.className = 'resolv-resolution-steps';
+
+    card.appendChild(header);
+    card.appendChild(stepsWrap);
     row.appendChild(av);
-    row.appendChild(t);
+    row.appendChild(card);
     wrap.appendChild(row);
     msgContainer.appendChild(wrap);
-    typingEl = wrap;
-    scrollBottom();
 
-    var textEl = t.querySelector('.resolv-thinking-text');
-    thinkingInterval = setInterval(function () {
-      stepIdx = (stepIdx + 1) % steps.length;
-      textEl.style.opacity = '0';
-      setTimeout(function () {
-        textEl.textContent = steps[stepIdx];
-        textEl.style.opacity = '1';
-      }, 150);
-    }, 1400);
+    resolutionEl = wrap;
+    resolutionStepsEl = stepsWrap;
+    scrollBottom();
   }
 
-  function hideSmartTyping() {
-    if (thinkingInterval) { clearInterval(thinkingInterval); thinkingInterval = null; }
-    if (typingEl) { typingEl.remove(); typingEl = null; }
+  function renderResolutionStep(step) {
+    if (!step.el) {
+      step.el = document.createElement('div');
+      step.el.className = 'resolv-resolution-step';
+      var dot = document.createElement('span');
+      dot.className = 'resolv-resolution-dot';
+      var text = document.createElement('div');
+      var label = document.createElement('div');
+      label.className = 'resolv-resolution-label';
+      var sub = document.createElement('div');
+      sub.className = 'resolv-resolution-sub';
+      sub.style.display = 'none';
+      text.appendChild(label);
+      text.appendChild(sub);
+      step.el.appendChild(dot);
+      step.el.appendChild(text);
+      resolutionStepsEl.appendChild(step.el);
+      step.dotEl = dot;
+      step.labelEl = label;
+      step.subEl = sub;
+    }
+    step.dotEl.className = 'resolv-resolution-dot ' + step.status;
+    step.dotEl.textContent = step.status === 'complete' ? '✓' : '';
+    step.labelEl.textContent = step.label;
+    if (step.subLabel) {
+      step.subEl.textContent = step.subLabel;
+      step.subEl.style.display = '';
+    }
+  }
+
+  // Only called when a real backend status event arrives - never on a
+  // timer, never a guessed stage.
+  function addResolutionEvent(stage, label) {
+    if (!resolutionStepsEl) return;
+
+    if (RESOLUTION_CONFIRMATION_STAGES[stage] && resolutionSteps.length) {
+      var prev = resolutionSteps[resolutionSteps.length - 1];
+      prev.status = 'complete';
+      prev.subLabel = label;
+      renderResolutionStep(prev);
+      scrollBottom();
+      return;
+    }
+
+    if (resolutionSteps.length) {
+      var last = resolutionSteps[resolutionSteps.length - 1];
+      if (last.status !== 'complete') {
+        last.status = 'complete';
+        renderResolutionStep(last);
+      }
+    }
+    var step = { stage: stage, label: label, subLabel: null, status: 'active', el: null };
+    resolutionSteps.push(step);
+    renderResolutionStep(step);
+    scrollBottom();
+  }
+
+  // Freezes whatever's left active as complete and leaves the timeline
+  // permanently visible in the transcript - it is not a transient typing
+  // indicator, the customer can scroll back and see how the request was
+  // actually resolved.
+  function finishResolutionTimeline() {
+    for (var i = 0; i < resolutionSteps.length; i++) {
+      if (resolutionSteps[i].status !== 'complete') {
+        resolutionSteps[i].status = 'complete';
+        renderResolutionStep(resolutionSteps[i]);
+      }
+    }
+    resolutionEl = null;
+    resolutionStepsEl = null;
+    resolutionSteps = [];
+  }
+
+  // No real status event ever arrived for this turn (e.g. an early-exit
+  // plain-JSON response - rate limit, entitlement, quota, human takeover)
+  // - remove the empty shell rather than leave an empty "Resolving" card.
+  function abortResolutionTimelineIfEmpty() {
+    if (resolutionEl && resolutionSteps.length === 0) {
+      resolutionEl.remove();
+    }
+    resolutionEl = null;
+    resolutionStepsEl = null;
+    resolutionSteps = [];
   }
 
   /* ── Order card renderer ─────────────────────────────────────────── */
@@ -761,16 +926,19 @@
     var now = new Date().toISOString();
     messages.push({ role: 'user', content: userText, created_at: now });
     renderMsg('user', userText, now);
-    showSmartTyping(userText);
+    startResolutionTimeline();
     scrollBottom();
 
-    apiPost('/api/v2/widget/chat', {
+    apiPostStream('/api/v2/widget/chat', {
       brand_id:       BRAND_ID,
       session_id:     sessionId,
       message:        userText,
       customer_email: emailCaptured || undefined,
+    }, function (stage, label) {
+      addResolutionEvent(stage, label);
     }, function (err, data) {
-      hideSmartTyping();
+      if (resolutionSteps.length) { finishResolutionTimeline(); }
+      else { abortResolutionTimelineIfEmpty(); }
       sending = false;
 
       if (err || !data || data.detail) {
