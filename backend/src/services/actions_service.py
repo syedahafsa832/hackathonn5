@@ -458,6 +458,7 @@ class ActionsService:
                     # the customer's message). Neither set means the
                     # existing full-refund default inside process_refund().
                     refund_amount = override_amount if override_amount is not None else extracted.get("amount")
+                    await self._record_edit_tracking(action_id, extracted, override_amount, extracted.get("amount"))
                     execution_result = await shopify_client.process_refund(
                         order_id=order_id,
                         amount=refund_amount,
@@ -972,6 +973,38 @@ class ActionsService:
             })
         except Exception as e:
             logger.error(f"[Actions] Mark failed error: {e}")
+
+    async def _record_edit_tracking(
+        self,
+        action_id: str,
+        extracted_data: Dict[str, Any],
+        override_amount: Optional[float],
+        proposed_amount: Optional[float],
+    ):
+        """Best-effort: record whether the human approver changed the
+        refund amount before approving (the only edit surface any action
+        type has today - see actions/046_action_edit_tracking.sql).
+
+        Deliberately a separate, non-blocking update - never folded into
+        the atomic pending->approved claim - for two reasons: (1) this is
+        enrichment, not part of the approval state machine, so it must
+        never be able to fail an approval; (2) the migration adding these
+        columns is not applied to production yet, so writing them as part
+        of a required update would break every refund approval the moment
+        this code ships, not just silently skip the tracking. Once the
+        migration lands this starts writing real data with no further code
+        change needed; until then it logs and moves on.
+        """
+        was_edited = override_amount is not None and override_amount != proposed_amount
+        if not was_edited:
+            return
+        try:
+            supabase_update("actions", {"id": f"eq.{action_id}"}, {
+                "was_edited": True,
+                "approved_extracted_data": {**extracted_data, "amount": override_amount},
+            })
+        except Exception as e:
+            logger.info(f"[Actions] Edit tracking not recorded for {action_id} (migration 046 likely not applied yet): {e}")
 
     async def _log_event(
         self,

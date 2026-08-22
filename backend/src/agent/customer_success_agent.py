@@ -311,8 +311,25 @@ def _enforce_no_ambiguous_product_claim(structured: Dict[str, Any], inventory_re
     price/availability/variant claim anyway. Unlike that prompt instruction,
     this always overrides the reply with a clarification built from the
     tool's own verified matches list — it never inspects or trusts the
-    model's text, so it works even when the model ignores the instruction."""
-    if not inventory_result or not inventory_result.get("ambiguous"):
+    model's text, so it works even when the model ignores the instruction.
+
+    needs_clarification=True is the other case handled here: a color/variant
+    follow-up ("do you have it in black?") whose product-anchor couldn't be
+    resolved from this conversation's own history either (see
+    _resolve_recent_product_anchor) — no matches to list, just an honest
+    "which product?" ask, forced the same non-negotiable way."""
+    if not inventory_result:
+        return structured
+
+    if inventory_result.get("needs_clarification"):
+        clarification = inventory_result.get("message") or (
+            "Which product are you asking about? Let me know the item name and I'll check that for you."
+        )
+        logger.info("[Agent] Overriding reply for an unresolved variant follow-up — model must not guess which product the customer means")
+        structured["reply_body"] = clarification
+        return structured
+
+    if not inventory_result.get("ambiguous"):
         return structured
 
     matches = inventory_result.get("matches") or []
@@ -357,6 +374,99 @@ def _enforce_no_ungrounded_recommendation(structured: Dict[str, Any], recommenda
     logger.info("[Agent] Overriding reply for ungrounded recommendation result (ambiguous/no-candidates/no-pairing-data/failure) — model must not invent a recommendation")
     structured["reply_body"] = message
     return structured
+
+
+# Reused by both the recommendation-anchor and variant-followup resolvers
+# below — the same "does this look like a real product name, not a
+# pronoun" filter the current-message anchor extraction already applies.
+_ANCHOR_PRONOUN_STOPWORDS = {"this", "that", "it", "this one", "that one", "the one", "same one", "one"}
+
+# The same three anchor-style patterns used for the CURRENT message (see
+# the recommendation-intent block below), reused unmodified so a candidate
+# found in history is held to the identical bar as one found live.
+_HISTORY_ANCHOR_PATTERNS = (
+    r"(?:goes well with|wear with|wear it with|pair(?:s)? with|pair it with|buy with|buy alongside)\s+(?:the |a |an )?(.+?)\s*\??$",
+    r"(?:similar to|anything like|something like|alternatives? to)\s+(?:the |a |an )?(.+?)\s*\??$",
+    r"other\s+(.+?)(?:\s+do you have|\s+available|\s+in stock)?\s*\??$",
+    # Same question phrasing the inventory-gate extractor uses on a
+    # CUSTOMER's message ("do you have the Essential Hoodie in stock?") —
+    # product name comes AFTER "do you have"/"is".
+    r"do you have\s+(?:the |a |an )?(.+?)\s+(?:in stock|available)\b",
+    # Luna's own prior AFFIRMATIVE replies confirm a product the other way
+    # around — product name BEFORE "is" ("Yes, the Essential Hoodie is in
+    # stock.", "The Winter Parka is also available."). An optional leading
+    # "yes," and article are stripped the same way the anchor patterns above
+    # already strip "the/a/an" from the customer-phrased patterns.
+    r"^(?:yes,?\s+)?(?:the |a |an )?(.+?)\s+is\s+(?:currently\s+)?(?:also\s+)?(?:in stock|available)\b",
+)
+
+# The same category-word fallback used elsewhere in this file (inventory
+# fallback, discovery category match) — deliberately small and known-narrow;
+# a miss here just means no history match is found, never a guess.
+_HISTORY_PRODUCT_MENTION_RE = re.compile(
+    r'\b(\w+\s+)?(hoodie|jacket|pants|shirt|tshirt|coat|dress|skirt)(\s+v\d+)?\b'
+)
+
+
+def _resolve_recent_product_anchor(query_text: str) -> Optional[str]:
+    """When the CURRENT message is a pronoun-only follow-up ("show me that
+    one", "do you have it in black") with no product name of its own, look
+    backward through this conversation's chat history (already embedded in
+    `query_text` by v2_chat_widget.py's _build_history_context — the
+    "[CHAT HISTORY ...]...[END CHAT HISTORY]" block) for the most recently
+    mentioned real-looking product name, most-recent-first.
+
+    Never invents a product: this only extracts a name-shaped candidate
+    from text that was actually said in this conversation (by the customer
+    or by Luna's own prior, already-grounded replies). The candidate is
+    still resolved through the same live Shopify title search
+    (find_products_by_title, via get_inventory_status/
+    get_product_recommendations) before ever reaching a reply — a wrong
+    guess here still can't produce a fabricated result, only an honest
+    "couldn't find that" or a real match. Returns None (never a pronoun,
+    never a guess) when no history exists or nothing candidate-shaped is
+    found in it, so the caller can fall back to asking the customer
+    directly instead of guessing.
+    """
+    if not query_text or "[CHAT HISTORY" not in query_text:
+        return None
+
+    start = query_text.find("[CHAT HISTORY")
+    end = query_text.find("[END CHAT HISTORY]")
+    history_block = query_text[start:end] if end > start else query_text[start:]
+
+    lines = [ln.strip() for ln in history_block.split("\n") if ln.strip()]
+    for line in reversed(lines):  # most recent turn first
+        # Strip the "Customer: "/"<agent name>: " role prefix _build_history_
+        # context() prepends to every line — otherwise the ^-anchored
+        # declarative pattern below would swallow the role label itself into
+        # the candidate (e.g. "luna: yes, the essential hoodie"). Agent name
+        # is merchant-configurable, so this strips ANY leading "word: "
+        # rather than hardcoding "luna".
+        line_lower = re.sub(r'^\w+:\s*', '', line.lower())
+
+        for pattern in _HISTORY_ANCHOR_PATTERNS:
+            m = re.search(pattern, line_lower)
+            if m:
+                candidate = m.group(1).strip(" ?.!")
+                if len(candidate) >= 2 and candidate not in _ANCHOR_PRONOUN_STOPWORDS:
+                    return candidate
+
+        mention = _HISTORY_PRODUCT_MENTION_RE.search(line_lower)
+        if mention:
+            prefix = (mention.group(1) or "").strip()
+            prefix_stopwords = {
+                "does", "do", "is", "are", "was", "were", "can", "could",
+                "will", "would", "should", "the", "a", "an", "this", "that",
+                "your", "our", "my", "have", "has", "had", "luna", "customer",
+            }
+            if prefix in prefix_stopwords:
+                prefix = ""
+            candidate = " ".join(g for g in (prefix, mention.group(2), (mention.group(3) or "").strip()) if g)
+            if candidate:
+                return candidate
+
+    return None
 
 
 class CustomerSuccessAgent:
@@ -538,7 +648,16 @@ class CustomerSuccessAgent:
             # boots" as if it were a literal product name).
             _complementary_kw = ["goes well with", "wear with", "wear it with", "pair with", "pairs with", "pair it with", "buy with", "buy alongside"]
             _similar_kw = ["similar", "something like", "anything like", "alternative", "recommend", "what other", "other hoodies", "other shirts", "other options"]
-            _is_recommendation_query = any(kw in query_lower for kw in _complementary_kw + _similar_kw)
+            # Bare pronoun references to a previously-discussed product
+            # ("show me that one", "what about this one?") — these carry no
+            # keyword like "similar"/"recommend" at all, so without this list
+            # they never even reached the recommendation-intent gate, let
+            # alone the anchor extraction below. None of the 3 anchor
+            # patterns extract anything from phrasing this bare, so these
+            # always fall through to _resolve_recent_product_anchor()'s
+            # history lookup — never a literal Shopify search for "that one".
+            _pronoun_followup_kw = ["that one", "this one", "the other one"]
+            _is_recommendation_query = any(kw in query_lower for kw in _complementary_kw + _similar_kw + _pronoun_followup_kw)
 
             # Discovery queries — "I need a hoodie for winter, what would you
             # suggest" — have no specific anchor product to be "similar to",
@@ -554,6 +673,46 @@ class CustomerSuccessAgent:
                               "help me choose", "help me pick", "what would you recommend"]
             _is_discovery_query = (not _is_recommendation_query) and any(kw in query_lower for kw in _discovery_kw)
 
+            # Color/variant follow-ups — "do you have it in black?", "what
+            # about another color?", "what about a smaller size?", "same one
+            # in blue". The customer isn't naming a new product; they're
+            # asking about a different variant of whatever was already
+            # discussed. Checked before the plain inventory gate below so
+            # "this in another color" is never captured as if it were a
+            # literal product name (previously: it was — get_inventory_status
+            # would honestly report "couldn't find 'this in another color'",
+            # which is truthful but useless, since the real product was never
+            # looked up at all).
+            _variant_followup_kw = [
+                "another color", "different color", "other color", "another colour", "different colour", "other colour",
+                "smaller size", "bigger size", "larger size", "different size", "another size", "other size",
+                "in black", "in white", "in red", "in blue", "in green", "in yellow", "in pink", "in purple",
+                "in grey", "in gray", "in brown", "in navy", "in beige", "in orange",
+            ]
+            _is_variant_followup_query = (
+                not _is_recommendation_query and not _is_discovery_query
+                and any(kw in query_lower for kw in _variant_followup_kw)
+            )
+            if _is_variant_followup_query:
+                variant_anchor = _resolve_recent_product_anchor(query)
+                if variant_anchor:
+                    await _emit("product_lookup", "Checking that item…")
+                    tool_results["inventory"] = await v3_tools.get_inventory_status(
+                        variant_anchor,
+                        shop_domain=_brand_shopify_domain,
+                        access_token=_brand_shopify_token,
+                    )
+                    if tool_results["inventory"].get("success"):
+                        await _emit("product_found", "Shopify product found")
+                else:
+                    # No product identified anywhere in this conversation to
+                    # resolve "it"/"this one" against — ask, don't guess.
+                    tool_results["inventory"] = {
+                        "success": False,
+                        "needs_clarification": True,
+                        "message": "Which product are you asking about? Let me know the item name and I'll check that for you.",
+                    }
+
             # Check for inventory/product/price inquiry. The keyword gate below
             # is what keeps unrelated messages from ever reaching Shopify — a
             # product search only runs when both the gate AND one of the
@@ -565,7 +724,7 @@ class CustomerSuccessAgent:
             # much is the Winter Parka?" reach the live tool the same as
             # "hoodie" always did. A miss here just means no live lookup runs
             # (falls back to normal RAG/LLM handling) — never a guess.
-            if not _is_recommendation_query and not _is_discovery_query and any(kw in query_lower for kw in ["in stock", "available", "inventory", "do you have", "how much", "price", "cost", "tell me about", "describe"]):
+            if not _is_recommendation_query and not _is_discovery_query and not _is_variant_followup_query and any(kw in query_lower for kw in ["in stock", "available", "inventory", "do you have", "how much", "price", "cost", "tell me about", "describe"]):
                 product = None
                 for pattern in (
                     # Trigger-word variants first — non-greedy up to the FIRST
@@ -694,9 +853,16 @@ class CustomerSuccessAgent:
             # real data) from "complementary" (no real pairing data exists
             # anywhere in this architecture — handled honestly inside
             # get_product_recommendations, never faked as same-type results).
-            # "this"/"that" alone (no product actually named) is deliberately
-            # left unresolved — no cross-turn anchor tracking exists yet, so
-            # skipping the tool call here is the honest choice, not a guess.
+            # "this"/"that" alone (no product actually named in the CURRENT
+            # message) falls back to _resolve_recent_product_anchor(), which
+            # looks backward through this conversation's own history for the
+            # most recently mentioned real product — still never a guess,
+            # since whatever it finds still has to resolve through the same
+            # live Shopify title search below. Only when history has nothing
+            # resolvable either does this ask the customer directly, instead
+            # of silently doing nothing (which previously left the reply
+            # fully ungrounded — no tool call, no guard, nothing stopping the
+            # model from inventing an answer).
             if _is_recommendation_query:
                 rec_intent = "complementary" if any(kw in query_lower for kw in _complementary_kw) else "similar"
                 anchor = None
@@ -708,13 +874,14 @@ class CustomerSuccessAgent:
                     m = re.search(pattern, query_lower)
                     if m:
                         candidate = m.group(1).strip(" ?.!")
-                        # A bare pronoun isn't a product name — no cross-turn
-                        # anchor tracking exists to resolve "this"/"that" to a
-                        # real product yet, so leave it unresolved rather than
-                        # searching Shopify for the literal word "this".
-                        if len(candidate) >= 2 and candidate not in ("this", "that", "it", "this one", "that one"):
+                        # A bare pronoun isn't a product name from the current
+                        # message alone — fall through to history resolution
+                        # below rather than searching Shopify for "this".
+                        if len(candidate) >= 2 and candidate not in _ANCHOR_PRONOUN_STOPWORDS:
                             anchor = candidate
                             break
+                if not anchor:
+                    anchor = _resolve_recent_product_anchor(query)
                 if anchor:
                     await _emit("product_search", "Finding products…")
                     tool_results["recommendations"] = await v3_tools.get_product_recommendations(
@@ -723,6 +890,11 @@ class CustomerSuccessAgent:
                         access_token=_brand_shopify_token,
                         intent=rec_intent,
                     )
+                else:
+                    tool_results["recommendations"] = {
+                        "success": False,
+                        "message": "Which product would you like recommendations for? Let me know the item and I'll take a look.",
+                    }
 
             # Discovery query — "I need a hoodie for winter, what would you
             # suggest" — no anchor product to compare against, so pull a

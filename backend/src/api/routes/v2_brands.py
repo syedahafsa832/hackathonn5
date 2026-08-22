@@ -295,11 +295,23 @@ async def get_brand_analytics(
         }) or []
         cancel_executed = sum(1 for a in all_cancel_actions if a.get("status") == "executed")
         cancel_rejected = sum(1 for a in all_cancel_actions if a.get("status") == "rejected")
+        # A genuine Shopify execution failure (human approved, but the
+        # Shopify call itself failed - e.g. a missing scope, order state
+        # changed mid-flight) is a real signal about whether this category
+        # is ready for unattended execution, distinct from a human rejection.
+        # It was previously excluded from both the numerator and denominator
+        # entirely - meaning a spike in real execution failures didn't move
+        # this number at all, which is unsafe for a metric meant to gate
+        # Autopilot eligibility. It now counts against the rate (same as a
+        # rejection would) and toward the minimum sample size.
+        cancel_failed = sum(1 for a in all_cancel_actions if a.get("status") == "failed")
+        cancel_sample = cancel_executed + cancel_rejected + cancel_failed
         autopilot_readiness = None
-        if cancel_executed + cancel_rejected >= _AUTOPILOT_MIN_SAMPLE:
+        if cancel_sample >= _AUTOPILOT_MIN_SAMPLE:
             autopilot_readiness = {
                 "eligible_cancellations": cancel_executed,
-                "approval_rate": round(100 * cancel_executed / (cancel_executed + cancel_rejected), 1),
+                "failed_executions": cancel_failed,
+                "approval_rate": round(100 * cancel_executed / cancel_sample, 1),
             }
 
         return {
@@ -673,25 +685,66 @@ async def get_shopify_health(
 ):
     """Shopify connection health: which store/app is connected, what scopes
     that token actually has, and what's missing — the single place to answer
-    'why isn't this working' without digging through logs."""
+    'why isn't this working' without digging through logs.
+
+    "status" is one of:
+      - healthy                 - every required scope is granted
+      - needs_permission_update - connection verified, a required scope is genuinely missing -> reconnect
+      - check_unavailable       - connection recorded, but we couldn't reach Shopify to verify
+                                   scopes right now (token invalid/revoked, or Shopify unreachable) -
+                                   distinct from a confirmed missing scope, since reporting every
+                                   check failure as "needs_permission_update" (every scope shown
+                                   "missing") would be misleading when the real cause is transient
+                                   or the token was revoked outright, not a narrower grant.
+      - connection_unavailable  - shopify_connected=True but there's no usable client (missing
+                                   domain/token, or the stored token failed to decrypt)
+    Never a healthy/needs_permission_update verdict without an actual successful live scope check.
+    """
     try:
         brand = _get_owned_brand(brand_id, tenant.tenant_id)
         if not brand.get("shopify_connected"):
-            return {"connected": False}
+            return {"connected": False, "status": "not_connected"}
 
         granted = brand.get("shopify_granted_scopes")
         app_name = brand.get("shopify_app_name")
         checked_at = brand.get("shopify_scopes_checked_at")
+        check_error = None
 
         if granted is None:
+            # Only need a live client - and only pay for a live Shopify call -
+            # when there's no cached scope check to fall back on.
             client = shopify_import_service._get_client_for_brand(brand)
-            if client:
-                result = await shopify_scope_service.check_and_store_scopes(brand_id, client)
-                granted, app_name, checked_at = (
-                    result.get("granted_scopes"), result.get("app_name"), result.get("checked_at")
-                )
+            if not client:
+                return {
+                    "connected": True,
+                    "domain": brand.get("shopify_domain"),
+                    "status": "connection_unavailable",
+                    "granted_scopes": [],
+                    "missing_scopes": [],
+                    "missing_scope_labels": [],
+                    "checked_at": None,
+                }
+            result = await shopify_scope_service.check_and_store_scopes(brand_id, client)
+            granted, app_name, checked_at, check_error = (
+                result.get("granted_scopes"), result.get("app_name"),
+                result.get("checked_at"), result.get("error"),
+            )
 
-        granted = granted or []
+        if granted is None:
+            # The live check ran and failed (or has never once succeeded) -
+            # report that plainly instead of treating every required scope
+            # as confirmed-missing.
+            return {
+                "connected": True,
+                "domain": brand.get("shopify_domain"),
+                "status": "check_unavailable",
+                "check_error": check_error,
+                "granted_scopes": [],
+                "missing_scopes": [],
+                "missing_scope_labels": [],
+                "checked_at": checked_at,
+            }
+
         missing = shopify_scope_service.missing_scopes(granted, list(shopify_scope_service.REQUIRED_SCOPES.keys()))
 
         return {

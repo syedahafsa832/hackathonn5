@@ -205,6 +205,108 @@ def test_autopilot_readiness_shown_at_or_above_minimum_sample():
     assert readiness["approval_rate"] == 80.0
 
 
+def test_autopilot_readiness_successful_executions_count_correctly():
+    """Baseline: with zero rejections and zero failures, a clean run of
+    executed cancellations is 100% - the "successes count correctly" case
+    the denominator fix must not disturb."""
+    all_cancel_actions = [
+        {"id": f"a{i}", "action_type": "cancel_order", "status": "executed", "created_at": _now_iso()}
+        for i in range(5)
+    ]
+
+    def fake_select(table, params=None):
+        if table == "brands":
+            return [BRAND]
+        if table == "actions":
+            return all_cancel_actions
+        return []
+
+    with patch("src.api.routes.v2_brands.supabase_select", side_effect=fake_select):
+        resp = _with_tenant(lambda: client.get("/api/v2/brands/brand-1/analytics"))
+
+    readiness = resp.json()["autopilot_readiness"]
+    assert readiness["eligible_cancellations"] == 5
+    assert readiness["failed_executions"] == 0
+    assert readiness["approval_rate"] == 100.0
+
+
+def test_autopilot_readiness_failed_executions_count_against_the_rate():
+    """The bug: a real Shopify execution failure (human approved it, but
+    the Shopify call itself failed) was previously excluded from BOTH the
+    numerator and denominator - invisible to this metric entirely. It must
+    now depress the approval rate, the same way a human rejection does."""
+    all_cancel_actions = (
+        [{"id": f"a{i}", "action_type": "cancel_order", "status": "executed", "created_at": _now_iso()} for i in range(4)]
+        + [{"id": "a5", "action_type": "cancel_order", "status": "failed", "created_at": _now_iso()}]
+    )
+
+    def fake_select(table, params=None):
+        if table == "brands":
+            return [BRAND]
+        if table == "actions":
+            return all_cancel_actions
+        return []
+
+    with patch("src.api.routes.v2_brands.supabase_select", side_effect=fake_select):
+        resp = _with_tenant(lambda: client.get("/api/v2/brands/brand-1/analytics"))
+
+    readiness = resp.json()["autopilot_readiness"]
+    assert readiness is not None
+    # 4 executed / (4 executed + 0 rejected + 1 failed) = 80% - not 100%,
+    # and not simply omitted from the calculation as it was before.
+    assert readiness["eligible_cancellations"] == 4
+    assert readiness["failed_executions"] == 1
+    assert readiness["approval_rate"] == 80.0
+
+
+def test_autopilot_readiness_failures_cannot_artificially_inflate_the_rate():
+    """A pathological case proving failures are counted as a negative
+    signal, never a neutral or positive one: many executions, but half of
+    all decided actions failed - the rate must reflect that, not read as a
+    misleadingly high 100% because failures were dropped from the math."""
+    all_cancel_actions = (
+        [{"id": f"ok{i}", "action_type": "cancel_order", "status": "executed", "created_at": _now_iso()} for i in range(5)]
+        + [{"id": f"fail{i}", "action_type": "cancel_order", "status": "failed", "created_at": _now_iso()} for i in range(5)]
+    )
+
+    def fake_select(table, params=None):
+        if table == "brands":
+            return [BRAND]
+        if table == "actions":
+            return all_cancel_actions
+        return []
+
+    with patch("src.api.routes.v2_brands.supabase_select", side_effect=fake_select):
+        resp = _with_tenant(lambda: client.get("/api/v2/brands/brand-1/analytics"))
+
+    readiness = resp.json()["autopilot_readiness"]
+    assert readiness["approval_rate"] == 50.0
+    assert readiness["approval_rate"] != 100.0
+
+
+def test_autopilot_readiness_insufficient_sample_still_blocks_even_with_failures_present():
+    """Failures count toward the sample size too (they're real historical
+    data points), but a handful of actions - decided or not - still isn't
+    enough evidence either way; the card must stay omitted below the
+    minimum, exactly as it already does for a small all-executed sample."""
+    all_cancel_actions = [
+        {"id": "a1", "action_type": "cancel_order", "status": "executed", "created_at": _now_iso()},
+        {"id": "a2", "action_type": "cancel_order", "status": "failed", "created_at": _now_iso()},
+    ]
+
+    def fake_select(table, params=None):
+        if table == "brands":
+            return [BRAND]
+        if table == "actions":
+            return all_cancel_actions
+        return []
+
+    with patch("src.api.routes.v2_brands.supabase_select", side_effect=fake_select):
+        resp = _with_tenant(lambda: client.get("/api/v2/brands/brand-1/analytics"))
+
+    assert resp.json()["autopilot_readiness"] is None
+
+
 def test_analytics_404s_for_a_brand_owned_by_another_tenant():
     def fake_select(table, params=None):
         return []  # brands query finds nothing for this tenant
