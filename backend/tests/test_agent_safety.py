@@ -16,7 +16,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("SUPABASE_URL", "http://localhost")
 os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test")
 
-from src.agent.customer_success_agent import _enforce_no_unconfirmed_action_success  # noqa: E402
+from src.agent.customer_success_agent import (  # noqa: E402
+    _enforce_no_unconfirmed_action_success,
+    _enforce_human_handoff_request,
+)
 
 
 def test_refund_reply_claiming_processed_is_overridden_and_escalated():
@@ -101,3 +104,80 @@ def test_action_detected_alone_without_matching_intent_still_triggers_guard():
     result = _enforce_no_unconfirmed_action_success(structured)
     assert result["escalate"] is True
     assert result["status"] == "escalated"
+
+
+# ── Explicit "talk to a human" request always escalates ─────────────────────
+
+def test_explicit_human_request_forces_escalation_even_if_model_did_not_flag_it():
+    structured = {
+        "intent": "general_inquiry", "action_detected": "none",
+        "reply_body": "Sure, I can help with that myself!",
+        "status": "auto_resolved", "escalate": False,
+    }
+    result = _enforce_human_handoff_request(structured, "I want to talk to a human please")
+    assert result["escalate"] is True
+    assert result["status"] == "escalated"
+    assert "team" in result["reply_body"].lower()
+    assert "escalation_reason" in result
+
+
+def test_model_already_escalating_is_left_alone():
+    """If the model already correctly escalated, the backstop shouldn't
+    stomp on whatever wording/reason it already set."""
+    structured = {
+        "intent": "general_inquiry", "action_detected": "none",
+        "reply_body": "Connecting you with our team now.",
+        "status": "escalated", "escalate": True, "escalation_reason": "model's own reason",
+    }
+    result = _enforce_human_handoff_request(structured, "can I speak to a human")
+    assert result["escalation_reason"] == "model's own reason"
+    assert result["reply_body"] == "Connecting you with our team now."
+
+
+def test_human_request_in_stale_chat_history_does_not_retrigger_every_turn():
+    """Chat embeds prior turns as 'Customer: ...' lines ahead of the live
+    message - only the LATEST message should be checked, not a request
+    from several turns ago that's already been handled."""
+    structured = {
+        "intent": "order_status_inquiry", "action_detected": "none",
+        "reply_body": "Your order shipped yesterday!",
+        "status": "auto_resolved", "escalate": False,
+    }
+    stale_history_query = (
+        "[CHAT HISTORY — earlier in this conversation:]\n"
+        "Customer: I want to talk to a human\n"
+        "Luna: Connecting you with our team now.\n"
+        "[END CHAT HISTORY]\n\n"
+        "Customer: where is my order?"
+    )
+    result = _enforce_human_handoff_request(structured, stale_history_query)
+    assert result["escalate"] is False
+    assert result["reply_body"] == "Your order shipped yesterday!"
+
+
+def test_human_request_as_the_live_chat_message_still_escalates():
+    structured = {
+        "intent": "general_inquiry", "action_detected": "none",
+        "reply_body": "Sure, I can help!",
+        "status": "auto_resolved", "escalate": False,
+    }
+    live_query = (
+        "[CHAT HISTORY — earlier in this conversation:]\n"
+        "Customer: where is my order?\n"
+        "Luna: It shipped yesterday!\n"
+        "[END CHAT HISTORY]\n\n"
+        "Customer: ok but I want to talk to a human"
+    )
+    result = _enforce_human_handoff_request(structured, live_query)
+    assert result["escalate"] is True
+
+
+def test_unrelated_query_does_not_trigger_human_handoff_guard():
+    structured = {
+        "intent": "order_status_inquiry", "action_detected": "none",
+        "reply_body": "Your order shipped yesterday!",
+        "status": "auto_resolved", "escalate": False,
+    }
+    result = _enforce_human_handoff_request(structured, "where is my order?")
+    assert result["escalate"] is False
+    assert result["reply_body"] == "Your order shipped yesterday!"

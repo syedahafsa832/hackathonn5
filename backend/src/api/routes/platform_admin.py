@@ -107,7 +107,10 @@ async def activate_upgrade_request(request_id: str, tenant: TenantContext = Depe
 
         target_tenant_id = req.get("tenant_id")
         plan = req.get("requested_plan")
+        previous_plan = None
         if target_tenant_id and plan in PLAN_LIMITS:
+            _prior = supabase_select("tenants", {"id": f"eq.{target_tenant_id}", "select": "plan"})
+            previous_plan = _prior[0].get("plan") if _prior else None
             from datetime import datetime, timezone
             update = {"plan": plan}
             # Paid plans expire 30 days after activation (plan_service._resolve_plan);
@@ -128,6 +131,19 @@ async def activate_upgrade_request(request_id: str, tenant: TenantContext = Depe
             "status": "activated",
             "activated_by": tenant.email,
         })
+
+        # Audit trail for this sensitive cross-tenant plan change — reuses
+        # the existing audit_logs table/helper, no new schema.
+        try:
+            from src.services.supabase_service import supabase_service
+            await supabase_service.log_audit(
+                store_id=target_tenant_id, action="platform_admin.activate_upgrade_request",
+                performer=tenant.email,
+                metadata={"request_id": request_id, "previous_plan": previous_plan, "new_plan": plan},
+            )
+        except Exception as _audit_err:
+            logger.warning(f"[PlatformAdmin] Audit log write failed (non-blocking): {_audit_err}")
+
         return {"success": True}
     except HTTPException:
         raise

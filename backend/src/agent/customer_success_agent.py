@@ -260,6 +260,48 @@ def _enforce_no_unconfirmed_action_success(structured: Dict[str, Any]) -> Dict[s
     return structured
 
 
+# Rule backstop: a customer explicitly asking for a human must actually get
+# one, not an LLM deciding it can still "help" and continuing to auto-
+# resolve. The prompt has no dedicated instruction for this, so - same
+# reasoning as the false-success backstop above - this is the code-level
+# guarantee for when the model doesn't honor an explicit request anyway.
+_HUMAN_HANDOFF_FRAGS = [
+    "talk to a human", "speak to a human", "talk to a person", "speak to a person",
+    "talk with a human", "speak with a human", "talk with a person", "speak with a person",
+    "talk to someone", "speak to someone", "real person", "actual person",
+    "human agent", "live agent", "human representative", "human support",
+    "connect me with a human", "connect me to a human", "get me a human",
+    "talk to a representative", "speak to a representative", "customer service rep",
+]
+
+
+def _enforce_human_handoff_request(structured: Dict[str, Any], query: str) -> Dict[str, Any]:
+    """If the customer explicitly asked for a human, honor that regardless
+    of what the model decided - never let it keep "helpfully" auto-
+    resolving instead of handing off.
+
+    Checks only the CURRENT message, not the whole query string: chat's
+    query embeds prior conversation history as "Customer: ..." lines ahead
+    of the live message (see v2_chat_widget.py's full_query), so scanning
+    the entire string would keep re-triggering forever off a request from
+    several turns ago that's already been handled. The live message is
+    always the text after the last "Customer:" marker; email's query has
+    no such marker at all, so this is a no-op split there (whole message
+    used, exactly as before)."""
+    q = (query or "").lower()
+    current_turn = q.rsplit("customer:", 1)[-1]
+    if any(frag in current_turn for frag in _HUMAN_HANDOFF_FRAGS) and not structured.get("escalate"):
+        logger.info("[Agent] Customer explicitly requested a human — forcing escalation")
+        structured["reply_body"] = (
+            "Of course — I'm connecting you with a member of our team now. "
+            "They'll follow up with you shortly."
+        )
+        structured["escalate"] = True
+        structured["status"] = "escalated"
+        structured["escalation_reason"] = "Customer explicitly requested a human agent."
+    return structured
+
+
 def _enforce_no_ambiguous_product_claim(structured: Dict[str, Any], inventory_result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """If the live Shopify product lookup couldn't resolve to a single
     product (ambiguous=True — e.g. "Essential Hoodie V1" title-matching
@@ -356,7 +398,13 @@ class CustomerSuccessAgent:
                 logger.debug("[Agent] on_progress callback failed (non-blocking)", exc_info=True)
 
         try:
-            _is_chat = "[CHAT MODE" in query
+            # channel is the real, already-set signal (v2_chat_widget.py sets
+            # customer_info["channel"]="chat") - not a magic string sniffed
+            # out of the customer's own message text, which used to leak
+            # "[CHAT MODE — reply in 1-3 short sentences...]" into anything
+            # that persists `query` verbatim (actions.original_message,
+            # shown to merchants on the Escalations page).
+            _is_chat = customer_info.get("channel") == "chat"
             await _emit("thinking", "Analyzing request…")
 
             # 1. RAG Retrieval - brand_knowledge_service.get_brand_context() is scoped
@@ -948,6 +996,11 @@ class CustomerSuccessAgent:
             # 5b. Safety backstop: never let a false "action completed" claim through
             structured = _enforce_no_unconfirmed_action_success(structured)
 
+            # 5b2. Safety backstop: an explicit "let me talk to a human"
+            # request must always actually escalate, regardless of what the
+            # model decided.
+            structured = _enforce_human_handoff_request(structured, query)
+
             # 5c. Safety backstop: never let a specific product/price/
             # availability claim through when the live Shopify lookup
             # couldn't resolve to exactly one product.
@@ -1053,6 +1106,17 @@ class CustomerSuccessAgent:
         # Computed as a plain local variable, not inlined into the f-string
         # below - see _UNKNOWN_NAME_PROMPT_TEXT's comment for why.
         _customer_name_line = _known_customer_name(customer_info.get('name')) or _UNKNOWN_NAME_PROMPT_TEXT
+        # Chat-specific formatting used to be smuggled into the customer's
+        # own message text as a "[CHAT MODE ...]" prefix - that string then
+        # got persisted verbatim wherever the raw query is stored (e.g.
+        # actions.original_message, shown to merchants on the Escalations
+        # page as if the customer had typed it). Lives in the prompt itself
+        # now, driven by the already-set customer_info["channel"], never
+        # mixed into message content.
+        _chat_formatting_rule = (
+            "\n- This is a live chat - reply in 1 to 3 short sentences, conversational tone, no bullet points"
+            if customer_info.get("channel") == "chat" else ""
+        )
         order_critical = (
             "\n⚠ LIVE DATA FROM SHOPIFY — USE ONLY THESE DETAILS:\n"
             "• Reference ONLY the product names, quantities, and totals listed below.\n"
@@ -1083,7 +1147,7 @@ class CustomerSuccessAgent:
         - NEVER use hyphens to join or separate clauses in a sentence
         - Use a comma or start a new sentence instead of a dash
         - WRONG: "I'd love to help—could you share your order number?"
-        - RIGHT: "I'd love to help! Could you share your order number?"
+        - RIGHT: "I'd love to help! Could you share your order number?"{_chat_formatting_rule}
 
         KNOWLEDGE BASE (authoritative ONLY for claims explicitly present in the text below —
         do NOT invent material, fit, texture, quality, popularity, durability, price,

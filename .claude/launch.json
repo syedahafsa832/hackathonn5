@@ -12,6 +12,12 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["backend/main.py"],
       "port": 8001
+    },
+    {
+      "name": "resolv-site",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "D:/RESOLV/resolv-site", "run", "dev"],
+      "port": 3000
     }
   ]
 }
