@@ -648,13 +648,21 @@ async def reject_action(
         if action["status"] != "pending":
             raise HTTPException(status_code=400, detail=f"Action is {action['status']}, cannot reject")
 
-        # Update to rejected
-        supabase_update("actions", {"id": f"eq.{action_id}"}, {
-            "status": "rejected",
-            "rejection_reason": request.reason,
-            "rejected_by": context.user.user_id,
-            "rejected_at": datetime.now(timezone.utc).isoformat()
-        })
+        # Atomically claim (conditioned on still "pending") before writing -
+        # a plain unconditional update here could race a concurrent
+        # approve/execute call and silently overwrite its real status back
+        # to "rejected" after the check above passed but before this write.
+        claimed = supabase_update(
+            "actions", {"id": f"eq.{action_id}", "status": "eq.pending"},
+            {
+                "status": "rejected",
+                "rejection_reason": request.reason,
+                "rejected_by": context.user.user_id,
+                "rejected_at": datetime.now(timezone.utc).isoformat()
+            }
+        )
+        if not claimed:
+            raise HTTPException(status_code=400, detail="Action already actioned")
 
         # Log rejection
         supabase_insert("action_logs", {

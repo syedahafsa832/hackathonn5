@@ -818,13 +818,27 @@ class ActionsService:
             if action["status"] != ActionStatus.PENDING.value:
                 return {"success": False, "error": f"Action already {action['status']}"}
 
-            supabase_update("actions", {"id": f"eq.{action_id}"}, {
-                "status": ActionStatus.REJECTED.value,
-                "rejection_reason": reason,
-                "approved_by": rejected_by,
-                "approved_at": datetime.now(timezone.utc).isoformat(),
-                "updated_at": datetime.now(timezone.utc).isoformat()
-            })
+            # Atomically claim the action (conditioned on it still being
+            # "pending") before writing - closes the same race approve_action
+            # already guards against: without this, a reject request racing
+            # a concurrent approve/execute could pass the check above and
+            # then unconditionally overwrite an action that was just
+            # approved or executed back to "rejected", corrupting the audit
+            # trail (the action itself was never re-executed by this path,
+            # but its recorded status would silently lie about what happened).
+            claimed = supabase_update(
+                "actions",
+                {"id": f"eq.{action_id}", "status": f"eq.{ActionStatus.PENDING.value}"},
+                {
+                    "status": ActionStatus.REJECTED.value,
+                    "rejection_reason": reason,
+                    "approved_by": rejected_by,
+                    "approved_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }
+            )
+            if not claimed:
+                return {"success": False, "error": "Action already actioned"}
 
             await self._log_event(tenant_id, action_id, "rejected", rejected_by, {"reason": reason})
 

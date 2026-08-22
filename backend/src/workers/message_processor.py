@@ -733,8 +733,14 @@ class UnifiedMessageProcessor:
                         return True
             return False
         except Exception as e:
-            logger.warning(f"[PROCESSOR] Override check failed: {e}")
-            return False  # Fail open - don't block on error
+            # Fail CLOSED, not open: if we can't confirm a human hasn't
+            # taken over this thread, don't risk an AI auto-reply landing on
+            # a human-owned conversation. Same invariant the chat widget's
+            # equivalent check already enforces (v2_chat_widget.py's
+            # check_conversation_override call) - costs one turn of no
+            # auto-reply during a transient DB error rather than gambling.
+            logger.warning(f"[PROCESSOR] Override check failed ({e}) — failing closed")
+            return True
 
     def _parse_confidence(self, text: str) -> int:
         """Extract CONFIDENCE: XX from AI response text. Returns 0-100 int."""
