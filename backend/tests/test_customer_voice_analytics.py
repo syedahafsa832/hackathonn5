@@ -354,6 +354,58 @@ def test_category_readiness_ready_for_review_with_no_failures():
     assert cancellation["failed_executions"] == 0
 
 
+def test_recent_failures_lists_real_failed_actions_with_category_and_reason():
+    all_cancel_actions = [
+        {"id": "a1", "action_type": "cancel_order", "status": "executed", "order_id": "1005"},
+        {"id": "a2", "action_type": "cancel_order", "status": "failed", "order_id": "1009",
+         "error_message": "This order has already been cancelled.", "updated_at": "2026-08-21T10:50:56Z"},
+        {"id": "a3", "action_type": "cancel_order", "status": "failed", "order_id": "1008",
+         "error_message": "Invalid Shopify access token. Please reconnect your store.", "updated_at": "2026-08-21T09:56:50Z"},
+        {"id": "a4", "action_type": "cancel_order", "status": "failed", "order_id": "1011",
+         "error_message": "No Shopify store connected.", "updated_at": "2026-08-13T02:18:27Z"},
+    ]
+
+    def fake_select(table, params=None):
+        if table == "brands":
+            return [BRAND]
+        if table == "actions":
+            return all_cancel_actions
+        return []
+
+    with patch("src.api.routes.v2_brands.supabase_select", side_effect=fake_select):
+        resp = _with_tenant(lambda: client.get("/api/v2/brands/brand-1/analytics"))
+
+    cancellation = resp.json()["category_readiness"]["cancellation"]
+    # Readiness math is untouched by this feature.
+    assert cancellation["failed_executions"] == 3
+    assert cancellation["total_requests"] == 4
+
+    failures = cancellation["recent_failures"]
+    assert len(failures) == 3
+    by_order = {f["order_id"]: f for f in failures}
+    assert by_order["1009"]["category"] == "Order state changed"
+    assert by_order["1009"]["reason"] == "This order has already been cancelled."
+    assert by_order["1008"]["category"] == "Connection issue"
+    assert by_order["1011"]["category"] == "Connection issue"
+    assert all(f["status"] == "failed" for f in failures)
+    # Most recent first.
+    assert [f["order_id"] for f in failures] == ["1009", "1008", "1011"]
+
+
+def test_recent_failures_empty_when_no_failures_exist():
+    def fake_select(table, params=None):
+        if table == "brands":
+            return [BRAND]
+        if table == "actions":
+            return [{"id": "a1", "action_type": "cancel_order", "status": "executed", "order_id": "1005"}]
+        return []
+
+    with patch("src.api.routes.v2_brands.supabase_select", side_effect=fake_select):
+        resp = _with_tenant(lambda: client.get("/api/v2/brands/brand-1/analytics"))
+
+    assert resp.json()["category_readiness"]["cancellation"]["recent_failures"] == []
+
+
 def test_category_readiness_almost_there_when_failures_present_even_with_enough_sample():
     """The exact Phase 4 distinction: enough sample, but a real Shopify
     execution failure in the mix means "almost there," not "ready" -
