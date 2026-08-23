@@ -78,6 +78,17 @@ def test_multiple_shipments_missing_tracking_is_not_invented():
     assert "not yet available from the carrier" in context
 
 
+def test_cancelled_order_surfaces_cancellation_in_context():
+    """Shopify Order Context bug: once get_order_status() succeeds for a
+    cancelled order, the prompt block Luna is told to use verbatim must
+    actually say so - this is the "AI receives and uses verified order
+    context" half of that fix."""
+    order = _base_order(status="unfulfilled", cancelled_at="2026-08-22T06:23:54Z", financial_status="paid")
+    context = _build_order_context(order)
+    assert "CANCELLED: Yes" in context
+    assert "2026-08-22T06:23:54Z" in context
+
+
 def test_no_fulfillments_falls_back_to_unfulfilled_message():
     order = _base_order(status="unfulfilled", fulfillments=[])
     context = _build_order_context(order)
