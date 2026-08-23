@@ -199,6 +199,44 @@ export function useDisableRefundAutopilot() {
 }
 
 /**
+ * Training / AI Readiness — Train/Verify/Automate summary for a brand.
+ */
+export function useTrainingReadiness(brandId) {
+  return useQuery({
+    queryKey: ['training-readiness', brandId],
+    queryFn: () => api.getTrainingReadiness(brandId),
+    enabled: !!brandId,
+    refetchInterval: 60000,
+  });
+}
+
+/**
+ * "Review Luna's Work" — real Luna-authored conversations awaiting or
+ * having received human review.
+ */
+export function useReviewQueue(reviewStatus, storeId) {
+  return useQuery({
+    queryKey: ['review-queue', reviewStatus, storeId],
+    queryFn: () => api.getReviewQueue({
+      ...(reviewStatus ? { review_status: reviewStatus } : {}),
+      ...(storeId ? { store_id: storeId } : {}),
+    }),
+    refetchInterval: 20000,
+  });
+}
+
+export function useSubmitTicketReview() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ticketId, ...payload }) => api.submitTicketReview(ticketId, payload),
+    onSettled: () => {
+      queryClient.invalidateQueries(['review-queue']);
+      queryClient.invalidateQueries(['training-readiness']);
+    },
+  });
+}
+
+/**
  * Mutation to approve an action
  */
 export function useApproveAction() {

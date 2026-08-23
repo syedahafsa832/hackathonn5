@@ -32,6 +32,39 @@ class SendReplyRequest(BaseModel):
     body: Optional[str] = None  # manual text; if omitted, uses ai_draft from ticket
 
 
+class ReviewDecisionRequest(BaseModel):
+    decision: str  # "approve" | "edit_approve" | "reject"
+    edited_response: Optional[str] = None
+    rejection_reason: Optional[str] = None
+
+
+# Deterministic, fixed vocabulary — never classified by an LLM. Any other
+# string is still stored as-is (a merchant typing something outside this
+# list isn't blocked), this is only what the frontend's picker offers.
+REJECTION_REASONS = {
+    "Wrong tone", "Wrong information", "Missing information",
+    "Policy issue", "Too verbose", "Other",
+}
+
+
+def _compute_review_status(ticket: dict) -> Optional[str]:
+    """Needs Review / Approved / Edited / Rejected for 'Review Luna's Work' —
+    derived purely from the existing human_approved/human_response fields
+    (already written by send-reply/approve-ai above and by v2_tickets.py's
+    equivalents) plus human_rejected (migration 049). Never a second status
+    column to keep in sync. None means this ticket has no Luna-authored
+    reply at all, so it's not applicable to review."""
+    if not (ticket.get("ai_reply") or ticket.get("ai_draft") or ticket.get("ai_response")):
+        return None
+    if ticket.get("human_rejected"):
+        return "rejected"
+    if ticket.get("human_approved") and ticket.get("human_response"):
+        return "edited"
+    if ticket.get("human_approved"):
+        return "approved"
+    return "needs_review"
+
+
 async def _get_tenant_brand_ids(tenant: TenantContext) -> Optional[List[str]]:
     """Return brand IDs owned by this tenant, or None if we can't determine ownership.
     Includes inactive brands to catch the onboarding 409 edge case where a brand is
@@ -101,6 +134,82 @@ async def list_tickets(
         return tickets
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/review/queue")
+async def list_review_queue(
+    review_status: Optional[str] = Query(None, description="needs_review, approved, edited, or rejected"),
+    store_id: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    """Real Luna-authored conversations for human review ("Review Luna's
+    Work") — reuses the exact same tenant-scoped ticket rows Conversation
+    Replay and the Conversations list already read, never a second
+    conversation store. review_status is computed from the existing
+    human_approved/human_response/human_rejected fields, the same ones
+    Reply Style Learning's organic counter already reads (see
+    reply_style_service._approved_reply_texts)."""
+    try:
+        brand_ids = await _get_tenant_brand_ids(tenant)
+        if not brand_ids:
+            return {"items": [], "count": 0}
+        if store_id:
+            if store_id not in brand_ids:
+                return {"items": [], "count": 0}
+            brand_ids = [store_id]
+
+        all_tickets: list = []
+        for bid in brand_ids:
+            all_tickets.extend(await supabase_service.get_tickets(store_id=bid, status=None))
+        all_tickets.sort(key=lambda t: t.get("updated_at") or t.get("created_at") or "", reverse=True)
+
+        # Batch lookup of any linked Shopify action (cancel/refund/exchange/
+        # address change) for "action usage" context — reuses the existing
+        # actions table (actions.ticket_id), never a new audit trail.
+        ticket_ids = [t["id"] for t in all_tickets if t.get("id")]
+        actions_by_ticket: dict = {}
+        if ticket_ids:
+            id_list = ",".join(ticket_ids)
+            linked_actions = supabase_select("actions", {"ticket_id": f"in.({id_list})"}) or []
+            for a in linked_actions:
+                actions_by_ticket.setdefault(a["ticket_id"], []).append({
+                    "action_type": a.get("action_type"), "status": a.get("status"),
+                })
+
+        items = []
+        for t in all_tickets:
+            status = _compute_review_status(t)
+            if status is None:
+                continue
+            if review_status and status != review_status:
+                continue
+            items.append({
+                "ticket_id": t.get("id"),
+                "customer_message": t.get("message") or t.get("body") or "",
+                "luna_reply": t.get("human_response") or t.get("ai_reply") or t.get("ai_draft") or t.get("ai_response") or "",
+                "channel": t.get("channel") or "email",
+                "created_at": t.get("created_at"),
+                "updated_at": t.get("updated_at"),
+                "order_id": t.get("order_id"),
+                "actions": actions_by_ticket.get(t.get("id"), []),
+                "human_outcome": {
+                    "approved": bool(t.get("human_approved")),
+                    "edited": bool(t.get("human_response")),
+                    "rejected": bool(t.get("human_rejected")),
+                    "rejection_reason": t.get("human_rejected_reason"),
+                },
+                "review_status": status,
+            })
+            if len(items) >= limit:
+                break
+
+        return {"items": items, "count": len(items)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Tickets] review-queue error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/{ticket_id}")
 async def get_ticket(
@@ -270,6 +379,69 @@ async def approve_ai(
 ):
     """Approve and send the AI-generated draft — alias for send-reply with no body."""
     return await send_reply(ticket_id, SendReplyRequest(), tenant)
+
+
+@router.post("/{ticket_id}/review")
+async def review_ai_reply(
+    ticket_id: str,
+    request: ReviewDecisionRequest,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    """Record a human's review decision on a real Luna reply — Approve /
+    Edit & Approve / Reject ("Review Luna's Work"). This is retrospective
+    quality review of a reply that already exists (drafted or already
+    sent), separate from the pre-send send-reply/approve-ai flow above:
+    it never sends or re-sends anything. Approve and Edit & Approve write
+    the exact same human_approved/human_response fields those endpoints
+    already write, so Reply Style Learning's organic counter
+    (reply_style_service.count_eligible_approved_replies) counts it
+    identically — no second learning system. Reject writes human_rejected
+    (migration 049), the one outcome with no prior representation, and
+    never touches human_approved/human_response, so a rejected reply can
+    never count toward the 20-approved-replies threshold."""
+    try:
+        ticket = await _assert_ticket_access(ticket_id, tenant)
+        ai_text = ticket.get("ai_reply") or ticket.get("ai_draft") or ticket.get("ai_response")
+        if not ai_text:
+            raise HTTPException(status_code=400, detail="This conversation has no Luna reply to review")
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if request.decision == "approve":
+            updates = {
+                "human_approved": True,
+                "human_approved_at": now_iso,
+                "human_rejected": False,
+                "updated_at": now_iso,
+            }
+        elif request.decision == "edit_approve":
+            if not request.edited_response or not request.edited_response.strip():
+                raise HTTPException(status_code=400, detail="edited_response is required for edit_approve")
+            updates = {
+                "human_response": request.edited_response.strip(),
+                "human_approved": True,
+                "human_approved_at": now_iso,
+                "human_rejected": False,
+                "updated_at": now_iso,
+            }
+        elif request.decision == "reject":
+            updates = {
+                "human_rejected": True,
+                "human_rejected_at": now_iso,
+                "human_rejected_reason": request.rejection_reason,
+                "updated_at": now_iso,
+            }
+        else:
+            raise HTTPException(status_code=400, detail="decision must be approve, edit_approve, or reject")
+
+        supabase_update("tickets", {"id": f"eq.{ticket_id}"}, updates)
+        _invalidate_tickets_cache()
+        merged = {**ticket, **updates}
+        return {"success": True, "review_status": _compute_review_status(merged)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Tickets] review error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/{ticket_id}/reply-suggestions")
