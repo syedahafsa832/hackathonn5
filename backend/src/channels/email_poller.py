@@ -269,6 +269,24 @@ class EmailPoller:
                     except Exception:
                         pass  # column may not exist yet — safe to continue
 
+                    # Skip if the merchant already discarded this exact quarantine
+                    # item. Gmail's `after:` search is date-level, so a discarded
+                    # message keeps reappearing in every poll for the rest of that
+                    # day - without this check it re-runs classification from
+                    # scratch each time, and a different (or nondeterministic)
+                    # outcome could let it through to a real ticket, silently
+                    # overriding the merchant's decision.
+                    try:
+                        discarded = await asyncio.to_thread(
+                            supabase_select, "email_quarantine",
+                            {"gmail_message_id": f"eq.{gmail_msg_id}", "status": "eq.discarded"},
+                        )
+                        if discarded:
+                            logger.debug(f"[Poller] Skipping discarded message {gmail_msg_id}")
+                            continue
+                    except Exception:
+                        pass
+
                 # ── Filter evaluation (runs before any ticket or AI work) ──
                 logger.info(f"[email_filter] evaluating gmail_message_id={gmail_msg_id} sender={sender} brand={brand.get('name')}")
                 email["brand_support_email"] = support_email
