@@ -82,8 +82,8 @@ export default function Signup() {
         boxShadow: '0 4px 24px rgba(0,0,0,0.06)',
       }}>
         <div style={{ textAlign: 'center', marginBottom: '32px' }}>
-          <div style={{ fontSize: '28px', fontWeight: '700', color: 'var(--accent)', letterSpacing: '-0.5px', marginBottom: '6px' }}>
-            Resolv
+          <div style={{ fontSize: '28px', fontWeight: '700', letterSpacing: '-0.5px', marginBottom: '6px' }}>
+            <span style={{ color: 'var(--accent)' }}>t</span><span style={{ color: 'var(--text-primary)' }}>Resolv</span>
           </div>
           <div style={{ fontSize: '14px', color: 'var(--text-secondary)' }}>
             Create your account
