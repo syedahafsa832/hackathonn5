@@ -1,24 +1,16 @@
 """
-Cross-tenant IDOR in Knowledge Base upload/delete (security audit finding A2).
+Cross-tenant IDOR in Knowledge Base upload/delete (security audit finding A2),
+re-verified after v2_knowledge.py's auth was switched from the stale
+org-based auth_middleware (require_admin/require_brand_access, which check
+brands.organization_id - a column the current tenant-per-brand model doesn't
+populate, which was also why "Failed to load knowledge base sources" was
+showing for every real merchant) to the same tenant_auth.get_current_tenant +
+_get_owned_brand ownership check every other v2 brand-scoped endpoint in
+v2_brands.py already uses.
 
-v2_knowledge.py's /upload and DELETE /sources/{source_id} used
-Depends(require_admin) - which only checks the caller's own role, never that
-brand_id in the URL belongs to them - while every sibling endpoint in the
-same file (GET /sources, /search, /context, /stats) already used
-Depends(require_brand_access("brand_id")). Any admin-role user could write to
-or delete another tenant's knowledge base, and since KB content is injected
-verbatim into that brand's live AI system prompt, this was also a path to
-poisoning another merchant's real customer-facing AI responses.
-
-Fix: both endpoints now ALSO require require_brand_access("brand_id"),
-alongside the existing require_admin (so the "must be an admin" requirement
-is preserved, not weakened - this only adds the missing ownership check).
-
-Real HTTP-level test via FastAPI's TestClient and the actual (unmodified)
-require_admin/require_brand_access dependency chain - only get_current_user
-is overridden (standard FastAPI testing technique) so the test doesn't need
-to simulate real Supabase Auth JWTs; supabase_select/brand_knowledge_service
-are mocked at the boundary.
+Every route in v2_knowledge.py now calls _get_owned_brand(brand_id,
+tenant.tenant_id) before doing anything else - a 404 (not 403) for a brand
+owned by a different tenant, same pattern/response as v2_brands.py.
 """
 import os
 import sys
@@ -32,42 +24,30 @@ from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from src.api.routes.v2_knowledge import router as v2_knowledge_router  # noqa: E402
-from src.api.middleware.auth_middleware import get_current_user, UserContext, AuthenticatedContext, UserRole  # noqa: E402
+from src.api.middleware.tenant_auth import get_current_tenant, TenantContext  # noqa: E402
 
 app = FastAPI()
 app.include_router(v2_knowledge_router, prefix="/api/v2")
 client = TestClient(app)
 
-ATTACKER_ORG = "org-attacker"
+ATTACKER_TENANT = "tenant-attacker"
 ATTACKER_OWN_BRAND = "brand-attacker-owned"
 VICTIM_BRAND = "brand-victim"
 
 
-def _attacker_context() -> AuthenticatedContext:
-    """An admin-role user, but only within their own org/brand."""
-    return AuthenticatedContext(
-        user=UserContext(
-            user_id="user-attacker", supabase_auth_id="auth-attacker",
-            organization_id=ATTACKER_ORG, email="attacker@example.com",
-            role=UserRole.ADMIN, brands=[ATTACKER_OWN_BRAND],
-        ),
-        organization=None,
-        brand_ids=[ATTACKER_OWN_BRAND],
-    )
-
-
 def _fake_brand_lookup(table, params=None):
-    """require_brand_access's admin branch re-verifies the brand belongs to
-    the caller's own organization_id via a live supabase_select - simulate
-    that: only ATTACKER_OWN_BRAND resolves under ATTACKER_ORG."""
+    """_get_owned_brand queries brands filtered by id + tenant_id - only
+    ATTACKER_OWN_BRAND resolves under ATTACKER_TENANT."""
     if table == "brands" and params.get("id") == f"eq.{ATTACKER_OWN_BRAND}" \
-       and params.get("organization_id") == f"eq.{ATTACKER_ORG}":
-        return [{"id": ATTACKER_OWN_BRAND, "organization_id": ATTACKER_ORG}]
+       and params.get("tenant_id") == f"eq.{ATTACKER_TENANT}":
+        return [{"id": ATTACKER_OWN_BRAND, "tenant_id": ATTACKER_TENANT}]
     return []
 
 
 def setup_function():
-    app.dependency_overrides[get_current_user] = _attacker_context
+    app.dependency_overrides[get_current_tenant] = lambda: TenantContext(
+        tenant_id=ATTACKER_TENANT, email="attacker@example.com"
+    )
 
 
 def teardown_function():
@@ -75,22 +55,22 @@ def teardown_function():
 
 
 def test_upload_to_another_tenants_brand_is_blocked():
-    with patch("src.lib.supabase_client.supabase_select", side_effect=_fake_brand_lookup):
+    with patch("src.api.routes.v2_brands.supabase_select", side_effect=_fake_brand_lookup):
         resp = client.post(
             f"/api/v2/brands/{VICTIM_BRAND}/knowledge/upload",
             json={"name": "malicious", "content": "x" * 20},
         )
-    assert resp.status_code in (403, 404)
+    assert resp.status_code == 404
 
 
 def test_delete_another_tenants_brand_source_is_blocked():
-    with patch("src.lib.supabase_client.supabase_select", side_effect=_fake_brand_lookup):
+    with patch("src.api.routes.v2_brands.supabase_select", side_effect=_fake_brand_lookup):
         resp = client.delete(f"/api/v2/brands/{VICTIM_BRAND}/knowledge/sources/some-source-id")
-    assert resp.status_code in (403, 404)
+    assert resp.status_code == 404
 
 
 def test_upload_to_own_brand_still_works():
-    with patch("src.lib.supabase_client.supabase_select", side_effect=_fake_brand_lookup), \
+    with patch("src.api.routes.v2_brands.supabase_select", side_effect=_fake_brand_lookup), \
          patch("src.api.routes.v2_knowledge.brand_knowledge_service.upload_text", new=AsyncMock(return_value={
              "success": True, "source_id": "src-1", "chunk_count": 1, "total_tokens": 10,
          })):
@@ -102,7 +82,7 @@ def test_upload_to_own_brand_still_works():
 
 
 def test_delete_own_brand_source_still_works():
-    with patch("src.lib.supabase_client.supabase_select", side_effect=_fake_brand_lookup), \
+    with patch("src.api.routes.v2_brands.supabase_select", side_effect=_fake_brand_lookup), \
          patch("src.api.routes.v2_knowledge.brand_knowledge_service.delete_source", new=AsyncMock(return_value={"success": True})):
         resp = client.delete(f"/api/v2/brands/{ATTACKER_OWN_BRAND}/knowledge/sources/some-source-id")
     assert resp.status_code == 200
