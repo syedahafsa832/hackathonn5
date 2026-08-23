@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import client, { extractErrorMessage } from '../api/client';
 import Alert from '../components/Alert';
 import GmailUnverifiedNotice from '../components/GmailUnverifiedNotice';
+import ShopifyConnectionNotice from '../components/ShopifyConnectionNotice';
 import { gmailOAuthErrorMessage } from '../components/gmailOAuthErrors';
 import HelpContactLink from '../components/HelpContactLink';
 
@@ -151,6 +152,8 @@ function StepShopify({ brandId, onNext, onConnected }) {
         <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', marginBottom: '5px' }}>Store URL</label>
         <input value={shopifyDomain} onChange={e => setShopifyDomain(e.target.value)} placeholder="yourstore.myshopify.com" style={inputStyle} />
       </div>
+
+      <ShopifyConnectionNotice />
 
       <Alert variant="error">{error}</Alert>
 

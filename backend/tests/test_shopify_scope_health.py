@@ -186,7 +186,7 @@ class TestImportGate:
 class TestShopifyHealth:
     def test_healthy_when_all_scopes_granted(self):
         brand = _brand(
-            shopify_granted_scopes=["read_products", "read_content", "read_orders"],
+            shopify_granted_scopes=["read_products", "read_content", "read_orders", "write_orders"],
             shopify_app_name="lastcustomersupport",
         )
         with patch("src.api.routes.v2_brands.supabase_select", return_value=[brand]):
@@ -208,7 +208,7 @@ class TestShopifyHealth:
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["status"] == "needs_permission_update"
-        assert set(body["missing_scopes"]) == {"read_products", "read_content"}
+        assert set(body["missing_scopes"]) == {"read_products", "read_content", "write_orders"}
 
     def test_not_connected_reports_connected_false_not_error(self):
         brand = _brand(shopify_connected=False)
@@ -216,12 +216,15 @@ class TestShopifyHealth:
             resp = client.get(f"/api/v2/brands/{BRAND_ID}/shopify/health", headers=_auth_header())
 
         assert resp.status_code == 200, resp.text
-        assert resp.json() == {"connected": False}
+        assert resp.json() == {"connected": False, "status": "not_connected"}
 
-    def test_no_scope_data_on_record_self_heals_without_crashing(self):
-        """Legacy brand: shopify_granted_scopes is None. Health must fall
-        back to a live check and still return a valid, non-crashing shape
-        even when that live check itself fails."""
+    def test_no_usable_client_reports_connection_unavailable_not_a_fake_scope_gap(self):
+        """Legacy/broken brand: shopify_granted_scopes is None and there's no
+        usable client (missing domain/token, or the stored token failed to
+        decrypt). Must be reported as "we can't even check" - never silently
+        treated as "every required scope confirmed missing", which used to
+        make an outright connection problem indistinguishable from a genuine,
+        fixable permissions gap."""
         brand = _brand(shopify_granted_scopes=None)
         with patch("src.api.routes.v2_brands.supabase_select", return_value=[brand]), \
              patch("src.api.routes.v2_brands.shopify_import_service._get_client_for_brand", return_value=None):
@@ -230,9 +233,32 @@ class TestShopifyHealth:
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["connected"] is True
+        assert body["status"] == "connection_unavailable"
         assert body["granted_scopes"] == []
-        assert set(body["missing_scopes"]) == set(scope_mod.REQUIRED_SCOPES.keys())
-        assert body["status"] == "needs_permission_update"
+        assert body["missing_scopes"] == []
+
+    def test_live_check_failure_reports_check_unavailable_not_needs_permission_update(self):
+        """A usable client exists, but the live access_scopes.json call
+        itself fails (token revoked, Shopify unreachable) - must not be
+        reported as a confirmed missing-scope state."""
+        brand = _brand(shopify_granted_scopes=None)
+        fake_client = MagicMock()
+        fake_client.shop_domain = "test-shop.myshopify.com"
+        fake_client.headers = {}
+
+        with patch("src.api.routes.v2_brands.supabase_select", return_value=[brand]), \
+             patch("src.api.routes.v2_brands.shopify_import_service._get_client_for_brand", return_value=fake_client), \
+             patch("src.services.shopify_scope_service.requests.get", side_effect=Exception("connection reset")):
+            resp = client.get(f"/api/v2/brands/{BRAND_ID}/shopify/health", headers=_auth_header())
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["connected"] is True
+        assert body["status"] == "check_unavailable"
+        assert body["check_error"] == "unreachable"
+        assert body["missing_scopes"] == []
+        # Never leak the raw exception text into the API response.
+        assert "connection reset" not in str(body)
 
 
 # ─── 4. check_and_store_scopes never raises ───────────────────────────────
@@ -249,7 +275,7 @@ class TestCheckAndStoreScopes:
         with patch("src.services.shopify_scope_service.requests.get", side_effect=Exception("DNS failure")):
             result = await scope_mod.check_and_store_scopes(BRAND_ID, bad_client)
 
-        assert result == {"granted_scopes": None, "app_name": None, "checked_at": None}
+        assert result == {"granted_scopes": None, "app_name": None, "checked_at": None, "error": "unreachable"}
 
     @pytest.mark.asyncio
     async def test_success_path_stores_scopes_and_clears_any_block(self):

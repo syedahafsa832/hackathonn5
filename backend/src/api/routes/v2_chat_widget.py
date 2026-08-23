@@ -442,7 +442,7 @@ async def chat(request: Request, body: ChatRequest, stream: Optional[int] = None
         is_overridden = True
     if ticket.get("status") == "human_managing" or is_overridden:
         return ChatResponse(
-            reply="A member of our team is already looking into this for you and will respond shortly.",
+            reply="A member of our team is already looking into this for you and will follow up here.",
             session_id=body.session_id,
             suggested_actions=[],
         )

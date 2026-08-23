@@ -7,6 +7,7 @@ Uses AI intent detection — no static keyword lists.
 """
 import asyncio
 import logging
+import re
 from typing import Dict, Any, List, Optional, Tuple, TYPE_CHECKING, Callable, Awaitable
 
 from src.lib.supabase_client import supabase_select
@@ -160,7 +161,7 @@ class ReturnActionsIntegration:
                     "**RESTORE ORDER QUEUED**: Order is cancelled but inventory not yet restocked — "
                     "our team will try to reactivate it via Shopify. "
                     "Tell the customer: 'I've sent your restoration request to our team. "
-                    "They'll do everything they can and get back to you shortly.'"
+                    "They'll take a look and follow up once it's reviewed.'"
                 )
             else:
                 # No order data available — cannot safely determine restocked status
@@ -248,7 +249,7 @@ class ReturnActionsIntegration:
             result["staged"] = staged
             result["action_context"] = (
                 "**ADDRESS CHANGE QUEUED (auto-parsed)**: Structured address stored — will update in Shopify automatically on approval. "
-                "Tell the customer: 'I've queued your address update. It will be updated right away and you'll get a confirmation email.'"
+                "Tell the customer: 'I've queued your address update for our team to review. You'll get a confirmation email once it's updated.'"
             )
             return result
 
@@ -271,7 +272,7 @@ class ReturnActionsIntegration:
             result["action_context"] = (
                 "**DELIVERY ISSUE QUEUED**: Team will check with the carrier and arrange reship or refund. "
                 "Tell the customer: 'I've flagged this with our team — they'll investigate with the carrier "
-                "and sort this out for you within 24 hours.'"
+                "and follow up once they've looked into it.'"
             )
             return result
 
@@ -411,7 +412,7 @@ class ReturnActionsIntegration:
                     "**REQUEST SUBMITTED FOR MANUAL REVIEW**: This store has additional cancellation policy "
                     "details on file that need a human check. "
                     "Tell the customer: 'I've sent your cancellation request to our team for a quick review "
-                    "given our store policy. They'll follow up shortly.'"
+                    "given our store policy. They'll follow up once it's reviewed.'"
                 )
                 return result
 
@@ -427,6 +428,22 @@ class ReturnActionsIntegration:
                 ai_reasoning=ai_reasoning, eligibility=eligibility,
             )
             result["staged"] = staged
+
+            # Cancellation Autopilot: this is the ONLY branch reachable here
+            # where every deterministic check this codebase has already
+            # passed — order freshly re-verified live against Shopify,
+            # unfulfilled, eligible, and no merchant free-text policy
+            # requiring human judgment (that case exits above, before this
+            # point, every time). The backend alone decides whether to
+            # auto-execute from here; Luna's own judgment is never consulted
+            # or trusted as authorization.
+            autopilot_context = await self._maybe_autopilot_cancel(
+                tenant_id=tenant_id, brand_id=brand_id, staged=staged, order_id=order_id,
+            )
+            if autopilot_context:
+                result["action_context"] = autopilot_context
+                return result
+
             result["action_context"] = (
                 "**CANCEL QUEUED**: Order hasn't shipped yet — cancel + refund is the right action. "
                 "Tell the customer: 'Since your order hasn't shipped yet, I've sent your cancellation request "
@@ -456,7 +473,7 @@ class ReturnActionsIntegration:
                 result["action_context"] = (
                     f"**REQUEST SUBMITTED FOR MANUAL REVIEW**: {eligibility.get('reason')} "
                     "Tell the customer: 'I've submitted your request to our team for manual review. "
-                    "They'll process it within 2 hours and you'll get an email confirmation.'"
+                    "They'll review it and you'll get an email confirmation once it's processed.'"
                 )
             else:
                 result["action_context"] = (
@@ -513,6 +530,20 @@ class ReturnActionsIntegration:
 
         if staged.get("success"):
             noun = "return" if intent_type == "return" else "refund" if intent_type == "refund" else "cancellation"
+
+            # Refund Autopilot: only ever the plain, whole-order, no-
+            # ambiguity happy path (see _maybe_autopilot_refund's own
+            # internal gating for the full list of conditions). Cancellation
+            # Autopilot is a separate, already-existing hook elsewhere and
+            # is unaffected by this.
+            autopilot_context = await self._maybe_autopilot_refund(
+                tenant_id=tenant_id, brand_id=brand_id, staged=staged, order_id=order_id,
+                query=query, is_unfulfilled=is_unfulfilled, specific_item=specific_item,
+            )
+            if autopilot_context:
+                result["action_context"] = autopilot_context
+                return result
+
             if specific_item:
                 result["action_context"] = (
                     f"**ACTION STAGED FOR APPROVAL (PARTIAL — only {specific_item.get('title')})**: "
@@ -520,13 +551,13 @@ class ReturnActionsIntegration:
                     "Our team will confirm the exact refund amount for that item specifically. "
                     f"Tell the customer: 'I've sent a request to my team to {noun} just the "
                     f"{specific_item.get('title')}, the rest of your order is unaffected. "
-                    "You'll get a confirmation as soon as they approve it (usually under 2 hours).'"
+                    "You'll get a confirmation once they approve it.'"
                 )
             else:
                 result["action_context"] = (
                     f"**ACTION STAGED FOR APPROVAL**: Your {noun} request has been submitted for review. "
                     "Tell the customer: 'I've prepared your request for my team to review. "
-                    "You'll get a confirmation as soon as they approve it (usually under 2 hours).'"
+                    "You'll get a confirmation once they approve it.'"
                 )
         else:
             result["action_context"] = (
@@ -577,7 +608,7 @@ class ReturnActionsIntegration:
                 f"our team's approval (submitted earlier in this conversation or a prior message). "
                 f"Do NOT create a new request or say a new one was sent. "
                 f"Tell the customer: 'Your {noun} request is already with our team for approval, you'll hear "
-                f"back soon, no need to send it again.'"
+                f"back once it's reviewed, no need to send it again.'"
             )
         if status == "approved":
             return (
@@ -665,7 +696,7 @@ class ReturnActionsIntegration:
                 result["action_context"] = (
                     f"**EXCHANGE REQUEST SUBMITTED FOR MANUAL REVIEW**: {eligibility.get('reason')} "
                     "Tell the customer: 'I've submitted your exchange request to our team for manual review. "
-                    "They'll process it within 2 hours and you'll get an email confirmation.'"
+                    "They'll review it and you'll get an email confirmation once it's processed.'"
                 )
             else:
                 result["action_context"] = (
@@ -755,7 +786,7 @@ class ReturnActionsIntegration:
                 f"({target.get('product_title')}, {target.get('variant_title')}) is ${abs(price_difference):.2f} "
                 "cheaper than the original item, our team needs to decide how to handle the difference. "
                 "Tell the customer: 'I found your replacement item and sent this to our team for approval "
-                "since there is a price difference to sort out. You will hear back within 2 hours.' "
+                "since there is a price difference to sort out. You'll hear back once it's reviewed.' "
                 "Do NOT say the exchange is done or promise a refund of the difference."
             )
             return result
@@ -921,6 +952,179 @@ class ReturnActionsIntegration:
         return (
             "**COULDN'T VERIFY THE REPLACEMENT**: Tell the customer we need to check with our team, and "
             "escalate. Do NOT create an exchange action or promise anything."
+        )
+
+    async def _maybe_autopilot_cancel(
+        self,
+        tenant_id: Optional[str],
+        brand_id: Optional[str],
+        staged: Optional[dict],
+        order_id: str,
+    ) -> Optional[str]:
+        """Auto-execute a cancellation that has already cleared every
+        deterministic eligibility check the caller enforces, but ONLY when
+        this brand has explicitly turned Cancellation Autopilot on via the
+        dedicated /automation/cancellation/enable endpoint. Returns None
+        when Autopilot isn't enabled (caller falls through to the normal
+        Copilot "queued for a human" message, unchanged) or when `staged`
+        isn't a real new pending action in the `actions` table (e.g.
+        actions_service.create_action failed and this fell back to the
+        legacy pending_actions table, or a duplicate was returned instead
+        of a fresh action) — never attempts to auto-execute on a path it
+        can't also safely follow through on.
+
+        Reuses actions_service.approve_action() — the exact same function a
+        human clicking Approve calls — so idempotency, the atomic
+        pending->approved claim (closing double-execution races from
+        retries/duplicate webhooks/concurrent workers), live Shopify
+        re-verification, the audit trail, and existing failure handling are
+        all inherited unchanged. No second execution path is created here."""
+        if not tenant_id or not brand_id or not staged or not staged.get("success"):
+            return None
+        if staged.get("status") not in ("pending", None):
+            # "duplicate_skipped" or anything else — not a fresh action
+            # this call originated, never auto-execute on it.
+            return None
+        action_id = staged.get("action_id")
+        if not action_id:
+            return None
+
+        try:
+            brands = supabase_select("brands", {"id": f"eq.{brand_id}"})
+        except Exception as e:
+            logger.warning(f"[Autopilot] Could not verify Autopilot flag for brand {brand_id} ({e}) — leaving action pending for human review")
+            return None
+        if not brands or not brands[0].get("cancellation_autopilot_enabled"):
+            return None
+
+        from src.services.actions_service import actions_service
+
+        logger.info(f"[Autopilot] Attempting automatic cancellation for action {action_id} (order #{order_id})")
+        outcome = await actions_service.approve_action(
+            tenant_id=tenant_id,
+            action_id=action_id,
+            approved_by="autopilot",
+            idempotency_key=f"autopilot-{action_id}",
+        )
+
+        if outcome.get("success"):
+            logger.info(f"[Autopilot] Cancellation completed automatically for action {action_id}")
+            return (
+                "**CANCEL COMPLETED AUTOMATICALLY**: Cancellation Autopilot verified every safety check and "
+                "Shopify has confirmed the order is cancelled. Tell the customer, briefly and naturally: "
+                f"'Done! Your order #{order_id} has been cancelled successfully.'"
+            )
+
+        # Shopify itself rejected/failed the cancellation (or the action was
+        # already actioned/claimed elsewhere) — the action record already
+        # reflects the real failure (actions_service marks it "failed" with
+        # the real error on a ShopifyError). Never claim success; this is a
+        # genuine escalation, never "best effort."
+        logger.warning(f"[Autopilot] Automatic cancellation failed for action {action_id}: {outcome.get('error')}")
+        return (
+            "**CANCEL AUTOPILOT FAILED — ESCALATED TO HUMAN REVIEW**: Automatic cancellation could not be "
+            f"completed ({outcome.get('error') or 'Shopify did not confirm the cancellation'}). Do NOT tell the "
+            "customer it succeeded, and do NOT promise a specific response time. Tell the customer: "
+            "'I couldn't complete the cancellation automatically, so I've sent this to our team for review.'"
+        )
+
+    # A customer stating their own dollar figure ("refund me $30 for the
+    # damaged item") is never captured anywhere in extracted_data by this
+    # integration - the refund action always stages as a full-order refund
+    # regardless, with a human approver deciding the real amount at
+    # approval time. That means an AI-generated/customer-stated amount can
+    # never silently reach Shopify - but a customer who explicitly named a
+    # figure clearly wants something other than a full refund, so treat any
+    # dollar mention in their message as inherently ambiguous and never
+    # eligible for automatic execution, matching the task's own example.
+    _AMOUNT_MENTION_RE = re.compile(r'\$\s*\d|\b\d+(?:\.\d+)?\s*(?:dollars|usd|bucks)\b', re.IGNORECASE)
+
+    async def _maybe_autopilot_refund(
+        self,
+        tenant_id: Optional[str],
+        brand_id: Optional[str],
+        staged: Optional[dict],
+        order_id: str,
+        query: str,
+        is_unfulfilled: bool,
+        specific_item: Optional[dict],
+    ) -> Optional[str]:
+        """Auto-execute a refund, but ONLY the single deterministic case
+        this system can verify without any model or customer input: a full,
+        whole-order refund for a Shopify-computed amount. Refunds are
+        financially sensitive, so this is deliberately far more
+        conservative than cancellation's equivalent hook — every one of
+        the conditions below must hold, and any doubt falls through to the
+        existing "staged for human review" Copilot path unchanged.
+
+        Never auto-executes:
+        - a cancel_order staging (is_unfulfilled) — that's Cancellation
+          Autopilot's own, entirely separate hook.
+        - a specific single-item partial match — this integration has no
+          deterministic partial-refund amount for a single item; only a
+          human approver decides that figure today.
+        - any message that mentions a dollar figure — the customer asked
+          for something this system cannot verify was actually approved
+          (see _AMOUNT_MENTION_RE above).
+
+        When all of those pass, reuses actions_service.approve_action()
+        with NO override_amount, so it falls through to
+        extracted_data.get("amount") (never set by this integration for a
+        refund action) and then to process_refund()'s own live,
+        Shopify-verified amount = refundable_amount (order total minus
+        already-refunded, freshly computed from a live order fetch) — the
+        backend calculates/validates the amount, never Luna, never a
+        guess."""
+        if is_unfulfilled or specific_item is not None:
+            return None
+        if self._AMOUNT_MENTION_RE.search(query or ""):
+            return None
+        if not tenant_id or not brand_id or not staged or not staged.get("success"):
+            return None
+        if staged.get("status") not in ("pending", None):
+            return None
+        action_id = staged.get("action_id")
+        if not action_id:
+            return None
+
+        try:
+            brands = supabase_select("brands", {"id": f"eq.{brand_id}"})
+        except Exception as e:
+            logger.warning(f"[Autopilot] Could not verify Refund Autopilot flag for brand {brand_id} ({e}) — leaving action pending for human review")
+            return None
+        if not brands or not brands[0].get("refund_autopilot_enabled"):
+            return None
+
+        from src.services.actions_service import actions_service
+
+        logger.info(f"[Autopilot] Attempting automatic refund for action {action_id} (order #{order_id})")
+        outcome = await actions_service.approve_action(
+            tenant_id=tenant_id,
+            action_id=action_id,
+            approved_by="autopilot",
+            idempotency_key=f"autopilot-{action_id}",
+        )
+
+        if outcome.get("success"):
+            logger.info(f"[Autopilot] Refund completed automatically for action {action_id}")
+            amount = (outcome.get("execution_result") or {}).get("amount")
+            amount_str = f" of ${amount:.2f}" if isinstance(amount, (int, float)) else ""
+            return (
+                "**REFUND COMPLETED AUTOMATICALLY**: Refund Autopilot verified every safety check and "
+                "Shopify has confirmed the refund. Tell the customer, briefly and naturally: "
+                f"'Done! Your refund{amount_str} has been processed.'"
+            )
+
+        # Shopify itself rejected/failed the refund (already fully
+        # refunded, no valid payment transaction, etc.) or the action was
+        # already actioned/claimed elsewhere — the action record already
+        # reflects the real failure. Never claim success.
+        logger.warning(f"[Autopilot] Automatic refund failed for action {action_id}: {outcome.get('error')}")
+        return (
+            "**REFUND AUTOPILOT FAILED — ESCALATED TO HUMAN REVIEW**: Automatic refund could not be "
+            f"completed ({outcome.get('error') or 'Shopify did not confirm the refund'}). Do NOT tell the "
+            "customer it succeeded, and do NOT promise a specific response time. Tell the customer: "
+            "'I couldn't complete that refund automatically, so I've sent it to our team for review.'"
         )
 
     async def _create_action(

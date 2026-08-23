@@ -237,6 +237,150 @@ _ANALYTICS_WINDOW_DAYS = 30
 # anything) — the card is omitted entirely rather than shown misleadingly.
 _AUTOPILOT_MIN_SAMPLE = 5
 
+# Action types that could eventually surface an Autopilot Readiness card.
+# Only "cancel_order" is actually computed today (see get_brand_analytics) —
+# listed here so a future category only needs a line added, not a new
+# framework; deliberately not built out further than that yet.
+_READINESS_CATEGORIES = {"cancel_order": "cancellation"}
+
+
+def _category_readiness_status(total: int, failed: int, min_sample: int) -> str:
+    """Never an invented threshold beyond the existing _AUTOPILOT_MIN_SAMPLE
+    gate: below it there simply isn't enough of a track record yet
+    ("not_ready"). At or above it, a real Shopify execution failure in the
+    sample (as opposed to a human rejection, which is normal, expected
+    judgment) is treated as something to review before recommending
+    automation ("almost_there") rather than folded silently into a passing
+    percentage. No failures at or above the sample floor is "ready_for_review"."""
+    if total < min_sample:
+        return "not_ready"
+    if failed > 0:
+        return "almost_there"
+    return "ready_for_review"
+
+
+def _compute_cancellation_readiness(brand_id: str) -> dict:
+    """The single source of truth for cancellation Autopilot readiness —
+    called both by GET /analytics (for the Automation page) and by the
+    /automation/cancellation/enable endpoint (to independently re-verify
+    readiness server-side at activation time, never trusting whatever the
+    frontend last rendered). Extracted from the inline computation that
+    used to live only in get_brand_analytics, with no change in behavior.
+
+    Also includes real Cancellation Autopilot execution stats:
+    approved_by="autopilot" is set nowhere else in the codebase (only
+    _maybe_autopilot_cancel in return_actions_integration.py sets it, via
+    the same actions_service.approve_action() a human's Approve click
+    calls), so counting by that field can never include an ordinary
+    human-approved Copilot action."""
+    all_cancel_actions = supabase_select("actions", {
+        "brand_id": f"eq.{brand_id}",
+        "action_type": "eq.cancel_order",
+    }) or []
+    cancel_executed = sum(1 for a in all_cancel_actions if a.get("status") == "executed")
+    cancel_rejected = sum(1 for a in all_cancel_actions if a.get("status") == "rejected")
+    # A genuine Shopify execution failure (human approved, but the
+    # Shopify call itself failed - e.g. a missing scope, order state
+    # changed mid-flight) is a real signal about whether this category
+    # is ready for unattended execution, distinct from a human rejection.
+    # It counts against the rate (same as a rejection would) and toward
+    # the minimum sample size.
+    cancel_failed = sum(1 for a in all_cancel_actions if a.get("status") == "failed")
+    cancel_sample = cancel_executed + cancel_rejected + cancel_failed
+
+    # Autopilot's own execution track record - a strict subset of the
+    # actions above (every autopilot-approved action is also one of the
+    # cancel_order actions counted above; this never double-counts).
+    autopilot_actions = [a for a in all_cancel_actions if a.get("approved_by") == "autopilot"]
+    autopilot_handled = len(autopilot_actions)
+    autopilot_successful = sum(1 for a in autopilot_actions if a.get("status") == "executed")
+    # "Escalated for review" here is specifically an automatic attempt
+    # that Shopify itself rejected/failed (actions_service._mark_failed
+    # already recorded the real reason in error_message) - a genuine
+    # execution failure, not a human rejection. A pre-execution decline
+    # (order fulfilled, or a merchant policy requiring human judgment)
+    # never reaches an autopilot attempt at all - it's staged as an
+    # ordinary pending Copilot action instead, visible in the existing
+    # Escalations queue exactly as it always has been.
+    autopilot_failed = [a for a in autopilot_actions if a.get("status") == "failed"]
+    recent_escalations = [
+        {
+            "order_id": a.get("order_id"),
+            "reason": a.get("error_message") or "Automatic cancellation could not be completed.",
+            "escalated_at": a.get("updated_at"),
+        }
+        for a in sorted(autopilot_failed, key=lambda a: a.get("updated_at") or "", reverse=True)[:5]
+    ]
+
+    return {
+        "category": "cancellation",
+        "total_requests": cancel_sample,
+        "successful": cancel_executed,
+        "escalated": cancel_rejected,
+        "failed_executions": cancel_failed,
+        "approval_rate": round(100 * cancel_executed / cancel_sample, 1) if cancel_sample > 0 else None,
+        "status": _category_readiness_status(cancel_sample, cancel_failed, _AUTOPILOT_MIN_SAMPLE),
+        "min_sample": _AUTOPILOT_MIN_SAMPLE,
+        "autopilot": {
+            "handled_automatically": autopilot_handled,
+            "successful": autopilot_successful,
+            "escalated_for_review": len(autopilot_failed),
+            "success_rate": round(100 * autopilot_successful / autopilot_handled, 1) if autopilot_handled > 0 else None,
+            "recent_escalations": recent_escalations,
+        },
+    }
+
+
+def _compute_refund_readiness(brand_id: str) -> dict:
+    """Refund Autopilot readiness — same category-readiness shape and
+    thresholds as _compute_cancellation_readiness (reuses
+    _category_readiness_status and _AUTOPILOT_MIN_SAMPLE, never a second
+    analytics system), but a deliberately separate function and a
+    deliberately separate `actions` query filtered to action_type=refund,
+    so nothing here can ever touch Cancellation Autopilot's own
+    computation or data. approved_by="autopilot" is set on a refund action
+    only by _maybe_autopilot_refund in return_actions_integration.py, via
+    the same actions_service.approve_action() human approval calls."""
+    all_refund_actions = supabase_select("actions", {
+        "brand_id": f"eq.{brand_id}",
+        "action_type": "eq.refund",
+    }) or []
+    refund_executed = sum(1 for a in all_refund_actions if a.get("status") == "executed")
+    refund_rejected = sum(1 for a in all_refund_actions if a.get("status") == "rejected")
+    refund_failed = sum(1 for a in all_refund_actions if a.get("status") == "failed")
+    refund_sample = refund_executed + refund_rejected + refund_failed
+
+    autopilot_actions = [a for a in all_refund_actions if a.get("approved_by") == "autopilot"]
+    autopilot_handled = len(autopilot_actions)
+    autopilot_successful = sum(1 for a in autopilot_actions if a.get("status") == "executed")
+    autopilot_failed = [a for a in autopilot_actions if a.get("status") == "failed"]
+    recent_escalations = [
+        {
+            "order_id": a.get("order_id"),
+            "reason": a.get("error_message") or "Automatic refund could not be completed.",
+            "escalated_at": a.get("updated_at"),
+        }
+        for a in sorted(autopilot_failed, key=lambda a: a.get("updated_at") or "", reverse=True)[:5]
+    ]
+
+    return {
+        "category": "refund",
+        "total_requests": refund_sample,
+        "successful": refund_executed,
+        "escalated": refund_rejected,
+        "failed_executions": refund_failed,
+        "approval_rate": round(100 * refund_executed / refund_sample, 1) if refund_sample > 0 else None,
+        "status": _category_readiness_status(refund_sample, refund_failed, _AUTOPILOT_MIN_SAMPLE),
+        "min_sample": _AUTOPILOT_MIN_SAMPLE,
+        "autopilot": {
+            "handled_automatically": autopilot_handled,
+            "successful": autopilot_successful,
+            "escalated_for_review": len(autopilot_failed),
+            "success_rate": round(100 * autopilot_successful / autopilot_handled, 1) if autopilot_handled > 0 else None,
+            "recent_escalations": recent_escalations,
+        },
+    }
+
 
 @router.get("/{brand_id}/analytics")
 async def get_brand_analytics(
@@ -251,7 +395,7 @@ async def get_brand_analytics(
     (e.g. response time when no ticket has first_response_at set) is
     omitted rather than guessed."""
     try:
-        _get_owned_brand(brand_id, tenant.tenant_id)
+        brand = _get_owned_brand(brand_id, tenant.tenant_id)
         window_start = (datetime.now(timezone.utc) - timedelta(days=_ANALYTICS_WINDOW_DAYS)).isoformat()
 
         tickets = supabase_select("tickets", {
@@ -288,19 +432,42 @@ async def get_brand_analytics(
         csat = round(sum(starred) / len(starred), 1) if starred else None
 
         # Autopilot readiness: all-time track record for cancel_order,
-        # independent of the 30-day analytics window above.
-        all_cancel_actions = supabase_select("actions", {
-            "brand_id": f"eq.{brand_id}",
-            "action_type": "eq.cancel_order",
-        }) or []
-        cancel_executed = sum(1 for a in all_cancel_actions if a.get("status") == "executed")
-        cancel_rejected = sum(1 for a in all_cancel_actions if a.get("status") == "rejected")
+        # independent of the 30-day analytics window above. Reuses
+        # _compute_cancellation_readiness (the same helper the enable
+        # endpoint independently re-verifies against) rather than a second,
+        # possibly-drifting computation.
+        cancellation_readiness = _compute_cancellation_readiness(brand_id)
+        cancel_sample = cancellation_readiness["total_requests"]
         autopilot_readiness = None
-        if cancel_executed + cancel_rejected >= _AUTOPILOT_MIN_SAMPLE:
+        if cancel_sample >= _AUTOPILOT_MIN_SAMPLE:
             autopilot_readiness = {
-                "eligible_cancellations": cancel_executed,
-                "approval_rate": round(100 * cancel_executed / (cancel_executed + cancel_rejected), 1),
+                "eligible_cancellations": cancellation_readiness["successful"],
+                "failed_executions": cancellation_readiness["failed_executions"],
+                "approval_rate": cancellation_readiness["approval_rate"],
             }
+
+        # Per-category readiness detail for the Automation page (Phase 1/4).
+        # Unlike autopilot_readiness (only present once the minimum sample
+        # is met, kept as-is for the existing Customer Voice card), this is
+        # always present once the brand has a Shopify connection, since
+        # "why isn't this ready yet" needs the real numbers even below the
+        # sample floor. cancellation_autopilot_enabled reads safely as
+        # falsy even before migration 047 is applied (see that file).
+        cancellation_autopilot_enabled = bool(brand.get("cancellation_autopilot_enabled"))
+        refund_autopilot_enabled = bool(brand.get("refund_autopilot_enabled"))
+        refund_readiness = _compute_refund_readiness(brand_id)
+        category_readiness = {
+            "cancellation": {
+                **cancellation_readiness,
+                "mode": "autopilot" if cancellation_autopilot_enabled else "copilot",
+                "enabled": cancellation_autopilot_enabled,
+            },
+            "refund": {
+                **refund_readiness,
+                "mode": "autopilot" if refund_autopilot_enabled else "copilot",
+                "enabled": refund_autopilot_enabled,
+            },
+        }
 
         return {
             "window_days": _ANALYTICS_WINDOW_DAYS,
@@ -313,12 +480,176 @@ async def get_brand_analytics(
             "refund_count": refund_count,
             "csat": csat,
             "autopilot_readiness": autopilot_readiness,
+            "category_readiness": category_readiness,
         }
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error computing brand analytics: {e}")
         raise HTTPException(status_code=500, detail="Failed to compute analytics")
+
+
+@router.post("/{brand_id}/automation/cancellation/enable")
+async def enable_cancellation_autopilot(
+    brand_id: str,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    """Dedicated, authenticated activation endpoint for Cancellation
+    Autopilot — the ONLY way this flag can be turned on (never a generic
+    settings PATCH, never a value trusted from the request body). Every
+    condition is re-verified here from data the merchant cannot control
+    from the browser:
+    - tenant authentication + brand ownership: _get_owned_brand (same
+      pattern every brand-scoped endpoint in this file already uses; 404s
+      rather than 403s for a brand owned by someone else).
+    - the merchant owns a real, connected Shopify store.
+    - entitlement: the existing plan_service.check_limit("shopify_actions")
+      primitive already used to gate real Shopify-executing actions
+      elsewhere (v2_tickets.py).
+    - readiness: a fresh server-side recomputation via
+      _compute_cancellation_readiness — never the readiness object the
+      frontend happened to last render."""
+    try:
+        brand = _get_owned_brand(brand_id, tenant.tenant_id)
+
+        if not brand.get("shopify_connected"):
+            raise HTTPException(
+                status_code=400,
+                detail="Connect a Shopify store before enabling Cancellation Autopilot.",
+            )
+
+        from src.services.plan_service import check_limit, build_limit_error
+        entitlement = check_limit(tenant.tenant_id, "shopify_actions", email=tenant.email)
+        if not entitlement["allowed"]:
+            raise HTTPException(status_code=402, detail=build_limit_error("shopify_actions", entitlement))
+
+        readiness = _compute_cancellation_readiness(brand_id)
+        if readiness["status"] != "ready_for_review":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Cancellation Autopilot isn't ready to enable yet "
+                    f"(status: {readiness['status']}). It needs at least {readiness['min_sample']} "
+                    "real cancellation outcomes with no unresolved Shopify execution failures."
+                ),
+            )
+
+        supabase_update("brands", {"id": f"eq.{brand_id}"}, {
+            "cancellation_autopilot_enabled": True,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+        logger.info(f"[Automation] Cancellation Autopilot ENABLED for brand {brand_id} (tenant {tenant.tenant_id})")
+        return {"success": True, "enabled": True, "readiness": readiness}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error enabling cancellation autopilot: {e}")
+        raise HTTPException(status_code=500, detail="Failed to enable Cancellation Autopilot")
+
+
+@router.post("/{brand_id}/automation/cancellation/disable")
+async def disable_cancellation_autopilot(
+    brand_id: str,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    """Kill switch. Only auth + ownership is required — a merchant must
+    always be able to turn this off immediately, with no readiness gate.
+    Flipping this flag only stops NEW automatic cancellations from the
+    next request onward (return_actions_integration.py reads it fresh on
+    every request); it cannot touch or corrupt an action that has already
+    atomically claimed "approved" and is mid-flight against Shopify — same
+    protection every action in this system already has via
+    actions_service.approve_action()'s conditional claim."""
+    try:
+        _get_owned_brand(brand_id, tenant.tenant_id)
+        supabase_update("brands", {"id": f"eq.{brand_id}"}, {
+            "cancellation_autopilot_enabled": False,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+        logger.info(f"[Automation] Cancellation Autopilot DISABLED for brand {brand_id} (tenant {tenant.tenant_id})")
+        return {"success": True, "enabled": False}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error disabling cancellation autopilot: {e}")
+        raise HTTPException(status_code=500, detail="Failed to disable Cancellation Autopilot")
+
+
+@router.post("/{brand_id}/automation/refund/enable")
+async def enable_refund_autopilot(
+    brand_id: str,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    """Dedicated, authenticated activation endpoint for Refund Autopilot —
+    a separate flag from Cancellation Autopilot, gated independently.
+    Mirrors enable_cancellation_autopilot's verification exactly (auth +
+    ownership, connected Shopify store, entitlement via the existing
+    plan_service.check_limit("shopify_actions"), a fresh server-side
+    readiness recomputation), never trusting a frontend toggle. Refunds
+    are financially sensitive, so the actual automatic-execution safety
+    gates (deterministic full-refund-only amount, no ambiguous partial
+    figure) live in _maybe_autopilot_refund — this endpoint only controls
+    whether that path is reachable at all."""
+    try:
+        brand = _get_owned_brand(brand_id, tenant.tenant_id)
+
+        if not brand.get("shopify_connected"):
+            raise HTTPException(
+                status_code=400,
+                detail="Connect a Shopify store before enabling Refund Autopilot.",
+            )
+
+        from src.services.plan_service import check_limit, build_limit_error
+        entitlement = check_limit(tenant.tenant_id, "shopify_actions", email=tenant.email)
+        if not entitlement["allowed"]:
+            raise HTTPException(status_code=402, detail=build_limit_error("shopify_actions", entitlement))
+
+        readiness = _compute_refund_readiness(brand_id)
+        if readiness["status"] != "ready_for_review":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Refund Autopilot isn't ready to enable yet "
+                    f"(status: {readiness['status']}). It needs at least {readiness['min_sample']} "
+                    "real refund outcomes with no unresolved Shopify execution failures."
+                ),
+            )
+
+        supabase_update("brands", {"id": f"eq.{brand_id}"}, {
+            "refund_autopilot_enabled": True,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+        logger.info(f"[Automation] Refund Autopilot ENABLED for brand {brand_id} (tenant {tenant.tenant_id})")
+        return {"success": True, "enabled": True, "readiness": readiness}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error enabling refund autopilot: {e}")
+        raise HTTPException(status_code=500, detail="Failed to enable Refund Autopilot")
+
+
+@router.post("/{brand_id}/automation/refund/disable")
+async def disable_refund_autopilot(
+    brand_id: str,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    """Kill switch. Only auth + ownership is required — no readiness gate,
+    same as cancellation's disable endpoint. Stops NEW automatic refunds
+    from the next request onward; cannot touch an action already
+    atomically claimed "approved" and mid-flight against Shopify."""
+    try:
+        _get_owned_brand(brand_id, tenant.tenant_id)
+        supabase_update("brands", {"id": f"eq.{brand_id}"}, {
+            "refund_autopilot_enabled": False,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+        logger.info(f"[Automation] Refund Autopilot DISABLED for brand {brand_id} (tenant {tenant.tenant_id})")
+        return {"success": True, "enabled": False}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error disabling refund autopilot: {e}")
+        raise HTTPException(status_code=500, detail="Failed to disable Refund Autopilot")
 
 
 @router.patch("/{brand_id}")
@@ -673,25 +1004,66 @@ async def get_shopify_health(
 ):
     """Shopify connection health: which store/app is connected, what scopes
     that token actually has, and what's missing — the single place to answer
-    'why isn't this working' without digging through logs."""
+    'why isn't this working' without digging through logs.
+
+    "status" is one of:
+      - healthy                 - every required scope is granted
+      - needs_permission_update - connection verified, a required scope is genuinely missing -> reconnect
+      - check_unavailable       - connection recorded, but we couldn't reach Shopify to verify
+                                   scopes right now (token invalid/revoked, or Shopify unreachable) -
+                                   distinct from a confirmed missing scope, since reporting every
+                                   check failure as "needs_permission_update" (every scope shown
+                                   "missing") would be misleading when the real cause is transient
+                                   or the token was revoked outright, not a narrower grant.
+      - connection_unavailable  - shopify_connected=True but there's no usable client (missing
+                                   domain/token, or the stored token failed to decrypt)
+    Never a healthy/needs_permission_update verdict without an actual successful live scope check.
+    """
     try:
         brand = _get_owned_brand(brand_id, tenant.tenant_id)
         if not brand.get("shopify_connected"):
-            return {"connected": False}
+            return {"connected": False, "status": "not_connected"}
 
         granted = brand.get("shopify_granted_scopes")
         app_name = brand.get("shopify_app_name")
         checked_at = brand.get("shopify_scopes_checked_at")
+        check_error = None
 
         if granted is None:
+            # Only need a live client - and only pay for a live Shopify call -
+            # when there's no cached scope check to fall back on.
             client = shopify_import_service._get_client_for_brand(brand)
-            if client:
-                result = await shopify_scope_service.check_and_store_scopes(brand_id, client)
-                granted, app_name, checked_at = (
-                    result.get("granted_scopes"), result.get("app_name"), result.get("checked_at")
-                )
+            if not client:
+                return {
+                    "connected": True,
+                    "domain": brand.get("shopify_domain"),
+                    "status": "connection_unavailable",
+                    "granted_scopes": [],
+                    "missing_scopes": [],
+                    "missing_scope_labels": [],
+                    "checked_at": None,
+                }
+            result = await shopify_scope_service.check_and_store_scopes(brand_id, client)
+            granted, app_name, checked_at, check_error = (
+                result.get("granted_scopes"), result.get("app_name"),
+                result.get("checked_at"), result.get("error"),
+            )
 
-        granted = granted or []
+        if granted is None:
+            # The live check ran and failed (or has never once succeeded) -
+            # report that plainly instead of treating every required scope
+            # as confirmed-missing.
+            return {
+                "connected": True,
+                "domain": brand.get("shopify_domain"),
+                "status": "check_unavailable",
+                "check_error": check_error,
+                "granted_scopes": [],
+                "missing_scopes": [],
+                "missing_scope_labels": [],
+                "checked_at": checked_at,
+            }
+
         missing = shopify_scope_service.missing_scopes(granted, list(shopify_scope_service.REQUIRED_SCOPES.keys()))
 
         return {

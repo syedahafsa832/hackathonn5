@@ -24,11 +24,17 @@ from src.services.shopify_service import ShopifyClient
 logger = logging.getLogger(__name__)
 
 # Every scope tResolv's Shopify integration can use, and what it unlocks —
-# shown on the connection health page.
+# shown on the connection health page. write_orders covers every action
+# ShopifyClient can execute today (refund, cancel_order,
+# update_shipping_address, reopen_order — all PUT/POST against orders.json
+# or its sub-resources); it was missing from this dict entirely before,
+# which meant the health page could report a brand "healthy" while its
+# token lacked the one scope every financial action actually needs.
 REQUIRED_SCOPES: Dict[str, str] = {
     "read_products": "Products",
     "read_content": "Store content (pages, blogs, policies)",
     "read_orders": "Orders",
+    "write_orders": "Order actions (cancel, refund, address change)",
 }
 
 # Subset the knowledge-base importer actually consumes. A missing
@@ -91,7 +97,18 @@ async def check_and_store_scopes(brand_id: str, client: ShopifyClient) -> Dict[s
     """Best-effort: fetch granted scopes + issuing app name and persist them
     on the brand row. Never raises — a scope-check failure shouldn't fail
     the Shopify connection itself, since the token was already validated
-    separately (shop.json) before this is called."""
+    separately (shop.json) before this is called.
+
+    On failure the "error" key is set to a coarse, non-sensitive reason
+    ("unauthorized" | "unreachable") so a caller like get_shopify_health()
+    can tell "we couldn't verify this connection at all" apart from "we
+    verified it and a scope is genuinely missing" - conflating those two
+    used to report every check-failure as a fixable "needs_permission_update"
+    with every required scope listed as missing, which was misleading (the
+    token might be perfectly fine; Shopify might just be unreachable). The
+    underlying exception is logged for operators only - never returned, to
+    avoid leaking token/request details to an API response.
+    """
     try:
         granted = await fetch_granted_scopes(client)
         app_name = await fetch_app_name(client)
@@ -102,7 +119,12 @@ async def check_and_store_scopes(brand_id: str, client: ShopifyClient) -> Dict[s
             "shopify_scopes_checked_at": checked_at,
         })
         clear_blocked(brand_id)
-        return {"granted_scopes": granted, "app_name": app_name, "checked_at": checked_at}
+        return {"granted_scopes": granted, "app_name": app_name, "checked_at": checked_at, "error": None}
+    except requests.HTTPError as e:
+        status_code = e.response.status_code if e.response is not None else None
+        reason = "unauthorized" if status_code in (401, 403) else "unreachable"
+        logger.warning(f"[ShopifyScopes] Could not check scopes for brand {brand_id} (HTTP {status_code}): {e}")
+        return {"granted_scopes": None, "app_name": None, "checked_at": None, "error": reason}
     except Exception as e:
         logger.warning(f"[ShopifyScopes] Could not check scopes for brand {brand_id}: {e}")
-        return {"granted_scopes": None, "app_name": None, "checked_at": None}
+        return {"granted_scopes": None, "app_name": None, "checked_at": None, "error": "unreachable"}

@@ -198,6 +198,103 @@ def test_no_override_and_no_extracted_amount_means_full_refund_default():
     assert captured["amount"] is None
 
 
+# ── edit-tracking: was the AI's proposal changed before approval? ───────────
+# (migrations/046_action_edit_tracking.sql — not applied to production by
+# that migration; this write is deliberately best-effort/non-blocking, see
+# actions_service._record_edit_tracking's docstring for why.)
+
+def _run_approve_capturing_updates(action, override_amount=None):
+    """Like _run_approve, but records every supabase_update call (not just
+    the Shopify-side captured amount) so edit-tracking's own update can be
+    asserted on independently of the atomic-claim/execution updates."""
+    update_calls = []
+
+    def fake_update(table, match, data):
+        update_calls.append((table, match, data))
+        return {"id": "a1"}
+
+    async def fake_refund(order_id, amount=None, reason=None):
+        return {"success": True, "refund_id": 999, "amount": amount, "message": "Refunded"}
+
+    fake_client = type("FakeClient", (), {"process_refund": staticmethod(fake_refund)})()
+    svc = _make_service()
+
+    with patch.object(svc, "get_action", new=AsyncMock(return_value=action)), \
+         patch("src.services.actions_service.supabase_update", side_effect=fake_update), \
+         patch("src.services.actions_service.shopify_service.get_client_for_tenant", new=AsyncMock(return_value=fake_client)), \
+         patch.object(svc, "_log_event", new=AsyncMock()), \
+         patch.object(svc, "_post_execution_notify", new=AsyncMock()), \
+         patch.object(svc, "_record_financial_audit"):
+        result = run(svc.approve_action(tenant_id="t1", action_id="a1", override_amount=override_amount))
+
+    return result, update_calls
+
+
+def test_overridden_refund_amount_is_recorded_as_edited():
+    result, update_calls = _run_approve_capturing_updates(
+        _approved_action(amount_in_extracted_data=20.0), override_amount=75.0
+    )
+    assert result["success"] is True
+    tracking_calls = [c for c in update_calls if "was_edited" in c[2]]
+    assert len(tracking_calls) == 1
+    _, _, data = tracking_calls[0]
+    assert data["was_edited"] is True
+    assert data["approved_extracted_data"]["amount"] == 75.0
+
+
+def test_unedited_refund_amount_is_not_recorded_as_edited():
+    """No override at all — nothing to distinguish, so no tracking update
+    should be issued (was_edited's column default of false already covers
+    this row correctly without a write)."""
+    result, update_calls = _run_approve_capturing_updates(
+        _approved_action(amount_in_extracted_data=20.0), override_amount=None
+    )
+    assert result["success"] is True
+    tracking_calls = [c for c in update_calls if "was_edited" in c[2]]
+    assert tracking_calls == []
+
+
+def test_override_matching_the_original_proposal_is_not_recorded_as_edited():
+    """The approver typed the exact same amount the AI had already proposed
+    — that's not a correction, so it must not be flagged as edited."""
+    result, update_calls = _run_approve_capturing_updates(
+        _approved_action(amount_in_extracted_data=20.0), override_amount=20.0
+    )
+    assert result["success"] is True
+    tracking_calls = [c for c in update_calls if "was_edited" in c[2]]
+    assert tracking_calls == []
+
+
+def test_edit_tracking_write_failure_never_breaks_approval():
+    """If migration 046 isn't applied yet in some environment, the
+    supabase_update for was_edited/approved_extracted_data will fail (unknown
+    column) — that must never surface as an approval failure, only be
+    swallowed and logged, since it's enrichment, not part of the state
+    machine."""
+    action = _approved_action(amount_in_extracted_data=20.0)
+
+    def flaky_update(table, match, data):
+        if "was_edited" in data:
+            raise Exception('column "was_edited" does not exist')
+        return {"id": "a1"}
+
+    async def fake_refund(order_id, amount=None, reason=None):
+        return {"success": True, "refund_id": 999, "amount": amount, "message": "Refunded"}
+
+    fake_client = type("FakeClient", (), {"process_refund": staticmethod(fake_refund)})()
+    svc = _make_service()
+
+    with patch.object(svc, "get_action", new=AsyncMock(return_value=action)), \
+         patch("src.services.actions_service.supabase_update", side_effect=flaky_update), \
+         patch("src.services.actions_service.shopify_service.get_client_for_tenant", new=AsyncMock(return_value=fake_client)), \
+         patch.object(svc, "_log_event", new=AsyncMock()), \
+         patch.object(svc, "_post_execution_notify", new=AsyncMock()), \
+         patch.object(svc, "_record_financial_audit"):
+        result = run(svc.approve_action(tenant_id="t1", action_id="a1", override_amount=75.0))
+
+    assert result["success"] is True
+
+
 # ── v2_actions.py: the SECOND, also-live approval surface ───────────────────
 # (Dashboard.jsx and TicketDetail.jsx both render ActionCard.jsx, which posts
 # to this route — a genuinely separate, independently-reachable path from

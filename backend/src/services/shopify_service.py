@@ -45,6 +45,7 @@ class ShopifyErrorCode(str, Enum):
     NETWORK_ERROR = "network_error"
     UNKNOWN_ERROR = "unknown_error"
     INVALID_REQUEST = "invalid_request"
+    MISSING_SCOPE = "missing_scope"
 
 
 def _get_encryption_secret() -> str:
@@ -188,6 +189,24 @@ class ShopifyClient:
                 f"Resource not found: {context}",
                 ShopifyErrorCode.ORDER_NOT_FOUND,
                 404
+            )
+
+        if resp.status_code == 403:
+            # Shopify returns 403 when the token's granted scopes don't cover
+            # this endpoint - distinct from 401 (token itself invalid/
+            # revoked). Previously fell through to the generic
+            # UNKNOWN_ERROR branch below, whose message ("Shopify API
+            # error: {error_message}") echoes Shopify's raw response text
+            # (e.g. "This action requires merchant approval for write_orders
+            # scope") straight through - fine for a merchant in a dashboard,
+            # not something to relay to a customer verbatim. This message is
+            # tResolv's own wording and always actionable the same way
+            # regardless of which specific scope Shopify named.
+            raise ShopifyError(
+                "This Shopify connection is missing a permission this action needs. "
+                "Reconnect Shopify to grant the required access.",
+                ShopifyErrorCode.MISSING_SCOPE,
+                403
             )
 
         if resp.status_code == 422:
@@ -557,7 +576,21 @@ class ShopifyClient:
             order_id: Order ID or number
             amount: Refund amount (None = full refund)
             reason: Reason for refund
-            restock: Whether to restock items
+            restock: NOT CURRENTLY FUNCTIONAL — accepted but has no effect.
+                The refund payload built below (see "no refund_line_items"
+                comment) is a pure financial refund via `transactions`, never
+                a line-item refund via `refund_line_items`, so there is
+                nothing for this flag to attach to; restocking is a
+                per-line-item, per-location Shopify concept
+                (`refund_line_items[].restock_type` + a resolved
+                `location_id`), and this integration doesn't resolve a
+                location per order today. No caller currently passes
+                restock=True. Building real restock support is a product
+                decision (does the merchant want it on by default? which
+                location?) as much as a code change — flagged, not guessed
+                at here. cancel_order()'s `restock` parameter, by contrast,
+                *is* wired through correctly (Shopify's cancel endpoint takes
+                a simple top-level boolean, no location resolution needed).
             notify_customer: Send notification email
         """
         # Get the order first

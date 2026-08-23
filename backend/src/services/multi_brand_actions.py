@@ -364,13 +364,42 @@ class MultiBrandActionsManager:
 
             action = actions[0]
 
-            if action["status"] != ActionStatus.PENDING.value:
+            # Atomically claim the action (conditioned on it still being
+            # PENDING) before touching Shopify. A plain check-then-act here
+            # (read status, then later update unconditionally) is a race:
+            # two concurrent approve calls - double-click, retry - could
+            # both pass the check above and each execute a real Shopify
+            # refund/cancel/address-change against the same order. Matches
+            # the atomic-claim pattern actions_service.py and v2_actions.py
+            # already use for the same reason.
+            claimed = supabase_update(
+                "brand_actions",
+                {"id": f"eq.{action_id}", "status": f"eq.{ActionStatus.PENDING.value}"},
+                {
+                    "status": ActionStatus.APPROVED.value,
+                    "approved_by": approved_by,
+                    "approved_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            if not claimed:
                 return {"success": False, "error": f"Action already {action['status']}"}
+
+            # From here on the action is claimed (status=approved) - any exit
+            # path must leave it at a terminal status (executed/failed), never
+            # stuck at "approved" with no further way to retry or resubmit.
+            def _fail(error_msg: str) -> Dict[str, Any]:
+                supabase_update("brand_actions", {"id": f"eq.{action_id}"}, {
+                    "status": ActionStatus.FAILED.value,
+                    "execution_result": {"error": error_msg},
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                })
+                return {"success": False, "error": error_msg}
 
             # Get brand and create Shopify client
             brand = await brand_manager.get_brand(action["brand_id"])
             if not brand:
-                return {"success": False, "error": "Brand not found"}
+                return _fail("Brand not found")
 
             shopify_client = brand_manager.get_shopify_client(brand)
 
@@ -379,7 +408,7 @@ class MultiBrandActionsManager:
             order_id = action.get("order_id") or action.get("extracted_data", {}).get("order_id")
 
             if not order_id:
-                return {"success": False, "error": "Order ID required for execution"}
+                return _fail("Order ID required for execution")
 
             execution_result = None
 
@@ -401,7 +430,7 @@ class MultiBrandActionsManager:
             elif action_type == ActionType.CHANGE_ADDRESS.value:
                 new_address = action.get("extracted_data", {}).get("new_address", {})
                 if not new_address:
-                    return {"success": False, "error": "New address not provided"}
+                    return _fail("New address not provided")
 
                 execution_result = await shopify_client.update_shipping_address(
                     order_id=order_id,
@@ -409,7 +438,7 @@ class MultiBrandActionsManager:
                 )
 
             else:
-                return {"success": False, "error": f"Unknown action type: {action_type}"}
+                return _fail(f"Unknown action type: {action_type}")
 
             # Handle execution result
             if execution_result and execution_result.get("success"):
@@ -435,15 +464,8 @@ class MultiBrandActionsManager:
                     "execution_result": execution_result
                 }
             else:
-                # Mark as failed
                 error_msg = execution_result.get("error") if execution_result else "Unknown error"
-                supabase_update("brand_actions", {"id": f"eq.{action_id}"}, {
-                    "status": ActionStatus.FAILED.value,
-                    "execution_result": {"error": error_msg},
-                    "updated_at": datetime.now(timezone.utc).isoformat()
-                })
-
-                return {"success": False, "error": error_msg}
+                return _fail(error_msg)
 
         except Exception as e:
             logger.error(f"[Actions] Error approving action: {e}")
@@ -457,21 +479,34 @@ class MultiBrandActionsManager:
     ) -> Dict[str, Any]:
         """Reject an action."""
         try:
-            supabase_update("brand_actions", {"id": f"eq.{action_id}"}, {
-                "status": ActionStatus.REJECTED.value,
-                "rejection_reason": rejection_reason,
-                "approved_by": rejected_by,
-                "approved_at": datetime.now(timezone.utc).isoformat(),
-                "updated_at": datetime.now(timezone.utc).isoformat()
-            })
-
-            # Get action for email
             actions = supabase_select("brand_actions", {"id": f"eq.{action_id}"})
-            if actions:
-                action = actions[0]
-                brand = await brand_manager.get_brand(action["brand_id"])
-                if brand:
-                    await self._send_rejection_email(action, brand, rejection_reason)
+            if not actions:
+                return {"success": False, "error": "Action not found"}
+
+            # Atomically claim the rejection (conditioned on still being
+            # PENDING) so a reject racing a concurrent approve/execute can
+            # never silently overwrite an already-approved/executed action's
+            # status back to rejected - the same race class fixed for
+            # actions_service.py/v2_actions.py's reject_action().
+            claimed = supabase_update(
+                "brand_actions",
+                {"id": f"eq.{action_id}", "status": f"eq.{ActionStatus.PENDING.value}"},
+                {
+                    "status": ActionStatus.REJECTED.value,
+                    "rejection_reason": rejection_reason,
+                    "approved_by": rejected_by,
+                    "approved_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                }
+            )
+            if not claimed:
+                return {"success": False, "error": f"Action already {actions[0]['status']}"}
+
+            # Send rejection email
+            action = actions[0]
+            brand = await brand_manager.get_brand(action["brand_id"])
+            if brand:
+                await self._send_rejection_email(action, brand, rejection_reason)
 
             await self._log_action(action_id, "rejected", rejected_by, {"reason": rejection_reason})
 

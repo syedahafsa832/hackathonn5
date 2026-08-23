@@ -4,6 +4,7 @@ import client from '../api/client';
 import ChatWidget from '../components/ChatWidget';
 import Alert from '../components/Alert';
 import GmailUnverifiedNotice from '../components/GmailUnverifiedNotice';
+import ShopifyConnectionNotice from '../components/ShopifyConnectionNotice';
 import { gmailOAuthErrorMessage } from '../components/gmailOAuthErrors';
 
 const inputStyle = {
@@ -615,6 +616,9 @@ function ShopifyTab() {
               onBlur={e => e.target.style.borderColor = '#E4E4E7'}
             />
           </div>
+
+          <ShopifyConnectionNotice />
+
           <button
             onClick={handleConnect}
             disabled={connecting}

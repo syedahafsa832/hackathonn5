@@ -4,6 +4,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import CustomerVoice from './pages/CustomerVoice';
+import Automation from './pages/Automation';
 import Tickets from './pages/Tickets';
 import TicketDetail from './pages/TicketDetail';
 import Actions from './pages/Actions';
@@ -44,6 +45,7 @@ export default function App() {
         <Route path="/signup" element={<Signup />} />
         <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
         <Route path="/customer-voice" element={<ProtectedRoute><CustomerVoice /></ProtectedRoute>} />
+        <Route path="/automation" element={<ProtectedRoute><Automation /></ProtectedRoute>} />
         <Route path="/tickets" element={<ProtectedRoute><Tickets /></ProtectedRoute>} />
         <Route path="/tickets/:ticket_id" element={<ProtectedRoute><TicketDetail /></ProtectedRoute>} />
         <Route path="/actions" element={<ProtectedRoute><Actions /></ProtectedRoute>} />

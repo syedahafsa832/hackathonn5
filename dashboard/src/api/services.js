@@ -177,6 +177,30 @@ const api = {
     return res.data;
   },
 
+  // Dedicated, authenticated activation/kill-switch endpoints — never a
+  // generic brand settings PATCH. Errors are intentionally NOT swallowed
+  // here (unlike the .catch()-to-empty reads above): the caller needs the
+  // real 400/402 detail to show the merchant why activation was refused.
+  enableCancellationAutopilot: async (brandId) => {
+    const res = await client.post(`/api/v2/brands/${brandId}/automation/cancellation/enable`);
+    return res.data;
+  },
+
+  disableCancellationAutopilot: async (brandId) => {
+    const res = await client.post(`/api/v2/brands/${brandId}/automation/cancellation/disable`);
+    return res.data;
+  },
+
+  enableRefundAutopilot: async (brandId) => {
+    const res = await client.post(`/api/v2/brands/${brandId}/automation/refund/enable`);
+    return res.data;
+  },
+
+  disableRefundAutopilot: async (brandId) => {
+    const res = await client.post(`/api/v2/brands/${brandId}/automation/refund/disable`);
+    return res.data;
+  },
+
   // --- CANNED RESPONSES ---
   getCannedResponses: async () => {
     const res = await client.get('/api/v1/canned-responses').catch(() => ({ data: { items: [] } }));
