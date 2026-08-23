@@ -227,13 +227,19 @@ async def send_reply(
                 detail="No Gmail connected for this brand. Go to Brands → Connect Gmail first."
             )
 
-        # Mark sent and update status
+        # Mark sent and update status. human_approved is set either way - a
+        # human sent this reply whether they edited it first or approved
+        # Luna's draft as-is; reply_style_service's eligible-approved-reply
+        # count relies on this flag (previously only set for a manual edit,
+        # so a plain "Approve" click never counted toward Reply Style
+        # learning even though a human demonstrably stood behind it).
         is_manual = bool(req.body)
         now_iso = datetime.now(timezone.utc).isoformat()
         supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {
             "status": "resolved",
             "email_sent": True,
             "email_sent_at": now_iso,
+            "human_approved": True,
             **({"human_response": reply_body} if is_manual else {"ai_reply": reply_body}),
         })
 
