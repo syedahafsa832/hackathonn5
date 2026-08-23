@@ -601,10 +601,20 @@ class CustomerSuccessAgent:
                 except Exception as _se:
                     logger.warning(f"[Agent] Brand lookup failed (non-blocking): {_se}")
 
+            # Order number / email extraction must only ever look at the
+            # customer's own new top-level text, never a quoted earlier
+            # message in the same email thread ("On ... wrote:" / "> " quote
+            # lines) - a quote commonly repeats an old order number, email,
+            # or even an unrelated digit string (e.g. "Aug 23, 2026" in the
+            # quote header itself), any of which could otherwise be
+            # mistaken for a fresh, current one.
+            _quote_marker = re.search(r'^On .{0,80}wrote:|^>', query, re.MULTILINE)
+            _new_reply_text = query[:_quote_marker.start()] if _quote_marker else query
+
             # Check for order status inquiry
             if any(kw in query_lower for kw in ["order", "shipped", "tracking", "delivered", "when will", "what did i order"]):
                 # Try to extract order number from query
-                order_match = re.search(r'#?(\d{3,6})', query)
+                order_match = re.search(r'#?(\d{3,6})', _new_reply_text)
                 if order_match:
                     order_id = order_match.group(1)
                     await _emit("order_lookup", f"Finding order #{order_id}…")
@@ -621,7 +631,7 @@ class CustomerSuccessAgent:
                         await _emit("order_found", "Shopify order found")
 
                 # Also try to look up by customer email if provided in query
-                email_match = re.search(r'[\w.-]+@[\w.-]+\.\w+', query)
+                email_match = re.search(r'[\w.-]+@[\w.-]+\.\w+', _new_reply_text)
                 customer_email = None
                 if email_match:
                     customer_email = email_match.group(0)
@@ -649,7 +659,7 @@ class CustomerSuccessAgent:
             # email as sufficient without that prior request having
             # genuinely happened. Deterministic (regex), no LLM call.
             if "order_status" not in tool_results and ticket_id:
-                _verify_email_match = re.search(r'[\w.-]+@[\w.-]+\.\w+', query)
+                _verify_email_match = re.search(r'[\w.-]+@[\w.-]+\.\w+', _new_reply_text)
                 if _verify_email_match:
                     try:
                         from src.lib.supabase_client import supabase_select as _sel2

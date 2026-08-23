@@ -475,6 +475,14 @@ class UnifiedMessageProcessor:
                                               "subject", "message", "channel", "gmail_thread_id",
                                               "email_category", "sender_type", "customer_sentiment",
                                               "tags", "messages")}
+                if not update_fields.get("detected_order_id"):
+                    # detected_order_id is (re-)computed at STAGE 1.6 from ONLY
+                    # this message's own content - a later reply that mentions
+                    # no order number (e.g. "here's my email: x@y.com") must
+                    # never blank out an order number a prior message in this
+                    # same thread already established. Same
+                    # preserve-by-omission principle as "messages" above.
+                    update_fields.pop("detected_order_id", None)
                 update_fields["updated_at"] = datetime.now(timezone.utc).isoformat()
                 supabase_update("tickets", {"id": f"eq.{early_ticket_id}"}, update_fields)
                 ticket_id = early_ticket_id
