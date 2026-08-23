@@ -259,6 +259,18 @@ def _category_readiness_status(total: int, failed: int, min_sample: int) -> str:
     return "ready_for_review"
 
 
+def _categorize_failure_reason(reason: Optional[str]) -> str:
+    """Buckets a real, already-stored error_message into a short label a
+    merchant can scan at a glance. Never invents a reason - only labels
+    the real one already on the action record."""
+    text = (reason or "").lower()
+    if any(k in text for k in ("access token", "not connected", "store connected", "reconnect", "unauthorized", "scope")):
+        return "Connection issue"
+    if any(k in text for k in ("already been", "already cancelled", "already refunded", "already executed", "no longer")):
+        return "Order state changed"
+    return "Shopify error"
+
+
 def _compute_cancellation_readiness(brand_id: str) -> dict:
     """The single source of truth for cancellation Autopilot readiness —
     called both by GET /analytics (for the Automation page) and by the
@@ -287,6 +299,22 @@ def _compute_cancellation_readiness(brand_id: str) -> dict:
     # the minimum sample size.
     cancel_failed = sum(1 for a in all_cancel_actions if a.get("status") == "failed")
     cancel_sample = cancel_executed + cancel_rejected + cancel_failed
+
+    # All genuine execution failures (human-approved or autopilot), most
+    # recent first - so the readiness card's "N execution failures" claim
+    # is never just a number with nothing behind it. Never excluded from
+    # the readiness math above; this is purely additional visibility.
+    all_failed = [a for a in all_cancel_actions if a.get("status") == "failed"]
+    recent_failures = [
+        {
+            "order_id": a.get("order_id"),
+            "reason": a.get("error_message") or "Cancellation could not be completed.",
+            "category": _categorize_failure_reason(a.get("error_message")),
+            "occurred_at": a.get("updated_at"),
+            "status": "failed",
+        }
+        for a in sorted(all_failed, key=lambda a: a.get("updated_at") or "", reverse=True)[:5]
+    ]
 
     # Autopilot's own execution track record - a strict subset of the
     # actions above (every autopilot-approved action is also one of the
@@ -321,6 +349,7 @@ def _compute_cancellation_readiness(brand_id: str) -> dict:
         "approval_rate": round(100 * cancel_executed / cancel_sample, 1) if cancel_sample > 0 else None,
         "status": _category_readiness_status(cancel_sample, cancel_failed, _AUTOPILOT_MIN_SAMPLE),
         "min_sample": _AUTOPILOT_MIN_SAMPLE,
+        "recent_failures": recent_failures,
         "autopilot": {
             "handled_automatically": autopilot_handled,
             "successful": autopilot_successful,

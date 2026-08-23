@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useBrand } from '../context/BrandContext';
 import {
   useBrandAnalytics,
@@ -200,10 +201,60 @@ function AutopilotOnCard({ title, description, secondLine, emptyStateText, escal
 // ready / Almost there / Ready for review sub-states). Shared by both
 // categories via props; Cancellation's props reproduce its exact previous
 // strings so its rendered output is unchanged.
+const CATEGORY_COLOR = {
+  'Connection issue': '#B45309',
+  'Order state changed': '#0E7490',
+  'Shopify error': '#B91C1C',
+};
+
+function formatFailureTime(iso) {
+  if (!iso) return '';
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+// Compact, real-data-only list backing the "N execution failures" claim
+// in the explanation text above — every row is a real failed action.
+function RecentFailures({ failures }) {
+  const navigate = useNavigate();
+  return (
+    <div style={{ marginBottom: '16px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+        <span style={{ fontSize: '12px', fontWeight: '700', color: '#0F172A' }}>Recent execution failures</span>
+        <button
+          onClick={() => navigate('/actions')}
+          style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: '11.5px', fontWeight: '600', color: '#0E7490' }}
+        >
+          View all activity →
+        </button>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        {failures.map((f, i) => (
+          <div key={i} style={{ padding: '10px 12px', borderRadius: '6px', background: '#FAFAFA', border: '1px solid #E4E4E7' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: '12.5px', fontWeight: '600', color: '#0F172A' }}>Order #{f.order_id ?? '—'}</span>
+              <span style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                <span style={{
+                  fontSize: '10px', fontWeight: '600', color: CATEGORY_COLOR[f.category] || '#475569',
+                  background: 'white', border: `1px solid ${CATEGORY_COLOR[f.category] || '#E4E4E7'}`, borderRadius: '999px', padding: '1px 7px',
+                }}>
+                  {f.category}
+                </span>
+                <span style={{ fontSize: '10px', fontWeight: '600', color: '#94A3B8', textTransform: 'uppercase' }}>{f.status}</span>
+              </span>
+            </div>
+            <div style={{ fontSize: '12px', color: '#64748B', marginTop: '3px' }}>{f.reason}</div>
+            <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '2px' }}>{formatFailureTime(f.occurred_at)}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ReadinessDetail({
   sectionTitle, currentModeText, explanationFn, notReadyHelpText,
   enableButtonLabel, dialogTitle, dialogBody1, dialogBody2,
-  readiness, brandId, enableMutation, autopilotLabel, zeroDataLabel,
+  readiness, brandId, enableMutation, autopilotLabel, zeroDataLabel, showRecentFailures,
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
 
@@ -248,6 +299,10 @@ function ReadinessDetail({
         </div>
         <p style={{ margin: 0, fontSize: '13px', color: '#475569', lineHeight: 1.5 }}>{explanationFn(readiness)}</p>
       </div>
+
+      {showRecentFailures && readiness.recent_failures?.length > 0 && (
+        <RecentFailures failures={readiness.recent_failures} />
+      )}
 
       {enableError && (
         <p style={{ margin: '0 0 12px', fontSize: '12.5px', color: '#B91C1C' }}>{enableError}</p>
@@ -460,6 +515,7 @@ export default function Automation() {
               dialogBody1="Luna will automatically cancel eligible orders when all of your store's cancellation rules are satisfied."
               dialogBody2="Anything uncertain will still be sent to your team."
               autopilotLabel="Cancellation Autopilot"
+              showRecentFailures
               readiness={cancellation}
               brandId={brand?.id}
               enableMutation={cancelEnableMutation}
