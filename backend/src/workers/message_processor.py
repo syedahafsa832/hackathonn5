@@ -569,6 +569,12 @@ class UnifiedMessageProcessor:
                         "sent_at": now_iso,
                         "direction": msg_direction,
                         "role": "assistant",
+                        # Deterministic marker customer_success_agent.py reads on the
+                        # customer's NEXT message to recognize a bare "here's my email"
+                        # reply as an identity-verification follow-up (not just any
+                        # message that happens to mention an email) - see its
+                        # ownership_mismatch handling.
+                        **({"needs_email_verification": True} if ai_result.get("needs_identity_verification") else {}),
                     })
                     update = {"messages": existing_messages, "updated_at": now_iso}
                     if email_actually_sent:

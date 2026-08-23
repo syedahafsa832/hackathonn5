@@ -638,6 +638,41 @@ class CustomerSuccessAgent:
                         access_token=_brand_shopify_token,
                     )
 
+            # Identity-verification follow-up: this message names no order
+            # number of its own, but Luna's own prior reply on this ticket
+            # asked the customer to confirm the email used on a specific
+            # order (needs_email_verification, persisted on that outbound
+            # message - see STAGE 10 in message_processor.py). Re-run the
+            # SAME get_order_status lookup with the order number already
+            # known from this conversation and the newly supplied email -
+            # never re-ask for the order number, and never treat a bare
+            # email as sufficient without that prior request having
+            # genuinely happened. Deterministic (regex), no LLM call.
+            if "order_status" not in tool_results and ticket_id:
+                _verify_email_match = re.search(r'[\w.-]+@[\w.-]+\.\w+', query)
+                if _verify_email_match:
+                    try:
+                        from src.lib.supabase_client import supabase_select as _sel2
+                        _t_rows = _sel2("tickets", {"id": f"eq.{ticket_id}"})
+                        _t = _t_rows[0] if _t_rows else {}
+                        _last_outbound = next(
+                            (m for m in reversed(_t.get("messages") or []) if m.get("direction") in ("outbound", "draft")),
+                            None,
+                        )
+                        _pending_order_id = _t.get("detected_order_id")
+                        if _last_outbound and _last_outbound.get("needs_email_verification") and _pending_order_id:
+                            await _emit("order_lookup", f"Finding order #{_pending_order_id}…")
+                            tool_results["order_status"] = await v3_tools.get_order_status(
+                                _pending_order_id,
+                                shop_domain=_brand_shopify_domain,
+                                access_token=_brand_shopify_token,
+                                customer_email=_verify_email_match.group(0),
+                            )
+                            if tool_results["order_status"].get("success"):
+                                await _emit("order_found", "Shopify order found")
+                    except Exception as _pve:
+                        logger.warning(f"[Agent] Pending identity-verification lookup failed (non-blocking): {_pve}")
+
             # Recommendation intent is checked first so a message like "Do you
             # have anything like the Galactic Space Boots?" is recognized as
             # a recommendation question, not ALSO fired through the plain
@@ -938,6 +973,12 @@ class CustomerSuccessAgent:
 
             # 4. Build tool context for the AI (explicit Shopify data — AI must use this verbatim)
             tool_context = ""
+            # Set when this reply asks the customer to confirm their order's
+            # email - persisted onto the outbound message (see STAGE 10 in
+            # message_processor.py) so the customer's next message can be
+            # recognized as an identity-verification follow-up without an
+            # LLM call, per _pending_order_id below.
+            _needs_identity_verification = False
             if tool_results:
                 if "order_status" in tool_results:
                     order = tool_results["order_status"]
@@ -966,6 +1007,7 @@ class CustomerSuccessAgent:
                         mentioned_num = order.get("order_number", "")
                         tool_context += f"ORDER IDENTITY UNVERIFIED: An order #{mentioned_num} exists, but the email on file for it does not match this conversation.\n"
                         tool_context += "Do NOT reveal any details about this order (status, items, cancellation, refund, tracking). Ask the customer to confirm the email address used when placing that order before you can discuss it.\n"
+                        _needs_identity_verification = True
                     elif order.get("error"):
                         mentioned_num = order.get("order_number", "")
                         tool_context += f"ORDER LOOKUP FAILED: Could not retrieve order #{mentioned_num} from Shopify.\n"
@@ -1275,6 +1317,8 @@ class CustomerSuccessAgent:
             # text without it, so callers gating AI-reply quota on this flag
             # never charge a customer's trial/plan quota for a failed call.
             structured["ai_reply_generated"] = True
+            if _needs_identity_verification:
+                structured["needs_identity_verification"] = True
             return structured
 
         except Exception as e:
