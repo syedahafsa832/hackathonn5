@@ -1023,7 +1023,8 @@ function ReplyStyleTab() {
   const [switching, setSwitching] = useState(false);
   const [savingMode, setSavingMode] = useState(false);
   const [examples, setExamples] = useState([]);
-  const [newExample, setNewExample] = useState('');
+  const [newExampleQuestion, setNewExampleQuestion] = useState('');
+  const [newExampleReply, setNewExampleReply] = useState('');
   const [addingExample, setAddingExample] = useState(false);
 
   // Identity (assistant name, signature) is a separate concept from Reply
@@ -1162,12 +1163,18 @@ function ReplyStyleTab() {
   };
 
   const addExample = async () => {
-    if (!brandId || !newExample.trim()) return;
+    if (!brandId || !newExampleQuestion.trim() || !newExampleReply.trim()) return;
     setAddingExample(true);
     try {
-      await client.post(`/api/v2/brands/${brandId}/reply-style/examples`, { content: newExample.trim() });
+      // Stored as a single "content" string - no backend/schema change.
+      // The Customer:/Luna's reply: framing is what feeds style-profile
+      // extraction (reply_style_service._uploaded_example_texts), same as
+      // any other uploaded example text today.
+      const content = `Customer: ${newExampleQuestion.trim()}\n\nLuna's reply: ${newExampleReply.trim()}`;
+      await client.post(`/api/v2/brands/${brandId}/reply-style/examples`, { content });
       localStorage.setItem('resolv_reply_style_done', 'true');
-      setNewExample('');
+      setNewExampleQuestion('');
+      setNewExampleReply('');
       const res = await client.get(`/api/v2/brands/${brandId}/reply-style/examples`);
       setExamples(res.data?.examples || []);
     } catch (err) {
@@ -1388,33 +1395,61 @@ function ReplyStyleTab() {
       {mode !== 'disabled' && (
         <div style={card}>
           <div style={sectionTitle}>Uploaded Examples (optional)</div>
-          <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '12px' }}>
+          <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
             Seed data for faster personalization. Not required — approved replies work on their own.
           </div>
-          <div style={{ display: 'flex', gap: '8px', marginBottom: '14px' }}>
-            <textarea
-              value={newExample}
-              onChange={e => setNewExample(e.target.value)}
-              placeholder="Paste an example reply..."
-              rows={2}
-              style={{ ...inputStyle, flex: 1, resize: 'vertical' }}
-            />
+          <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '14px' }}>
+            Show Luna how your team would reply. You don't need to use the exact wording a real customer would use.
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '14px' }}>
+            <div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>Example customer message</div>
+              <textarea
+                value={newExampleQuestion}
+                onChange={e => setNewExampleQuestion(e.target.value)}
+                placeholder="Hey, can I change the size of my order?"
+                rows={2}
+                style={{ ...inputStyle, resize: 'vertical' }}
+              />
+            </div>
+            <div>
+              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>Example ideal reply</div>
+              <textarea
+                value={newExampleReply}
+                onChange={e => setNewExampleReply(e.target.value)}
+                placeholder="Of course! If your order hasn't shipped yet, we can help you change the size."
+                rows={2}
+                style={{ ...inputStyle, resize: 'vertical' }}
+              />
+            </div>
             <button
               onClick={addExample}
-              disabled={addingExample || !newExample.trim()}
-              style={{ padding: '0 16px', borderRadius: '4px', background: 'var(--accent)', color: 'white', fontWeight: '600', fontSize: '13px', cursor: addingExample ? 'not-allowed' : 'pointer', flexShrink: 0 }}
+              disabled={addingExample || !newExampleQuestion.trim() || !newExampleReply.trim()}
+              style={{ alignSelf: 'flex-start', padding: '8px 18px', borderRadius: '4px', background: 'var(--accent)', color: 'white', fontWeight: '600', fontSize: '13px', cursor: addingExample ? 'not-allowed' : 'pointer' }}
             >
               Add
             </button>
           </div>
           {examples.length === 0 ? (
             <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>No examples uploaded yet.</div>
-          ) : examples.map(ex => (
-            <div key={ex.id} style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', padding: '8px 0', borderTop: '1px solid var(--border)' }}>
-              <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{ex.content}</div>
-              <button onClick={() => deleteExample(ex.id)} style={{ fontSize: '11px', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0 }}>Delete</button>
-            </div>
-          ))}
+          ) : examples.map(ex => {
+            const parts = (ex.content || '').split('\n\nLuna\'s reply: ');
+            const question = parts.length === 2 ? parts[0].replace(/^Customer: /, '') : null;
+            const reply = parts.length === 2 ? parts[1] : null;
+            return (
+              <div key={ex.id} style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', padding: '10px 0', borderTop: '1px solid var(--border)' }}>
+                {question ? (
+                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                    <div><span style={{ color: 'var(--text-muted)' }}>Customer:</span> {question}</div>
+                    <div style={{ marginTop: '2px' }}><span style={{ color: 'var(--text-muted)' }}>Luna:</span> {reply}</div>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{ex.content}</div>
+                )}
+                <button onClick={() => deleteExample(ex.id)} style={{ fontSize: '11px', color: 'var(--danger)', background: 'none', border: 'none', cursor: 'pointer', flexShrink: 0 }}>Delete</button>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
