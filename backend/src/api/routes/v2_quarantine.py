@@ -5,6 +5,7 @@ GET  /api/v1/quarantine              — list quarantined emails for the brand
 POST /api/v1/quarantine/{id}/promote — promote to support ticket
 POST /api/v1/quarantine/{id}/discard — discard and mark as reviewed
 """
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -95,12 +96,38 @@ async def list_quarantine(
 
 # ── T014: POST /quarantine/{id}/promote ───────────────────────────────────────
 
+async def _run_promotion(quarantine_id: str, payload: dict, actioned_by: str) -> None:
+    """The actual AI analysis + email reply (several seconds of LLM/Gmail
+    latency) - run after the HTTP response has already gone out, same
+    fire-and-forget pattern used for Shopify import. The ticket itself is
+    created almost immediately inside process_message's own STAGE 1.8, well
+    before this AI/reply work; blocking the promote request on the rest of
+    the pipeline (the actual bottleneck) bought nothing since the dashboard
+    already discovers the new ticket via its own ticket list, not the
+    promote response."""
+    try:
+        from src.workers.message_processor import message_processor as _mp
+        result = await _mp.process_message("email_incoming", payload)
+        ticket_id = result.get("ticket_id") if result else None
+        logger.info(f"[Quarantine] Promoted {quarantine_id} → ticket {ticket_id} by {actioned_by}")
+    except Exception as e:
+        logger.error(f"[Quarantine] Message processing failed for {quarantine_id}: {e}")
+        # Release the claim so the item can be retried from the UI instead of
+        # being stuck in "promoted" with no ticket ever created.
+        try:
+            supabase_update("email_quarantine", {"id": f"eq.{quarantine_id}"}, {"status": "pending"})
+        except Exception:
+            pass
+
+
 @router.post("/{quarantine_id}/promote")
 async def promote_quarantine(
     quarantine_id: str,
     tenant: TenantContext = Depends(get_current_tenant),
 ):
-    """Promote a quarantined email to a support ticket."""
+    """Promote a quarantined email to a support ticket. Claims the record
+    and hands off to background processing immediately - see _run_promotion
+    for why the AI/email work doesn't block this response."""
     brand = _get_brand_for_tenant(tenant.tenant_id)
     if not brand:
         raise HTTPException(status_code=404, detail="No brand found for this tenant")
@@ -128,36 +155,22 @@ async def promote_quarantine(
     if not claimed:
         raise HTTPException(status_code=404, detail="Email already actioned")
 
-    # Run through the full message processor pipeline so the AI analysis
-    # and email reply happen exactly as if the email had passed filtering normally.
-    try:
-        from src.workers.message_processor import message_processor as _mp
-        payload = {
-            "channel":          "email",
-            "customer_email":   q.get("sender_email", ""),
-            "customer_name":    q.get("sender_email", ""),
-            "subject":          q.get("subject", "(no subject)"),
-            "content":          q.get("body_preview", ""),
-            "gmail_thread_id":  q.get("thread_id"),
-            "email_category":   "support",
-            "sender_type":      "human",
-            "auto_reply_enabled": True,
-            "store_id":         brand_id,
-        }
-        result = await _mp.process_message("email_incoming", payload)
-        ticket_id = result.get("ticket_id") if result else None
-    except Exception as e:
-        logger.error(f"[Quarantine] Message processing failed for {quarantine_id}: {e}")
-        # Release the claim so the item can be retried from the UI instead of
-        # being stuck in "promoted" with no ticket ever created.
-        try:
-            supabase_update("email_quarantine", {"id": f"eq.{quarantine_id}"}, {"status": "pending"})
-        except Exception:
-            pass
-        raise HTTPException(status_code=500, detail="Failed to process promoted email")
+    payload = {
+        "channel":          "email",
+        "customer_email":   q.get("sender_email", ""),
+        "customer_name":    q.get("sender_email", ""),
+        "subject":          q.get("subject", "(no subject)"),
+        "content":          q.get("body_preview", ""),
+        "gmail_thread_id":  q.get("thread_id"),
+        "gmail_message_id": q.get("gmail_message_id"),
+        "email_category":   "support",
+        "sender_type":      "human",
+        "auto_reply_enabled": True,
+        "store_id":         brand_id,
+    }
+    asyncio.create_task(_run_promotion(quarantine_id, payload, tenant.email))
 
-    logger.info(f"[Quarantine] Promoted {quarantine_id} → ticket {ticket_id} by {tenant.email}")
-    return {"success": True, "ticket_id": ticket_id, "message": "Email promoted to ticket"}
+    return {"success": True, "message": "Email promoted to ticket"}
 
 
 # ── T015: POST /quarantine/{id}/discard ───────────────────────────────────────
