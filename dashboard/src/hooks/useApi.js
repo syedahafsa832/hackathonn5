@@ -149,6 +149,32 @@ export function useBrandAnalytics(brandId) {
 }
 
 /**
+ * Mutations for the Cancellation Autopilot activation/kill-switch. Both
+ * invalidate brand-analytics so the Automation page immediately reflects
+ * the real, server-verified enabled state (never an optimistic local
+ * toggle) and pick up fresh readiness/stats on the next fetch.
+ */
+export function useEnableCancellationAutopilot() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (brandId) => api.enableCancellationAutopilot(brandId),
+    onSettled: () => {
+      queryClient.invalidateQueries(['brand-analytics']);
+    },
+  });
+}
+
+export function useDisableCancellationAutopilot() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (brandId) => api.disableCancellationAutopilot(brandId),
+    onSettled: () => {
+      queryClient.invalidateQueries(['brand-analytics']);
+    },
+  });
+}
+
+/**
  * Mutation to approve an action
  */
 export function useApproveAction() {

@@ -427,6 +427,22 @@ class ReturnActionsIntegration:
                 ai_reasoning=ai_reasoning, eligibility=eligibility,
             )
             result["staged"] = staged
+
+            # Cancellation Autopilot: this is the ONLY branch reachable here
+            # where every deterministic check this codebase has already
+            # passed — order freshly re-verified live against Shopify,
+            # unfulfilled, eligible, and no merchant free-text policy
+            # requiring human judgment (that case exits above, before this
+            # point, every time). The backend alone decides whether to
+            # auto-execute from here; Luna's own judgment is never consulted
+            # or trusted as authorization.
+            autopilot_context = await self._maybe_autopilot_cancel(
+                tenant_id=tenant_id, brand_id=brand_id, staged=staged, order_id=order_id,
+            )
+            if autopilot_context:
+                result["action_context"] = autopilot_context
+                return result
+
             result["action_context"] = (
                 "**CANCEL QUEUED**: Order hasn't shipped yet — cancel + refund is the right action. "
                 "Tell the customer: 'Since your order hasn't shipped yet, I've sent your cancellation request "
@@ -921,6 +937,80 @@ class ReturnActionsIntegration:
         return (
             "**COULDN'T VERIFY THE REPLACEMENT**: Tell the customer we need to check with our team, and "
             "escalate. Do NOT create an exchange action or promise anything."
+        )
+
+    async def _maybe_autopilot_cancel(
+        self,
+        tenant_id: Optional[str],
+        brand_id: Optional[str],
+        staged: Optional[dict],
+        order_id: str,
+    ) -> Optional[str]:
+        """Auto-execute a cancellation that has already cleared every
+        deterministic eligibility check the caller enforces, but ONLY when
+        this brand has explicitly turned Cancellation Autopilot on via the
+        dedicated /automation/cancellation/enable endpoint. Returns None
+        when Autopilot isn't enabled (caller falls through to the normal
+        Copilot "queued for a human" message, unchanged) or when `staged`
+        isn't a real new pending action in the `actions` table (e.g.
+        actions_service.create_action failed and this fell back to the
+        legacy pending_actions table, or a duplicate was returned instead
+        of a fresh action) — never attempts to auto-execute on a path it
+        can't also safely follow through on.
+
+        Reuses actions_service.approve_action() — the exact same function a
+        human clicking Approve calls — so idempotency, the atomic
+        pending->approved claim (closing double-execution races from
+        retries/duplicate webhooks/concurrent workers), live Shopify
+        re-verification, the audit trail, and existing failure handling are
+        all inherited unchanged. No second execution path is created here."""
+        if not tenant_id or not brand_id or not staged or not staged.get("success"):
+            return None
+        if staged.get("status") not in ("pending", None):
+            # "duplicate_skipped" or anything else — not a fresh action
+            # this call originated, never auto-execute on it.
+            return None
+        action_id = staged.get("action_id")
+        if not action_id:
+            return None
+
+        try:
+            brands = supabase_select("brands", {"id": f"eq.{brand_id}"})
+        except Exception as e:
+            logger.warning(f"[Autopilot] Could not verify Autopilot flag for brand {brand_id} ({e}) — leaving action pending for human review")
+            return None
+        if not brands or not brands[0].get("cancellation_autopilot_enabled"):
+            return None
+
+        from src.services.actions_service import actions_service
+
+        logger.info(f"[Autopilot] Attempting automatic cancellation for action {action_id} (order #{order_id})")
+        outcome = await actions_service.approve_action(
+            tenant_id=tenant_id,
+            action_id=action_id,
+            approved_by="autopilot",
+            idempotency_key=f"autopilot-{action_id}",
+        )
+
+        if outcome.get("success"):
+            logger.info(f"[Autopilot] Cancellation completed automatically for action {action_id}")
+            return (
+                "**CANCEL COMPLETED AUTOMATICALLY**: Cancellation Autopilot verified every safety check and "
+                "Shopify has confirmed the order is cancelled. Tell the customer, briefly and naturally: "
+                f"'Done! Your order #{order_id} has been cancelled successfully.'"
+            )
+
+        # Shopify itself rejected/failed the cancellation (or the action was
+        # already actioned/claimed elsewhere) — the action record already
+        # reflects the real failure (actions_service marks it "failed" with
+        # the real error on a ShopifyError). Never claim success; this is a
+        # genuine escalation, never "best effort."
+        logger.warning(f"[Autopilot] Automatic cancellation failed for action {action_id}: {outcome.get('error')}")
+        return (
+            "**CANCEL AUTOPILOT FAILED — ESCALATED TO HUMAN REVIEW**: Automatic cancellation could not be "
+            f"completed ({outcome.get('error') or 'Shopify did not confirm the cancellation'}). Do NOT tell the "
+            "customer it succeeded, and do NOT promise a specific response time. Tell the customer: "
+            "'I couldn't complete the cancellation automatically, so I've sent this to our team for review.'"
         )
 
     async def _create_action(
