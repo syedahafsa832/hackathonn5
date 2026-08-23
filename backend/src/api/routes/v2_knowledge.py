@@ -9,12 +9,8 @@ from typing import Optional, List
 from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel, Field
 
-from src.api.middleware.auth_middleware import (
-    AuthenticatedContext,
-    get_current_user,
-    require_admin,
-    require_brand_access
-)
+from src.api.middleware.tenant_auth import get_current_tenant, TenantContext
+from src.api.routes.v2_brands import _get_owned_brand
 from src.services.brand_knowledge_service import brand_knowledge_service
 from src.lib.supabase_client import supabase_select
 
@@ -51,10 +47,11 @@ class SourceResponse(BaseModel):
 @router.get("/sources")
 async def list_sources(
     brand_id: str,
-    context: AuthenticatedContext = Depends(require_brand_access("brand_id"))
+    tenant: TenantContext = Depends(get_current_tenant)
 ):
     """List all knowledge base sources for a brand"""
     try:
+        _get_owned_brand(brand_id, tenant.tenant_id)
         sources = await brand_knowledge_service.get_sources(brand_id)
 
         return {
@@ -62,6 +59,8 @@ async def list_sources(
             "count": len(sources)
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error listing KB sources: {e}")
         raise HTTPException(status_code=500, detail="Failed to list sources")
@@ -71,10 +70,11 @@ async def list_sources(
 async def get_source(
     brand_id: str,
     source_id: str,
-    context: AuthenticatedContext = Depends(require_brand_access("brand_id"))
+    tenant: TenantContext = Depends(get_current_tenant)
 ):
     """Get a specific knowledge base source"""
     try:
+        _get_owned_brand(brand_id, tenant.tenant_id)
         sources = supabase_select("knowledge_base_sources", {
             "id": f"eq.{source_id}",
             "brand_id": f"eq.{brand_id}"
@@ -105,13 +105,7 @@ async def get_source(
 async def upload_text(
     brand_id: str,
     request: UploadTextRequest,
-    context: AuthenticatedContext = Depends(require_admin),
-    # require_admin only checks the caller's own role - it never verified
-    # brand_id in the URL actually belongs to them, letting any admin-role
-    # user write to any other tenant's knowledge base (security audit
-    # finding A2). require_brand_access adds the missing ownership check
-    # without weakening the existing admin-role requirement above.
-    _brand_access: AuthenticatedContext = Depends(require_brand_access("brand_id")),
+    tenant: TenantContext = Depends(get_current_tenant),
 ):
     """
     Upload text content to the knowledge base.
@@ -119,13 +113,14 @@ async def upload_text(
     The content will be chunked, embedded, and stored for RAG retrieval.
     """
     try:
+        _get_owned_brand(brand_id, tenant.tenant_id)
         logger.info(f"[KB] Uploading: {request.name} for brand {brand_id}")
 
         result = await brand_knowledge_service.upload_text(
             brand_id=brand_id,
             name=request.name,
             content=request.content,
-            user_id=context.user.user_id,
+            user_id=tenant.tenant_id,
             metadata=request.metadata
         )
 
@@ -154,13 +149,11 @@ async def upload_text(
 async def delete_source(
     brand_id: str,
     source_id: str,
-    context: AuthenticatedContext = Depends(require_admin),
-    # Same fix as /upload above - require_admin alone doesn't check that
-    # brand_id belongs to this caller (finding A2).
-    _brand_access: AuthenticatedContext = Depends(require_brand_access("brand_id")),
+    tenant: TenantContext = Depends(get_current_tenant),
 ):
     """Delete a knowledge base source and all its chunks"""
     try:
+        _get_owned_brand(brand_id, tenant.tenant_id)
         result = await brand_knowledge_service.delete_source(brand_id, source_id)
 
         if not result.get("success"):
@@ -185,10 +178,11 @@ async def delete_source(
 async def search_knowledge(
     brand_id: str,
     request: SearchRequest,
-    context: AuthenticatedContext = Depends(require_brand_access("brand_id"))
+    tenant: TenantContext = Depends(get_current_tenant)
 ):
     """Search the knowledge base"""
     try:
+        _get_owned_brand(brand_id, tenant.tenant_id)
         results = await brand_knowledge_service.search_knowledge(
             brand_id=brand_id,
             query=request.query,
@@ -201,6 +195,8 @@ async def search_knowledge(
             "query": request.query
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error searching KB: {e}")
         raise HTTPException(status_code=500, detail="Failed to search knowledge base")
@@ -211,10 +207,11 @@ async def get_context(
     brand_id: str,
     query: str = Query(..., min_length=1),
     top_k: int = Query(5, ge=1, le=10),
-    context: AuthenticatedContext = Depends(require_brand_access("brand_id"))
+    tenant: TenantContext = Depends(get_current_tenant)
 ):
     """Get RAG context for a query (used by AI)"""
     try:
+        _get_owned_brand(brand_id, tenant.tenant_id)
         rag_context = await brand_knowledge_service.get_brand_context(
             brand_id=brand_id,
             query=query,
@@ -226,6 +223,8 @@ async def get_context(
             "has_context": bool(rag_context)
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting KB context: {e}")
         raise HTTPException(status_code=500, detail="Failed to get context")
@@ -234,10 +233,11 @@ async def get_context(
 @router.get("/stats")
 async def get_kb_stats(
     brand_id: str,
-    context: AuthenticatedContext = Depends(require_brand_access("brand_id"))
+    tenant: TenantContext = Depends(get_current_tenant)
 ):
     """Get knowledge base statistics"""
     try:
+        _get_owned_brand(brand_id, tenant.tenant_id)
         sources = supabase_select("knowledge_base_sources", {
             "brand_id": f"eq.{brand_id}"
         })
@@ -262,6 +262,8 @@ async def get_kb_stats(
             }
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting KB stats: {e}")
         raise HTTPException(status_code=500, detail="Failed to get stats")

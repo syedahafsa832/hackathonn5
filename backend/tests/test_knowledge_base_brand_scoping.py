@@ -186,35 +186,29 @@ def test_list_sources_blocked_for_another_tenants_brand():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from src.api.routes.v2_knowledge import router as v2_knowledge_router
-    from src.api.middleware.auth_middleware import get_current_user, UserContext, AuthenticatedContext, UserRole
+    from src.api.middleware.tenant_auth import get_current_tenant, TenantContext
 
     app = FastAPI()
     app.include_router(v2_knowledge_router, prefix="/api/v2")
     test_client = TestClient(app)
 
-    attacker_org, attacker_brand, victim_brand = "org-attacker", "brand-attacker-owned", "brand-victim"
-
-    def attacker_context():
-        return AuthenticatedContext(
-            user=UserContext(user_id="user-attacker", supabase_auth_id="auth-attacker",
-                              organization_id=attacker_org, email="attacker@example.com",
-                              role=UserRole.ADMIN, brands=[attacker_brand]),
-            organization=None, brand_ids=[attacker_brand],
-        )
+    attacker_tenant, attacker_brand, victim_brand = "tenant-attacker", "brand-attacker-owned", "brand-victim"
 
     def fake_brand_lookup(table, params=None):
-        if table == "brands" and params.get("id") == f"eq.{attacker_brand}" and params.get("organization_id") == f"eq.{attacker_org}":
-            return [{"id": attacker_brand, "organization_id": attacker_org}]
+        if table == "brands" and params.get("id") == f"eq.{attacker_brand}" and params.get("tenant_id") == f"eq.{attacker_tenant}":
+            return [{"id": attacker_brand, "tenant_id": attacker_tenant}]
         return []
 
-    app.dependency_overrides[get_current_user] = attacker_context
+    app.dependency_overrides[get_current_tenant] = lambda: TenantContext(
+        tenant_id=attacker_tenant, email="attacker@example.com"
+    )
     try:
-        with patch("src.lib.supabase_client.supabase_select", side_effect=fake_brand_lookup):
+        with patch("src.api.routes.v2_brands.supabase_select", side_effect=fake_brand_lookup):
             resp = test_client.get(f"/api/v2/brands/{victim_brand}/knowledge/sources")
     finally:
         app.dependency_overrides.clear()
 
-    assert resp.status_code in (403, 404)
+    assert resp.status_code == 404
 
 
 # ── rag_engine.py: unscoped fallback quarantined ─────────────────────────────
