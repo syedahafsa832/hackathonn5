@@ -160,7 +160,7 @@ class ReturnActionsIntegration:
                     "**RESTORE ORDER QUEUED**: Order is cancelled but inventory not yet restocked — "
                     "our team will try to reactivate it via Shopify. "
                     "Tell the customer: 'I've sent your restoration request to our team. "
-                    "They'll do everything they can and get back to you shortly.'"
+                    "They'll take a look and follow up once it's reviewed.'"
                 )
             else:
                 # No order data available — cannot safely determine restocked status
@@ -248,7 +248,7 @@ class ReturnActionsIntegration:
             result["staged"] = staged
             result["action_context"] = (
                 "**ADDRESS CHANGE QUEUED (auto-parsed)**: Structured address stored — will update in Shopify automatically on approval. "
-                "Tell the customer: 'I've queued your address update. It will be updated right away and you'll get a confirmation email.'"
+                "Tell the customer: 'I've queued your address update for our team to review. You'll get a confirmation email once it's updated.'"
             )
             return result
 
@@ -271,7 +271,7 @@ class ReturnActionsIntegration:
             result["action_context"] = (
                 "**DELIVERY ISSUE QUEUED**: Team will check with the carrier and arrange reship or refund. "
                 "Tell the customer: 'I've flagged this with our team — they'll investigate with the carrier "
-                "and sort this out for you within 24 hours.'"
+                "and follow up once they've looked into it.'"
             )
             return result
 
@@ -411,7 +411,7 @@ class ReturnActionsIntegration:
                     "**REQUEST SUBMITTED FOR MANUAL REVIEW**: This store has additional cancellation policy "
                     "details on file that need a human check. "
                     "Tell the customer: 'I've sent your cancellation request to our team for a quick review "
-                    "given our store policy. They'll follow up shortly.'"
+                    "given our store policy. They'll follow up once it's reviewed.'"
                 )
                 return result
 
@@ -456,7 +456,7 @@ class ReturnActionsIntegration:
                 result["action_context"] = (
                     f"**REQUEST SUBMITTED FOR MANUAL REVIEW**: {eligibility.get('reason')} "
                     "Tell the customer: 'I've submitted your request to our team for manual review. "
-                    "They'll process it within 2 hours and you'll get an email confirmation.'"
+                    "They'll review it and you'll get an email confirmation once it's processed.'"
                 )
             else:
                 result["action_context"] = (
@@ -520,13 +520,13 @@ class ReturnActionsIntegration:
                     "Our team will confirm the exact refund amount for that item specifically. "
                     f"Tell the customer: 'I've sent a request to my team to {noun} just the "
                     f"{specific_item.get('title')}, the rest of your order is unaffected. "
-                    "You'll get a confirmation as soon as they approve it (usually under 2 hours).'"
+                    "You'll get a confirmation once they approve it.'"
                 )
             else:
                 result["action_context"] = (
                     f"**ACTION STAGED FOR APPROVAL**: Your {noun} request has been submitted for review. "
                     "Tell the customer: 'I've prepared your request for my team to review. "
-                    "You'll get a confirmation as soon as they approve it (usually under 2 hours).'"
+                    "You'll get a confirmation once they approve it.'"
                 )
         else:
             result["action_context"] = (
@@ -577,7 +577,7 @@ class ReturnActionsIntegration:
                 f"our team's approval (submitted earlier in this conversation or a prior message). "
                 f"Do NOT create a new request or say a new one was sent. "
                 f"Tell the customer: 'Your {noun} request is already with our team for approval, you'll hear "
-                f"back soon, no need to send it again.'"
+                f"back once it's reviewed, no need to send it again.'"
             )
         if status == "approved":
             return (
@@ -665,7 +665,7 @@ class ReturnActionsIntegration:
                 result["action_context"] = (
                     f"**EXCHANGE REQUEST SUBMITTED FOR MANUAL REVIEW**: {eligibility.get('reason')} "
                     "Tell the customer: 'I've submitted your exchange request to our team for manual review. "
-                    "They'll process it within 2 hours and you'll get an email confirmation.'"
+                    "They'll review it and you'll get an email confirmation once it's processed.'"
                 )
             else:
                 result["action_context"] = (
@@ -755,7 +755,7 @@ class ReturnActionsIntegration:
                 f"({target.get('product_title')}, {target.get('variant_title')}) is ${abs(price_difference):.2f} "
                 "cheaper than the original item, our team needs to decide how to handle the difference. "
                 "Tell the customer: 'I found your replacement item and sent this to our team for approval "
-                "since there is a price difference to sort out. You will hear back within 2 hours.' "
+                "since there is a price difference to sort out. You'll hear back once it's reviewed.' "
                 "Do NOT say the exchange is done or promise a refund of the difference."
             )
             return result

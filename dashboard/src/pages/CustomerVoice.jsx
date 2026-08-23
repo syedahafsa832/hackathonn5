@@ -151,11 +151,13 @@ export default function CustomerVoice() {
         </div>
       </section>
 
-      {/* Autopilot readiness — only when there's a real track record */}
+      {/* Autopilot readiness teaser — only when there's a real track record.
+          Full detail (stats, why-not-ready explanation, activation control)
+          lives on the dedicated Automation page now. */}
       {analytics?.autopilot_readiness && (
         <section>
           <div style={{ padding: '22px 24px', border: '1px solid #E4E4E7', borderRadius: '8px', background: '#F8FAFC' }}>
-            <h3 style={{ margin: '0 0 6px', fontSize: '14px', fontWeight: '700', color: '#0F172A' }}>Luna is ready for Autopilot</h3>
+            <h3 style={{ margin: '0 0 6px', fontSize: '14px', fontWeight: '700', color: '#0F172A' }}>Luna is ready for Autopilot review</h3>
             <p style={{ margin: '0 0 14px', fontSize: '13px', color: '#475569', lineHeight: 1.55 }}>
               Luna has successfully handled {analytics.autopilot_readiness.eligible_cancellations} eligible cancellation
               request{analytics.autopilot_readiness.eligible_cancellations === 1 ? '' : 's'} with
@@ -164,11 +166,10 @@ export default function CustomerVoice() {
               requires your approval today.
             </p>
             <button
-              disabled
-              title="Coming soon"
-              style={{ padding: '8px 16px', borderRadius: '6px', border: '1px solid #E4E4E7', background: 'white', color: '#94A3B8', fontSize: '13px', fontWeight: '600', cursor: 'not-allowed' }}
+              onClick={() => navigate('/automation')}
+              style={{ padding: '8px 16px', borderRadius: '6px', border: '1px solid #06B6D4', background: 'white', color: '#0E7490', fontSize: '13px', fontWeight: '600', cursor: 'pointer' }}
             >
-              Review Autopilot
+              Review readiness →
             </button>
           </div>
         </section>

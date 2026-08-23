@@ -1393,7 +1393,7 @@ class CustomerSuccessAgent:
             "confidence_score": 40,
             "escalate": True,
             "escalation_reason": f"System error: {error}",
-            "reply_body": f"Hey there!\n\nThanks for reaching out. I'm having a bit of trouble processing your message right now, but I've flagged this for my team to take a look.\n\nSomeone will get back to you shortly!\n\n{sign_off}",
+            "reply_body": f"Hey there!\n\nThanks for reaching out. I'm having a bit of trouble processing your message right now, but I've flagged this for my team to take a look.\n\nWe'll follow up once it's reviewed.\n\n{sign_off}",
             "status": "escalated"
         }
 
@@ -1412,7 +1412,7 @@ class CustomerSuccessAgent:
             "escalate": True,
             "provider_outage": True,
             "escalation_reason": PROVIDER_OUTAGE_REASON,
-            "reply_body": f"Hey there!\n\nThanks for reaching out. I'm having a bit of trouble processing your message right now, but I've flagged this for my team to take a look.\n\nSomeone will get back to you shortly!\n\n{sign_off}",
+            "reply_body": f"Hey there!\n\nThanks for reaching out. I'm having a bit of trouble processing your message right now, but I've flagged this for my team to take a look.\n\nWe'll follow up once it's reviewed.\n\n{sign_off}",
             "status": "escalated"
         }
 

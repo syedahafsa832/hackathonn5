@@ -307,6 +307,136 @@ def test_autopilot_readiness_insufficient_sample_still_blocks_even_with_failures
     assert resp.json()["autopilot_readiness"] is None
 
 
+# ── category_readiness (Automation page) ────────────────────────────────────
+
+def test_category_readiness_present_even_below_minimum_sample():
+    """Unlike autopilot_readiness (omitted below the sample floor),
+    category_readiness must always be present - the "why isn't this ready
+    yet" UX needs the real numbers even when there aren't enough yet."""
+    all_cancel_actions = [
+        {"id": "a1", "action_type": "cancel_order", "status": "executed", "created_at": _now_iso()},
+        {"id": "a2", "action_type": "cancel_order", "status": "executed", "created_at": _now_iso()},
+    ]
+
+    def fake_select(table, params=None):
+        if table == "brands":
+            return [BRAND]
+        if table == "actions":
+            return all_cancel_actions
+        return []
+
+    with patch("src.api.routes.v2_brands.supabase_select", side_effect=fake_select):
+        resp = _with_tenant(lambda: client.get("/api/v2/brands/brand-1/analytics"))
+
+    cancellation = resp.json()["category_readiness"]["cancellation"]
+    assert cancellation["status"] == "not_ready"
+    assert cancellation["total_requests"] == 2
+    assert cancellation["successful"] == 2
+
+
+def test_category_readiness_ready_for_review_with_no_failures():
+    all_cancel_actions = (
+        [{"id": f"a{i}", "action_type": "cancel_order", "status": "executed", "created_at": _now_iso()} for i in range(5)]
+    )
+
+    def fake_select(table, params=None):
+        if table == "brands":
+            return [BRAND]
+        if table == "actions":
+            return all_cancel_actions
+        return []
+
+    with patch("src.api.routes.v2_brands.supabase_select", side_effect=fake_select):
+        resp = _with_tenant(lambda: client.get("/api/v2/brands/brand-1/analytics"))
+
+    cancellation = resp.json()["category_readiness"]["cancellation"]
+    assert cancellation["status"] == "ready_for_review"
+    assert cancellation["failed_executions"] == 0
+
+
+def test_category_readiness_almost_there_when_failures_present_even_with_enough_sample():
+    """The exact Phase 4 distinction: enough sample, but a real Shopify
+    execution failure in the mix means "almost there," not "ready" -
+    escalated (human rejections) alone don't trigger this, only failed."""
+    all_cancel_actions = (
+        [{"id": f"a{i}", "action_type": "cancel_order", "status": "executed", "created_at": _now_iso()} for i in range(5)]
+        + [{"id": "f1", "action_type": "cancel_order", "status": "failed", "created_at": _now_iso()}]
+    )
+
+    def fake_select(table, params=None):
+        if table == "brands":
+            return [BRAND]
+        if table == "actions":
+            return all_cancel_actions
+        return []
+
+    with patch("src.api.routes.v2_brands.supabase_select", side_effect=fake_select):
+        resp = _with_tenant(lambda: client.get("/api/v2/brands/brand-1/analytics"))
+
+    cancellation = resp.json()["category_readiness"]["cancellation"]
+    assert cancellation["status"] == "almost_there"
+    assert cancellation["failed_executions"] == 1
+
+
+def test_category_readiness_escalated_field_is_human_rejections_not_failures():
+    """Rejections are normal, expected human judgment calls, not a red flag
+    - a sample with rejections but zero execution failures still reads as
+    "ready_for_review", matching the task's own worked example (47 requests,
+    45 successful, 2 escalated, still "Ready for review")."""
+    all_cancel_actions = (
+        [{"id": f"a{i}", "action_type": "cancel_order", "status": "executed", "created_at": _now_iso()} for i in range(45)]
+        + [{"id": f"r{i}", "action_type": "cancel_order", "status": "rejected", "created_at": _now_iso()} for i in range(2)]
+    )
+
+    def fake_select(table, params=None):
+        if table == "brands":
+            return [BRAND]
+        if table == "actions":
+            return all_cancel_actions
+        return []
+
+    with patch("src.api.routes.v2_brands.supabase_select", side_effect=fake_select):
+        resp = _with_tenant(lambda: client.get("/api/v2/brands/brand-1/analytics"))
+
+    cancellation = resp.json()["category_readiness"]["cancellation"]
+    assert cancellation["escalated"] == 2
+    assert cancellation["total_requests"] == 47
+    assert cancellation["approval_rate"] == 95.7
+    assert cancellation["status"] == "ready_for_review"
+
+
+def test_category_readiness_cancellation_is_not_contaminated_by_refund_actions():
+    """Different action categories must not contaminate each other's
+    metrics - refund actions in the same brand's history must not count
+    toward (or degrade) the cancellation readiness numbers. The fake here
+    honors the real action_type filter the app sends (rather than ignoring
+    it and returning everything), so this actually exercises the app's own
+    filtering instead of just asserting on unfiltered fixture data."""
+    mixed_actions = (
+        [{"id": f"c{i}", "action_type": "cancel_order", "status": "executed", "created_at": _now_iso()} for i in range(5)]
+        + [{"id": f"r{i}", "action_type": "refund", "status": "failed", "created_at": _now_iso()} for i in range(10)]
+    )
+
+    def fake_select(table, params=None):
+        if table == "brands":
+            return [BRAND]
+        if table == "actions":
+            if params and params.get("action_type"):
+                wanted = params["action_type"].replace("eq.", "")
+                return [a for a in mixed_actions if a["action_type"] == wanted]
+            return mixed_actions
+        return []
+
+    with patch("src.api.routes.v2_brands.supabase_select", side_effect=fake_select):
+        resp = _with_tenant(lambda: client.get("/api/v2/brands/brand-1/analytics"))
+
+    cancellation = resp.json()["category_readiness"]["cancellation"]
+    # The refund failures must not leak into cancellation's counts or status.
+    assert cancellation["total_requests"] == 5
+    assert cancellation["failed_executions"] == 0
+    assert cancellation["status"] == "ready_for_review"
+
+
 def test_analytics_404s_for_a_brand_owned_by_another_tenant():
     def fake_select(table, params=None):
         return []  # brands query finds nothing for this tenant
@@ -315,3 +445,33 @@ def test_analytics_404s_for_a_brand_owned_by_another_tenant():
         resp = _with_tenant(lambda: client.get("/api/v2/brands/brand-1/analytics"))
 
     assert resp.status_code == 404
+
+
+def test_analytics_endpoint_never_writes_or_calls_shopify():
+    """Autopilot Readiness (this task) is read-only aggregation only - no
+    automatic Shopify mutation, no action-state write, must ever originate
+    from this endpoint. Patches supabase_update/supabase_insert and
+    ShopifyClient with a hard failure so the test would blow up loudly if
+    any code path here ever tried to write or call Shopify."""
+    all_cancel_actions = [
+        {"id": f"a{i}", "action_type": "cancel_order", "status": "executed", "created_at": _now_iso()}
+        for i in range(5)
+    ]
+
+    def fake_select(table, params=None):
+        if table == "brands":
+            return [BRAND]
+        if table == "actions":
+            return all_cancel_actions
+        return []
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("analytics endpoint must never write or call Shopify")
+
+    with patch("src.api.routes.v2_brands.supabase_select", side_effect=fake_select), \
+         patch("src.api.routes.v2_brands.supabase_update", side_effect=_forbidden), \
+         patch("src.api.routes.v2_brands.supabase_insert", side_effect=_forbidden), \
+         patch("src.services.shopify_service.ShopifyClient.__init__", side_effect=_forbidden):
+        resp = _with_tenant(lambda: client.get("/api/v2/brands/brand-1/analytics"))
+
+    assert resp.status_code == 200

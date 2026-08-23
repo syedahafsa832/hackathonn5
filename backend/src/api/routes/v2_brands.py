@@ -237,6 +237,27 @@ _ANALYTICS_WINDOW_DAYS = 30
 # anything) — the card is omitted entirely rather than shown misleadingly.
 _AUTOPILOT_MIN_SAMPLE = 5
 
+# Action types that could eventually surface an Autopilot Readiness card.
+# Only "cancel_order" is actually computed today (see get_brand_analytics) —
+# listed here so a future category only needs a line added, not a new
+# framework; deliberately not built out further than that yet.
+_READINESS_CATEGORIES = {"cancel_order": "cancellation"}
+
+
+def _category_readiness_status(total: int, failed: int, min_sample: int) -> str:
+    """Never an invented threshold beyond the existing _AUTOPILOT_MIN_SAMPLE
+    gate: below it there simply isn't enough of a track record yet
+    ("not_ready"). At or above it, a real Shopify execution failure in the
+    sample (as opposed to a human rejection, which is normal, expected
+    judgment) is treated as something to review before recommending
+    automation ("almost_there") rather than folded silently into a passing
+    percentage. No failures at or above the sample floor is "ready_for_review"."""
+    if total < min_sample:
+        return "not_ready"
+    if failed > 0:
+        return "almost_there"
+    return "ready_for_review"
+
 
 @router.get("/{brand_id}/analytics")
 async def get_brand_analytics(
@@ -314,6 +335,27 @@ async def get_brand_analytics(
                 "approval_rate": round(100 * cancel_executed / cancel_sample, 1),
             }
 
+        # Per-category readiness detail for the Automation page (Phase 1/4) —
+        # reuses the exact same cancel_executed/cancel_rejected/cancel_failed
+        # counts above rather than a second query. Unlike autopilot_readiness
+        # (only present once the minimum sample is met, kept as-is for the
+        # existing Customer Voice card), this is always present once the
+        # brand has a Shopify connection, since "why isn't this ready yet"
+        # needs the real numbers even below the sample floor.
+        category_readiness = {
+            "cancellation": {
+                "category": "cancellation",
+                "mode": "copilot",
+                "total_requests": cancel_sample,
+                "successful": cancel_executed,
+                "escalated": cancel_rejected,
+                "failed_executions": cancel_failed,
+                "approval_rate": round(100 * cancel_executed / cancel_sample, 1) if cancel_sample > 0 else None,
+                "status": _category_readiness_status(cancel_sample, cancel_failed, _AUTOPILOT_MIN_SAMPLE),
+                "min_sample": _AUTOPILOT_MIN_SAMPLE,
+            },
+        }
+
         return {
             "window_days": _ANALYTICS_WINDOW_DAYS,
             "conversations_handled": conversations_handled,
@@ -325,6 +367,7 @@ async def get_brand_analytics(
             "refund_count": refund_count,
             "csat": csat,
             "autopilot_readiness": autopilot_readiness,
+            "category_readiness": category_readiness,
         }
     except HTTPException:
         raise
