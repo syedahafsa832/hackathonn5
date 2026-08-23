@@ -175,6 +175,30 @@ export function useDisableCancellationAutopilot() {
 }
 
 /**
+ * Same pattern as the Cancellation Autopilot mutations above, for the
+ * separate Refund Autopilot flag.
+ */
+export function useEnableRefundAutopilot() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (brandId) => api.enableRefundAutopilot(brandId),
+    onSettled: () => {
+      queryClient.invalidateQueries(['brand-analytics']);
+    },
+  });
+}
+
+export function useDisableRefundAutopilot() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (brandId) => api.disableRefundAutopilot(brandId),
+    onSettled: () => {
+      queryClient.invalidateQueries(['brand-analytics']);
+    },
+  });
+}
+
+/**
  * Mutation to approve an action
  */
 export function useApproveAction() {

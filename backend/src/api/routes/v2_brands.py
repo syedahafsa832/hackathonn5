@@ -331,6 +331,57 @@ def _compute_cancellation_readiness(brand_id: str) -> dict:
     }
 
 
+def _compute_refund_readiness(brand_id: str) -> dict:
+    """Refund Autopilot readiness — same category-readiness shape and
+    thresholds as _compute_cancellation_readiness (reuses
+    _category_readiness_status and _AUTOPILOT_MIN_SAMPLE, never a second
+    analytics system), but a deliberately separate function and a
+    deliberately separate `actions` query filtered to action_type=refund,
+    so nothing here can ever touch Cancellation Autopilot's own
+    computation or data. approved_by="autopilot" is set on a refund action
+    only by _maybe_autopilot_refund in return_actions_integration.py, via
+    the same actions_service.approve_action() human approval calls."""
+    all_refund_actions = supabase_select("actions", {
+        "brand_id": f"eq.{brand_id}",
+        "action_type": "eq.refund",
+    }) or []
+    refund_executed = sum(1 for a in all_refund_actions if a.get("status") == "executed")
+    refund_rejected = sum(1 for a in all_refund_actions if a.get("status") == "rejected")
+    refund_failed = sum(1 for a in all_refund_actions if a.get("status") == "failed")
+    refund_sample = refund_executed + refund_rejected + refund_failed
+
+    autopilot_actions = [a for a in all_refund_actions if a.get("approved_by") == "autopilot"]
+    autopilot_handled = len(autopilot_actions)
+    autopilot_successful = sum(1 for a in autopilot_actions if a.get("status") == "executed")
+    autopilot_failed = [a for a in autopilot_actions if a.get("status") == "failed"]
+    recent_escalations = [
+        {
+            "order_id": a.get("order_id"),
+            "reason": a.get("error_message") or "Automatic refund could not be completed.",
+            "escalated_at": a.get("updated_at"),
+        }
+        for a in sorted(autopilot_failed, key=lambda a: a.get("updated_at") or "", reverse=True)[:5]
+    ]
+
+    return {
+        "category": "refund",
+        "total_requests": refund_sample,
+        "successful": refund_executed,
+        "escalated": refund_rejected,
+        "failed_executions": refund_failed,
+        "approval_rate": round(100 * refund_executed / refund_sample, 1) if refund_sample > 0 else None,
+        "status": _category_readiness_status(refund_sample, refund_failed, _AUTOPILOT_MIN_SAMPLE),
+        "min_sample": _AUTOPILOT_MIN_SAMPLE,
+        "autopilot": {
+            "handled_automatically": autopilot_handled,
+            "successful": autopilot_successful,
+            "escalated_for_review": len(autopilot_failed),
+            "success_rate": round(100 * autopilot_successful / autopilot_handled, 1) if autopilot_handled > 0 else None,
+            "recent_escalations": recent_escalations,
+        },
+    }
+
+
 @router.get("/{brand_id}/analytics")
 async def get_brand_analytics(
     brand_id: str,
@@ -403,11 +454,18 @@ async def get_brand_analytics(
         # sample floor. cancellation_autopilot_enabled reads safely as
         # falsy even before migration 047 is applied (see that file).
         cancellation_autopilot_enabled = bool(brand.get("cancellation_autopilot_enabled"))
+        refund_autopilot_enabled = bool(brand.get("refund_autopilot_enabled"))
+        refund_readiness = _compute_refund_readiness(brand_id)
         category_readiness = {
             "cancellation": {
                 **cancellation_readiness,
                 "mode": "autopilot" if cancellation_autopilot_enabled else "copilot",
                 "enabled": cancellation_autopilot_enabled,
+            },
+            "refund": {
+                **refund_readiness,
+                "mode": "autopilot" if refund_autopilot_enabled else "copilot",
+                "enabled": refund_autopilot_enabled,
             },
         }
 
@@ -515,6 +573,83 @@ async def disable_cancellation_autopilot(
     except Exception as e:
         logger.error(f"Error disabling cancellation autopilot: {e}")
         raise HTTPException(status_code=500, detail="Failed to disable Cancellation Autopilot")
+
+
+@router.post("/{brand_id}/automation/refund/enable")
+async def enable_refund_autopilot(
+    brand_id: str,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    """Dedicated, authenticated activation endpoint for Refund Autopilot —
+    a separate flag from Cancellation Autopilot, gated independently.
+    Mirrors enable_cancellation_autopilot's verification exactly (auth +
+    ownership, connected Shopify store, entitlement via the existing
+    plan_service.check_limit("shopify_actions"), a fresh server-side
+    readiness recomputation), never trusting a frontend toggle. Refunds
+    are financially sensitive, so the actual automatic-execution safety
+    gates (deterministic full-refund-only amount, no ambiguous partial
+    figure) live in _maybe_autopilot_refund — this endpoint only controls
+    whether that path is reachable at all."""
+    try:
+        brand = _get_owned_brand(brand_id, tenant.tenant_id)
+
+        if not brand.get("shopify_connected"):
+            raise HTTPException(
+                status_code=400,
+                detail="Connect a Shopify store before enabling Refund Autopilot.",
+            )
+
+        from src.services.plan_service import check_limit, build_limit_error
+        entitlement = check_limit(tenant.tenant_id, "shopify_actions", email=tenant.email)
+        if not entitlement["allowed"]:
+            raise HTTPException(status_code=402, detail=build_limit_error("shopify_actions", entitlement))
+
+        readiness = _compute_refund_readiness(brand_id)
+        if readiness["status"] != "ready_for_review":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Refund Autopilot isn't ready to enable yet "
+                    f"(status: {readiness['status']}). It needs at least {readiness['min_sample']} "
+                    "real refund outcomes with no unresolved Shopify execution failures."
+                ),
+            )
+
+        supabase_update("brands", {"id": f"eq.{brand_id}"}, {
+            "refund_autopilot_enabled": True,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+        logger.info(f"[Automation] Refund Autopilot ENABLED for brand {brand_id} (tenant {tenant.tenant_id})")
+        return {"success": True, "enabled": True, "readiness": readiness}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error enabling refund autopilot: {e}")
+        raise HTTPException(status_code=500, detail="Failed to enable Refund Autopilot")
+
+
+@router.post("/{brand_id}/automation/refund/disable")
+async def disable_refund_autopilot(
+    brand_id: str,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    """Kill switch. Only auth + ownership is required — no readiness gate,
+    same as cancellation's disable endpoint. Stops NEW automatic refunds
+    from the next request onward; cannot touch an action already
+    atomically claimed "approved" and mid-flight against Shopify."""
+    try:
+        _get_owned_brand(brand_id, tenant.tenant_id)
+        supabase_update("brands", {"id": f"eq.{brand_id}"}, {
+            "refund_autopilot_enabled": False,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+        logger.info(f"[Automation] Refund Autopilot DISABLED for brand {brand_id} (tenant {tenant.tenant_id})")
+        return {"success": True, "enabled": False}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error disabling refund autopilot: {e}")
+        raise HTTPException(status_code=500, detail="Failed to disable Refund Autopilot")
 
 
 @router.patch("/{brand_id}")

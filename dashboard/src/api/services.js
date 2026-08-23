@@ -191,6 +191,16 @@ const api = {
     return res.data;
   },
 
+  enableRefundAutopilot: async (brandId) => {
+    const res = await client.post(`/api/v2/brands/${brandId}/automation/refund/enable`);
+    return res.data;
+  },
+
+  disableRefundAutopilot: async (brandId) => {
+    const res = await client.post(`/api/v2/brands/${brandId}/automation/refund/disable`);
+    return res.data;
+  },
+
   // --- CANNED RESPONSES ---
   getCannedResponses: async () => {
     const res = await client.get('/api/v1/canned-responses').catch(() => ({ data: { items: [] } }));
