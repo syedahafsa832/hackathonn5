@@ -161,7 +161,17 @@ class V3Tools:
                         f"[Tools] Order #{order_id} ownership check failed — "
                         f"requested by a different/unverified email, not returning order data"
                     )
-                    return {"error": f"Order #{order_id} not found.", "order_number": order_id}
+                    # ownership_mismatch distinguishes "this order genuinely
+                    # doesn't exist" from "it exists but this requester's
+                    # identity doesn't match it" - callers use this to tell
+                    # the customer the truth (confirm your email) instead of
+                    # the misleading "can't find your order" wording, without
+                    # ever disclosing the real order's details either way.
+                    return {
+                        "error": f"Order #{order_id} not found.",
+                        "order_number": order_id,
+                        "ownership_mismatch": bool(provided_email),
+                    }
 
             _fulfillments = o.get("fulfillments") or []
             # Real Shopify shipments — one entry per fulfillment, never merged.

@@ -407,6 +407,45 @@ def test_get_order_status_no_customer_email_blocks_access():
     assert "success" not in result
 
 
+def test_get_order_status_cancelled_order_with_matching_email_returns_full_data():
+    """Shopify Order Context bug: connected Shopify + valid order number +
+    cancelled order + a verified/matching identity must return the real
+    cancellation data - not be blocked by the ownership check, which only
+    guards a MISMATCHED or unverified identity."""
+    tools = V3Tools()
+    payload = _order_payload(fulfillment_status="unfulfilled", cancelled_at="2026-08-22T06:23:54Z", email="owner@example.com")
+    with patch("src.services.tools.requests.get", return_value=_FakeResp(200, payload)):
+        result = run(tools.get_order_status(
+            "1013", shop_domain="test.myshopify.com", access_token="tok",
+            customer_email="owner@example.com",
+        ))
+    assert result["success"] is True
+    assert result["cancelled_at"] == "2026-08-22T06:23:54Z"
+    assert "ownership_mismatch" not in result
+
+
+def test_get_order_status_ownership_mismatch_is_flagged_distinctly_from_not_found():
+    """The order genuinely exists (found in Shopify) but the requester's
+    email doesn't match it - callers need to tell these two cases apart to
+    give an honest answer without ever disclosing the real order's data."""
+    tools = V3Tools()
+    payload = _order_payload(fulfillment_status="fulfilled", email="owner@example.com")
+    with patch("src.services.tools.requests.get", return_value=_FakeResp(200, payload)):
+        mismatch_result = run(tools.get_order_status(
+            "1008", shop_domain="test.myshopify.com", access_token="tok",
+            customer_email="someone-else@example.com",
+        ))
+    assert mismatch_result["ownership_mismatch"] is True
+    assert "success" not in mismatch_result
+
+    with patch("src.services.tools.requests.get", return_value=_FakeResp(200, {"orders": []})):
+        not_found_result = run(tools.get_order_status(
+            "9999", shop_domain="test.myshopify.com", access_token="tok",
+            customer_email="someone-else@example.com",
+        ))
+    assert "ownership_mismatch" not in not_found_result
+
+
 def test_get_order_status_customer_email_none_preserves_backward_compat():
     """customer_email=None (the default) means the caller isn't verifying
     ownership at all — used by callers that don't have a customer identity

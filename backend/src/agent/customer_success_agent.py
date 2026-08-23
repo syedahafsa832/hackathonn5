@@ -957,6 +957,15 @@ class CustomerSuccessAgent:
                         order_block = _build_order_context(order, tracking_context=_tracking_ctx)
                         tool_context += order_block + "\n"
                         logger.info(f"[Agent] Order context built:\n{order_block}")
+                    elif order.get("ownership_mismatch"):
+                        # A real order was found in Shopify, but the identity
+                        # on this conversation doesn't match it - never
+                        # weaken that check or disclose the order's details,
+                        # but don't lie and claim the lookup itself failed
+                        # either (it didn't).
+                        mentioned_num = order.get("order_number", "")
+                        tool_context += f"ORDER IDENTITY UNVERIFIED: An order #{mentioned_num} exists, but the email on file for it does not match this conversation.\n"
+                        tool_context += "Do NOT reveal any details about this order (status, items, cancellation, refund, tracking). Ask the customer to confirm the email address used when placing that order before you can discuss it.\n"
                     elif order.get("error"):
                         mentioned_num = order.get("order_number", "")
                         tool_context += f"ORDER LOOKUP FAILED: Could not retrieve order #{mentioned_num} from Shopify.\n"
