@@ -173,9 +173,15 @@ async def generate_learned_profile(brand_id: str, force: bool = False) -> Dict:
     texts = []
     if not brand.get("reply_style_use_uploaded_only"):
         texts = _approved_reply_texts(brand_id)
-    texts = texts + _uploaded_example_texts(brand_id)
+    uploaded_texts = _uploaded_example_texts(brand_id)
+    texts = texts + uploaded_texts
 
-    if not force and len(texts) < MIN_APPROVED_REPLIES_TO_LEARN:
+    # Uploaded examples are merchant-curated by hand, not organically
+    # collected - they don't need the same volume floor as real approved
+    # replies to be usable. Any uploaded example present skips the gate
+    # entirely; the gate still applies when learning purely from approved
+    # replies (no examples uploaded), unchanged from before.
+    if not force and not uploaded_texts and len(texts) < MIN_APPROVED_REPLIES_TO_LEARN:
         return {
             "success": False,
             "error": f"Need at least {MIN_APPROVED_REPLIES_TO_LEARN} approved replies "
@@ -250,7 +256,12 @@ async def regenerate_if_due(brand_id: str) -> None:
             new_since_last = count_approved_replies_since(brand_id, last_generated)
             due_by_volume = new_since_last >= REGENERATE_AFTER_NEW_REPLIES
         else:
-            due_by_volume = count_eligible_approved_replies(brand_id) >= MIN_APPROVED_REPLIES_TO_LEARN
+            # An uploaded example is enough on its own to trigger the first
+            # learned profile - same floor-skip as generate_learned_profile.
+            due_by_volume = (
+                bool(_uploaded_example_texts(brand_id, limit=1))
+                or count_eligible_approved_replies(brand_id) >= MIN_APPROVED_REPLIES_TO_LEARN
+            )
 
         if due_by_volume or (has_profile and due_by_time):
             await generate_learned_profile(brand_id)
