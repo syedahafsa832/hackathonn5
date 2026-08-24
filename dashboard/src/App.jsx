@@ -5,6 +5,8 @@ import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import CustomerVoice from './pages/CustomerVoice';
 import Automation from './pages/Automation';
+import Training from './pages/Training';
+import ReviewQueue from './pages/ReviewQueue';
 import Tickets from './pages/Tickets';
 import TicketDetail from './pages/TicketDetail';
 import Actions from './pages/Actions';
@@ -46,6 +48,8 @@ export default function App() {
         <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
         <Route path="/customer-voice" element={<ProtectedRoute><CustomerVoice /></ProtectedRoute>} />
         <Route path="/automation" element={<ProtectedRoute><Automation /></ProtectedRoute>} />
+        <Route path="/training" element={<ProtectedRoute><Training /></ProtectedRoute>} />
+        <Route path="/review" element={<ProtectedRoute><ReviewQueue /></ProtectedRoute>} />
         <Route path="/tickets" element={<ProtectedRoute><Tickets /></ProtectedRoute>} />
         <Route path="/tickets/:ticket_id" element={<ProtectedRoute><TicketDetail /></ProtectedRoute>} />
         <Route path="/actions" element={<ProtectedRoute><Actions /></ProtectedRoute>} />

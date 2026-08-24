@@ -1,22 +1,21 @@
 import { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Inbox, ShieldAlert, Store, Settings, ShieldQuestion, ShieldCheck, ChevronLeft, ChevronRight, Zap, Star, Sparkles, GraduationCap } from 'lucide-react';
+import { LayoutDashboard, Inbox, ShieldAlert, Store, Settings, ShieldQuestion, ShieldCheck, ChevronLeft, ChevronRight, Zap, Star, Sparkles, GraduationCap, ClipboardCheck } from 'lucide-react';
 import { useEscalations, useActions, useQuarantineCount, useMe } from '../hooks/useApi';
 
 // Simplified information architecture: Home / Inbox / Luna / Automation /
 // Store are the five things a merchant actually needs day to day. Nothing
 // here deletes a route or rebuilds a page - every item still points at the
-// exact same existing route/component. "Luna" reuses the existing Settings
-// page's Reply Style tab (via NavLink `state`, the same mechanism Settings
-// already reads via `location.state?.tab`) rather than a new page.
-// Escalations/Quarantine move to a visually secondary group (not gone,
-// just no longer equal-weight with the five core destinations) per the
-// "don't keep these as major top-level items" simplification.
+// exact same existing route/component. "Luna" points at the existing
+// /training page (its own "Teach Luna" lifecycle view) rather than a new
+// page. Escalations/Quarantine/"Review Luna's Work"/Customer Voice move to
+// a visually secondary group (not gone, just no longer equal-weight with
+// the five core destinations) per the "don't keep these as major
+// top-level items" simplification.
 const PRIMARY_NAV = [
   { path: '/dashboard', label: 'Home', icon: LayoutDashboard },
   { path: '/tickets', label: 'Inbox', icon: Inbox, badge: true },
-  { path: '/settings', label: 'Luna', icon: GraduationCap, state: { tab: 'reply-style' } },
-  { path: '/customer-voice', label: 'Feedback', icon: Star },
+  { path: '/training', label: 'Luna', icon: GraduationCap },
   { path: '/automation', label: 'Automation', icon: Sparkles },
   { path: '/brands', label: 'Store', icon: Store },
 ];
@@ -24,6 +23,8 @@ const PRIMARY_NAV = [
 const SECONDARY_NAV = [
   { path: '/actions', label: 'Needs you', icon: ShieldAlert, escalationsBadge: true },
   { path: '/quarantine', label: 'Safety', icon: ShieldQuestion, quarantineBadge: true },
+  { path: '/review', label: "Review Luna's Work", icon: ClipboardCheck },
+  { path: '/customer-voice', label: 'Customer Voice', icon: Star },
   { path: '/settings', label: 'Settings', icon: Settings },
   { path: '/upgrade', label: 'Upgrade', icon: Zap },
 ];

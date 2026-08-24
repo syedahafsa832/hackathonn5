@@ -201,6 +201,27 @@ const api = {
     return res.data;
   },
 
+  // Training / AI Readiness — Train/Verify/Automate summary, composed
+  // server-side from Reply Style, Knowledge Base, ticket review outcomes,
+  // and existing Autopilot readiness. See GET /brands/{id}/training-readiness.
+  getTrainingReadiness: async (brandId) => {
+    if (!brandId) return null;
+    const res = await client.get(`/api/v2/brands/${brandId}/training-readiness`).catch(() => ({ data: null }));
+    return res.data;
+  },
+
+  // --- REVIEW LUNA'S WORK ---
+
+  getReviewQueue: async (params = {}) => {
+    const res = await client.get('/api/tickets/review/queue', { params }).catch(() => ({ data: { items: [], count: 0 } }));
+    return res.data || { items: [], count: 0 };
+  },
+
+  submitTicketReview: async (ticketId, payload) => {
+    const res = await client.post(`/api/tickets/${ticketId}/review`, payload);
+    return res.data;
+  },
+
   // --- CANNED RESPONSES ---
   getCannedResponses: async () => {
     const res = await client.get('/api/v1/canned-responses').catch(() => ({ data: { items: [] } }));
