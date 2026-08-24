@@ -101,7 +101,7 @@ class ReturnActionsIntegration:
         if not intent_result.has_action:
             return result
 
-        order_id, email = self._extract_order_info(query, customer_info, existing_tool_results, intent_result)
+        order_id, email = self._extract_order_info(query, customer_info, existing_tool_results, intent_result, ticket_id=ticket_id)
         logger.info(f"[ReturnActions] intent={intent_type}, order_id={order_id}, email={email}")
 
         # ── RESTORE ORDER (un-cancel) ───────────────────────────────────────
@@ -1210,8 +1210,19 @@ class ReturnActionsIntegration:
         customer_info: Dict[str, Any],
         existing_tool_results: Dict[str, Any],
         intent_result: Optional[IntentResult] = None,
+        ticket_id: Optional[str] = None,
     ):
-        """Extract order ID and email. Uses LLM-extracted order_id first, then regex fallback."""
+        """Extract order ID and email. Uses LLM-extracted order_id first, then regex fallback.
+
+        Multi-turn continuity: a follow-up like "yes, cancel it" names no
+        order number of its own. When every other source above comes up
+        empty, falls back to this ticket's own detected_order_id - the
+        same trusted, already-preserved-across-turns field
+        customer_success_agent.py's identity-verification follow-up
+        already relies on (see message_processor.py STAGE 9's
+        preserve-by-omission fix). Only used as a last resort, so an
+        unrelated fresh request that genuinely names its own order number
+        is never overridden by stale conversation state."""
         import re
 
         # Email from customer_info first
@@ -1243,6 +1254,14 @@ class ReturnActionsIntegration:
             orders = existing_tool_results["orders_by_email"].get("orders", [])
             if orders:
                 order_id = orders[0].get("order_number")
+
+        if not order_id and ticket_id:
+            try:
+                rows = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
+                if rows and rows[0].get("detected_order_id"):
+                    order_id = rows[0]["detected_order_id"]
+            except Exception as e:
+                logger.warning(f"[ReturnActions] Ticket order-context lookup failed (non-blocking): {e}")
 
         if order_id and not email and existing_tool_results.get("orders_by_email"):
             email = existing_tool_results["orders_by_email"].get("email")
