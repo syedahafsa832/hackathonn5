@@ -2,14 +2,26 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import client from '../api/client';
 import Alert from '../components/Alert';
+import GoogleAuthButton from '../components/GoogleAuthButton';
 
 export default function Signup() {
   const navigate = useNavigate();
   const [form, setForm] = useState({ email: '', password: '', company_name: '' });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [confirmEmailSent, setConfirmEmailSent] = useState(false);
 
   const set = (field) => (e) => setForm(f => ({ ...f, [field]: e.target.value }));
+
+  const handleGoogleSuccess = (data) => {
+    if (data.access_token) {
+      localStorage.setItem('resolv_token', data.access_token);
+      if (data.refresh_token) localStorage.setItem('resolv_refresh_token', data.refresh_token);
+      navigate('/onboarding');
+    } else {
+      navigate('/login');
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -25,10 +37,13 @@ export default function Signup() {
         password: form.password,
         company_name: form.company_name,
       });
-      const token = res.data.access_token;
-      if (token) {
-        localStorage.setItem('resolv_token', token);
+      const { access_token, refresh_token, email_confirmation_required } = res.data;
+      if (access_token) {
+        localStorage.setItem('resolv_token', access_token);
+        if (refresh_token) localStorage.setItem('resolv_refresh_token', refresh_token);
         navigate('/onboarding');
+      } else if (email_confirmation_required) {
+        setConfirmEmailSent(true);
       } else {
         navigate('/login');
       }
@@ -88,6 +103,25 @@ export default function Signup() {
           <div style={{ fontSize: '14px', color: 'var(--text-secondary)' }}>
             Create your account
           </div>
+        </div>
+
+        {confirmEmailSent ? (
+          <div style={{ textAlign: 'center' }}>
+            <Alert variant="success" style={{ textAlign: 'left' }}>
+              We sent a confirmation link to <strong>{form.email}</strong>. Click it to finish creating your account, then come back and sign in.
+            </Alert>
+            <Link to="/login" style={{ display: 'inline-block', marginTop: '16px', color: 'var(--accent)', fontWeight: '500' }}>
+              Back to sign in
+            </Link>
+          </div>
+        ) : (
+        <>
+        <GoogleAuthButton text="signup_with" onSuccess={handleGoogleSuccess} onError={setError} />
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', margin: '20px 0' }}>
+          <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
+          <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>OR</span>
+          <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
         </div>
 
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -165,6 +199,8 @@ export default function Signup() {
             Sign in
           </Link>
         </div>
+        </>
+        )}
       </div>
     </div>
   );

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import client from '../api/client';
 import Alert from '../components/Alert';
+import GoogleAuthButton from '../components/GoogleAuthButton';
 
 export default function Login() {
   const navigate = useNavigate();
@@ -14,15 +15,23 @@ export default function Login() {
     document.title = "Sign in — tResolv";
   }, []);
 
+  const handleGoogleSuccess = (data) => {
+    if (!data.access_token) return;
+    localStorage.setItem('resolv_token', data.access_token);
+    if (data.refresh_token) localStorage.setItem('resolv_refresh_token', data.refresh_token);
+    navigate('/dashboard');
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
     setLoading(true);
     try {
       const res = await client.post('/api/v1/auth/login', { email, password });
-      const token = res.data.access_token;
-      if (!token) throw new Error('No token returned');
-      localStorage.setItem('resolv_token', token);
+      const { access_token, refresh_token } = res.data;
+      if (!access_token) throw new Error('No token returned');
+      localStorage.setItem('resolv_token', access_token);
+      if (refresh_token) localStorage.setItem('resolv_refresh_token', refresh_token);
       navigate('/dashboard');
     } catch (err) {
       if (!err.response) {
@@ -63,6 +72,14 @@ export default function Login() {
           </div>
         </div>
 
+        <GoogleAuthButton onSuccess={handleGoogleSuccess} onError={setError} />
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', margin: '20px 0' }}>
+          <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
+          <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>OR</span>
+          <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
+        </div>
+
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           <div>
             <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', marginBottom: '6px' }}>
@@ -91,9 +108,14 @@ export default function Login() {
           </div>
 
           <div>
-            <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', marginBottom: '6px' }}>
-              Password
-            </label>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '6px' }}>
+              <label style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)' }}>
+                Password
+              </label>
+              <Link to="/forgot-password" style={{ fontSize: '12px', color: 'var(--accent)', textDecoration: 'none' }}>
+                Forgot password?
+              </Link>
+            </div>
             <input
               type="password"
               value={password}

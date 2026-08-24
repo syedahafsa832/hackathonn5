@@ -361,8 +361,17 @@ class BrandGmailService:
         msg.attach(MIMEText(render_plain_text_email_html(body), "html"))
         return msg
 
-    async def send_email(self, brand: dict, to_email: str, subject: str, body: str) -> Dict[str, Any]:
-        """Send an email from a brand's connected Gmail account."""
+    async def send_email(self, brand: dict, to_email: str, subject: str, body: str, thread_id: str = None) -> Dict[str, Any]:
+        """Send an email from a brand's connected Gmail account.
+
+        thread_id, when given, keeps the reply in Gmail's existing
+        conversation (Gmail assigns every send() a brand-new thread unless
+        threadId is explicitly passed - a "Re:" subject alone does not do
+        this). Without it, the customer's own Gmail "Reply" click lands in
+        a thread our poller has never seen, so STAGE 1.5's
+        gmail_thread_id match in message_processor.py always misses and a
+        duplicate ticket gets created for what is really the same
+        conversation."""
         svc = self._build_service(brand)
         if not svc:
             return {"success": False, "error": "Gmail not connected for this brand"}
@@ -371,7 +380,10 @@ class BrandGmailService:
             msg["to"]      = to_email
             msg["subject"] = subject
             raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-            sent = svc.users().messages().send(userId="me", body={"raw": raw}).execute()
+            send_body = {"raw": raw}
+            if thread_id:
+                send_body["threadId"] = thread_id
+            sent = svc.users().messages().send(userId="me", body=send_body).execute()
             return {"success": True, "id": sent.get("id")}
         except Exception as e:
             logger.error(f"[BrandGmail] Send error for brand {brand.get('name')}: {e}")

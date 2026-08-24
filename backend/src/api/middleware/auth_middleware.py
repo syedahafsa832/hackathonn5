@@ -66,12 +66,30 @@ async def get_optional_auth(
         # Get full user context from database
         user_context = await supabase_auth_service.get_user_context(supabase_auth_id)
 
-        # v1 token fallback: sub is a tenant_id, not a Supabase auth UUID
         if not user_context:
-            user_context = await supabase_auth_service.get_tenant_by_id(supabase_auth_id)
+            # No row in the (unused) v2 `users` table for this subject — the
+            # live tenant model is `tenants`, reached one of two ways
+            # depending on token shape:
+            if payload.get("type") == "access":
+                # Legacy pre-migration tenant JWT: sub IS the tenant_id directly.
+                user_context = await supabase_auth_service.get_tenant_by_id(supabase_auth_id)
+            else:
+                # Real Supabase Auth token: sub is the Supabase user id —
+                # resolve/create the tenant it maps to, same as every other
+                # authenticated entry point since the auth migration.
+                from src.services.auth_service import auth_service, FoundingCohortFullError
+                email = payload.get("email")
+                if not email:
+                    return None
+                try:
+                    tenant_row = await auth_service.resolve_or_create_tenant_for_supabase_user(supabase_auth_id, email)
+                except FoundingCohortFullError:
+                    return None
+                user_context = supabase_auth_service.tenant_row_to_user_context(tenant_row) if tenant_row else None
+
             if not user_context:
                 return None
-            # v1 tenants don't have an organizations table entry — skip org lookup
+            # tenants don't have an organizations table entry — skip org lookup
             return AuthenticatedContext(
                 user=user_context,
                 organization=None,

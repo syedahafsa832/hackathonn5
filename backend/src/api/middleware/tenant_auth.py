@@ -1,15 +1,17 @@
 """
 Tenant Authentication Middleware
 ================================
-Validates JWT tokens and attaches tenant context to requests.
-All protected routes use this to ensure tenant isolation.
+Validates the authenticated Supabase Auth session (or, for a transition
+window, an already-issued legacy tenant JWT) and attaches tenant context to
+requests. All protected routes use this to ensure tenant isolation.
 """
 import logging
 from typing import Optional
 from fastapi import Request, HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-from src.services.auth_service import auth_service
+from src.services.auth_service import auth_service, FoundingCohortFullError
+from src.services.supabase_auth_service import supabase_auth_service
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +37,16 @@ async def get_current_tenant(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> TenantContext:
     """
-    Dependency that extracts and validates the JWT token.
-    Returns TenantContext for the authenticated user.
+    Dependency that verifies the bearer token and resolves it to a tenant.
+
+    Accepts two token shapes:
+    - A Supabase Auth access token (the normal case since the auth
+      migration) — verified via JWKS/shared-secret against Supabase, then
+      mapped to a tenant by supabase_user_id/email.
+    - A legacy pre-migration tenant JWT (marked by a "type": "access" claim,
+      same signing secret) — its `sub` IS the tenant_id directly, as before.
+      Purely a transition allowance for sessions issued before this
+      migration shipped; nothing issues these anymore.
 
     Usage in routes:
         @router.get("/actions")
@@ -52,9 +62,7 @@ async def get_current_tenant(
         )
 
     token = credentials.credentials
-
-    # Decode and validate token
-    payload = auth_service.decode_token(token)
+    payload = supabase_auth_service.verify_jwt(token)
 
     if not payload:
         raise HTTPException(
@@ -63,14 +71,34 @@ async def get_current_tenant(
             headers={"WWW-Authenticate": "Bearer"}
         )
 
-    tenant_id = payload.get("sub")
-    email = payload.get("email")
+    if payload.get("type") == "access":
+        # Legacy pre-migration token — sub is already the tenant_id.
+        tenant_id = payload.get("sub")
+        email = payload.get("email")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+    else:
+        supabase_user_id = payload.get("sub")
+        email = payload.get("email")
+        if not supabase_user_id or not email:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
 
-    if not tenant_id:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid token payload"
-        )
+        try:
+            tenant_row = await auth_service.resolve_or_create_tenant_for_supabase_user(supabase_user_id, email)
+        except FoundingCohortFullError:
+            raise HTTPException(status_code=403, detail={
+                "error": "founding_cohort_full",
+                "message": "Our Founding 20 program is full. Join the waitlist instead.",
+                "waitlist_url": "https://tresolv.online/waitlist",
+            })
+
+        if not tenant_row:
+            raise HTTPException(status_code=401, detail="Account not found")
+        if not tenant_row.get("is_active"):
+            raise HTTPException(status_code=403, detail="Account is disabled")
+
+        tenant_id = tenant_row["id"]
+        email = tenant_row["email"]
 
     # Create tenant context
     tenant = TenantContext(tenant_id=tenant_id, email=email)
