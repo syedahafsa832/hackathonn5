@@ -411,6 +411,143 @@ def _compute_refund_readiness(brand_id: str) -> dict:
     }
 
 
+def _compute_generic_category_readiness(brand_id: str, action_type: str, category_label: str) -> dict:
+    """Read-only readiness view for a category with no Autopilot execution
+    capability today (Exchanges, Address changes) — same real metrics and
+    the same _category_readiness_status/_AUTOPILOT_MIN_SAMPLE thresholds as
+    Cancellation/Refund above, deliberately without an "autopilot" stats
+    sub-object or an enable/disable endpoint: no _maybe_autopilot_* hook
+    exists for these action types, so nothing computed here can ever be
+    turned on. Exists so the Training/AI Readiness page can show a category
+    its real track record instead of a static "Coming soon" with no numbers
+    behind it, without adding any new automation capability."""
+    actions = supabase_select("actions", {
+        "brand_id": f"eq.{brand_id}",
+        "action_type": f"eq.{action_type}",
+    }) or []
+    executed = sum(1 for a in actions if a.get("status") == "executed")
+    rejected = sum(1 for a in actions if a.get("status") == "rejected")
+    failed = sum(1 for a in actions if a.get("status") == "failed")
+    sample = executed + rejected + failed
+    return {
+        "category": category_label,
+        "total_requests": sample,
+        "successful": executed,
+        "escalated": rejected,
+        "failed_executions": failed,
+        "approval_rate": round(100 * executed / sample, 1) if sample > 0 else None,
+        "status": _category_readiness_status(sample, failed, _AUTOPILOT_MIN_SAMPLE),
+        "min_sample": _AUTOPILOT_MIN_SAMPLE,
+    }
+
+
+@router.get("/{brand_id}/training-readiness")
+async def get_training_readiness(
+    brand_id: str,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    """Training / AI Readiness — the merchant-facing summary of "what has
+    Luna learned, what have humans verified, what's ready to automate".
+    Deliberately a pure read-only composition of data that already exists
+    for its own settings page or endpoint elsewhere (Reply Style, Knowledge
+    Base, ticket review outcomes via tickets._compute_review_status,
+    Cancellation/Refund Autopilot readiness) — no new learning system, no
+    new thresholds, no invented metrics. Brand-level counts only; never
+    returns a customer name, email, or message body."""
+    try:
+        brand = _get_owned_brand(brand_id, tenant.tenant_id)
+        from src.api.routes.tickets import _compute_review_status
+
+        # ---- Train: what the merchant has taught Luna ----
+        kb_sources = supabase_select("knowledge_base_sources", {"brand_id": f"eq.{brand_id}"}) or []
+        kb_completed = sum(1 for s in kb_sources if s.get("status") == "completed")
+        examples = supabase_select("reply_style_examples", {"brand_id": f"eq.{brand_id}"}) or []
+        approved_count = reply_style_service.count_eligible_approved_replies(brand_id)
+        reply_style_mode = brand.get("reply_style_mode") or "preset"
+        reply_style_learned = reply_style_mode == "learned" and bool(brand.get("reply_style_profile"))
+        has_policies = bool(
+            brand.get("return_policy_days") or brand.get("refund_notes") or brand.get("final_sale_tags")
+        )
+
+        train = {
+            "knowledge": {
+                "sources_count": len(kb_sources),
+                "completed_count": kb_completed,
+                "has_any": kb_completed > 0,
+            },
+            "policies": {"has_any": has_policies, "return_policy_days": brand.get("return_policy_days")},
+            "examples": {"count": len(examples)},
+            "reply_style": {
+                "mode": reply_style_mode,
+                "learned": reply_style_learned,
+                "approved_reply_count": approved_count,
+                "min_replies_required": reply_style_service.MIN_APPROVED_REPLIES_TO_LEARN,
+            },
+        }
+
+        # ---- Verify: real human review outcomes over Luna's replies ----
+        all_tickets = supabase_select("tickets", {"brand_id": f"eq.{brand_id}"}) or []
+        reviewable_statuses = [_compute_review_status(t) for t in all_tickets]
+        reviewable_statuses = [s for s in reviewable_statuses if s is not None]
+        needs_review = sum(1 for s in reviewable_statuses if s == "needs_review")
+        approved_n = sum(1 for s in reviewable_statuses if s == "approved")
+        edited_n = sum(1 for s in reviewable_statuses if s == "edited")
+        rejected_n = sum(1 for s in reviewable_statuses if s == "rejected")
+        reviewed_total = approved_n + edited_n + rejected_n
+
+        feedback = supabase_select("chat_feedback", {"brand_id": f"eq.{brand_id}"}) or []
+        starred = [f["rating_stars"] for f in feedback if f.get("rating_stars")]
+        csat = {"average": round(sum(starred) / len(starred), 1), "total": len(starred)} if starred else None
+
+        verify = {
+            "total_ai_conversations": len(reviewable_statuses),
+            "conversations_reviewed": reviewed_total,
+            "conversations_needing_review": needs_review,
+            "approval_rate": round(100 * (approved_n + edited_n) / reviewed_total, 1) if reviewed_total else None,
+            "edit_rate": round(100 * edited_n / reviewed_total, 1) if reviewed_total else None,
+            "rejection_rate": round(100 * rejected_n / reviewed_total, 1) if reviewed_total else None,
+            "csat": csat,
+        }
+
+        # ---- Automate: category-specific readiness, reusing the exact
+        # same computation the Automation page's /analytics already uses ----
+        cancellation_autopilot_enabled = bool(brand.get("cancellation_autopilot_enabled"))
+        refund_autopilot_enabled = bool(brand.get("refund_autopilot_enabled"))
+        automate = {
+            "cancellation": {
+                **_compute_cancellation_readiness(brand_id),
+                "mode": "autopilot" if cancellation_autopilot_enabled else "copilot",
+                "enabled": cancellation_autopilot_enabled,
+                "autopilot_capable": True,
+            },
+            "refund": {
+                **_compute_refund_readiness(brand_id),
+                "mode": "autopilot" if refund_autopilot_enabled else "copilot",
+                "enabled": refund_autopilot_enabled,
+                "autopilot_capable": True,
+            },
+            "exchange": {
+                **_compute_generic_category_readiness(brand_id, "exchange", "Exchanges"),
+                "mode": "copilot",
+                "enabled": False,
+                "autopilot_capable": False,
+            },
+            "address_change": {
+                **_compute_generic_category_readiness(brand_id, "change_address", "Address changes"),
+                "mode": "copilot",
+                "enabled": False,
+                "autopilot_capable": False,
+            },
+        }
+
+        return {"train": train, "verify": verify, "automate": automate}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error computing training readiness: {e}")
+        raise HTTPException(status_code=500, detail="Failed to compute training readiness")
+
+
 @router.get("/{brand_id}/analytics")
 async def get_brand_analytics(
     brand_id: str,
@@ -1296,6 +1433,21 @@ async def add_reply_example(
             "brand_id": brand_id,
             "content": request.content.strip(),
         })
+
+        # Best-effort, never blocks the response: an uploaded example is a
+        # deliberate, curated signal, so regenerate the learned profile right
+        # away instead of waiting for the next opportunistic
+        # regenerate_if_due() check (Settings page load). That check's
+        # "due" logic only looks at NEW approved-reply volume once a profile
+        # already exists (see regenerate_if_due), so a newly uploaded example
+        # would otherwise never be picked up automatically at all. This never
+        # changes reply_style_mode — becoming the active style is still the
+        # merchant's own explicit "Switch to Learned Style" action.
+        try:
+            await reply_style_service.generate_learned_profile(brand_id, force=False)
+        except Exception as e:
+            logger.warning(f"[ReplyStyle] Profile regeneration after example upload failed: {e}")
+
         return {"success": True, "example": result}
     except HTTPException:
         raise

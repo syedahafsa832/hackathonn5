@@ -115,7 +115,7 @@ def test_ownership_mismatch_never_leaks_order_data_but_does_not_falsely_claim_lo
         customer_email="syedahafsa1983@gmail.com",
     )
     assert "ORDER IDENTITY UNVERIFIED" in prompt_text
-    assert "confirm the email address" in prompt_text
+    assert "confirm the email used" in prompt_text
     # "CANCELLED: Yes" is the literal marker _build_order_context() would emit
     # for real order data (see test_cancelled_order_surfaces_cancellation_in_
     # context) - its absence proves no real order data leaked through. The

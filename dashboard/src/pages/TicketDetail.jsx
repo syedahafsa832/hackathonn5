@@ -370,6 +370,15 @@ export default function TicketDetail() {
   const [approving, setApproving] = useState(false);
   const [suggestions, setSuggestions] = useState(null);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  // null = not yet initialized from the loaded ticket. Once set, further
+  // ticket refetches never clobber an in-progress edit.
+  const [draftText, setDraftText] = useState(null);
+
+  useEffect(() => {
+    if (ticket && draftText === null) {
+      setDraftText(ticket.ai_draft || ticket.ai_response || '');
+    }
+  }, [ticket, draftText]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -416,7 +425,7 @@ export default function TicketDetail() {
     setApproving(true);
     setActionStatus('');
     try {
-      const res = await client.post(`/api/v2/tickets/${ticket_id}/approve-ai`);
+      const res = await client.post(`/api/v2/tickets/${ticket_id}/approve-ai`, draftText ? { body: draftText } : {});
       if (res.data?.success) {
         setActionStatus('AI response approved and email sent.');
         setTimeout(() => window.location.reload(), 1500);
@@ -695,13 +704,16 @@ export default function TicketDetail() {
         {/* AI Draft Approval */}
         {(ticket.ai_draft || ticket.ai_response) && ticket.status !== 'resolved' && (
           <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '6px', padding: '16px 20px' }}>
-            <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '10px' }}>AI Draft</div>
-            <div style={{ fontSize: '13px', color: 'var(--text-primary)', lineHeight: '1.6', marginBottom: '12px', padding: '10px', background: 'var(--bg-secondary)', borderRadius: '4px', whiteSpace: 'pre-wrap' }}>
-              {ticket.ai_draft || ticket.ai_response}
-            </div>
+            <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '10px' }}>AI Draft (editable)</div>
+            <textarea
+              value={draftText ?? (ticket.ai_draft || ticket.ai_response || '')}
+              onChange={e => setDraftText(e.target.value)}
+              rows={6}
+              style={{ width: '100%', fontSize: '13px', color: 'var(--text-primary)', lineHeight: '1.6', marginBottom: '12px', padding: '10px', background: 'var(--bg-secondary)', borderRadius: '4px', border: '1px solid var(--border)', resize: 'vertical', boxSizing: 'border-box', fontFamily: 'inherit' }}
+            />
             <button
               onClick={handleApproveAI}
-              disabled={approving}
+              disabled={approving || !(draftText ?? '').trim()}
               style={{
                 width: '100%',
                 padding: '9px 14px',

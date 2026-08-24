@@ -424,7 +424,19 @@ export default function Automation() {
   return (
     <div style={{ padding: '28px 32px', display: 'flex', flexDirection: 'column', gap: '32px' }}>
       <div>
-        <h1 style={{ margin: '0 0 4px', fontSize: '20px', fontWeight: '700', color: '#0F172A' }}>Automation</h1>
+        <h1 style={{ margin: '0 0 4px', fontSize: '20px', fontWeight: '700', color: '#0F172A', display: 'flex', alignItems: 'center', gap: '6px' }}>
+          Automation
+          <span
+            title="Autopilot: Luna completes the action without asking you first. It will only do this for requests that pass your store's existing safety, Shopify, and policy checks — anything uncertain still comes to your team."
+            style={{
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              width: '16px', height: '16px', borderRadius: '50%', border: '1px solid #CBD5E1',
+              color: '#94A3B8', fontSize: '11px', fontWeight: '600', cursor: 'help', flexShrink: 0,
+            }}
+          >
+            i
+          </span>
+        </h1>
         <p style={{ margin: 0, fontSize: '13px', color: '#94A3B8' }}>
           From Copilot to Autopilot — decide when Luna is trusted to act on its own.
         </p>

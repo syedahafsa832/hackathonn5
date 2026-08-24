@@ -1008,6 +1008,39 @@ class CustomerSuccessAgent:
                         order_block = _build_order_context(order, tracking_context=_tracking_ctx)
                         tool_context += order_block + "\n"
                         logger.info(f"[Agent] Order context built:\n{order_block}")
+
+                        # Deterministic cancellation-window check: a plain
+                        # question like "can I cancel? it was placed
+                        # yesterday" never reaches return_actions_integration.py's
+                        # action-staging flow at all if it isn't classified
+                        # as an action request - but the model still needs
+                        # the real answer, not a guess from the customer's
+                        # own wording. Only checked for cancel-shaped
+                        # questions about a still-active order; never
+                        # fabricates a policy or a result.
+                        if "cancel" in query_lower and not order.get("cancelled_at"):
+                            try:
+                                from src.services.actions_manager import actions_manager
+                                _cancel_policy_text = await actions_manager.get_custom_policy_text(store_id)
+                                _window_check = actions_manager.evaluate_cancellation_window(
+                                    _cancel_policy_text, order.get("created_at")
+                                )
+                                if _window_check:
+                                    if _window_check["eligible"]:
+                                        tool_context += (
+                                            f"CANCELLATION WINDOW CHECK: This order was placed {_window_check['elapsed_hours']:.1f} "
+                                            f"hours ago, within the store's {_window_check['window_hours']:.0f}-hour cancellation window. "
+                                            "State plainly that it's still within the window.\n"
+                                        )
+                                    else:
+                                        tool_context += (
+                                            f"CANCELLATION WINDOW CHECK: This order was placed {_window_check['elapsed_hours']:.1f} "
+                                            f"hours ago, which is OUTSIDE the store's {_window_check['window_hours']:.0f}-hour "
+                                            "cancellation window. State plainly that it can no longer be cancelled. Do NOT say it "
+                                            "'might still' be within the window - the timestamps prove it isn't.\n"
+                                        )
+                            except Exception as _wce:
+                                logger.warning(f"[Agent] Cancellation window check failed (non-blocking): {_wce}")
                     elif order.get("ownership_mismatch"):
                         # A real order was found in Shopify, but the identity
                         # on this conversation doesn't match it - never
@@ -1015,8 +1048,14 @@ class CustomerSuccessAgent:
                         # but don't lie and claim the lookup itself failed
                         # either (it didn't).
                         mentioned_num = order.get("order_number", "")
-                        tool_context += f"ORDER IDENTITY UNVERIFIED: An order #{mentioned_num} exists, but the email on file for it does not match this conversation.\n"
-                        tool_context += "Do NOT reveal any details about this order (status, items, cancellation, refund, tracking). Ask the customer to confirm the email address used when placing that order before you can discuss it.\n"
+                        tool_context += f"ORDER IDENTITY UNVERIFIED: You found order #{mentioned_num} in Shopify, but the email this customer is contacting you from is different from the email used on that order.\n"
+                        tool_context += (
+                            "Do NOT reveal any details about this order (status, items, cancellation, refund, tracking). "
+                            "Do NOT say 'the email on file' or imply the customer did anything wrong - a different contact "
+                            "email is completely normal (lost access, ordered for someone else, used another address). "
+                            "Tell them plainly you found the order but the email they're writing from doesn't match the one "
+                            "used to place it, and ask them to confirm the email used when ordering so you can help.\n"
+                        )
                         _needs_identity_verification = True
                     elif order.get("error"):
                         mentioned_num = order.get("order_number", "")
@@ -1424,7 +1463,7 @@ class CustomerSuccessAgent:
            any placeholder word as if it were their real name.
 
         COMMON SENSE — READ ORDER STATUS BEFORE RESPONDING:
-        - If ORDER DATA says "CANCELLED" — do NOT offer cancellation. Acknowledge it is cancelled already.
+        - If ORDER DATA says "CANCELLED" — do NOT offer cancellation. Tell them plainly it's already cancelled and can't be cancelled again, using the real order data (not a one-line brush-off) so they know their request was actually handled.
         - If ORDER DATA says "refunded" or "partially_refunded" — do NOT offer a refund. Acknowledge it is refunded already.
         - If ORDER DATA says "fulfilled" (shipped) AND a tracking URL is present — share that URL directly in your reply. Never say "check your email".
         - If ORDER DATA says "fulfilled" (shipped) — do NOT offer cancellation or address change. Offer reship/refund if relevant.
