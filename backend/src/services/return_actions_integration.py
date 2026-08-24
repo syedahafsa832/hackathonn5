@@ -373,6 +373,31 @@ class ReturnActionsIntegration:
             # uses — never auto-approved past policy text that was never
             # actually checked.
             cancel_policy_text = await self.actions.get_custom_policy_text(brand_id)
+
+            # Deterministic time-window check FIRST, before the blanket
+            # "needs a human" escalation below - a merchant policy like
+            # "cancellation within 2 hours" is a fact Shopify's real
+            # order.created_at can settle outright, not something that
+            # needs a human to eyeball. Only overrides the generic
+            # escalation when it produces a definitive answer (real window
+            # text + a real order timestamp); a policy that isn't a simple
+            # "within N hours/days" window, or a missing timestamp, still
+            # falls through to the existing manual-review behavior below
+            # unchanged - never guessed.
+            window_check = self.actions.evaluate_cancellation_window(
+                cancel_policy_text, order_data.get("created_at")
+            )
+            if window_check and not window_check["eligible"]:
+                result["action_context"] = (
+                    f"**{intent_type.upper()} NOT ELIGIBLE**: This order was placed "
+                    f"{window_check['elapsed_hours']:.1f} hours ago. Store policy only allows "
+                    f"cancellation within {window_check['window_hours']:.0f} hours of placing the order. "
+                    "This order is outside that window. Tell the customer clearly that the order can no "
+                    "longer be cancelled per store policy - do NOT say it 'might still' be eligible, and "
+                    "do NOT create a cancellation request."
+                )
+                return result
+
             # None = the check couldn't be completed (unknown, not
             # confirmed-empty) - treated the same as real policy text.
             if cancel_policy_text != "":

@@ -1008,6 +1008,39 @@ class CustomerSuccessAgent:
                         order_block = _build_order_context(order, tracking_context=_tracking_ctx)
                         tool_context += order_block + "\n"
                         logger.info(f"[Agent] Order context built:\n{order_block}")
+
+                        # Deterministic cancellation-window check: a plain
+                        # question like "can I cancel? it was placed
+                        # yesterday" never reaches return_actions_integration.py's
+                        # action-staging flow at all if it isn't classified
+                        # as an action request - but the model still needs
+                        # the real answer, not a guess from the customer's
+                        # own wording. Only checked for cancel-shaped
+                        # questions about a still-active order; never
+                        # fabricates a policy or a result.
+                        if "cancel" in query_lower and not order.get("cancelled_at"):
+                            try:
+                                from src.services.actions_manager import actions_manager
+                                _cancel_policy_text = await actions_manager.get_custom_policy_text(store_id)
+                                _window_check = actions_manager.evaluate_cancellation_window(
+                                    _cancel_policy_text, order.get("created_at")
+                                )
+                                if _window_check:
+                                    if _window_check["eligible"]:
+                                        tool_context += (
+                                            f"CANCELLATION WINDOW CHECK: This order was placed {_window_check['elapsed_hours']:.1f} "
+                                            f"hours ago, within the store's {_window_check['window_hours']:.0f}-hour cancellation window. "
+                                            "State plainly that it's still within the window.\n"
+                                        )
+                                    else:
+                                        tool_context += (
+                                            f"CANCELLATION WINDOW CHECK: This order was placed {_window_check['elapsed_hours']:.1f} "
+                                            f"hours ago, which is OUTSIDE the store's {_window_check['window_hours']:.0f}-hour "
+                                            "cancellation window. State plainly that it can no longer be cancelled. Do NOT say it "
+                                            "'might still' be within the window - the timestamps prove it isn't.\n"
+                                        )
+                            except Exception as _wce:
+                                logger.warning(f"[Agent] Cancellation window check failed (non-blocking): {_wce}")
                     elif order.get("ownership_mismatch"):
                         # A real order was found in Shopify, but the identity
                         # on this conversation doesn't match it - never

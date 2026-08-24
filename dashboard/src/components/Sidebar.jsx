@@ -1,16 +1,29 @@
 import { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Inbox, ShieldAlert, Store, Settings, ShieldQuestion, ShieldCheck, ChevronLeft, ChevronRight, Zap, Star, Sparkles } from 'lucide-react';
+import { LayoutDashboard, Inbox, ShieldAlert, Store, Settings, ShieldQuestion, ShieldCheck, ChevronLeft, ChevronRight, Zap, Star, Sparkles, GraduationCap } from 'lucide-react';
 import { useEscalations, useActions, useQuarantineCount, useMe } from '../hooks/useApi';
 
-const NAV = [
-  { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { path: '/tickets', label: 'Conversations', icon: Inbox },
-  { path: '/customer-voice', label: 'Customer Voice', icon: Star },
+// Simplified information architecture: Home / Inbox / Luna / Automation /
+// Store are the five things a merchant actually needs day to day. Nothing
+// here deletes a route or rebuilds a page - every item still points at the
+// exact same existing route/component. "Luna" reuses the existing Settings
+// page's Reply Style tab (via NavLink `state`, the same mechanism Settings
+// already reads via `location.state?.tab`) rather than a new page.
+// Escalations/Quarantine move to a visually secondary group (not gone,
+// just no longer equal-weight with the five core destinations) per the
+// "don't keep these as major top-level items" simplification.
+const PRIMARY_NAV = [
+  { path: '/dashboard', label: 'Home', icon: LayoutDashboard },
+  { path: '/tickets', label: 'Inbox', icon: Inbox, badge: true },
+  { path: '/settings', label: 'Luna', icon: GraduationCap, state: { tab: 'reply-style' } },
+  { path: '/customer-voice', label: 'Feedback', icon: Star },
   { path: '/automation', label: 'Automation', icon: Sparkles },
   { path: '/brands', label: 'Store', icon: Store },
-  { path: '/actions', label: 'Escalations', icon: ShieldAlert, badge: true },
-  { path: '/quarantine', label: 'Quarantine', icon: ShieldQuestion, quarantineBadge: true },
+];
+
+const SECONDARY_NAV = [
+  { path: '/actions', label: 'Needs you', icon: ShieldAlert, escalationsBadge: true },
+  { path: '/quarantine', label: 'Safety', icon: ShieldQuestion, quarantineBadge: true },
   { path: '/settings', label: 'Settings', icon: Settings },
   { path: '/upgrade', label: 'Upgrade', icon: Zap },
 ];
@@ -36,9 +49,64 @@ export default function Sidebar({ mobileOpen, onCloseMobile }) {
     localStorage.setItem(COLLAPSE_KEY, String(collapsed));
   }, [collapsed]);
 
-  const navItems = me?.is_super_admin
-    ? [...NAV, { path: '/admin', label: 'Admin', icon: ShieldCheck }]
-    : NAV;
+  const secondaryItems = me?.is_super_admin
+    ? [...SECONDARY_NAV, { path: '/admin', label: 'Admin', icon: ShieldCheck }]
+    : SECONDARY_NAV;
+
+  const renderNavItem = ({ path, label, icon: Icon, badge, escalationsBadge, quarantineBadge, state }, onLinkClick, isCollapsed, dimmed) => {
+    const count = badge ? pendingCount : escalationsBadge ? escalations.length : quarantineBadge ? quarantineCount : 0;
+    return (
+      <NavLink
+        key={label}
+        to={path}
+        state={state}
+        end={path === '/settings' && !state}
+        onClick={onLinkClick}
+        title={isCollapsed ? label : undefined}
+        style={({ isActive }) => ({
+          position: 'relative',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: isCollapsed ? 'center' : 'flex-start',
+          gap: '10px',
+          height: '36px',
+          padding: isCollapsed ? '0' : (isActive ? '0 12px 0 10px' : '0 12px'),
+          margin: isCollapsed ? '2px 10px' : '2px 8px',
+          borderRadius: '6px',
+          textDecoration: 'none',
+          fontWeight: '500',
+          fontSize: dimmed ? '13px' : '14px',
+          color: isActive ? '#0E7490' : (dimmed ? '#94A3B8' : '#475569'),
+          background: isActive ? '#ECFEFF' : 'transparent',
+          borderLeft: !isCollapsed && isActive ? '2px solid #06B6D4' : 'none',
+          transition: 'all 0.1s',
+        })}
+        onMouseEnter={e => { if (!e.currentTarget.classList.contains('active')) { e.currentTarget.style.background = '#F1F5F9'; e.currentTarget.style.color = '#0F172A'; } }}
+        onMouseLeave={e => { if (!e.currentTarget.classList.contains('active')) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = dimmed ? '#94A3B8' : '#475569'; } }}
+      >
+        <Icon size={dimmed ? 14 : 16} />
+        {!isCollapsed && <span style={{ flex: 1 }}>{label}</span>}
+        {count > 0 && (
+          <span style={{
+            background: badge ? '#06B6D4' : '#F59E0B',
+            color: 'white',
+            borderRadius: '10px',
+            fontSize: '11px',
+            fontWeight: '600',
+            padding: isCollapsed ? '0' : '1px 6px',
+            minWidth: isCollapsed ? '8px' : '18px',
+            height: isCollapsed ? '8px' : 'auto',
+            textAlign: 'center',
+            position: isCollapsed ? 'absolute' : 'static',
+            top: isCollapsed ? '2px' : 'auto',
+            right: isCollapsed ? '6px' : 'auto',
+          }}>
+            {isCollapsed ? '' : count}
+          </span>
+        )}
+      </NavLink>
+    );
+  };
 
   const renderContent = (onLinkClick, isCollapsed) => (
     <>
@@ -58,58 +126,15 @@ export default function Sidebar({ mobileOpen, onCloseMobile }) {
       </div>
 
       <nav style={{ flex: 1, padding: '8px 0', display: 'flex', flexDirection: 'column', gap: '2px' }}>
-        {navItems.map(({ path, label, icon: Icon, badge, quarantineBadge }) => {
-          const count = badge ? pendingCount : quarantineBadge ? quarantineCount : 0;
-          return (
-            <NavLink
-              key={path}
-              to={path}
-              onClick={onLinkClick}
-              title={isCollapsed ? label : undefined}
-              style={({ isActive }) => ({
-                position: 'relative',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: isCollapsed ? 'center' : 'flex-start',
-                gap: '10px',
-                height: '36px',
-                padding: isCollapsed ? '0' : (isActive ? '0 12px 0 10px' : '0 12px'),
-                margin: isCollapsed ? '2px 10px' : '2px 8px',
-                borderRadius: '6px',
-                textDecoration: 'none',
-                fontWeight: '500',
-                fontSize: '14px',
-                color: isActive ? '#0E7490' : '#475569',
-                background: isActive ? '#ECFEFF' : 'transparent',
-                borderLeft: !isCollapsed && isActive ? '2px solid #06B6D4' : 'none',
-                transition: 'all 0.1s',
-              })}
-              onMouseEnter={e => { if (!e.currentTarget.classList.contains('active')) { e.currentTarget.style.background = '#F1F5F9'; e.currentTarget.style.color = '#0F172A'; } }}
-              onMouseLeave={e => { if (!e.currentTarget.classList.contains('active')) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#475569'; } }}
-            >
-              <Icon size={16} />
-              {!isCollapsed && <span style={{ flex: 1 }}>{label}</span>}
-              {count > 0 && (
-                <span style={{
-                  background: badge ? '#06B6D4' : '#F59E0B',
-                  color: 'white',
-                  borderRadius: '10px',
-                  fontSize: '11px',
-                  fontWeight: '600',
-                  padding: isCollapsed ? '0' : '1px 6px',
-                  minWidth: isCollapsed ? '8px' : '18px',
-                  height: isCollapsed ? '8px' : 'auto',
-                  textAlign: 'center',
-                  position: isCollapsed ? 'absolute' : 'static',
-                  top: isCollapsed ? '2px' : 'auto',
-                  right: isCollapsed ? '6px' : 'auto',
-                }}>
-                  {isCollapsed ? '' : count}
-                </span>
-              )}
-            </NavLink>
-          );
-        })}
+        {PRIMARY_NAV.map(item => renderNavItem(item, onLinkClick, isCollapsed, false))}
+
+        {!isCollapsed && (
+          <div style={{ margin: '10px 20px 4px', fontSize: '11px', fontWeight: '600', color: '#CBD5E1', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            More
+          </div>
+        )}
+        {isCollapsed && <div style={{ height: '1px', background: '#E4E4E7', margin: '6px 16px' }} />}
+        {secondaryItems.map(item => renderNavItem(item, onLinkClick, isCollapsed, true))}
       </nav>
 
       {!isCollapsed && (
