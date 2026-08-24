@@ -6,7 +6,7 @@ import os
 import re
 import logging
 from typing import Dict, Any, Optional, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import requests
 import uuid as uuid_lib
 from src.lib.supabase_client import supabase_select, supabase_insert, supabase_update
@@ -98,6 +98,48 @@ class ActionsManager:
             logger.warning(f"[ActionsManager] Knowledge base policy lookup failed for brand {brand_id}: {e}")
             return None
         return text
+
+    def evaluate_cancellation_window(
+        self, policy_text: Optional[str], order_created_at: Optional[str]
+    ) -> Optional[Dict[str, Any]]:
+        """Deterministic cancellation-window eligibility - the actual bug
+        fix. Luna used to reason about "within N hours" cancellation
+        policies purely from retrieved KB text and the customer's own
+        wording ("placed yesterday"), producing hedges like "might still be
+        within the window" even when Shopify's real order.created_at made
+        the answer obvious. This computes the real answer from real data.
+
+        Returns None (never a guess) when the policy text has no "within N
+        hours/days" pattern, or when order_created_at is missing/unparseable
+        - callers must fall back to their existing safe behavior (escalate/
+        ask, never assume eligible or not)."""
+        if not policy_text or not order_created_at:
+            return None
+
+        window_hours = None
+        m = re.search(r'(\d+(?:\.\d+)?)\s*hour', policy_text, re.IGNORECASE)
+        if m:
+            window_hours = float(m.group(1))
+        else:
+            m = re.search(r'(\d+(?:\.\d+)?)\s*day', policy_text, re.IGNORECASE)
+            if m:
+                window_hours = float(m.group(1)) * 24
+        if window_hours is None:
+            return None
+
+        try:
+            created = datetime.fromisoformat(order_created_at.replace("Z", "+00:00"))
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            return None
+
+        elapsed_hours = (datetime.now(timezone.utc) - created).total_seconds() / 3600
+        return {
+            "window_hours": window_hours,
+            "elapsed_hours": round(elapsed_hours, 2),
+            "eligible": elapsed_hours <= window_hours,
+        }
 
     async def _get_product_collection_ids(self, tenant_id: Optional[str], product_id) -> List[int]:
         """Which collections a product belongs to. Shopify's order line items
