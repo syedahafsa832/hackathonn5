@@ -1041,6 +1041,49 @@ class CustomerSuccessAgent:
                                         )
                             except Exception as _wce:
                                 logger.warning(f"[Agent] Cancellation window check failed (non-blocking): {_wce}")
+
+                        # Same grounding for a plain return/refund/exchange
+                        # question about a fulfilled, still-active order -
+                        # e.g. "can I return this? I got it 3 weeks ago".
+                        # Uses the merchant's real configured return window
+                        # (days), not the customer's own wording. Only
+                        # states the timing fact, not a full eligibility
+                        # verdict (final-sale tags, exclusions, etc. still
+                        # require the real check_return_eligibility path
+                        # when an actual return/refund is requested) - never
+                        # fabricates a policy or a result.
+                        if (
+                            any(w in query_lower for w in ("return", "refund", "exchange"))
+                            and order.get("status") == "fulfilled"
+                            and not order.get("cancelled_at")
+                        ):
+                            try:
+                                from src.services.actions_manager import actions_manager
+                                _window_days = await actions_manager.get_return_window_days(store_id)
+                                _return_check = actions_manager.evaluate_return_window(
+                                    order.get("created_at"), _window_days
+                                )
+                                if _return_check:
+                                    logger.info(
+                                        f"[Agent] Deterministic return/refund window check: policy source=return_policy_days, "
+                                        f"evidence=order.created_at, decision={'ELIGIBLE' if _return_check['eligible'] else 'NOT ELIGIBLE'}, "
+                                        "method=deterministic"
+                                    )
+                                    if _return_check["eligible"]:
+                                        tool_context += (
+                                            f"RETURN/REFUND WINDOW CHECK: This order was placed {_return_check['days_since_order']} "
+                                            f"day(s) ago, within the store's {_return_check['window_days']}-day return window. "
+                                            "State plainly that it's still within the window based on timing.\n"
+                                        )
+                                    else:
+                                        tool_context += (
+                                            f"RETURN/REFUND WINDOW CHECK: This order was placed {_return_check['days_since_order']} "
+                                            f"day(s) ago, which is OUTSIDE the store's {_return_check['window_days']}-day return window. "
+                                            "State plainly that it's no longer eligible for a return/refund based on timing. Do NOT say "
+                                            "it 'might still' be eligible - the timestamps prove it isn't.\n"
+                                        )
+                            except Exception as _rwe:
+                                logger.warning(f"[Agent] Return window check failed (non-blocking): {_rwe}")
                     elif order.get("ownership_mismatch"):
                         # A real order was found in Shopify, but the identity
                         # on this conversation doesn't match it - never

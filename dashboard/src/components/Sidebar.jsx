@@ -20,11 +20,19 @@ const PRIMARY_NAV = [
   { path: '/brands', label: 'Store', icon: Store },
 ];
 
-const SECONDARY_NAV = [
-  { path: '/actions', label: 'Needs you', icon: ShieldAlert, escalationsBadge: true },
-  { path: '/quarantine', label: 'Safety', icon: ShieldQuestion, quarantineBadge: true },
+// The rest of the Luna workflow (Train Luna lives in PRIMARY_NAV above) -
+// grouped under its own label so it reads as one place, not scattered
+// among unrelated secondary items.
+const LUNA_GROUP = [
   { path: '/review', label: "Review Luna's Work", icon: ClipboardCheck },
   { path: '/customer-voice', label: 'Customer Voice', icon: Star },
+];
+
+// Lower-frequency tools - accessible, not deleted, just not competing
+// with the five primary destinations or the Luna group for attention.
+const ADVANCED_GROUP = [
+  { path: '/actions', label: 'Needs you', icon: ShieldAlert, escalationsBadge: true },
+  { path: '/quarantine', label: 'Safety', icon: ShieldQuestion, quarantineBadge: true },
   { path: '/settings', label: 'Settings', icon: Settings },
   { path: '/upgrade', label: 'Upgrade', icon: Zap },
 ];
@@ -50,9 +58,9 @@ export default function Sidebar({ mobileOpen, onCloseMobile }) {
     localStorage.setItem(COLLAPSE_KEY, String(collapsed));
   }, [collapsed]);
 
-  const secondaryItems = me?.is_super_admin
-    ? [...SECONDARY_NAV, { path: '/admin', label: 'Admin', icon: ShieldCheck }]
-    : SECONDARY_NAV;
+  const advancedItems = me?.is_super_admin
+    ? [...ADVANCED_GROUP, { path: '/admin', label: 'Admin', icon: ShieldCheck }]
+    : ADVANCED_GROUP;
 
   const renderNavItem = ({ path, label, icon: Icon, badge, escalationsBadge, quarantineBadge, state }, onLinkClick, isCollapsed, dimmed) => {
     const count = badge ? pendingCount : escalationsBadge ? escalations.length : quarantineBadge ? quarantineCount : 0;
@@ -131,11 +139,19 @@ export default function Sidebar({ mobileOpen, onCloseMobile }) {
 
         {!isCollapsed && (
           <div style={{ margin: '10px 20px 4px', fontSize: '11px', fontWeight: '600', color: '#CBD5E1', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-            More
+            Luna
           </div>
         )}
         {isCollapsed && <div style={{ height: '1px', background: '#E4E4E7', margin: '6px 16px' }} />}
-        {secondaryItems.map(item => renderNavItem(item, onLinkClick, isCollapsed, true))}
+        {LUNA_GROUP.map(item => renderNavItem(item, onLinkClick, isCollapsed, true))}
+
+        {!isCollapsed && (
+          <div style={{ margin: '10px 20px 4px', fontSize: '11px', fontWeight: '600', color: '#CBD5E1', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            Advanced
+          </div>
+        )}
+        {isCollapsed && <div style={{ height: '1px', background: '#E4E4E7', margin: '6px 16px' }} />}
+        {advancedItems.map(item => renderNavItem(item, onLinkClick, isCollapsed, true))}
       </nav>
 
       {!isCollapsed && (

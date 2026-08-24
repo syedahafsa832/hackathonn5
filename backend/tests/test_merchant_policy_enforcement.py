@@ -93,27 +93,36 @@ async def _check_eligibility(order, brand, kb_context="", kb_raises=False):
 def test_refund_notes_policy_blocks_auto_eligibility_even_within_structured_window():
     """Order is only 5 days old - well inside the default 30-day structured
     window - but the merchant's free-text notes say refunds are restricted
-    to 24 hours. Must NOT be auto-approved as eligible."""
+    to 24 hours. Must NOT be auto-approved as eligible.
+
+    Updated for the deterministic free-text window check (same fix as the
+    cancellation-window bug, applied to refund/return): "after 24 hours"
+    against a real 5-day-old order is a fact the timestamps settle
+    outright, so this is now a direct, confident NOT ELIGIBLE rather than
+    the old blanket "needs a human to check" escalation - the underlying
+    guarantee this test protects (never auto-approved as eligible) still
+    holds, just resolved deterministically instead of punted to a human."""
     order = _order(days_old=5, fulfillment_status="fulfilled")
     brand = {"id": "b1", "refund_notes": "Orders cannot be refunded after 24 hours."}
     result = run(_check_eligibility(order, brand))
 
     assert result["eligible"] is False
-    assert result["requires_manual_review"] is True
-    assert result["staging_required"] is True
-    assert "24 hours" in result["custom_policy_text"]
+    assert not result.get("requires_manual_review")
+    assert not result.get("staging_required")
+    assert "24" in result["reason"]
 
 
 def test_knowledge_base_policy_also_blocks_auto_eligibility_when_notes_field_is_empty():
     """Same scenario, but the merchant only ever wrote the policy into their
-    Knowledge Base (FAQ/policy doc), never the structured notes field."""
+    Knowledge Base (FAQ/policy doc), never the structured notes field.
+    Same deterministic-window update as the test above."""
     order = _order(days_old=5, fulfillment_status="fulfilled")
     brand = {"id": "b1", "refund_notes": ""}
     result = run(_check_eligibility(order, brand, kb_context="Our policy: refunds must be requested within 24 hours of delivery."))
 
     assert result["eligible"] is False
-    assert result["requires_manual_review"] is True
-    assert "24 hours" in result["custom_policy_text"]
+    assert not result.get("requires_manual_review")
+    assert "24" in result["reason"]
 
 
 def test_no_custom_policy_anywhere_still_grants_normal_eligibility():
