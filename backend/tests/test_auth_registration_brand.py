@@ -24,11 +24,19 @@ os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test")
 from src.services.auth_service import AuthService  # noqa: E402
 
 
+def _fake_signup(email):
+    """A Supabase GoTrue signup response with an immediate session (email confirmation off)."""
+    return {
+        "user": {"id": "supabase-user-1", "email": email},
+        "session": {"access_token": "at-1", "refresh_token": "rt-1", "token_type": "bearer", "expires_in": 3600},
+    }
+
+
 def _run_register(insert_side_effect, email="new.tenant@example.com", company_name=None):
     auth_service = AuthService()
     with patch("src.services.auth_service.supabase_select", return_value=[]), \
          patch("src.services.auth_service.supabase_insert", side_effect=insert_side_effect), \
-         patch.object(AuthService, "_store_refresh_token", new=AsyncMock(return_value=None)):
+         patch("src.services.auth_service.supabase_gotrue.sign_up", return_value=_fake_signup(email)):
         import asyncio
         return asyncio.run(auth_service.register(email=email, password="supersecret123", company_name=company_name))
 

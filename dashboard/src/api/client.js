@@ -14,16 +14,58 @@ client.interceptors.request.use((config) => {
 });
 
 let redirecting = false;
+let refreshPromise = null;
+
+// Supabase access tokens are short-lived (typically 1hr, vs. the old
+// custom JWT's 24hr) — a silent refresh-and-retry-once on 401 keeps a
+// signed-in user signed in across normal usage instead of bouncing them to
+// /login every time the access token expires.
+function refreshSession() {
+  const refreshToken = localStorage.getItem('resolv_refresh_token');
+  if (!refreshToken) return Promise.resolve(false);
+
+  if (!refreshPromise) {
+    refreshPromise = axios
+      .post(`${client.defaults.baseURL}/api/v1/auth/refresh`, { refresh_token: refreshToken }, { timeout: 35000 })
+      .then((res) => {
+        const { access_token, refresh_token } = res.data || {};
+        if (!access_token) throw new Error('No access token in refresh response');
+        localStorage.setItem('resolv_token', access_token);
+        if (refresh_token) localStorage.setItem('resolv_refresh_token', refresh_token);
+        return true;
+      })
+      .catch(() => {
+        localStorage.removeItem('resolv_token');
+        localStorage.removeItem('resolv_refresh_token');
+        return false;
+      })
+      .finally(() => {
+        refreshPromise = null;
+      });
+  }
+  return refreshPromise;
+}
 
 client.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
+    const original = error.config;
+
+    if (error.response?.status === 401 && original && !original._retried && localStorage.getItem('resolv_refresh_token')) {
+      original._retried = true;
+      const refreshed = await refreshSession();
+      if (refreshed) {
+        return client(original);
+      }
+    }
+
     if (error.response?.status === 401 && !redirecting) {
       // Only redirect if the user has (or had) a token — avoids redirect loops on public endpoints
       const hadToken = !!localStorage.getItem('resolv_token');
       if (hadToken) {
         redirecting = true;
         localStorage.removeItem('resolv_token');
+        localStorage.removeItem('resolv_refresh_token');
         window.location.href = '/login';
       }
     }

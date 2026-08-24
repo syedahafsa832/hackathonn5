@@ -75,8 +75,13 @@ def _mock_insert_recorder():
 def test_new_brand_registration_creates_paused_system_settings_row():
     service = AuthService()
     fake_insert, inserted = _mock_insert_recorder()
+    fake_signup = {
+        "user": {"id": "sb-user-1", "email": "new@example.com"},
+        "session": {"access_token": "at-1", "refresh_token": "rt-1", "token_type": "bearer", "expires_in": 3600},
+    }
     with patch("src.services.auth_service.supabase_select", return_value=[]), \
-         patch("src.services.auth_service.supabase_insert", side_effect=fake_insert):
+         patch("src.services.auth_service.supabase_insert", side_effect=fake_insert), \
+         patch("src.services.auth_service.supabase_gotrue.sign_up", return_value=fake_signup):
         result = run(service.register(email="new@example.com", password="password123", company_name="Test Co"))
 
     assert result["success"] is True
@@ -200,8 +205,13 @@ def test_registration_change_does_not_touch_any_existing_brand_row():
     pre-existing brand/settings row."""
     service = AuthService()
     fake_insert, inserted = _mock_insert_recorder()
+    fake_signup = {
+        "user": {"id": "sb-user-2", "email": "second@example.com"},
+        "session": {"access_token": "at-2", "refresh_token": "rt-2", "token_type": "bearer", "expires_in": 3600},
+    }
     with patch("src.services.auth_service.supabase_select", return_value=[]), \
          patch("src.services.auth_service.supabase_insert", side_effect=fake_insert), \
+         patch("src.services.auth_service.supabase_gotrue.sign_up", return_value=fake_signup), \
          patch("src.services.auth_service.supabase_update") as mock_update:
         run(service.register(email="second@example.com", password="password123", company_name="Second Co"))
 

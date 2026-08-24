@@ -41,7 +41,6 @@ from src.api.routes.saas_auth import router as saas_auth_router  # noqa: E402
 from src.api.routes.v2_brands import router as v2_brands_router  # noqa: E402
 from src.api.routes.v2_tickets import router as v2_tickets_router  # noqa: E402
 from src.api.routes.brands import router as brands_router  # noqa: E402
-from src.services.auth_service import auth_service as real_auth_service  # noqa: E402
 
 
 # ─── Minimal app: only the routers under test, real prefixes matching main.py ──
@@ -78,7 +77,7 @@ class _FakeDB:
         else:
             return []
 
-        for key in ("id", "tenant_id", "brand_id", "organization_id", "email"):
+        for key in ("id", "tenant_id", "brand_id", "organization_id", "email", "supabase_user_id"):
             if key in params:
                 wanted = self._eq(params[key])
                 rows = [r for r in rows if r.get(key) == wanted]
@@ -107,14 +106,28 @@ class _FakeDB:
 
 db = _FakeDB()
 
+# Stand-in for Supabase Auth: sign_up() hands back a session whose
+# access_token is an opaque marker, and verify_jwt() looks up the claims
+# that marker was minted with — the same shape a real decoded Supabase JWT
+# would have (sub = Supabase user id, email), no "type" claim, so requests
+# exercise the real (non-legacy) tenant-resolution path in tenant_auth.py /
+# auth_middleware.py, not the deprecated custom-JWT bridge.
+_token_claims = {}
 
-def _verify_jwt_via_real_v1_decode(token):
-    """Bridge for supabase_auth_service.verify_jwt: decode with the app's own
-    v1 JWT logic (auth_service.decode_token) instead of the Supabase-specific
-    JWKS/secret dance, which needs live infra this test doesn't have. This is
-    the same decode the real verify_jwt would need to succeed at for a v1
-    token to reach the fallback branch it's already written to handle."""
-    return real_auth_service.decode_token(token)
+
+def _fake_gotrue_signup(email, password):
+    supabase_user_id = f"sb-{uuid.uuid4()}"
+    access_token = f"access-{uuid.uuid4()}"
+    refresh_token = f"refresh-{uuid.uuid4()}"
+    _token_claims[access_token] = {"sub": supabase_user_id, "email": email}
+    return {
+        "user": {"id": supabase_user_id, "email": email},
+        "session": {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer", "expires_in": 3600},
+    }
+
+
+def _verify_jwt_via_stub(token):
+    return _token_claims.get(token)
 
 
 @pytest.fixture(autouse=True)
@@ -129,6 +142,7 @@ def _patched_supabase():
     with patch("src.services.auth_service.supabase_select", side_effect=db.select), \
          patch("src.services.auth_service.supabase_insert", side_effect=db.insert), \
          patch("src.services.auth_service.supabase_update", side_effect=db.update), \
+         patch("src.services.auth_service.supabase_gotrue.sign_up", side_effect=_fake_gotrue_signup), \
          patch("src.services.supabase_auth_service.supabase_select", side_effect=db.select), \
          patch("src.api.routes.v2_brands.supabase_select", side_effect=db.select), \
          patch("src.api.routes.v2_brands.supabase_update", side_effect=db.update), \
@@ -138,11 +152,12 @@ def _patched_supabase():
          patch("src.services.brand_manager.supabase_select", side_effect=db.select), \
          patch("src.services.brand_manager.supabase_update", side_effect=db.update), \
          patch("src.api.middleware.auth_middleware.supabase_auth_service.verify_jwt",
-               side_effect=_verify_jwt_via_real_v1_decode):
+               side_effect=_verify_jwt_via_stub):
         yield
     db.tenants.clear()
     db.brands.clear()
     db.tickets.clear()
+    _token_claims.clear()
     from src.services.brand_manager import brand_manager as _bm
     _bm._brand_cache.clear()
 
