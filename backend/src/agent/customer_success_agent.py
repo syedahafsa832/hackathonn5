@@ -235,12 +235,21 @@ _FALSE_SUCCESS_RE = re.compile(
 )
 
 
-def _enforce_no_unconfirmed_action_success(structured: Dict[str, Any]) -> Dict[str, Any]:
+def _enforce_no_unconfirmed_action_success(
+    structured: Dict[str, Any], genuinely_executed: bool = False
+) -> Dict[str, Any]:
     """If the model's reply claims a refund/cancellation/address-change already
-    happened, that claim is always false in this pipeline (nothing sensitive is
-    executed synchronously here - see module docstring above). Overrides the
-    reply with an honest "sent for confirmation" message and forces escalation
+    happened, that claim is false UNLESS Cancellation/Refund Autopilot genuinely
+    executed it synchronously via actions_service.approve_action() (the same
+    real Shopify mutation a human's Approve click triggers - see
+    _maybe_autopilot_cancel/_maybe_autopilot_refund in
+    return_actions_integration.py). genuinely_executed is only ever True when
+    the caller's own staged-action record already shows status="executed" -
+    never inferred from the reply text itself. Otherwise overrides the reply
+    with an honest "sent for confirmation" message and forces escalation
     rather than letting a false success claim reach the customer."""
+    if genuinely_executed:
+        return structured
     is_action_reply = (
         structured.get("intent") in _UNCONFIRMED_ACTION_INTENTS
         or structured.get("action_detected") in _UNCONFIRMED_ACTION_DETECTED
@@ -515,7 +524,7 @@ class CustomerSuccessAgent:
             # that persists `query` verbatim (actions.original_message,
             # shown to merchants on the Escalations page).
             _is_chat = customer_info.get("channel") == "chat"
-            await _emit("thinking", "Analyzing request…")
+            await _emit("thinking", "Understanding your request…")
 
             # 1. RAG Retrieval - brand_knowledge_service.get_brand_context() is scoped
             # correctly by brand_id via match_brand_rag_chunks. rag_engine.get_relevant_context's
@@ -680,6 +689,24 @@ class CustomerSuccessAgent:
                             )
                             if tool_results["order_status"].get("success"):
                                 await _emit("order_found", "Shopify order found")
+                                # A verified email was only ever used for this
+                                # one lookup and then lost - the next turn had
+                                # no record of it (customer_email stayed blank
+                                # on the ticket, invisible to the merchant
+                                # dashboard, and would trigger the SAME
+                                # verification ask again). Reuses the exact
+                                # same column the widget's own explicit email
+                                # capture endpoint writes to - no new field,
+                                # no new system. Never overwrites an existing
+                                # (already-verified or Gmail-sourced) email
+                                # with something looser.
+                                if not _t.get("customer_email"):
+                                    try:
+                                        supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {
+                                            "customer_email": _verify_email_match.group(0),
+                                        })
+                                    except Exception as _pse:
+                                        logger.warning(f"[Agent] Persisting verified email failed (non-blocking): {_pse}")
                     except Exception as _pve:
                         logger.warning(f"[Agent] Pending identity-verification lookup failed (non-blocking): {_pve}")
 
@@ -1086,19 +1113,35 @@ class CustomerSuccessAgent:
                                 logger.warning(f"[Agent] Return window check failed (non-blocking): {_rwe}")
                     elif order.get("ownership_mismatch"):
                         # A real order was found in Shopify, but the identity
-                        # on this conversation doesn't match it - never
+                        # on this conversation isn't confirmed yet - never
                         # weaken that check or disclose the order's details,
                         # but don't lie and claim the lookup itself failed
-                        # either (it didn't).
+                        # either (it didn't). Two real sub-cases, worded
+                        # differently: no email given yet at all (by far the
+                        # more common one - a chat visitor's very first
+                        # message with just an order number) vs. an email
+                        # that was given but doesn't match the order on file.
                         mentioned_num = order.get("order_number", "")
-                        tool_context += f"ORDER IDENTITY UNVERIFIED: You found order #{mentioned_num} in Shopify, but the email this customer is contacting you from is different from the email used on that order.\n"
-                        tool_context += (
-                            "Do NOT reveal any details about this order (status, items, cancellation, refund, tracking). "
-                            "Do NOT say 'the email on file' or imply the customer did anything wrong - a different contact "
-                            "email is completely normal (lost access, ordered for someone else, used another address). "
-                            "Tell them plainly you found the order but the email they're writing from doesn't match the one "
-                            "used to place it, and ask them to confirm the email used when ordering so you can help.\n"
-                        )
+                        if order.get("email_provided"):
+                            tool_context += f"ORDER IDENTITY UNVERIFIED: You found order #{mentioned_num} in Shopify, but the email this customer is contacting you from is different from the email used on that order.\n"
+                            tool_context += (
+                                "Do NOT reveal any details about this order (status, items, cancellation, refund, tracking). "
+                                "Do NOT say 'the email on file' or imply the customer did anything wrong - a different contact "
+                                "email is completely normal (lost access, ordered for someone else, used another address). "
+                                "Do NOT say you can't pull up or access the order - you found it. "
+                                "Tell them plainly you found the order but the email they're writing from doesn't match the one "
+                                "used to place it, and ask them to confirm the email used when ordering so you can help.\n"
+                            )
+                        else:
+                            tool_context += f"ORDER FOUND, IDENTITY NOT YET CONFIRMED: You found order #{mentioned_num} in Shopify, but no email has been provided yet to verify it belongs to this customer.\n"
+                            tool_context += (
+                                "Do NOT reveal any details about this order yet. Do NOT say you can't pull up, can't access, "
+                                "or can't find the order - you found it, you just need to verify ownership before sharing "
+                                "anything. Do NOT say a team member will follow up - you can continue this yourself once "
+                                "verified. Ask naturally for the email address used to place this order so you can verify "
+                                "it's theirs, e.g. 'Could you share the email address you used to place this order? "
+                                "I'll use it to verify your order details.'\n"
+                            )
                         _needs_identity_verification = True
                     elif order.get("error"):
                         mentioned_num = order.get("order_number", "")
@@ -1308,8 +1351,13 @@ class CustomerSuccessAgent:
             else:
                 structured["status"] = "auto_resolved"
 
-            # 5b. Safety backstop: never let a false "action completed" claim through
-            structured = _enforce_no_unconfirmed_action_success(structured)
+            # 5b. Safety backstop: never let a false "action completed" claim
+            # through - UNLESS Autopilot genuinely executed it (the staged
+            # action's own record shows status="executed", set only by
+            # _maybe_autopilot_cancel/_maybe_autopilot_refund on a real
+            # confirmed Shopify mutation, never inferred from the reply text).
+            _genuinely_executed = bool(action_taken) and action_taken.get("status") == "executed"
+            structured = _enforce_no_unconfirmed_action_success(structured, genuinely_executed=_genuinely_executed)
 
             # 5b2. Safety backstop: an explicit "let me talk to a human"
             # request must always actually escalate, regardless of what the
@@ -1485,11 +1533,22 @@ class CustomerSuccessAgent:
         Email: {customer_info.get('email')}
         History: {customer_info.get('history', 'New customer')}
 
-        ACTION RULES (IMPORTANT - DO NOT AUTO-CONFIRM):
-        1. For refunds, returns, exchanges, cancellations, or address changes - NEVER say it's done
-        2. Instead say: "I've prepared your request and sent it to our team for confirmation. You'll receive an update shortly!"
-        3. NEVER use words like "processed", "approved", "completed", "done", "exchanged"
-        4. Always say the request is "being reviewed" or "sent for confirmation"
+        ACTION RULES (IMPORTANT - DO NOT AUTO-CONFIRM, BUT DO NOT UNDER-CONFIRM EITHER):
+        1. Your ONLY source of truth for what actually happened is RETURN/EXCHANGE STATUS above -
+           never guess, and never default to "sent to our team" out of caution once RETURN/EXCHANGE
+           STATUS already tells you the real outcome.
+        2. If RETURN/EXCHANGE STATUS says the action was completed/executed/cancelled automatically
+           (e.g. "CANCEL COMPLETED AUTOMATICALLY") - say plainly that it's done (e.g. "Done! Your
+           order has been cancelled."). Do NOT say it was sent to the team or is awaiting approval -
+           that would be false; it already happened.
+        3. If RETURN/EXCHANGE STATUS says the action was staged/queued for a human (e.g. "QUEUED",
+           "STAGED FOR APPROVAL", "SUBMITTED FOR MANUAL REVIEW") - say it's been sent to your team
+           for confirmation and they'll receive an update shortly. Do NOT say "done", "processed", or
+           "completed" for this case - it genuinely hasn't happened yet.
+        4. If RETURN/EXCHANGE STATUS says the request is NOT ELIGIBLE - say so plainly and explain
+           why using the real reason given. Do NOT say it was sent to the team unless it genuinely
+           was staged for one (per rule 3) - a declined request that was never escalated is not
+           "with the team", it's simply not eligible.
         5. If not eligible - be honest and offer alternatives
         6. NEVER invent a specific policy detail - a time window ("within 2 hours of ordering"),
            a cutoff, a fee, a percentage, a return/exchange window, a restocking fee, or any other

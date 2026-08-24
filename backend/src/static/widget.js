@@ -26,7 +26,12 @@
   var BRAND_ID    = _cfg.brandId    || scriptEl.getAttribute('data-brand');
   var API_BASE    = _cfg.apiBase    || scriptEl.getAttribute('data-api-base') ||
                     scriptEl.src.replace(/\/widget\.js(\?.*)?$/, '');
-  var ACCENT      = _cfg.color      || scriptEl.getAttribute('data-color') || '#FFFFFF';
+  // Default matches the documented example above (#6366F1) and the
+  // #6C63FF/rgba(108,99,255,...) purple washes already used elsewhere in
+  // this file. The fallback used to be '#FFFFFF', so any brand that never
+  // set a custom color got a white-to-light-purple gradient that read as
+  // "barely visible" instead of the intended brand purple.
+  var ACCENT      = _cfg.color      || scriptEl.getAttribute('data-color') || '#6366F1';
   var BOT_NAME    = _cfg.botName    || scriptEl.getAttribute('data-bot-name') || 'Luna';
   var BRAND_LABEL = _cfg.brandLabel || scriptEl.getAttribute('data-brand-label') || 'AI Support';
   var POSITION    = _cfg.position   || 'bottom-right';
@@ -612,7 +617,7 @@
     brand.textContent = 'tResolv';
     var badge = document.createElement('span');
     badge.className = 'resolv-resolution-badge';
-    badge.textContent = 'Resolving';
+    badge.textContent = BOT_NAME + ' is working…';
     header.appendChild(brand);
     header.appendChild(badge);
 
@@ -1093,8 +1098,13 @@
         exchangeCount = Math.floor(data.messages.length / 2);
         if (data.customer_email) emailCaptured = data.customer_email;
       } else {
+        // Warmer, more concrete than "your AI support assistant... ask me
+        // about your orders, returns, or anything else" — names the actual
+        // things a customer can ask about (orders, shipping, returns,
+        // cancellations) instead of a vague "anything else", without
+        // over-explaining what Luna is.
         var greeting = _cfg.greeting ||
-          ('Hey! I’m ' + BOT_NAME + ', your AI support assistant. How can I help you today?\n\nAsk me about your orders, returns, or anything else.');
+          ('Hi! I\'m ' + BOT_NAME + ' 👋 Ask me about your order, shipping, returns, or cancellations — happy to help.');
         renderMsg('bot', greeting, new Date().toISOString());
         showSuggestions(QUICK_ACTIONS);
       }

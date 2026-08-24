@@ -407,6 +407,32 @@ def test_get_order_status_no_customer_email_blocks_access():
     assert "success" not in result
 
 
+def test_get_order_status_no_email_yet_is_flagged_distinctly_from_a_mismatched_one():
+    """Root cause of the 'I can't pull up your order' production bug:
+    ownership_mismatch used to be bool(provided_email), so a chat visitor
+    who's given an order number but no email at all yet (the single most
+    common case) got ownership_mismatch=False - indistinguishable from a
+    genuine Shopify lookup failure to callers. It must now be True either
+    way (the order WAS found), with email_provided distinguishing "no email
+    given yet" from "a mismatched email was given" so callers can phrase
+    each honestly."""
+    tools = V3Tools()
+    payload = _order_payload(fulfillment_status="fulfilled", email="owner@example.com")
+    with patch("src.services.tools.requests.get", return_value=_FakeResp(200, payload)):
+        no_email_result = run(tools.get_order_status(
+            "1008", shop_domain="test.myshopify.com", access_token="tok", customer_email="",
+        ))
+    assert no_email_result["ownership_mismatch"] is True
+    assert no_email_result["email_provided"] is False
+
+    with patch("src.services.tools.requests.get", return_value=_FakeResp(200, payload)):
+        mismatch_result = run(tools.get_order_status(
+            "1008", shop_domain="test.myshopify.com", access_token="tok", customer_email="wrong@example.com",
+        ))
+    assert mismatch_result["ownership_mismatch"] is True
+    assert mismatch_result["email_provided"] is True
+
+
 def test_get_order_status_cancelled_order_with_matching_email_returns_full_data():
     """Shopify Order Context bug: connected Shopify + valid order number +
     cancelled order + a verified/matching identity must return the real

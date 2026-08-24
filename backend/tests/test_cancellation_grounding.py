@@ -59,6 +59,26 @@ def test_prompt_forbids_inventing_specific_policy_details():
     assert "time window" in lowered
 
 
+def test_prompt_no_longer_blanket_forces_sent_to_our_team_wording():
+    """Root cause of two production bugs: 'a cancellation Autopilot already
+    executed gets shown as awaiting approval' and 'a declined/not-eligible
+    request gets told it was escalated when it never was' both traced back
+    to ACTION RULES unconditionally telling the model to NEVER say an action
+    is done and to ALWAYS say 'sent to our team for confirmation' -
+    contradicting the specific, accurate RETURN/EXCHANGE STATUS instructions
+    (e.g. CANCEL COMPLETED AUTOMATICALLY) injected right above it. The rule
+    must now be conditional on what RETURN/EXCHANGE STATUS actually says."""
+    prompt = customer_success_agent._construct_v3_prompt(
+        customer_info={"name": "Jane Doe", "email": "jane@example.com"},
+        rag_context="", sizing_context="", tool_context="", action_context="",
+    )
+    assert "your only source of truth for what actually happened is return/exchange status" in prompt.lower()
+    assert "completed automatically" in prompt.lower()
+    assert "not eligible" in prompt.lower()
+    # The old unconditional phrasing must be gone, not just supplemented.
+    assert "1. for refunds, returns, exchanges, cancellations, or address changes - never say it's done" not in prompt.lower()
+
+
 def test_customer_name_in_prompt_is_exactly_what_was_provided_never_embellished():
     prompt = customer_success_agent._construct_v3_prompt(
         customer_info={"name": "Syeda Hafsa", "email": "syeda@example.com"},

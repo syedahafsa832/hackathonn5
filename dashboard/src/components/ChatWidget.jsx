@@ -7,7 +7,9 @@ const API_BASE = import.meta.env.VITE_API_URL || "https://backend.tresolv.online
 const INITIAL_MESSAGE = {
   id: "init",
   role: "assistant",
-  text: "Hi there 👋 I'm Luna, your AI support assistant.\nAsk me about your orders, returns, or anything else.",
+  // Same wording fix as widget.js's default greeting - concrete categories
+  // instead of a vague "anything else", no over-explaining what Luna is.
+  text: "Hi! I'm Luna 👋 Ask me about your order, shipping, returns, or cancellations — happy to help.",
   ts: Date.now(),
 };
 

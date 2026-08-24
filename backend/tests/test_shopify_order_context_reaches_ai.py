@@ -108,7 +108,7 @@ def test_ownership_mismatch_never_leaks_order_data_but_does_not_falsely_claim_lo
     (mismatched identity) - the model must be told the truth (confirm the
     order's email) without ever seeing the real order's details, and without
     being told the lookup itself failed."""
-    mismatch_result = {"error": "Order #1013 not found.", "order_number": "1013", "ownership_mismatch": True}
+    mismatch_result = {"error": "Order #1013 not found.", "order_number": "1013", "ownership_mismatch": True, "email_provided": True}
     prompt_text = _run_query(
         "hi where is my order? #1013 i have a memory loss i dont remember if i canceled it or not?",
         mismatch_result,

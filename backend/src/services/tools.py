@@ -167,10 +167,23 @@ class V3Tools:
                     # the customer the truth (confirm your email) instead of
                     # the misleading "can't find your order" wording, without
                     # ever disclosing the real order's details either way.
+                    #
+                    # This must be True whenever this block runs at all - the
+                    # order WAS found in Shopify either way, only the identity
+                    # check didn't clear. It used to be bool(provided_email),
+                    # which was False for the single most common case (a
+                    # brand-new chat visitor who's given an order number but
+                    # no email yet) - so that case fell through to the
+                    # generic "order lookup failed" branch downstream and
+                    # produced exactly the misleading "I can't pull up your
+                    # order" wording this was written to avoid. email_provided
+                    # lets the caller still phrase the two sub-cases
+                    # differently (no email yet vs. a mismatched one).
                     return {
                         "error": f"Order #{order_id} not found.",
                         "order_number": order_id,
-                        "ownership_mismatch": bool(provided_email),
+                        "ownership_mismatch": True,
+                        "email_provided": bool(provided_email),
                     }
 
             _fulfillments = o.get("fulfillments") or []
