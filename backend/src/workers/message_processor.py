@@ -863,8 +863,16 @@ class UnifiedMessageProcessor:
                     brands = supabase_select("brands", {"id": f"eq.{store_id}", "gmail_connected": "is.true"})
                     if brands:
                         brand = brands[0]
-                        logger.info(f"[EMAIL] Sending via brand Gmail: {brand.get('gmail_email')}")
-                        result = await brand_gmail_service.send_email(brand, email, reply_subject, reply_body)
+                        # Keep the reply in the customer's existing Gmail thread - without
+                        # this, their next "Reply" click lands in a thread our poller has
+                        # never seen and a duplicate ticket gets created for the same
+                        # conversation (see send_email()'s docstring).
+                        _thread_id = None
+                        if ticket_id:
+                            _t_rows = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
+                            _thread_id = _t_rows[0].get("gmail_thread_id") if _t_rows else None
+                        logger.info(f"[EMAIL] Sending via brand Gmail: {brand.get('gmail_email')} (thread_id={_thread_id})")
+                        result = await brand_gmail_service.send_email(brand, email, reply_subject, reply_body, thread_id=_thread_id)
                         if result.get("success"):
                             result = {"status": "sent", "id": result.get("id")}
                         else:
