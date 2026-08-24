@@ -622,12 +622,23 @@ async def respond_to_ticket(
         raise HTTPException(status_code=500, detail="Failed to send response")
 
 
+class ApproveAiRequest(BaseModel):
+    # When set, this is the exact text sent to the customer instead of the
+    # unedited ai_draft/ai_response - the human's edit, not another AI call.
+    body: Optional[str] = None
+
+
 @router.post("/{ticket_id}/approve-ai")
 async def approve_ai_response(
     ticket_id: str,
+    request: ApproveAiRequest = ApproveAiRequest(),
     context: AuthenticatedContext = Depends(require_agent_or_admin)
 ):
-    """Approve and send the AI-generated response"""
+    """Approve and send the AI-generated response - or, if request.body is
+    set, the human's edited version of it. Either way this is the exact
+    text sent to the customer and the exact text Conversation Replay shows,
+    and the original ai_draft/ai_response fields are left untouched for
+    audit (see _promote_or_append_ai_message)."""
     try:
         # Get ticket and verify access
         tickets = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
@@ -651,8 +662,9 @@ async def approve_ai_response(
                 "message": "Already approved and sent"
             }
 
-        # Check if AI response exists (fall back to ai_draft)
-        reply_body = ticket.get("ai_response") or ticket.get("ai_draft")
+        # The human's edited text wins when given; otherwise fall back to
+        # the AI-generated draft exactly as before.
+        reply_body = (request.body or "").strip() or ticket.get("ai_response") or ticket.get("ai_draft")
         if not reply_body:
             raise HTTPException(status_code=400, detail="No AI response to approve")
 
