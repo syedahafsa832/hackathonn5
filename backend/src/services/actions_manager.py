@@ -141,6 +141,42 @@ class ActionsManager:
             "eligible": elapsed_hours <= window_hours,
         }
 
+    async def get_return_window_days(self, brand_id: Optional[str]) -> int:
+        """Public accessor for the merchant's configured return/refund
+        window in days - the same value check_return_eligibility's own
+        return-window check (Step 4) already uses via _get_refund_policy.
+        Exposed separately so an informational question ("can I return
+        this? I got it 3 weeks ago") can ground its answer in the real
+        configured window without duplicating the policy-loading logic."""
+        policy = await self._get_refund_policy(brand_id)
+        return policy["window_days"]
+
+    def evaluate_return_window(
+        self, order_created_at: Optional[str], window_days: int
+    ) -> Optional[Dict[str, Any]]:
+        """Deterministic day-based return/refund window evaluation - the
+        same real order.created_at math check_return_eligibility's Step 4
+        return-window check already uses, exposed as its own small function
+        so a plain informational question gets the identical grounded
+        answer. Returns None (never a guess) when order_created_at is
+        missing/unparseable - callers must fall back to their existing
+        safe behavior (never assume eligible or not)."""
+        if not order_created_at:
+            return None
+        try:
+            order_date = datetime.fromisoformat(order_created_at.replace("Z", "+00:00"))
+            if order_date.tzinfo is None:
+                order_date = order_date.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            return None
+
+        days_since_order = (datetime.now(timezone.utc) - order_date).days
+        return {
+            "window_days": window_days,
+            "days_since_order": days_since_order,
+            "eligible": days_since_order <= window_days,
+        }
+
     async def _get_product_collection_ids(self, tenant_id: Optional[str], product_id) -> List[int]:
         """Which collections a product belongs to. Shopify's order line items
         don't carry collection membership, so this is a small extra lookup
@@ -372,6 +408,48 @@ class ActionsManager:
             # when no free-text policy exists anywhere (the common case),
             # nothing changes and eligibility is granted exactly as before.
             custom_policy_text = await self.get_custom_policy_text(brand_id, policy.get("notes"))
+
+            # Deterministic time-window check FIRST, same principle as the
+            # cancellation-window fix: a free-text policy note like "no
+            # refunds after 14 days" is a fact Shopify's real order.created_at
+            # can settle outright, not something that needs a human to
+            # eyeball — reuses the exact same "within N hours/days" text
+            # parser evaluate_cancellation_window already has (it isn't
+            # cancellation-specific, just named for its first use). Only
+            # overrides the escalation below when it produces a definitive
+            # NOT ELIGIBLE; an eligible or ambiguous read still falls through
+            # to the existing human-review escalation, since the free text
+            # may carry other conditions this window check can't evaluate.
+            window_check = self.evaluate_cancellation_window(custom_policy_text, created_at)
+            if window_check and not window_check["eligible"]:
+                logger.info(
+                    f"[ActionsManager] Deterministic return/refund window check for order {order_id}: "
+                    f"policy source=free-text, evidence=order.created_at ({created_at}), "
+                    f"decision=NOT ELIGIBLE ({window_check['elapsed_hours']:.1f}h elapsed vs "
+                    f"{window_check['window_hours']:.0f}h window), method=deterministic"
+                )
+                # Customer-facing reason reads in whichever unit the
+                # merchant actually wrote (hours for a short window like
+                # "24 hours", days for a longer one like "14 days") rather
+                # than always showing the internal hour-normalized value
+                # evaluate_cancellation_window uses ("336-hour window" is a
+                # much less natural read of "14 days" than "14-day window").
+                if window_check["window_hours"] < 48:
+                    window_label = f"{window_check['window_hours']:.0f}-hour"
+                    elapsed_label = f"{window_check['elapsed_hours']:.1f} hours"
+                else:
+                    window_label = f"{window_check['window_hours'] / 24:.0f}-day"
+                    elapsed_label = f"{window_check['elapsed_hours'] / 24:.0f} days"
+                return {
+                    "eligible": False,
+                    "reason": (
+                        f"This order is outside the store's {window_label} return/refund "
+                        f"window (placed {elapsed_label} ago)."
+                    ),
+                    "order": self._extract_order_summary(order),
+                    "items": items,
+                    "policy_snapshot": {**policy, "time_window_check": window_check},
+                }
 
             # None means the check itself couldn't be completed (e.g. the
             # Knowledge Base lookup errored) — genuinely unknown, not

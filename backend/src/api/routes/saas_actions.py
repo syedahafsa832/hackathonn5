@@ -268,6 +268,30 @@ async def reject_action(
     return result
 
 
+@router.post("/{action_id}/report")
+async def report_action(
+    action_id: str,
+    tenant: TenantContext = Depends(get_current_tenant)
+):
+    """
+    "Send this error to tResolv" — one click for a merchant to report a
+    failed action instead of copying an error message by hand. Logs the
+    existing action's context (brand/ticket/order/action/timestamp/Shopify
+    error) via the same action_logs mechanism every other action-lifecycle
+    step already writes to.
+    """
+    result = await actions_service.report_action_issue(
+        tenant_id=tenant.tenant_id,
+        action_id=action_id,
+        reported_by=tenant.email,
+    )
+
+    if not result.get("success"):
+        raise HTTPException(status_code=404, detail=result.get("error"))
+
+    return result
+
+
 # ==================== Action Creation (Internal Use) ====================
 
 @router.post("/create")

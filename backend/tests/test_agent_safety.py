@@ -1,13 +1,18 @@
 """
 Rule 1 (safety-non-negotiable): tResolv must never tell a customer a refund,
 cancellation, or address change succeeded unless the backend actually confirmed
-it. return_actions_integration.py only ever *stages* these for merchant approval
-- nothing sensitive is executed synchronously in the reply-generation pipeline.
-The system prompt already tells the model never to claim success, but that's a
-prompt instruction, not a guarantee. _enforce_no_unconfirmed_action_success in
-customer_success_agent.py is the code-level backstop for when the model does it
-anyway. These tests cover that backstop directly (pure function, no LLM/mocking
-needed).
+it. return_actions_integration.py *stages* these for merchant approval by
+default - but Cancellation/Refund Autopilot (once a brand has explicitly
+enabled it) can genuinely execute a cancellation/refund synchronously via the
+same actions_service.approve_action() a human's Approve click calls. The
+system prompt tells the model never to claim success unless RETURN/EXCHANGE
+STATUS says so, but that's a prompt instruction, not a guarantee.
+_enforce_no_unconfirmed_action_success in customer_success_agent.py is the
+code-level backstop for when the model claims success anyway - genuinely_executed
+(set by the caller only when the staged action's own record shows
+status="executed") is the one legitimate exception, never inferred from the
+reply text itself. These tests cover that backstop directly (pure function, no
+LLM/mocking needed).
 """
 import os
 import sys
@@ -48,6 +53,25 @@ def test_cancellation_reply_claiming_successfully_cancelled_is_overridden():
     result = _enforce_no_unconfirmed_action_success(structured)
     assert result["escalate"] is True
     assert result["status"] == "escalated"
+
+
+def test_cancellation_reply_claiming_cancelled_is_left_alone_when_genuinely_executed():
+    """The one legitimate exception: Cancellation Autopilot actually executed
+    this via actions_service.approve_action() - Shopify confirmed it. The
+    same 'successfully cancelled' wording that gets overridden above must NOT
+    be touched here, and must NOT be force-escalated - that would recreate
+    the exact 'awaiting approval' bug for an order that was already done."""
+    structured = {
+        "intent": "cancellation_request",
+        "action_detected": "cancel_order",
+        "reply_body": "Done! Your order has been cancelled successfully.",
+        "status": "auto_resolved",
+        "escalate": False,
+    }
+    result = _enforce_no_unconfirmed_action_success(structured, genuinely_executed=True)
+    assert result["escalate"] is False
+    assert result["status"] == "auto_resolved"
+    assert "cancelled successfully" in result["reply_body"]
 
 
 def test_address_change_reply_claiming_updated_is_overridden():

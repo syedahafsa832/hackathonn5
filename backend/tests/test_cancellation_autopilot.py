@@ -321,6 +321,33 @@ def test_enabled_autopilot_executes_eligible_cancellation_exactly_once():
     assert "#1013" in result["action_context"]
 
 
+# Task 3 (chatbot UX): the chat widget's action-result card reads
+# result["staged"]["status"] to decide whether to show a real "Order
+# Cancelled" confirmation or the generic staging card - it must reflect
+# what Shopify actually confirmed in this same turn, not just the
+# pre-autopilot "pending" staging outcome.
+def test_autopilot_success_marks_staged_dict_executed_for_the_chat_widget():
+    integration = _integration()
+    brand_on = {"id": "brand-1", "cancellation_autopilot_enabled": True}
+    result, mock_approve = _run_cancel_intent(
+        integration, brand_on, autopilot_outcome={"success": True, "message": "Order cancelled"}, order_id="1013",
+    )
+    mock_approve.assert_called_once()
+    assert result["staged"]["status"] == "executed"
+
+
+def test_autopilot_disabled_leaves_staged_dict_pending():
+    """Regression guard: an ordinary Copilot cancellation (no autopilot)
+    must NOT be mutated to "executed" - the chat widget must keep showing
+    the staged/awaiting-approval wording for it."""
+    integration = _integration()
+    brand_off = {"id": "brand-1", "cancellation_autopilot_enabled": False}
+    result, mock_approve = _run_cancel_intent(integration, brand_off)
+
+    mock_approve.assert_not_called()
+    assert result["staged"]["status"] == "pending"
+
+
 # 7. Duplicate requests cannot execute twice - the existing duplicate-action
 # guard (checked before eligibility/autopilot are ever reached) short-
 # circuits a second request for the same order, so autopilot never gets a

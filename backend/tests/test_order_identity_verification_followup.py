@@ -60,7 +60,7 @@ MATCHING_ORDER = {
     "fulfillments": [], "fulfillment_count": 0,
     "total_amount": "120.00", "items": [], "created_at": "2026-08-21T12:26:24Z",
 }
-MISMATCH_RESULT = {"error": "Order #1013 not found.", "order_number": "1013", "ownership_mismatch": True}
+MISMATCH_RESULT = {"error": "Order #1013 not found.", "order_number": "1013", "ownership_mismatch": True, "email_provided": True}
 
 
 def _fake_ai_response():
@@ -136,6 +136,33 @@ def test_order_number_with_mismatched_email_withholds_and_asks_for_verification(
     assert result.get("needs_identity_verification") is True
 
 
+# ── 2b. Order number, NO email given yet -> honest "confirm ownership" ask,
+#        never "I can't pull up your order" (the reported production bug) ──
+
+def test_order_number_with_no_email_yet_asks_naturally_never_claims_lookup_failed():
+    """The exact reported bug: a chat visitor's very first message is just
+    an order number, no email at all yet. get_order_status still finds the
+    real order in Shopify but withholds it pending verification
+    (customer_email="" -> ownership_mismatch=True, email_provided=False).
+    The customer-facing wording must never claim the order couldn't be
+    found/accessed, and must never say a team member will follow up -
+    Luna found it and can continue once the email is confirmed."""
+    no_email_result = {
+        "error": "Order #1013 not found.", "order_number": "1013",
+        "ownership_mismatch": True, "email_provided": False,
+    }
+    mock = AsyncMock(return_value=no_email_result)
+    result, prompt_text = _run_query(
+        "where is my order #1013?", mock, ticket_select_return=[],
+        customer_email="",
+    )
+    assert "ORDER FOUND, IDENTITY NOT YET CONFIRMED" in prompt_text
+    assert "Do NOT say you can't pull up, can't access, or can't find the order" in prompt_text
+    assert "Do NOT say a team member will follow up" in prompt_text
+    assert "CANCELLED: Yes" not in prompt_text
+    assert result.get("needs_identity_verification") is True
+
+
 # ── 3. Mismatch -> customer provides correct email -> lookup succeeds ─────
 
 def test_followup_with_correct_email_recovers_order_number_and_succeeds():
@@ -151,10 +178,43 @@ def test_followup_with_correct_email_recovers_order_number_and_succeeds():
     assert "CANCELLED: Yes" in prompt_text
 
 
+# ── 3b. A successfully verified email is persisted to the ticket, so the
+#        next turn (and the merchant dashboard) both have it ─────────────
+
+def test_verified_email_is_persisted_to_the_ticket_not_lost_after_this_turn():
+    """Task doc: 'the email must not disappear into the chatbot transcript'.
+    Reuses the exact same tickets.customer_email column the widget's own
+    explicit email-capture endpoint (v2_chat_widget.py) already writes to -
+    no new field, no new system. Visible to the merchant for free via the
+    existing Tickets/TicketDetail pages, which already render
+    ticket.customer_email."""
+    mock = AsyncMock(return_value=MATCHING_ORDER)
+    ticket = _ticket_with_pending_verification()
+    with patch("src.agent.customer_success_agent.supabase_update") as mock_update:
+        result, prompt_text = _run_query(
+            "customer10@example.com", mock, ticket_select_return=[ticket],
+        )
+    mock_update.assert_called_once_with(
+        "tickets", {"id": "eq.ticket-1"}, {"customer_email": "customer10@example.com"},
+    )
+
+
+def test_verified_email_never_overwrites_an_email_already_on_the_ticket():
+    """Safety guard: never clobber a real, already-known email (e.g. from
+    Gmail, or a prior verification) with whatever the customer types in a
+    loosely-matched follow-up."""
+    mock = AsyncMock(return_value=MATCHING_ORDER)
+    ticket = _ticket_with_pending_verification()
+    ticket["customer_email"] = "already-on-file@example.com"
+    with patch("src.agent.customer_success_agent.supabase_update") as mock_update:
+        _run_query("customer10@example.com", mock, ticket_select_return=[ticket])
+    mock_update.assert_not_called()
+
+
 # ── 4. Mismatch -> customer provides ANOTHER wrong email -> still withheld ─
 
 def test_followup_with_another_wrong_email_still_withholds():
-    mock = AsyncMock(return_value={"error": "Order #1013 not found.", "order_number": "1013", "ownership_mismatch": True})
+    mock = AsyncMock(return_value={"error": "Order #1013 not found.", "order_number": "1013", "ownership_mismatch": True, "email_provided": True})
     ticket = _ticket_with_pending_verification()
     result, prompt_text = _run_query(
         "I think it was wrong-guess@example.com", mock, ticket_select_return=[ticket],

@@ -107,7 +107,7 @@ def _run(query: str, *, order_status=None, inventory=None, recommendations=None,
 def test_activity_state_appears_immediately_for_every_query():
     _, events = _run("what are your store hours?")
     assert events, "on_progress was never called - customer would see a dead loading state"
-    assert events[0] == ("thinking", "Analyzing request…")
+    assert events[0] == ("thinking", "Understanding your request…")
 
 
 # ── 2. The stage shown matches what actually ran ──────────────────────────

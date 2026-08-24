@@ -26,7 +26,12 @@
   var BRAND_ID    = _cfg.brandId    || scriptEl.getAttribute('data-brand');
   var API_BASE    = _cfg.apiBase    || scriptEl.getAttribute('data-api-base') ||
                     scriptEl.src.replace(/\/widget\.js(\?.*)?$/, '');
-  var ACCENT      = _cfg.color      || scriptEl.getAttribute('data-color') || '#FFFFFF';
+  // Default matches the documented example above (#6366F1) and the
+  // #6C63FF/rgba(108,99,255,...) purple washes already used elsewhere in
+  // this file. The fallback used to be '#FFFFFF', so any brand that never
+  // set a custom color got a white-to-light-purple gradient that read as
+  // "barely visible" instead of the intended brand purple.
+  var ACCENT      = _cfg.color      || scriptEl.getAttribute('data-color') || '#6366F1';
   var BOT_NAME    = _cfg.botName    || scriptEl.getAttribute('data-bot-name') || 'Luna';
   var BRAND_LABEL = _cfg.brandLabel || scriptEl.getAttribute('data-brand-label') || 'AI Support';
   var POSITION    = _cfg.position   || 'bottom-right';
@@ -320,8 +325,10 @@
     '.resolv-resolution-brand{font-size:11px;font-weight:700;color:rgba(255,255,255,.85)}' +
     '.resolv-resolution-badge{' +
       'font-size:9px;font-weight:600;padding:2px 8px;border-radius:999px;' +
-      'background:rgba(16,185,129,.15);color:#10B981' +
+      'background:rgba(99,102,241,.15);color:' + ACCENT +
     '}' +
+    '.resolv-resolution-badge.resolved{background:rgba(16,185,129,.15);color:#10B981}' +
+    '.resolv-resolution-badge.failed{background:rgba(239,68,68,.15);color:#EF4444}' +
     '.resolv-resolution-steps{display:flex;flex-direction:column;gap:8px}' +
     '.resolv-resolution-step{display:flex;align-items:flex-start;gap:8px}' +
     '.resolv-resolution-dot{' +
@@ -587,6 +594,7 @@
    * sequences them. */
   var resolutionEl = null;
   var resolutionStepsEl = null;
+  var resolutionBadgeEl = null;
   var resolutionSteps = [];
   var RESOLUTION_CONFIRMATION_STAGES = { order_found: 1, product_found: 1, policy_verified: 1 };
 
@@ -609,7 +617,7 @@
     brand.textContent = 'tResolv';
     var badge = document.createElement('span');
     badge.className = 'resolv-resolution-badge';
-    badge.textContent = 'Resolving';
+    badge.textContent = BOT_NAME + ' is working…';
     header.appendChild(brand);
     header.appendChild(badge);
 
@@ -625,6 +633,7 @@
 
     resolutionEl = wrap;
     resolutionStepsEl = stepsWrap;
+    resolutionBadgeEl = badge;
     scrollBottom();
   }
 
@@ -688,16 +697,30 @@
   // Freezes whatever's left active as complete and leaves the timeline
   // permanently visible in the transcript - it is not a transient typing
   // indicator, the customer can scroll back and see how the request was
-  // actually resolved.
-  function finishResolutionTimeline() {
+  // actually resolved. The header badge used to stay stuck on "Resolving"
+  // forever, even once every step had already finished - it now flips to
+  // "Resolved" (or a clear failure label, never a fake success) so the
+  // card's own header agrees with what actually happened, matching what
+  // the reply itself says.
+  function finishResolutionTimeline(success) {
     for (var i = 0; i < resolutionSteps.length; i++) {
       if (resolutionSteps[i].status !== 'complete') {
         resolutionSteps[i].status = 'complete';
         renderResolutionStep(resolutionSteps[i]);
       }
     }
+    if (resolutionBadgeEl) {
+      if (success) {
+        resolutionBadgeEl.textContent = 'Resolved';
+        resolutionBadgeEl.className = 'resolv-resolution-badge resolved';
+      } else {
+        resolutionBadgeEl.textContent = "Couldn't complete";
+        resolutionBadgeEl.className = 'resolv-resolution-badge failed';
+      }
+    }
     resolutionEl = null;
     resolutionStepsEl = null;
+    resolutionBadgeEl = null;
     resolutionSteps = [];
   }
 
@@ -710,6 +733,7 @@
     }
     resolutionEl = null;
     resolutionStepsEl = null;
+    resolutionBadgeEl = null;
     resolutionSteps = [];
   }
 
@@ -791,6 +815,11 @@
     var META = {
       'refund_staged':   { cls: 'refund',  icon: '✓',  title: 'Refund Requested',        badge: 'STAGED' },
       'cancel_staged':   { cls: 'cancel',  icon: '✕',  title: 'Cancellation Requested',  badge: 'STAGED' },
+      // Autopilot already confirmed this with Shopify in the same turn -
+      // a genuinely different, stronger state than "staged", not just the
+      // same card with different words (see _map_action_result on the
+      // backend for what sets this).
+      'cancel_executed': { cls: 'cancel',  icon: '✓',  title: 'Order Cancelled',    badge: 'DONE'   },
       'address_updated': { cls: 'address', icon: '📍', title: 'Address Updated',    badge: 'DONE'   },
       'restore_staged':  { cls: 'restore', icon: '📦', title: 'Reship Requested',   badge: 'STAGED' },
     };
@@ -824,7 +853,7 @@
       d1.textContent = 'Rs ' + actionResult.amount + ' → back to original method';
       card.appendChild(d1);
     }
-    if ((actionResult.type === 'cancel_staged' || actionResult.type === 'refund_staged') && actionResult.order_number) {
+    if ((actionResult.type === 'cancel_staged' || actionResult.type === 'cancel_executed' || actionResult.type === 'refund_staged') && actionResult.order_number) {
       var d2 = document.createElement('div');
       d2.className = 'resolv-action-detail';
       d2.textContent = 'Order #' + actionResult.order_number;
@@ -837,10 +866,13 @@
       card.appendChild(d3);
     }
 
+    var DONE_TYPES = { address_updated: 1, cancel_executed: 1 };
     var sub = document.createElement('div');
     sub.className = 'resolv-action-detail';
     sub.style.marginTop = '2px';
-    sub.textContent = actionResult.type === 'address_updated' ? 'Updated in Shopify' : 'Awaiting merchant approval';
+    sub.textContent = actionResult.type === 'cancel_executed'
+      ? 'Shopify order status: Cancelled'
+      : DONE_TYPES[actionResult.type] ? 'Updated in Shopify' : 'Awaiting merchant approval';
     card.appendChild(sub);
 
     container.appendChild(card);
@@ -937,7 +969,8 @@
     }, function (stage, label) {
       addResolutionEvent(stage, label);
     }, function (err, data) {
-      if (resolutionSteps.length) { finishResolutionTimeline(); }
+      var succeeded = !(err || !data || data.detail);
+      if (resolutionSteps.length) { finishResolutionTimeline(succeeded); }
       else { abortResolutionTimelineIfEmpty(); }
       sending = false;
 
@@ -1065,8 +1098,13 @@
         exchangeCount = Math.floor(data.messages.length / 2);
         if (data.customer_email) emailCaptured = data.customer_email;
       } else {
+        // Warmer, more concrete than "your AI support assistant... ask me
+        // about your orders, returns, or anything else" — names the actual
+        // things a customer can ask about (orders, shipping, returns,
+        // cancellations) instead of a vague "anything else", without
+        // over-explaining what Luna is.
         var greeting = _cfg.greeting ||
-          ('Hey! I’m ' + BOT_NAME + ', your AI support assistant. How can I help you today?\n\nAsk me about your orders, returns, or anything else.');
+          ('Hi! I\'m ' + BOT_NAME + ' 👋 Ask me about your order, shipping, returns, or cancellations — happy to help.');
         renderMsg('bot', greeting, new Date().toISOString());
         showSuggestions(QUICK_ACTIONS);
       }

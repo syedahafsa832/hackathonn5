@@ -111,6 +111,15 @@ def _map_action_result(intent: Optional[str], action_taken: Optional[dict], orde
     if intent == "exchange_request":
         return {"type": "exchange_staged", "order_number": order_number, "action_id": action_id}
     if intent == "cancellation_request":
+        # Cancellation Autopilot can execute in the same turn it stages -
+        # action_taken["status"] is mutated to "executed" by
+        # _maybe_autopilot_cancel when that happens (see
+        # return_actions_integration.py), so the customer sees a real
+        # "Order cancelled" confirmation instead of "Cancellation
+        # Requested / Awaiting merchant approval" for an order Shopify has
+        # already cancelled.
+        if action_taken.get("status") == "executed":
+            return {"type": "cancel_executed", "order_number": order_number, "action_id": action_id}
         return {"type": "cancel_staged", "order_number": order_number, "action_id": action_id}
     if intent == "address_change":
         return {"type": "address_updated", "new_address": None}

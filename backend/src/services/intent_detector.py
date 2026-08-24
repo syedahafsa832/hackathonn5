@@ -40,7 +40,7 @@ INTENT_PROMPT = """Classify this customer support message. Respond with valid JS
 
 action_type options:
 - "restore_order" — customer accidentally cancelled their order and wants it back/restored/reactivated. Key phrases: "mistakenly canceled", "accidentally canceled", "please get it back", "restore my order", "undo my cancellation", "cancel was a mistake", "reactivate". IMPORTANT: classify as restore_order even if the message contains the word "cancel" — if the customer wants to UN-cancel, it is restore_order NOT cancel.
-- "address_change" — customer wants to change or update their delivery/shipping address
+- "address_change" — customer explicitly wants to CHANGE or update their delivery/shipping address to something different. Merely asking what address is on file, confirming an address, or mentioning "address" while asking about order status is NOT address_change — that is "none".
 - "reship" — package not received, lost, stolen, missing, marked delivered but not arrived
 - "cancel" — customer wants to CANCEL an active order they no longer want, before it ships (NOT restore — they want it stopped; NOT a return, which is for an item already received)
 - "return" — customer wants to send an item they already RECEIVED back for a refund. Key phrases: "return this", "send it back", "want to return", "return my order", "return item X", "how do I return", "changed my mind" (about a received item), "don't want this anymore" (about a received item). Does NOT include wanting a different size/color/product instead — that is "exchange".
@@ -90,7 +90,22 @@ _EXCHANGE_FRAGS = [
 ]
 _RETURN_FRAGS = ['return', 'send it back', 'send this back', 'sent it back', 'ship it back', 'no longer want it']
 _REFUND_FRAGS = ['refund', 'money back', 'damaged', 'wrong item', 'get my money']
-_ADDRESS_FRAGS = ['address', 'new address', 'delivery address', 'shipping address']
+# Bare 'address' used to be a fragment here, so a pure order inquiry that
+# merely mentions the word ("what address is this going to?", "can you
+# confirm my shipping address on order 1013") matched address_change and
+# got mislabeled/staged as an Address Change request instead of answered as
+# an inquiry. Every other fragment list in this file (cancel/return/refund/
+# exchange) also has an 'is this actually asking to DO something' guard —
+# _POLICY_QUESTION_FRAGS is checked first for exactly that reason — but
+# address never had one. Fixed by requiring a change-shaped phrase, mirroring
+# what the raw-address extraction regex just below already assumes.
+_ADDRESS_FRAGS = [
+    'change my address', 'change the address', 'update my address', 'update the address',
+    'change my delivery address', 'change my shipping address',
+    'update my delivery address', 'update my shipping address',
+    'wrong address', 'new address', 'different address', 'move my order to',
+    'ship it to', 'ship this to',
+]
 _RESHIP_FRAGS = ['not received', 'never received', 'not arrived', 'never arrived', 'missing', 'lost', 'stolen',
                  'not delivered', 'says delivered', "didn't receive", 'didnt receive', 'havent received',
                  "haven't received", 'never got', 'never came']

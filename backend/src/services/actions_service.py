@@ -353,6 +353,38 @@ class ActionsService:
             logger.error(f"[Actions] Get action error: {e}")
             return None
 
+    async def report_action_issue(
+        self, tenant_id: str, action_id: str, reported_by: str
+    ) -> Dict[str, Any]:
+        """'Send this error to tResolv' - the merchant reports a failed
+        action with one click instead of copying error text by hand.
+        Reuses the exact same action_logs event mechanism every other step
+        of the action lifecycle already writes to (_log_event) rather than
+        building a second reporting/escalation system: the useful technical
+        context (brand, ticket, order, action type, timestamp, the real
+        Shopify error) is already sitting on the action row and its prior
+        log events - this just records that a human flagged it, with that
+        context attached, for tResolv's team to review. Never exposes or
+        needs a secret/token - only fields already stored on the action."""
+        action = await self.get_action(tenant_id, action_id)
+        if not action:
+            return {"success": False, "error": "Action not found"}
+
+        await self._log_event(
+            tenant_id, action_id, "reported_to_support", reported_by,
+            details={
+                "brand_id": action.get("brand_id"),
+                "ticket_id": action.get("ticket_id"),
+                "order_id": action.get("order_id"),
+                "action_type": action.get("action_type"),
+                "action_status": action.get("status"),
+                "occurred_at": action.get("updated_at"),
+            },
+            error_message=action.get("error_message"),
+        )
+        logger.info(f"[Actions] Action {action_id} reported to support by {reported_by}")
+        return {"success": True}
+
     async def approve_action(
         self,
         tenant_id: str,
