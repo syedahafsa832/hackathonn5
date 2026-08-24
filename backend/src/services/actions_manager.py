@@ -11,6 +11,7 @@ import requests
 import uuid as uuid_lib
 from src.lib.supabase_client import supabase_select, supabase_insert, supabase_update
 from src.config import SHOPIFY_API_VERSION
+from src.services.policy_evidence import verify_time_window
 
 logger = logging.getLogger(__name__)
 
@@ -331,11 +332,49 @@ class ActionsManager:
             # nothing changes and eligibility is granted exactly as before.
             custom_policy_text = await self.get_custom_policy_text(brand_id, policy.get("notes"))
 
+            # Policy Evidence layer: if that free-text restriction expresses
+            # a confidently-parseable "refund/return within N hours/days"
+            # condition (distinct from the structured window_days field
+            # above — e.g. a note like "refunds must be requested within 24
+            # hours" left in free text), verify it deterministically against
+            # the order's real Shopify creation timestamp rather than
+            # blindly escalating. Anything the regex can't confidently parse
+            # still falls through to the existing escalate-for-human-review
+            # branch below, unchanged.
+            window_result = None
+            if custom_policy_text:
+                window_result = verify_time_window(
+                    custom_policy_text, order.get("created_at"), keywords=["refund", "return"],
+                )
+                logger.info(
+                    f"[PolicyEvidence] refund/return window check order=#{order_id}: "
+                    f"status={window_result['status']} reason={window_result['reason']} "
+                    f"window_hours={window_result['evidence'].get('policy_window_hours')} "
+                    f"elapsed_hours={window_result['evidence'].get('elapsed_hours')}"
+                )
+
+            if window_result and window_result["status"] == "INELIGIBLE":
+                ev = window_result["evidence"]
+                return {
+                    "eligible": False,
+                    "eligibility_verified": True,
+                    "reason": (
+                        f"Verified: this order was placed {ev['elapsed_hours']:.1f} hours ago, outside the "
+                        f"store's {ev['policy_window_hours']:.0f}-hour refund/return window."
+                    ),
+                    "order": self._extract_order_summary(order),
+                    "items": items,
+                    "policy_snapshot": policy,
+                    "policy_verification": window_result,
+                }
+
+            window_verified_eligible = bool(window_result and window_result["status"] == "ELIGIBLE")
+
             # None means the check itself couldn't be completed (e.g. the
             # Knowledge Base lookup errored) — genuinely unknown, not
             # confirmed-empty. Treated the same as real policy text: never
             # guess "no policy" from a failed/ambiguous check.
-            if custom_policy_text != "":
+            if custom_policy_text != "" and not window_verified_eligible:
                 reason = (
                     "This order meets the standard return window and item rules, but this store has "
                     "additional policy details on file that need a quick human check before approving."
@@ -362,6 +401,7 @@ class ActionsManager:
                 "order": self._extract_order_summary(order),
                 "items": items,
                 "policy_snapshot": policy,
+                **({"policy_verification": window_result} if window_verified_eligible else {}),
             }
 
         except Exception as e:

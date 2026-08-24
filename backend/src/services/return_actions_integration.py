@@ -12,6 +12,7 @@ from typing import Dict, Any, List, Optional, Tuple, TYPE_CHECKING, Callable, Aw
 
 from src.lib.supabase_client import supabase_select
 from src.services.intent_detector import intent_detector, IntentResult
+from src.services.policy_evidence import verify_time_window
 
 from .actions_manager import actions_manager, stage_pending_action
 
@@ -375,7 +376,49 @@ class ReturnActionsIntegration:
             cancel_policy_text = await self.actions.get_custom_policy_text(brand_id)
             # None = the check couldn't be completed (unknown, not
             # confirmed-empty) - treated the same as real policy text.
-            if cancel_policy_text != "":
+
+            # Policy Evidence layer: if that free-text policy expresses a
+            # confidently-parseable "cancel within N hours/days" condition,
+            # verify it deterministically against the order's real Shopify
+            # creation timestamp instead of blindly escalating every custom
+            # policy to a human — this is the exact "2-hour cancellation
+            # window" case that previously always fell into manual review
+            # regardless of content. Anything the regex can't confidently
+            # parse (window_result is None, or status UNKNOWN) still falls
+            # through to the existing escalate-for-human-review branch
+            # below, unchanged. RAG found the policy; this only checks
+            # whether THIS order satisfies it — the LLM never decides this.
+            window_result = None
+            if cancel_policy_text:
+                window_result = verify_time_window(
+                    cancel_policy_text, order_data.get("created_at"), keywords=["cancel"],
+                )
+                logger.info(
+                    f"[PolicyEvidence] cancellation window check ticket={ticket_id} order=#{order_id}: "
+                    f"status={window_result['status']} reason={window_result['reason']} "
+                    f"window_hours={window_result['evidence'].get('policy_window_hours')} "
+                    f"elapsed_hours={window_result['evidence'].get('elapsed_hours')}"
+                )
+
+            if window_result and window_result["status"] == "INELIGIBLE":
+                ev = window_result["evidence"]
+                await _emit("policy_verified", "Cancellation policy checked — window expired")
+                result["action_context"] = (
+                    f"**CANCELLATION NOT ELIGIBLE**: Verified — this order was placed "
+                    f"{ev['elapsed_hours']:.1f} hours ago, outside the store's "
+                    f"{ev['policy_window_hours']:.0f}-hour cancellation window. Do NOT cancel the order and "
+                    "do NOT create a cancellation action. Tell the customer factually, based on these real "
+                    "numbers, that the order is outside the cancellation window — never say it 'might' still "
+                    "qualify. Offer to check what other options (like a return once delivered, if eligible) "
+                    "might help."
+                )
+                return result
+
+            window_verified_eligible = bool(window_result and window_result["status"] == "ELIGIBLE")
+            if window_verified_eligible:
+                await _emit("policy_verified", "Cancellation policy verified — within window")
+
+            if cancel_policy_text != "" and not window_verified_eligible:
                 # Merchant-facing reason stays short (a card a human can read
                 # in 5-10 seconds) - the raw, possibly multi-document RAG
                 # lookup (Store Pages/FAQ Pages) never goes in this field.
@@ -416,25 +459,42 @@ class ReturnActionsIntegration:
                 )
                 return result
 
-            ai_reasoning = (
-                f"Customer requests {intent_type} for order #{order_id}. "
-                f"Order is unfulfilled — cancel + auto-refund is appropriate."
-            )
+            if window_verified_eligible:
+                ev = window_result["evidence"]
+                ai_reasoning = (
+                    f"Customer requests {intent_type} for order #{order_id}. "
+                    f"Order is unfulfilled — cancel + auto-refund is appropriate. "
+                    f"Store's free-text cancellation window verified against the real order timestamp: "
+                    f"placed {ev['elapsed_hours']:.2f}h ago, policy allows {ev['policy_window_hours']:.0f}h — ELIGIBLE."
+                )
+                policy_evidence = _policy_evidence_excerpt(cancel_policy_text)
+            else:
+                ai_reasoning = (
+                    f"Customer requests {intent_type} for order #{order_id}. "
+                    f"Order is unfulfilled — cancel + auto-refund is appropriate."
+                )
+                policy_evidence = None
             await _emit("staging_action", f"Preparing your {_noun} request…")
             staged = await self._create_action(
                 tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
                 action_type="cancel_order", order_id=order_id, email=email,
                 customer_name=customer_info.get("name"), query=query,
                 ai_reasoning=ai_reasoning, eligibility=eligibility,
+                policy_evidence=policy_evidence,
             )
             result["staged"] = staged
 
-            # Cancellation Autopilot: this is the ONLY branch reachable here
-            # where every deterministic check this codebase has already
-            # passed — order freshly re-verified live against Shopify,
-            # unfulfilled, eligible, and no merchant free-text policy
-            # requiring human judgment (that case exits above, before this
-            # point, every time). The backend alone decides whether to
+            # Cancellation Autopilot: reachable here in two cases, both
+            # already fully deterministic — either no merchant free-text
+            # policy exists at all, or one exists and was just verified
+            # (above) against the order's real Shopify timestamp as
+            # confidently within its window. Any policy text that couldn't
+            # be confidently parsed, or that verification found expired,
+            # already exited above — every time. This never weakens
+            # _maybe_autopilot_cancel's own independent safety re-check
+            # (fresh Shopify re-verification, brand autopilot flag,
+            # idempotency) below; it only decides which staged actions are
+            # even offered to it. The backend alone decides whether to
             # auto-execute from here; Luna's own judgment is never consulted
             # or trusted as authorization.
             autopilot_context = await self._maybe_autopilot_cancel(
