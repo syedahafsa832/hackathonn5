@@ -150,8 +150,17 @@ function OrderPanel({ ticketId, ticket }) {
             <div style={{ display: 'flex', gap: '4px' }}>
               <span style={{ fontSize: '11px', padding: '2px 6px', borderRadius: '3px', background: order.financial_status === 'paid' ? 'var(--success-light)' : 'var(--bg-tertiary)', color: order.financial_status === 'paid' ? 'var(--success)' : 'var(--text-muted)', fontWeight: '600' }}>{order.financial_status}</span>
               <span style={{ fontSize: '11px', padding: '2px 6px', borderRadius: '3px', background: 'var(--bg-tertiary)', color: 'var(--text-muted)', fontWeight: '600' }}>{order.fulfillment_status || 'unfulfilled'}</span>
+              {order.cancelled_at && (
+                <span style={{ fontSize: '11px', padding: '2px 6px', borderRadius: '3px', background: 'var(--bg-tertiary)', color: 'var(--text-muted)', fontWeight: '600' }}>cancelled</span>
+              )}
             </div>
           </div>
+          {(order.customer_email || order.created_at) && (
+            <div style={{ fontSize: '12px', color: 'var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+              {order.customer_email && <div>Customer: {order.customer_email}</div>}
+              {order.created_at && <div>Created: {formatDate(order.created_at)}</div>}
+            </div>
+          )}
           {order.line_items?.length > 0 && (
             <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
               {order.line_items.map((item, i) => (
@@ -225,6 +234,40 @@ function OrderPanel({ ticketId, ticket }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// Real backend-driven processing activity — every row comes from
+// ticket.events (an actual dispatch point in the pipeline persisted it),
+// never a frontend-invented "thinking" animation. status: 'done' | 'failed'
+// (currently always 'done' — a stage that never got a corresponding
+// follow-up event, e.g. "order_lookup" with no later "order_found", simply
+// stays the last line shown while the ticket is still processing; nothing
+// is rendered as complete until the backend actually wrote that row).
+function ActivityTimeline({ events, ticketStatus }) {
+  if (!events || events.length === 0) return null;
+  const stillProcessing = ticketStatus === 'processing';
+  return (
+    <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '6px', padding: '14px 20px' }}>
+      <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '10px' }}>Activity</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        {events.map((ev, i) => {
+          const isLast = i === events.length - 1;
+          const failed = ev.status === 'failed';
+          const icon = failed ? '⚠' : '✓';
+          const color = failed ? 'var(--warning)' : 'var(--success)';
+          return (
+            <div key={ev.id || i} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', fontSize: '12.5px' }}>
+              <span style={{ color, flexShrink: 0 }}>{icon}</span>
+              <span style={{ color: 'var(--text-secondary)' }}>{ev.label}</span>
+              {isLast && stillProcessing && !failed && (
+                <span style={{ color: 'var(--text-muted)' }}>…</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -519,6 +562,9 @@ export default function TicketDetail() {
             </div>
           </div>
         </div>
+
+        {/* Real processing activity — only rendered once the backend has actually written events */}
+        <ActivityTimeline events={ticket.events} ticketStatus={ticket.status} />
 
         {/* Customer feedback — only shown when the customer actually left one */}
         {ticket.feedback && (

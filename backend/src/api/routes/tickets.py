@@ -261,6 +261,16 @@ async def get_ticket(
         })
         ticket["feedback"] = feedback_rows[0] if feedback_rows else None
 
+        # Real backend-driven processing activity ("Real-Time AI Employees"
+        # feature) — every row here was written by an actual dispatch point
+        # in message_processor.py/customer_success_agent.py as it happened,
+        # never invented for display. Oldest first so the timeline reads
+        # top-to-bottom in the order things actually occurred.
+        ticket["events"] = supabase_select("ticket_events", {
+            "ticket_id": f"eq.{ticket_id}",
+            "order": "created_at.asc",
+        }) or []
+
         return ticket
     except HTTPException:
         raise

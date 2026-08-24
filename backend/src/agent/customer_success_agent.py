@@ -1479,7 +1479,14 @@ class CustomerSuccessAgent:
             "status": "escalated"
         }
 
-    async def generate_channel_appropriate_response(self, query: str, customer_info: Dict[str, Any], channel: str, tenant_id: Optional[str] = None, store_id: Optional[str] = None, ticket_id: Optional[str] = None) -> Dict[str, Any]:
-        return await self.process_customer_query(query, customer_info, tenant_id=tenant_id, store_id=store_id, ticket_id=ticket_id)
+    async def generate_channel_appropriate_response(self, query: str, customer_info: Dict[str, Any], channel: str, tenant_id: Optional[str] = None, store_id: Optional[str] = None, ticket_id: Optional[str] = None, on_progress: Optional[Callable[[str, str], Awaitable[None]]] = None) -> Dict[str, Any]:
+        # on_progress was previously dropped here — process_customer_query's
+        # real dispatch-point emissions (order lookup, eligibility check,
+        # policy verified, ...) already existed and were already forwarded
+        # into return_actions_integration, but only the chat widget's
+        # streaming path ever passed a callback through this method. The
+        # email/webform pipeline (message_processor.py) is the other caller
+        # of this method and now passes one too, to persist real events.
+        return await self.process_customer_query(query, customer_info, tenant_id=tenant_id, store_id=store_id, ticket_id=ticket_id, on_progress=on_progress)
 
 customer_success_agent = CustomerSuccessAgent()
