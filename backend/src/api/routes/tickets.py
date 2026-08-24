@@ -321,7 +321,15 @@ async def send_reply(
                 from src.services.brand_gmail_service import brand_gmail_service
                 brands = supabase_select("brands", {"id": f"eq.{store_id}", "gmail_connected": "is.true"})
                 if brands:
-                    result = await brand_gmail_service.send_email(brands[0], customer_email, reply_subject, reply_body)
+                    # Same fix as message_processor.py's auto-reply path: keep
+                    # this reply in the customer's existing Gmail thread, so a
+                    # later Reply from them lands where STAGE 1.5's
+                    # gmail_thread_id match can find and reopen this ticket
+                    # instead of spawning a disconnected duplicate.
+                    result = await brand_gmail_service.send_email(
+                        brands[0], customer_email, reply_subject, reply_body,
+                        thread_id=ticket.get("gmail_thread_id"),
+                    )
                     if result.get("success"):
                         sent = True
                         logger.info(f"[Tickets] Reply sent via brand Gmail for ticket {ticket_id}")
