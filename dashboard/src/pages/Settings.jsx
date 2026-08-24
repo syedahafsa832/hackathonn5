@@ -1213,6 +1213,19 @@ function ReplyStyleTab() {
   const presets = data.presets || [];
   const progressPct = Math.min(100, Math.round((data.approved_reply_count / Math.max(1, data.min_replies_required)) * 100));
 
+  // The one place that answers "what's actually active right now" — shown
+  // as a single unambiguous headline instead of letting the "switch to
+  // Learned" suggestion banner (below) sit next to the preset grid and
+  // read as if both were active at once. Never implies Learned is active
+  // just because a learned profile exists; only `mode` decides this.
+  const activePreset = presets.find(p => p.id === data.preset);
+  const activeLabel = mode === 'learned' ? 'Learned Style' : mode === 'preset' ? (activePreset?.label || 'Preset') : null;
+  const activeDescription = mode === 'learned'
+    ? "Luna is using your team's learned writing style."
+    : mode === 'preset'
+      ? (activePreset?.description || '')
+      : '';
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', maxWidth: '760px' }}>
       <div style={card}>
@@ -1277,6 +1290,19 @@ function ReplyStyleTab() {
         <Alert variant="error" onDismiss={() => setError('')}>{error}</Alert>
         <Alert variant="success" onDismiss={() => setMsg('')}>{msg}</Alert>
 
+        {activeLabel && (
+          <div style={{ marginTop: '4px', marginBottom: '4px' }}>
+            <div style={{ fontSize: '14px', fontWeight: '700', color: 'var(--text-primary)' }}>
+              {activeLabel} ✓
+            </div>
+            {activeDescription && (
+              <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '2px' }}>
+                {activeDescription}
+              </div>
+            )}
+          </div>
+        )}
+
         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: 'var(--text-secondary)', marginTop: '8px' }}>
           <input type="checkbox" checked={mode === 'disabled'} onChange={e => setDisabled(e.target.checked)} disabled={savingMode} />
           Disable Reply Style (use a neutral default tone)
@@ -1286,7 +1312,7 @@ function ReplyStyleTab() {
       {mode !== 'disabled' && data.learned_profile && mode !== 'learned' && (
         <div style={{ ...card, background: '#ECFEFF', borderColor: '#A5F3FC' }}>
           <div style={{ fontSize: '13px', fontWeight: '600', color: '#0E7490', marginBottom: '8px' }}>
-            We've learned how your team naturally replies.
+            A learned writing style is ready from your approved replies — you can switch to it anytime.
           </div>
           <button
             onClick={switchToLearned}
@@ -1303,6 +1329,7 @@ function ReplyStyleTab() {
           <div style={sectionTitle}>Presets</div>
           <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '14px' }}>
             Pick a starting style. This is active immediately.
+            {mode === 'learned' && " Your learned style stays saved — switch back to it anytime."}
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '12px' }}>
             {presets.map(p => {
