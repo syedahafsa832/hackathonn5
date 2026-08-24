@@ -351,10 +351,17 @@ class MultiBrandActionsManager:
     async def approve_action(
         self,
         action_id: str,
-        approved_by: str = "admin"
+        approved_by: str = "admin",
+        brand_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Approve and execute an action.
+
+        brand_id is optional defense-in-depth: the current caller
+        (brand_actions.py) already verifies ownership before calling this,
+        but this service must not rely solely on that — passing brand_id
+        here re-verifies it against the fetched row, so a future caller that
+        forgets the ownership check can't execute another brand's action.
         """
         try:
             # Get the action
@@ -363,6 +370,8 @@ class MultiBrandActionsManager:
                 return {"success": False, "error": "Action not found"}
 
             action = actions[0]
+            if brand_id and action.get("brand_id") != brand_id:
+                return {"success": False, "error": "Action not found"}
 
             # Atomically claim the action (conditioned on it still being
             # PENDING) before touching Shopify. A plain check-then-act here
@@ -475,12 +484,15 @@ class MultiBrandActionsManager:
         self,
         action_id: str,
         rejection_reason: str,
-        rejected_by: str = "admin"
+        rejected_by: str = "admin",
+        brand_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Reject an action."""
+        """Reject an action. brand_id is optional defense-in-depth — see approve_action."""
         try:
             actions = supabase_select("brand_actions", {"id": f"eq.{action_id}"})
             if not actions:
+                return {"success": False, "error": "Action not found"}
+            if brand_id and actions[0].get("brand_id") != brand_id:
                 return {"success": False, "error": "Action not found"}
 
             # Atomically claim the rejection (conditioned on still being

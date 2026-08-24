@@ -99,7 +99,15 @@ class UnifiedMessageProcessor:
             is_thread_continuation = False
             if gmail_thread_id and channel == "email":
                 try:
-                    existing = supabase_select("tickets", {"gmail_thread_id": f"eq.{gmail_thread_id}"})
+                    # Scoped to this brand's own store_id — a gmail_thread_id is only
+                    # unique within one Gmail account, but this table holds every
+                    # brand's tickets, so an unscoped lookup could otherwise append
+                    # this message onto a different brand's ticket if a thread id
+                    # were ever reused/collided across mailboxes.
+                    thread_filters = {"gmail_thread_id": f"eq.{gmail_thread_id}"}
+                    if store_id:
+                        thread_filters["store_id"] = f"eq.{store_id}"
+                    existing = supabase_select("tickets", thread_filters)
                     if existing:
                         existing_ticket = existing[0]
                         early_ticket_id = existing_ticket.get("id")
@@ -198,14 +206,22 @@ class UnifiedMessageProcessor:
                                 tenant_id = tenants[0].get("id")
                                 logger.info(f"[PROCESSOR] Tenant found by env support email: {tenant_id}")
 
-                    # 4. Last resort: first active tenant (single-tenant dev/staging only)
-                    # WARNING: in multi-tenant production this will pick the wrong tenant
-                    # if steps 1-3 failed, which means store_id has no tenant_id set — run migration 019
-                    if not tenant_id:
+                    # 4. Last resort: first active tenant — ONLY for the single-tenant
+                    # dev/staging placeholder store_id. A real brand (store_id is an
+                    # actual brands.id) with no tenant_id must fail closed instead:
+                    # picking "the first active tenant" here would misattribute this
+                    # brand's plan/quota tracking, and — via Stage 9.5's action
+                    # detection below, which is gated on tenant_id — could otherwise
+                    # let a real customer's action be created under an unrelated
+                    # tenant's Shopify credentials. Leaving tenant_id unset simply
+                    # skips the tenant-scoped entitlement/quota/action-creation
+                    # steps for this message rather than guessing.
+                    if not tenant_id and store_id == "00000000-0000-0000-0000-000000000000":
                         tenants = supabase_select("tenants", {"is_active": "eq.true"})
                         if tenants:
                             tenant_id = tenants[0].get("id")
-                            logger.warning(f"[PROCESSOR] Using default tenant fallback: {tenant_id} — brand {store_id} has no tenant_id set, run migration 019")
+                    elif not tenant_id and store_id:
+                        logger.warning(f"[PROCESSOR] No tenant resolved for brand {store_id} — run migration 019. Proceeding without tenant-scoped entitlement/quota/action-creation for this message rather than guessing a tenant.")
 
                 except Exception as tenant_error:
                     logger.warning(f"[PROCESSOR] Tenant lookup failed: {tenant_error}")
@@ -427,7 +443,7 @@ class UnifiedMessageProcessor:
             # IMPORTANT: Only check override for EMAIL channel replies in same thread
             # Webform submissions are ALWAYS new conversations, never blocked by override
             if channel == "email":
-                is_overridden = await self._check_thread_override(customer_email, subject)
+                is_overridden = await self._check_thread_override(customer_email, subject, store_id)
 
             if is_overridden:
                 logger.info(f"[PROCESSOR] Human override active for email thread: {subject}")
@@ -728,8 +744,13 @@ class UnifiedMessageProcessor:
             history = history[:self._HISTORY_MAX_TOTAL_CHARS] + "..."
         return history
 
-    async def _check_thread_override(self, customer_email: str, subject: str) -> bool:
-        """Check if there's an active human override for this specific email thread."""
+    async def _check_thread_override(self, customer_email: str, subject: str, store_id: Optional[str] = None) -> bool:
+        """Check if there's an active human override for this specific email thread.
+
+        Scoped to store_id: two different brands can easily share a customer
+        email + a generic subject line ("Order issue", "Refund request"), and
+        without this check a human takeover on Brand A's ticket would
+        incorrectly suppress Brand B's unrelated AI auto-reply."""
         try:
             overrides = supabase_select("conversation_overrides", {"active": "eq.true"})
             if not overrides:
@@ -742,6 +763,10 @@ class UnifiedMessageProcessor:
 
                 ov_ticket = await supabase_service.get_ticket_by_id(convo_id)
                 if not ov_ticket:
+                    continue
+
+                ov_store_id = ov_ticket.get("store_id") or ov_ticket.get("brand_id")
+                if store_id and ov_store_id != store_id:
                     continue
 
                 # Must match BOTH email AND subject to be considered same thread

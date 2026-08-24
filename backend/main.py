@@ -286,15 +286,28 @@ try:
     except Exception as _e:
       logger.error(f"Failed to register AfterShip webhook router: {_e}")
 
-    try:
-      from src.api.routes.returns import router as returns_router
-      register_router(returns_router, prefix="/api")
-    except: pass
-
-    try:
-      from src.api.routes.actions import router as actions_router
-      register_router(actions_router, prefix="/api")
-    except: pass
+    # returns.py and actions.py (legacy `pending_actions`) are intentionally
+    # NOT mounted: both have zero live callers in dashboard/web-form/ai-ops
+    # (confirmed by repo-wide search; actions.py's own docstring says the
+    # same), and both are structurally unfixable cross-tenant leaks —
+    # returns.py has no auth at all and dumps ALL tenants' tickets when the
+    # optional `email` filter is omitted; actions.py's `pending_actions`
+    # table has no brand_id/tenant_id column, so any authenticated user of
+    # any tenant could view/approve/reject another tenant's pending Shopify
+    # refund/exchange action. The canonical, tenant-scoped replacements
+    # (v2_tickets.py / v2_actions.py, saas_actions.py) are already mounted
+    # below and cover this functionality. Re-enable only after adding real
+    # tenant/brand scoping to both.
+    #
+    # try:
+    #   from src.api.routes.returns import router as returns_router
+    #   register_router(returns_router, prefix="/api")
+    # except: pass
+    #
+    # try:
+    #   from src.api.routes.actions import router as actions_router
+    #   register_router(actions_router, prefix="/api")
+    # except: pass
 
     try:
       from src.api.routes.agentic import router as agentic_router

@@ -137,13 +137,20 @@ async def list_brands(
 
         # Scope to tenant — try tenant_id column first (requires migration 010),
         # then fall back to shopify_domain match so older rows still appear.
+        # The fallback never returns a brand another tenant already owns — a
+        # shared/duplicate shopify_domain value must not leak another
+        # tenant's brand into this list.
         from src.services.auth_service import auth_service
         owned = supabase_select("brands", {"tenant_id": f"eq.{tenant.tenant_id}", **params})
         if not owned:
             tenant_data = await auth_service.get_tenant(tenant.tenant_id)
             shopify_domain = (tenant_data or {}).get("shopify_domain")
             if shopify_domain:
-                owned = supabase_select("brands", {"shopify_domain": f"eq.{shopify_domain}", **params})
+                candidates = supabase_select("brands", {"shopify_domain": f"eq.{shopify_domain}", **params})
+                owned = [
+                    b for b in candidates
+                    if b.get("tenant_id") is None or b.get("tenant_id") == tenant.tenant_id
+                ]
 
         # Strip secrets before returning
         safe = []
@@ -252,23 +259,26 @@ async def delete_brand(
 
 
 @router.post("/{brand_id}/test-connection", response_model=dict)
-async def test_brand_connection(brand_id: str):
+async def test_brand_connection(brand_id: str, tenant: TenantContext = Depends(get_current_tenant)):
     """
     Test Shopify API connection for a brand.
     """
     try:
         from src.services.brand_manager import brand_manager
 
+        _assert_owned(brand_id, tenant.tenant_id)
         result = await brand_manager.test_connection(brand_id)
 
         return result
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"[Brands API] Error testing connection: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/{brand_id}/sync-products", response_model=dict)
-async def sync_brand_products(brand_id: str):
+async def sync_brand_products(brand_id: str, tenant: TenantContext = Depends(get_current_tenant)):
     """
     Trigger product sync from Shopify for this brand.
     """
@@ -276,6 +286,7 @@ async def sync_brand_products(brand_id: str):
         from src.services.brand_manager import brand_manager
         from src.services.shopify_sync import ShopifySyncService
 
+        _assert_owned(brand_id, tenant.tenant_id)
         brand = await brand_manager.get_brand(brand_id)
         if not brand:
             raise HTTPException(status_code=404, detail="Brand not found")
@@ -305,7 +316,7 @@ async def sync_brand_products(brand_id: str):
 
 
 @router.post("/{brand_id}/sync-orders", response_model=dict)
-async def sync_brand_orders(brand_id: str):
+async def sync_brand_orders(brand_id: str, tenant: TenantContext = Depends(get_current_tenant)):
     """
     Trigger order sync from Shopify for this brand.
     """
@@ -313,6 +324,7 @@ async def sync_brand_orders(brand_id: str):
         from src.services.brand_manager import brand_manager
         from src.services.shopify_sync import ShopifySyncService
 
+        _assert_owned(brand_id, tenant.tenant_id)
         brand = await brand_manager.get_brand(brand_id)
         if not brand:
             raise HTTPException(status_code=404, detail="Brand not found")

@@ -9,7 +9,7 @@ import os
 import requests
 import logging
 from datetime import datetime, timedelta, timezone
-from src.api.middleware.tenant_auth import get_optional_tenant
+from src.api.middleware.tenant_auth import get_optional_tenant, get_current_tenant, TenantContext
 
 router = APIRouter(prefix="/agentic", tags=["agentic"])
 logger = logging.getLogger(__name__)
@@ -174,9 +174,13 @@ Respond in JSON format only:
         }
 
 
-async def get_shopify_audit(order_id: str) -> ShopifyAudit:
+async def get_shopify_audit(order_id: str, brand_ids: Optional[List[str]] = None) -> ShopifyAudit:
     """
     Fetch order details from Shopify and check return window.
+
+    order_number is not globally unique across brands, so this must always be
+    scoped to the caller's own brand_ids — otherwise a client-supplied order_id
+    could return another brand's order total/line items.
     """
     try:
         # Try to get order from Supabase first
@@ -187,7 +191,13 @@ async def get_shopify_audit(order_id: str) -> ShopifyAudit:
         order_num_str = order_id.replace("ORD-", "").replace("#", "").strip()
         try:
             order_num = int(order_num_str)
-            orders = supabase_select("orders", {"order_number": f"eq.{order_num}"})
+            if not brand_ids:
+                orders = []
+            else:
+                orders = supabase_select("orders", {
+                    "order_number": f"eq.{order_num}",
+                    "store_id": f"in.({','.join(brand_ids)})",
+                })
         except (ValueError, AttributeError):
             orders = []
 
@@ -396,13 +406,19 @@ def generate_recommendation(shopify_audit: ShopifyAudit, extraction: dict, inven
 # ============== API Endpoints ==============
 
 @router.post("/process-ticket", response_model=ProcessedTicketResponse)
-async def process_ticket(request: ProcessTicketRequest):
+async def process_ticket(
+    request: ProcessTicketRequest,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
     """
     The Intelligence Layer - Process a customer ticket and generate AI recommendation.
     Uses Mistral LLM to extract intent, then fetches Shopify context and checks inventory.
     """
     try:
         logger.info(f"Processing ticket: {request.ticket_id}")
+
+        from src.api.routes.tickets import _get_tenant_brand_ids
+        brand_ids = await _get_tenant_brand_ids(tenant)
 
         # Step 1: Extract intent with LLM
         extraction = await extract_intent_with_llm(
@@ -415,8 +431,8 @@ async def process_ticket(request: ProcessTicketRequest):
         if not order_id:
             raise HTTPException(status_code=400, detail="Order ID is required for processing")
 
-        # Step 2: Get Shopify audit
-        shopify_audit = await get_shopify_audit(order_id)
+        # Step 2: Get Shopify audit (scoped to this tenant's own brands only)
+        shopify_audit = await get_shopify_audit(order_id, brand_ids=brand_ids)
 
         # Step 3: Check inventory if exchange requested
         inventory = None
@@ -443,19 +459,26 @@ async def process_ticket(request: ProcessTicketRequest):
 
 
 @router.get("/ticket/{ticket_id}")
-async def get_ticket_analysis(ticket_id: str):
+async def get_ticket_analysis(ticket_id: str, tenant: TenantContext = Depends(get_current_tenant)):
     """
     Get existing ticket analysis.
     """
     try:
         from src.lib.supabase_client import supabase_select
+        from src.api.routes.tickets import _get_tenant_brand_ids
 
         tickets = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
 
         if not tickets:
             raise HTTPException(status_code=404, detail="Ticket not found")
 
-        return tickets[0]
+        ticket = tickets[0]
+        ticket_brand_id = ticket.get("brand_id") or ticket.get("store_id")
+        brand_ids = await _get_tenant_brand_ids(tenant)
+        if brand_ids is not None and ticket_brand_id not in brand_ids:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+
+        return ticket
 
     except HTTPException:
         raise

@@ -98,27 +98,14 @@ async def get_ticket_status(ticket_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@router.get("/ticket-by-email")
-async def get_ticket_by_email(email: str):
-    """
-    Get the latest ticket for a given email address
-    """
-    try:
-        from src.lib.supabase_client import supabase_select
-
-        result = supabase_select(
-            "tickets",
-            {"customer_email": f"eq.{email}", "order": "created_at.desc", "limit": "1"}
-        )
-
-        if not result or len(result) == 0:
-            raise HTTPException(status_code=404, detail="No tickets found for this email")
-
-        return result[0]
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+# get_ticket_by_email was removed: it returned the latest ticket (customer
+# PII, AI/human reply content) for ANY caller-supplied email address, across
+# ALL brands, with no ownership check of any kind — email is not a secret,
+# so this let anyone enumerate other people's (and other brands' customers')
+# support tickets. Confirmed unused by any frontend caller (web-form's
+# apiClient.getTicketByEmail had zero callers), so removed rather than
+# scoped, matching this codebase's "no session/auth exists for this
+# endpoint to check against" constraint.
 
 
 @router.post("/test-email")

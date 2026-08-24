@@ -268,15 +268,12 @@ class BrandMessageProcessor:
             if brands:
                 return brands[0]
 
-        # 4. Fallback to first active brand (single-brand setups)
-        brands = supabase_select("brands", {
-            "is_active": "eq.true",
-            "order": "created_at.asc",
-            "limit": "1"
-        })
-        if brands:
-            return brands[0]
-
+        # No brand_id, to_email, or env match — fail closed rather than
+        # guessing "the first active brand". This processor is not currently
+        # wired into any live channel (see message_processor.py's module
+        # docstring), but if it ever is, silently attaching an unidentified
+        # message to an arbitrary brand would misattribute a real customer's
+        # ticket/action to the wrong merchant's Shopify store.
         return None
 
     def _is_automated(self, email: str, content: str) -> bool:

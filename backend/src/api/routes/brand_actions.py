@@ -410,10 +410,11 @@ async def approve_action(
         actions = supabase_select("brand_actions", {"id": f"eq.{action_id}"})
         if not actions:
             raise HTTPException(status_code=404, detail="Action not found")
-        _require_brand_access(actions[0].get("brand_id"), context)
+        action_brand_id = actions[0].get("brand_id")
+        _require_brand_access(action_brand_id, context)
 
         approved_by = request.approved_by if request else context.user.email
-        result = await multi_brand_actions.approve_action(action_id, approved_by)
+        result = await multi_brand_actions.approve_action(action_id, approved_by, brand_id=action_brand_id)
 
         if result.get("success"):
             return result
@@ -449,12 +450,14 @@ async def reject_action(
         actions = supabase_select("brand_actions", {"id": f"eq.{action_id}"})
         if not actions:
             raise HTTPException(status_code=404, detail="Action not found")
-        _require_brand_access(actions[0].get("brand_id"), context)
+        action_brand_id = actions[0].get("brand_id")
+        _require_brand_access(action_brand_id, context)
 
         result = await multi_brand_actions.reject_action(
             action_id=action_id,
             rejection_reason=request.rejection_reason,
-            rejected_by=request.rejected_by or context.user.email
+            rejected_by=request.rejected_by or context.user.email,
+            brand_id=action_brand_id,
         )
 
         if result.get("success"):
