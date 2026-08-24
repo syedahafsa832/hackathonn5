@@ -284,12 +284,78 @@ function ActionCard({ action, onApprove, onReject }) {
   );
 }
 
+// A real Shopify execution failure - persistent (no auto-dismiss, no
+// timeout) until the merchant does something about it. Reuses the same
+// merchant-friendly framing ActionCard's failMsg already uses, plus a
+// one-click way to hand the real technical context to tResolv without the
+// merchant copying an error message by hand.
+function FailedActionCard({ action }) {
+  const [reportState, setReportState] = useState('idle'); // idle | sending | sent | error
+  const meta = ACTION_LABELS[action.action_type] || { label: action.action_type, color: '#0E7490' };
+
+  const handleReport = async () => {
+    setReportState('sending');
+    try {
+      await api.reportAction(action.id);
+      setReportState('sent');
+    } catch {
+      setReportState('error');
+    }
+  };
+
+  return (
+    <div style={{ background: 'white', border: '1px solid #FECACA', borderRadius: '8px', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <span style={{ fontSize: '14px', fontWeight: '600', color: meta.color }}>{meta.label}</span>
+          {(action.order_id || action.order_number) && (
+            <span style={{ fontSize: '12px', background: '#F8FAFC', color: '#475569', padding: '2px 8px', borderRadius: '4px' }}>
+              Order #{action.order_id || action.order_number}
+            </span>
+          )}
+          <span style={{ fontSize: '11px', background: '#FEF2F2', color: '#B91C1C', padding: '2px 8px', borderRadius: '10px', fontWeight: '600' }}>Failed</span>
+        </div>
+        <span style={{ fontSize: '11px', color: '#94A3B8', fontFamily: 'DM Mono, monospace' }}>{formatDate(action.updated_at)}</span>
+      </div>
+      <div style={{ fontSize: '13px', color: '#64748B' }}>
+        <strong style={{ fontSize: '14px', fontWeight: '500', color: '#0F172A' }}>{action.customer_name || action.customer_email}</strong>
+      </div>
+      <div style={{ fontSize: '13px', color: '#B91C1C', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: '6px', padding: '10px 12px' }}>
+        Luna tried to {(ACTION_EXECUTE_LABELS[action.action_type] || 'complete this').toLowerCase()}, but it failed:
+        <div style={{ marginTop: '4px', fontWeight: '500' }}>{action.error_message || 'Shopify did not confirm this action.'}</div>
+      </div>
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+        <button
+          onClick={handleReport}
+          disabled={reportState === 'sending' || reportState === 'sent'}
+          style={{
+            padding: '7px 14px', borderRadius: '4px', border: '1px solid #E4E4E7', background: 'white',
+            color: '#475569', fontSize: '12.5px', fontWeight: '600',
+            cursor: reportState === 'idle' || reportState === 'error' ? 'pointer' : 'default',
+          }}
+        >
+          {reportState === 'sent' ? 'Reported ✓' : reportState === 'sending' ? 'Sending…' : 'Send this error to tResolv'}
+        </button>
+        {reportState === 'error' && (
+          <span style={{ fontSize: '12px', color: '#B91C1C' }}>Couldn't send — try again.</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function Actions() {
   const navigate = useNavigate();
   const { data: escalations = [], isLoading: loadingEscalations, refetch: refetchEscalations } = useEscalations();
   const { data: actions = [], isLoading: loadingActions, refetch: refetchActions } = useActions('pending');
   const { data: history = [], isLoading: loadingHistory } = useActions('history');
   const rejectedActions = history.filter(a => a.status === 'rejected');
+  // Real Shopify execution failures - these used to only exist in `history`
+  // (fetched, but never rendered) once the action left `pending`, so the
+  // failure the merchant just watched happen would vanish from view on the
+  // next 15s poll. Surfaced here the same persistent way rejections already
+  // are, instead of only living in a toast or the Automation readiness card.
+  const failedActions = history.filter(a => a.status === 'failed');
   const { data: stats } = useStats();
   const { mutateAsync: approveAction } = useApproveAction();
   const { mutateAsync: rejectAction } = useRejectAction();
@@ -298,6 +364,7 @@ export default function Actions() {
   const [selectedEscalationIds, setSelectedEscalationIds] = useState(new Set());
   const [bulkEscalWorking, setBulkEscalWorking] = useState(false);
   const [showRejected, setShowRejected] = useState(false);
+  const [showFailed, setShowFailed] = useState(true);
   const [pageError, setPageError] = useState('');
 
   // ActionCard's own onReject already awaits this and shows its own working
@@ -508,6 +575,30 @@ export default function Actions() {
                   </div>
                 );
               })}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Failed actions — real Shopify execution failures. Persistent: no
+          timeout, no toast, backed by the same `actions` data the readiness
+          card on Automation reads from. */}
+      {loadingHistory ? null : failedActions.length > 0 && (
+        <section>
+          <div className="header-row" style={{ marginBottom: '10px' }}>
+            <button
+              onClick={() => setShowFailed(s => !s)}
+              style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: '14px', fontWeight: '600', color: '#B91C1C' }}
+            >
+              <span style={{ display: 'inline-block', transition: 'transform 0.15s', transform: showFailed ? 'rotate(90deg)' : 'none' }}>▸</span>
+              Failed ({failedActions.length})
+            </button>
+          </div>
+          {showFailed && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {failedActions.map(action => (
+                <FailedActionCard key={action.id} action={action} />
+              ))}
             </div>
           )}
         </section>

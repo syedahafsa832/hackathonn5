@@ -1034,6 +1034,16 @@ class ReturnActionsIntegration:
 
         if outcome.get("success"):
             logger.info(f"[Autopilot] Cancellation completed automatically for action {action_id}")
+            # The chat widget's action_result card (see v2_chat_widget.py's
+            # _map_action_result) reads `staged` to decide what to show the
+            # customer - without this, it only ever saw the pre-autopilot
+            # "pending" staging outcome and rendered "Cancellation
+            # Requested / Awaiting merchant approval" even when Shopify had
+            # already confirmed the cancellation moments earlier. Mutating
+            # the same dict the caller already holds a reference to is the
+            # smallest way to make that state visible without threading a
+            # second return value through every call site.
+            staged["status"] = "executed"
             return (
                 "**CANCEL COMPLETED AUTOMATICALLY**: Cancellation Autopilot verified every safety check and "
                 "Shopify has confirmed the order is cancelled. Tell the customer, briefly and naturally: "

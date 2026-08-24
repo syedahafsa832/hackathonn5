@@ -183,3 +183,30 @@ def test_map_action_result_ignores_llm_self_reported_intent_without_real_staging
     action_taken (not the intent string alone) must gate the response."""
     order_data = {"orderNumber": "1011"}
     assert _map_action_result("cancellation_request", None, order_data) is None
+
+
+# ── Task 3: cancellation result must clearly say "cancelled", not always
+# the generic "staged" wording, when Autopilot actually executed it ────────
+
+def test_map_action_result_reports_executed_when_autopilot_completed_it():
+    """_maybe_autopilot_cancel mutates the staged dict's status to
+    "executed" in-place when Shopify confirms the cancellation in the same
+    turn - the widget must render a genuine "Order Cancelled" confirmation,
+    not the generic "Cancellation Requested / Awaiting merchant approval"
+    staging card, for that case."""
+    order_data = {"orderNumber": "1011"}
+    result = _map_action_result(
+        "cancellation_request", {"success": True, "action_id": "x", "status": "executed"}, order_data,
+    )
+    assert result == {"type": "cancel_executed", "order_number": "1011", "action_id": "x"}
+
+
+def test_map_action_result_still_reports_staged_when_status_is_pending():
+    """Regression guard: an ordinary Copilot cancellation (human approval
+    still required) must keep showing the staged/pending wording, not the
+    executed one."""
+    order_data = {"orderNumber": "1011"}
+    result = _map_action_result(
+        "cancellation_request", {"success": True, "action_id": "x", "status": "pending"}, order_data,
+    )
+    assert result == {"type": "cancel_staged", "order_number": "1011", "action_id": "x"}

@@ -231,10 +231,15 @@ def test_autopilot_readiness_successful_executions_count_correctly():
 
 
 def test_autopilot_readiness_failed_executions_count_against_the_rate():
-    """The bug: a real Shopify execution failure (human approved it, but
-    the Shopify call itself failed) was previously excluded from BOTH the
-    numerator and denominator - invisible to this metric entirely. It must
-    now depress the approval rate, the same way a human rejection does."""
+    """The approval-rate math bug: a real Shopify execution failure (human
+    approved it, but the Shopify call itself failed) was previously
+    excluded from BOTH the numerator and denominator - invisible to this
+    metric entirely. It must now depress the approval rate, the same way a
+    human rejection does. Checked via category_readiness (always present)
+    rather than autopilot_readiness, since - separately - a sample with any
+    failed_executions is "almost_there", not "ready_for_review", so
+    autopilot_readiness (which now shares that exact same canonical status,
+    see the contradictory-readiness fix below) is correctly None here."""
     all_cancel_actions = (
         [{"id": f"a{i}", "action_type": "cancel_order", "status": "executed", "created_at": _now_iso()} for i in range(4)]
         + [{"id": "a5", "action_type": "cancel_order", "status": "failed", "created_at": _now_iso()}]
@@ -250,13 +255,14 @@ def test_autopilot_readiness_failed_executions_count_against_the_rate():
     with patch("src.api.routes.v2_brands.supabase_select", side_effect=fake_select):
         resp = _with_tenant(lambda: client.get("/api/v2/brands/brand-1/analytics"))
 
-    readiness = resp.json()["autopilot_readiness"]
-    assert readiness is not None
+    body = resp.json()
+    readiness = body["category_readiness"]["cancellation"]
     # 4 executed / (4 executed + 0 rejected + 1 failed) = 80% - not 100%,
     # and not simply omitted from the calculation as it was before.
-    assert readiness["eligible_cancellations"] == 4
+    assert readiness["successful"] == 4
     assert readiness["failed_executions"] == 1
     assert readiness["approval_rate"] == 80.0
+    assert body["autopilot_readiness"] is None
 
 
 def test_autopilot_readiness_failures_cannot_artificially_inflate_the_rate():
@@ -279,7 +285,7 @@ def test_autopilot_readiness_failures_cannot_artificially_inflate_the_rate():
     with patch("src.api.routes.v2_brands.supabase_select", side_effect=fake_select):
         resp = _with_tenant(lambda: client.get("/api/v2/brands/brand-1/analytics"))
 
-    readiness = resp.json()["autopilot_readiness"]
+    readiness = resp.json()["category_readiness"]["cancellation"]
     assert readiness["approval_rate"] == 50.0
     assert readiness["approval_rate"] != 100.0
 
@@ -305,6 +311,36 @@ def test_autopilot_readiness_insufficient_sample_still_blocks_even_with_failures
         resp = _with_tenant(lambda: client.get("/api/v2/brands/brand-1/analytics"))
 
     assert resp.json()["autopilot_readiness"] is None
+
+
+def test_autopilot_readiness_and_category_readiness_never_contradict_each_other():
+    """Task 2 (production bug report): Automation said 'Almost there - not
+    ready yet' while Customer Voice simultaneously said 'Luna is ready for
+    Autopilot review' for the same brand, because autopilot_readiness
+    (Customer Voice) was gated on sample size alone while category_readiness
+    .cancellation.status (Automation) also accounted for failures. Locks in
+    the fix directly: whenever there are execution failures in the sample,
+    autopilot_readiness must be None (not "ready") at the exact same time
+    category_readiness's status is "almost_there" (not "ready_for_review") -
+    both pages read the one canonical status, so they can't diverge again."""
+    all_cancel_actions = (
+        [{"id": f"a{i}", "action_type": "cancel_order", "status": "executed", "created_at": _now_iso()} for i in range(4)]
+        + [{"id": "a5", "action_type": "cancel_order", "status": "failed", "created_at": _now_iso()}]
+    )
+
+    def fake_select(table, params=None):
+        if table == "brands":
+            return [BRAND]
+        if table == "actions":
+            return all_cancel_actions
+        return []
+
+    with patch("src.api.routes.v2_brands.supabase_select", side_effect=fake_select):
+        resp = _with_tenant(lambda: client.get("/api/v2/brands/brand-1/analytics"))
+
+    body = resp.json()
+    assert body["category_readiness"]["cancellation"]["status"] == "almost_there"
+    assert body["autopilot_readiness"] is None  # never "ready for review" while Automation says "almost there"
 
 
 # ── category_readiness (Automation page) ────────────────────────────────────

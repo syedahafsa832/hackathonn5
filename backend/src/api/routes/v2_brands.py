@@ -603,9 +603,16 @@ async def get_brand_analytics(
         # endpoint independently re-verifies against) rather than a second,
         # possibly-drifting computation.
         cancellation_readiness = _compute_cancellation_readiness(brand_id)
-        cancel_sample = cancellation_readiness["total_requests"]
         autopilot_readiness = None
-        if cancel_sample >= _AUTOPILOT_MIN_SAMPLE:
+        # Was `cancel_sample >= _AUTOPILOT_MIN_SAMPLE` - true purely on
+        # sample size, ignoring failed_executions. That let this go
+        # non-null (Customer Voice: "Luna is ready for Autopilot review")
+        # while category_readiness.status below - which DOES fail sample+
+        # failures into "almost_there", never "ready_for_review" - stayed
+        # not-ready for the exact same brand (Automation: "Almost there...
+        # not ready yet"). Same canonical status now gates both, so the two
+        # pages can never contradict each other again.
+        if cancellation_readiness["status"] == "ready_for_review":
             autopilot_readiness = {
                 "eligible_cancellations": cancellation_readiness["successful"],
                 "failed_executions": cancellation_readiness["failed_executions"],

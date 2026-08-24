@@ -149,6 +149,11 @@ const api = {
     return res.data;
   },
 
+  reportAction: async (id) => {
+    const res = await client.post(`/api/v1/actions/${id}/report`);
+    return res.data;
+  },
+
   bulkRejectActions: async ({ action_ids, clear_all } = {}) => {
     const res = await client.post('/api/v2/actions/bulk-reject', { action_ids, clear_all });
     return res.data;
