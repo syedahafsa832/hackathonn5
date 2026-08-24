@@ -1365,7 +1365,19 @@ function ReplyStyleTab() {
 
       {mode !== 'disabled' && (
         <div style={card}>
-          <div style={sectionTitle}>Learning</div>
+          <div style={{ ...sectionTitle, display: 'flex', alignItems: 'center', gap: '6px' }}>
+            Learning
+            <span
+              title="Every time your team approves (or edits and approves) a reply, Luna learns a little more about how your team actually writes. Nothing changes automatically — your current tone stays exactly as-is until enough approvals build up."
+              style={{
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                width: '15px', height: '15px', borderRadius: '50%', border: '1px solid var(--border)',
+                color: 'var(--text-muted)', fontSize: '10px', fontWeight: '600', cursor: 'help', flexShrink: 0,
+              }}
+            >
+              i
+            </span>
+          </div>
           <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '10px' }}>
             {data.approved_reply_count} of {data.min_replies_required} approved replies needed to learn your team's real writing style.
           </div>

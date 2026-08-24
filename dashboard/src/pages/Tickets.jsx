@@ -4,7 +4,7 @@ import client from '../api/client';
 import { useBrand } from '../context/BrandContext';
 import Badge from '../components/Badge';
 import Alert from '../components/Alert';
-import { useConversations, useMarkRead } from '../hooks/useApi';
+import { useConversations, useMarkRead, useReviewQueue, useActions, useEscalations } from '../hooks/useApi';
 
 function formatDate(iso) {
   if (!iso) return '—';
@@ -23,6 +23,16 @@ export default function Tickets() {
   const { mutate: markRead } = useMarkRead();
   const [refreshing, setRefreshing] = useState(false);
 
+  // Things needing merchant attention shouldn't require leaving the Inbox
+  // to discover — reuses the exact same hooks the sidebar's badges already
+  // fetch, no new data plumbing. Nothing here duplicates Review Luna's
+  // Work or the Needs You (actions) page; it's just a doorway into them.
+  const { data: reviewQueue } = useReviewQueue('needs_review');
+  const pendingReviewCount = reviewQueue?.items?.length || 0;
+  const { data: pendingActions = [] } = useActions('pending');
+  const { data: escalations = [] } = useEscalations();
+  const needsAttentionCount = pendingActions.length + escalations.length;
+
   // isLoading only reflects the *first* fetch — once data exists, a manual
   // refetch() only flips isFetching, which this page didn't track, so the
   // button gave zero visual feedback and looked broken even though it was
@@ -35,7 +45,7 @@ export default function Tickets() {
   }, [refetch]);
 
   useEffect(() => {
-    document.title = "Conversations — tResolv";
+    document.title = "Inbox — tResolv";
     client.get('/api/v1/settings/gmail/status')
       .then(res => setGmailConnected(!!res.data?.connected))
       // A failed status check (cold start, transient network error) is not proof
@@ -174,6 +184,39 @@ export default function Tickets() {
           </button>
         </div>
       </div>
+
+      {/* Attention doorway — real counts only, no fabricated activity.
+          Links out to the actual pages rather than duplicating them. */}
+      {(pendingReviewCount > 0 || needsAttentionCount > 0) && (
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+          {pendingReviewCount > 0 && (
+            <Link
+              to="/review"
+              style={{
+                display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 14px', borderRadius: '6px',
+                background: '#F8FAFC', border: '1px solid #E4E4E7', color: '#0F172A', fontSize: '13px',
+                fontWeight: '600', textDecoration: 'none',
+              }}
+            >
+              {pendingReviewCount} repl{pendingReviewCount === 1 ? 'y' : 'ies'} waiting for your review
+              <span style={{ color: '#0E7490' }}>→</span>
+            </Link>
+          )}
+          {needsAttentionCount > 0 && (
+            <Link
+              to="/actions"
+              style={{
+                display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 14px', borderRadius: '6px',
+                background: '#FFFBEB', border: '1px solid #FDE68A', color: '#92400E', fontSize: '13px',
+                fontWeight: '600', textDecoration: 'none',
+              }}
+            >
+              {needsAttentionCount} action{needsAttentionCount === 1 ? '' : 's'} need{needsAttentionCount === 1 ? 's' : ''} your approval
+              <span>→</span>
+            </Link>
+          )}
+        </div>
+      )}
 
       {/* Gmail not connected banner */}
       {gmailConnected === false && (
