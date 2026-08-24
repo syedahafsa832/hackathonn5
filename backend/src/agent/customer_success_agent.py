@@ -1015,8 +1015,14 @@ class CustomerSuccessAgent:
                         # but don't lie and claim the lookup itself failed
                         # either (it didn't).
                         mentioned_num = order.get("order_number", "")
-                        tool_context += f"ORDER IDENTITY UNVERIFIED: An order #{mentioned_num} exists, but the email on file for it does not match this conversation.\n"
-                        tool_context += "Do NOT reveal any details about this order (status, items, cancellation, refund, tracking). Ask the customer to confirm the email address used when placing that order before you can discuss it.\n"
+                        tool_context += f"ORDER IDENTITY UNVERIFIED: You found order #{mentioned_num} in Shopify, but the email this customer is contacting you from is different from the email used on that order.\n"
+                        tool_context += (
+                            "Do NOT reveal any details about this order (status, items, cancellation, refund, tracking). "
+                            "Do NOT say 'the email on file' or imply the customer did anything wrong - a different contact "
+                            "email is completely normal (lost access, ordered for someone else, used another address). "
+                            "Tell them plainly you found the order but the email they're writing from doesn't match the one "
+                            "used to place it, and ask them to confirm the email used when ordering so you can help.\n"
+                        )
                         _needs_identity_verification = True
                     elif order.get("error"):
                         mentioned_num = order.get("order_number", "")
@@ -1424,7 +1430,7 @@ class CustomerSuccessAgent:
            any placeholder word as if it were their real name.
 
         COMMON SENSE — READ ORDER STATUS BEFORE RESPONDING:
-        - If ORDER DATA says "CANCELLED" — do NOT offer cancellation. Acknowledge it is cancelled already.
+        - If ORDER DATA says "CANCELLED" — do NOT offer cancellation. Tell them plainly it's already cancelled and can't be cancelled again, using the real order data (not a one-line brush-off) so they know their request was actually handled.
         - If ORDER DATA says "refunded" or "partially_refunded" — do NOT offer a refund. Acknowledge it is refunded already.
         - If ORDER DATA says "fulfilled" (shipped) AND a tracking URL is present — share that URL directly in your reply. Never say "check your email".
         - If ORDER DATA says "fulfilled" (shipped) — do NOT offer cancellation or address change. Offer reship/refund if relevant.
