@@ -126,7 +126,7 @@ export default function Sidebar({ mobileOpen, onCloseMobile }) {
         </span>
       </div>
 
-      <nav style={{ flex: 1, padding: '8px 0', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+      <nav style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '8px 0', display: 'flex', flexDirection: 'column', gap: '2px' }}>
         {PRIMARY_NAV.map(item => renderNavItem(item, onLinkClick, isCollapsed, false))}
 
         {!isCollapsed && (
