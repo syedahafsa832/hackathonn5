@@ -12,6 +12,7 @@ from enum import Enum
 from src.lib.supabase_client import supabase_select, supabase_insert, supabase_update
 from src.services.shopify_service import shopify_service, ShopifyError, ShopifyErrorCode
 from src.services.financial_audit import get_cached_result, record_financial_action
+from src.services import email_automation_service
 
 logger = logging.getLogger(__name__)
 
@@ -685,6 +686,54 @@ class ActionsService:
             )
             brand_name = brand.get("name", "our team")
             order_name = execution_result.get("order_name") or f"your order"
+
+            # Custom Email Automation: a merchant-configured template for
+            # this exact brand+trigger takes over the confirmation email
+            # entirely, still gated behind the same already-successful
+            # execution this whole function only ever runs after. Falls
+            # through to the existing hardcoded copy below when none is
+            # configured/enabled — unchanged default behavior.
+            if brand_id and action_type in email_automation_service.SUPPORTED_TRIGGERS:
+                custom_automation = email_automation_service.get_enabled_automation(brand_id, action_type)
+                if custom_automation:
+                    variables = {
+                        "customer_name": customer_name,
+                        "order_number": order_name,
+                        "brand_name": brand_name,
+                        "order_status": email_automation_service.order_status_label(action_type, execution_result),
+                    }
+                    if action_type == ActionType.REFUND.value:
+                        amount = execution_result.get("amount", "")
+                        variables["refund_amount"] = f"PKR {amount:.2f}" if isinstance(amount, (int, float)) else str(amount)
+                    subject = email_automation_service.render_template(custom_automation["subject"], variables)
+                    body = email_automation_service.render_template(custom_automation["body"], variables)
+
+                    if custom_automation.get("requires_approval", True):
+                        email_automation_service.queue_pending_send(custom_automation, action, customer_email, subject, body)
+                        email_sent = False
+                        logger.info(f"[Actions] Custom automation '{custom_automation.get('name')}' queued for merchant approval — action {action.get('id')}")
+                    else:
+                        from src.services.brand_gmail_service import brand_gmail_service
+                        reply_subject = subject if subject.startswith("Re:") else f"Re: {subject}"
+                        send_result = await brand_gmail_service.send_email(brand, customer_email, reply_subject, body)
+                        email_sent = send_result.get("success", False)
+                        logger.info(f"[Actions] Custom automation '{custom_automation.get('name')}' sent={email_sent} for action {action.get('id')} → {customer_email}")
+
+                    if ticket_id and ticket:
+                        existing_msgs = list(ticket.get("messages") or [])
+                        existing_msgs.append({
+                            "from": "AI Agent",
+                            "body": body,
+                            "sent_at": datetime.now(timezone.utc).isoformat(),
+                            "direction": "outbound" if email_sent else "draft",
+                        })
+                        supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {
+                            "status": "resolved",
+                            "messages": existing_msgs,
+                            "email_sent": email_sent,
+                        })
+                        logger.info(f"[Actions] Ticket {ticket_id} resolved after {action_type} execution (custom automation)")
+                    return
 
             if action_type == ActionType.CANCEL_ORDER.value:
                 body = (

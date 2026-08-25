@@ -211,6 +211,60 @@ export function useTrainingReadiness(brandId) {
 }
 
 /**
+ * Custom Email Automation — merchant-configured confirmation emails.
+ * Mutations always invalidate the list (and pending queue, for send/dismiss)
+ * so the UI reflects the real server state, never an optimistic guess.
+ */
+export function useEmailAutomations(brandId) {
+  return useQuery({
+    queryKey: ['email-automations', brandId],
+    queryFn: () => api.getEmailAutomations(brandId),
+    enabled: !!brandId,
+  });
+}
+
+export function useCreateEmailAutomation(brandId) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload) => api.createEmailAutomation(brandId, payload),
+    onSuccess: () => queryClient.invalidateQueries(['email-automations', brandId]),
+  });
+}
+
+export function useUpdateEmailAutomation(brandId) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ automationId, payload }) => api.updateEmailAutomation(brandId, automationId, payload),
+    onSuccess: () => queryClient.invalidateQueries(['email-automations', brandId]),
+  });
+}
+
+export function usePendingEmailSends(brandId) {
+  return useQuery({
+    queryKey: ['email-automations-pending', brandId],
+    queryFn: () => api.getPendingEmailSends(brandId),
+    enabled: !!brandId,
+    refetchInterval: 30000,
+  });
+}
+
+export function useSendPendingEmail(brandId) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (pendingId) => api.sendPendingEmail(brandId, pendingId),
+    onSuccess: () => queryClient.invalidateQueries(['email-automations-pending', brandId]),
+  });
+}
+
+export function useDismissPendingEmail(brandId) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (pendingId) => api.dismissPendingEmail(brandId, pendingId),
+    onSuccess: () => queryClient.invalidateQueries(['email-automations-pending', brandId]),
+  });
+}
+
+/**
  * "Review Luna's Work" — real Luna-authored conversations awaiting or
  * having received human review.
  */
