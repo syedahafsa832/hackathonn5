@@ -7,6 +7,7 @@ import Alert from '../components/Alert';
 export default function ResetPassword() {
   const [accessToken, setAccessToken] = useState(null);
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [done, setDone] = useState(false);
@@ -29,6 +30,10 @@ export default function ResetPassword() {
     setError('');
     if (password.length < 8) {
       setError('Password must be at least 8 characters.');
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError('Passwords do not match.');
       return;
     }
     setLoading(true);
@@ -99,6 +104,30 @@ export default function ResetPassword() {
                 required
                 autoComplete="new-password"
                 placeholder="Min. 8 characters"
+                disabled={!accessToken}
+                style={{
+                  width: '100%',
+                  padding: '10px 12px',
+                  border: '1px solid var(--border-strong)',
+                  borderRadius: '6px',
+                  fontSize: '14px',
+                  background: 'var(--bg-primary)',
+                  color: 'var(--text-primary)',
+                }}
+              />
+            </div>
+
+            <div>
+              <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', marginBottom: '6px' }}>
+                Confirm new password
+              </label>
+              <input
+                type="password"
+                value={confirmPassword}
+                onChange={e => setConfirmPassword(e.target.value)}
+                required
+                autoComplete="new-password"
+                placeholder="Re-enter password"
                 disabled={!accessToken}
                 style={{
                   width: '100%',

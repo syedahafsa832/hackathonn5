@@ -6,6 +6,7 @@ import {
   useEnableCancellationAutopilot, useDisableCancellationAutopilot,
   useEnableRefundAutopilot, useDisableRefundAutopilot,
 } from '../hooks/useApi';
+import EmailAutomations from '../components/EmailAutomations';
 
 // Every status here maps 1:1 to what the backend's category_readiness.status
 // actually computed from real action history — never an invented label.
@@ -571,6 +572,14 @@ export default function Automation() {
           )}
         </section>
       )}
+
+      {/* Custom Email Automation — merchant-authored confirmation emails,
+          kept in the existing Automation area per product decision rather
+          than a new top-level nav section. */}
+      <section>
+        <h2 style={{ margin: '0 0 12px', fontSize: '15px', fontWeight: '600', color: '#0F172A' }}>Custom Emails</h2>
+        <EmailAutomations brandId={brand?.id} />
+      </section>
     </div>
   );
 }
