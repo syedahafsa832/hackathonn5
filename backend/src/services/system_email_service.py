@@ -3,8 +3,8 @@ System Email Service
 =====================
 Sends tResolv's own system/auth emails (password reset, and — since the
 Supabase Send Email Hook is global across every auth email type — signup
-confirmation, magic link, email change, and invite too) via a dedicated
-SMTP account.
+confirmation, magic link, email change, and invite too) via Resend's
+HTTP API.
 
 Deliberately separate from brand_gmail_service.py, which sends
 customer-facing support replies through each MERCHANT's own connected
@@ -12,69 +12,71 @@ Gmail account. That's the wrong shape for these emails: a password reset
 must come from tResolv itself and must work even for a tenant with no
 brand or Gmail connection yet, not from a merchant's personal inbox.
 
-SMTP credentials are read from environment variables only, never exposed
-to the frontend, and never included in any exception message that gets
-logged.
+Originally sent over raw SMTP, but Render's free tier blocks all
+outbound traffic to SMTP ports (25/465/587) as of September 2025 —
+confirmed via Render's own changelog, not an assumption — which made
+every send fail with a connection-level TimeoutError regardless of host,
+port, or credentials. Resend's API is plain HTTPS (port 443), which
+Render's free tier does not block, so no paid-plan upgrade is required.
+
+The Resend API key is read from an environment variable only, never
+exposed to the frontend, and never included in any exception message
+that gets logged.
 """
 import os
 import logging
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+import requests
 
 logger = logging.getLogger(__name__)
 
-SMTP_SERVER = os.getenv("SMTP_SERVER", "")
-SMTP_PORT = int(os.getenv("SMTP_PORT") or "587")
-SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
-SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "") or SMTP_USERNAME
-SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME", "tResolv")
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+# onboarding@resend.dev works without verifying a domain in Resend, but
+# only for sending to the Resend account's own email — verify a real
+# domain (e.g. tresolv.online) in the Resend dashboard for production use.
+SYSTEM_EMAIL_FROM_EMAIL = os.getenv("SYSTEM_EMAIL_FROM_EMAIL", "onboarding@resend.dev")
+SYSTEM_EMAIL_FROM_NAME = os.getenv("SYSTEM_EMAIL_FROM_NAME", "tResolv")
 
+_RESEND_API_URL = "https://api.resend.com/emails"
 _BRAND_COLOR = "#0EA5B7"
 
 
 def _is_configured() -> bool:
-    return bool(SMTP_SERVER and SMTP_USERNAME and SMTP_PASSWORD and SMTP_FROM_EMAIL)
+    return bool(RESEND_API_KEY and SYSTEM_EMAIL_FROM_EMAIL)
 
 
 def _send(to_email: str, subject: str, html_body: str, text_body: str) -> bool:
-    """Send one email via SMTP. Returns True/False — never raises past this
-    boundary. On failure, logs only the exception's class name, never its
-    message: smtplib exceptions can echo back the raw SMTP server
-    conversation (including the AUTH exchange), which is not safe to put
-    in a shared log stream, but the exception type alone is enough to
-    distinguish an auth failure from a connection/TLS failure."""
+    """Send one email via Resend's HTTP API. Returns True/False — never
+    raises past this boundary. On failure, logs only the HTTP status code
+    and the exception's class name, never the response body or the
+    exception message, since Resend's error responses can describe the
+    request in enough detail to be worth keeping out of a shared log
+    stream even though they don't contain the API key itself."""
     if not _is_configured():
-        logger.error("[SystemEmail] SMTP is not fully configured — email not sent")
+        logger.error("[SystemEmail] Resend is not configured (missing RESEND_API_KEY) — email not sent")
         return False
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = f"{SMTP_FROM_NAME} <{SMTP_FROM_EMAIL}>"
-    msg["To"] = to_email
-    msg.attach(MIMEText(text_body, "plain"))
-    msg.attach(MIMEText(html_body, "html"))
-
     try:
-        # Port 465 is implicit TLS (the connection must be SSL from the
-        # first byte); every other port (587, 25) uses STARTTLS to upgrade
-        # a plaintext connection. Using the wrong mode for the port makes
-        # the server reject the handshake outright.
-        smtp_cls = smtplib.SMTP_SSL if SMTP_PORT == 465 else smtplib.SMTP
-        with smtp_cls(SMTP_SERVER, SMTP_PORT, timeout=15) as server:
-            if SMTP_PORT != 465:
-                server.starttls()
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
-            server.sendmail(SMTP_FROM_EMAIL, [to_email], msg.as_string())
+        resp = requests.post(
+            _RESEND_API_URL,
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "from": f"{SYSTEM_EMAIL_FROM_NAME} <{SYSTEM_EMAIL_FROM_EMAIL}>",
+                "to": [to_email],
+                "subject": subject,
+                "html": html_body,
+                "text": text_body,
+            },
+            timeout=15,
+        )
+        if resp.status_code >= 400:
+            logger.error(f"[SystemEmail] Delivery failed for '{subject}' to {to_email} (HTTP {resp.status_code})")
+            return False
         logger.info(f"[SystemEmail] Sent '{subject}' to {to_email}")
         return True
     except Exception as e:
-        # Log the exception's class only (e.g. "SMTPAuthenticationError",
-        # "SSLError", "TimeoutError") - enough to tell an auth failure from
-        # a connection/TLS failure without str(e), which for smtplib
-        # exceptions can echo back the raw SMTP server conversation
-        # (including the AUTH exchange).
         logger.error(f"[SystemEmail] Delivery failed for '{subject}' to {to_email} ({type(e).__name__})")
         return False
 
