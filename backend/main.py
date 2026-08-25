@@ -347,15 +347,6 @@ try:
     except Exception as e:
       logger.warning(f"Failed to register SaaS auth router: {e}")
 
-    # Supabase Auth "Send Email" webhook — configured in the Supabase
-    # dashboard (Authentication > Hooks > Send Email) to POST here instead
-    # of using Supabase's own built-in email provider.
-    try:
-      from src.api.routes.auth_email_hook import router as auth_email_hook_router
-      register_router(auth_email_hook_router, prefix="/api/v1")
-      logger.info("✓ Auth email hook router registered")
-    except Exception as e:
-      logger.warning(f"Failed to register auth email hook router: {e}")
 
     try:
       from src.api.routes.saas_actions import router as saas_actions_router

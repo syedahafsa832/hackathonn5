@@ -64,3 +64,46 @@ def test_sign_up_succeeds_with_immediate_session():
     with patch.object(supabase_gotrue._session, "post", return_value=resp):
         data = supabase_gotrue.sign_up("new@example.com", "supersecret123")
     assert data["session"]["access_token"] == "at"
+
+
+# ─── generate_recovery_link (Admin API, replaces the Send Email Hook path) ──
+
+def test_generate_recovery_link_returns_action_link_on_success():
+    action_link = "https://project.supabase.co/auth/v1/verify?token=abc&type=recovery&redirect_to=https://app.tresolv.online/reset-password"
+    resp = _fake_response(200, {"action_link": action_link})
+    with patch.object(supabase_gotrue, "SUPABASE_SERVICE_ROLE_KEY", "fake-service-role-key"), \
+         patch.object(supabase_gotrue._session, "post", return_value=resp) as mock_post:
+        result = supabase_gotrue.generate_recovery_link("merchant@example.com", redirect_to="https://app.tresolv.online/reset-password")
+
+    assert result == action_link
+    call_kwargs = mock_post.call_args
+    assert call_kwargs.kwargs["headers"]["apikey"] == "fake-service-role-key"
+    assert call_kwargs.kwargs["json"]["type"] == "recovery"
+    assert call_kwargs.kwargs["json"]["email"] == "merchant@example.com"
+    assert call_kwargs.kwargs["json"]["redirect_to"] == "https://app.tresolv.online/reset-password"
+
+
+def test_generate_recovery_link_returns_none_without_service_role_key():
+    with patch.object(supabase_gotrue, "SUPABASE_SERVICE_ROLE_KEY", ""):
+        result = supabase_gotrue.generate_recovery_link("merchant@example.com")
+    assert result is None
+
+
+def test_generate_recovery_link_returns_none_on_error_response_never_raises():
+    """Must not raise — the caller (request_password_reset) treats this the
+    same as "no such account" and still returns the generic success
+    response, so a raised exception here would either leak account
+    existence via a 500 or crash the endpoint outright."""
+    resp = _fake_response(422, {"msg": "Unable to validate email address"})
+    with patch.object(supabase_gotrue, "SUPABASE_SERVICE_ROLE_KEY", "fake-service-role-key"), \
+         patch.object(supabase_gotrue._session, "post", return_value=resp):
+        result = supabase_gotrue.generate_recovery_link("not-an-account@example.com")
+    assert result is None
+
+
+def test_generate_recovery_link_returns_none_on_network_error():
+    import requests
+    with patch.object(supabase_gotrue, "SUPABASE_SERVICE_ROLE_KEY", "fake-service-role-key"), \
+         patch.object(supabase_gotrue._session, "post", side_effect=requests.ConnectionError("boom")):
+        result = supabase_gotrue.generate_recovery_link("merchant@example.com")
+    assert result is None

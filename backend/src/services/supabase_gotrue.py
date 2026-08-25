@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 
 _session = requests.Session()
 
@@ -139,25 +140,53 @@ def sign_out(access_token: str) -> None:
         logger.warning(f"[GoTrue] Logout returned {resp.status_code}: {_extract_error(resp)}")
 
 
-def recover_password(email: str, redirect_to: Optional[str] = None) -> None:
+def generate_recovery_link(email: str, redirect_to: Optional[str] = None) -> Optional[str]:
     """
-    Trigger a password-reset email. Always appears to succeed (anti-enumeration).
+    Generate a password-reset action_link via Supabase's Admin API,
+    without Supabase sending any email itself or involving the Send Email
+    Hook at all — this is Supabase's own documented mechanism for custom
+    email delivery ("Generates email links and OTPs to be sent via a
+    custom email provider"). The caller is responsible for emailing the
+    returned link.
 
-    `redirect_to` becomes the `redirect_to` field in the Send Email Hook
-    payload (see auth_email_hook.py) and, if Supabase's own built-in sender
-    is used instead, where the confirmation link ultimately lands the user
-    after verification — it's a query parameter on this request (matching
-    the JS client's `resetPasswordForEmail(email, {redirectTo})`, which
-    passes it as a sibling request option, not inside the JSON body), never
-    the project's dashboard-configured default Site URL. Passing it
-    explicitly is what keeps dev pointed at localhost and production at the
-    real domain regardless of what's configured in the Supabase dashboard.
+    Deliberately synchronous and hook-free: the Send Email Hook approach
+    this replaced was tied to Supabase's own hard 5-second webhook
+    timeout, which a cold or slow backend instance can blow past even when
+    the SMTP send itself would have succeeded a moment later. Generating
+    the link here happens inside our own request, under our own timeout
+    budget, with no external deadline imposed on us.
+
+    Requires the service-role key — the one call in this module that does,
+    since /admin/* GoTrue endpoints are privileged and every other
+    function here deliberately uses only the anon key. Never raises;
+    returns None on any failure (including "no such account") since
+    request_password_reset() must not reveal whether the email exists
+    either way.
     """
-    params = {"redirect_to": redirect_to} if redirect_to else None
-    resp = _session.post(_url("recover"), headers=_headers(), params=params, json={"email": email}, timeout=_TIMEOUT)
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        logger.error("[GoTrue] SUPABASE_SERVICE_ROLE_KEY not configured — cannot generate recovery link")
+        return None
+
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Content-Type": "application/json",
+    }
+    body: Dict[str, Any] = {"type": "recovery", "email": email}
+    if redirect_to:
+        body["redirect_to"] = redirect_to
+
+    try:
+        resp = _session.post(_url("admin/generate_link"), headers=headers, json=body, timeout=_TIMEOUT)
+    except requests.RequestException as e:
+        logger.warning(f"[GoTrue] Recovery link generation request failed: {e}")
+        return None
+
     if resp.status_code >= 400:
-        # Don't raise — recover() must not reveal whether the email exists.
-        logger.warning(f"[GoTrue] Password recovery request returned {resp.status_code}: {_extract_error(resp)}")
+        logger.warning(f"[GoTrue] Recovery link generation returned {resp.status_code}: {_extract_error(resp)}")
+        return None
+
+    return resp.json().get("action_link")
 
 
 def update_user_password(access_token: str, new_password: str) -> Dict[str, Any]:

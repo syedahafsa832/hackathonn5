@@ -240,29 +240,42 @@ def test_change_password_succeeds_when_current_password_verifies():
 
 
 # ─── 9. Password reset never reveals whether the email is registered ───────
+#
+# request_password_reset() generates the recovery link via Supabase's Admin
+# API (generate_recovery_link) and emails it directly with
+# system_email_service — not via the Send Email Hook, which was tied to
+# Supabase's own hard 5-second webhook timeout and failed unpredictably in
+# production regardless of whether the SMTP send itself would have
+# succeeded.
+
+_FAKE_ACTION_LINK = "https://project-ref.supabase.co/auth/v1/verify?token=abc&type=recovery&redirect_to=https://app.tresolv.online/reset-password"
+
 
 def test_password_reset_request_always_reports_success():
-    with patch("src.services.auth_service.supabase_gotrue.recover_password", return_value=None) as mock_recover:
+    with patch("src.services.auth_service.supabase_gotrue.generate_recovery_link", return_value=_FAKE_ACTION_LINK) as mock_generate, \
+         patch("src.services.auth_service.system_email_service.send_password_reset_email", return_value=True) as mock_send:
         auth_service = AuthService()
         result = _run(auth_service.request_password_reset("reset-generic-response@example.com"))
 
     assert result["success"] is True
-    mock_recover.assert_called_once()
-    called_email, called_kwargs = mock_recover.call_args[0][0], mock_recover.call_args[1]
+    mock_generate.assert_called_once()
+    called_email, called_kwargs = mock_generate.call_args[0][0], mock_generate.call_args[1]
     assert called_email == "reset-generic-response@example.com"
     # Must always pass an explicit redirect_to — never rely on Supabase's
     # dashboard-configured default Site URL, which could be pointed at the
     # wrong environment.
     assert called_kwargs["redirect_to"].endswith("/reset-password")
+    mock_send.assert_called_once_with("reset-generic-response@example.com", _FAKE_ACTION_LINK)
 
 
 def test_password_reset_request_uses_frontend_url_env_var_for_the_redirect():
-    with patch("src.services.auth_service.supabase_gotrue.recover_password", return_value=None) as mock_recover, \
+    with patch("src.services.auth_service.supabase_gotrue.generate_recovery_link", return_value=_FAKE_ACTION_LINK) as mock_generate, \
+         patch("src.services.auth_service.system_email_service.send_password_reset_email", return_value=True), \
          patch("src.services.auth_service.FRONTEND_URL", "https://app.tresolv.online"):
         auth_service = AuthService()
         _run(auth_service.request_password_reset("reset-frontend-url@example.com"))
 
-    assert mock_recover.call_args[1]["redirect_to"] == "https://app.tresolv.online/reset-password"
+    assert mock_generate.call_args[1]["redirect_to"] == "https://app.tresolv.online/reset-password"
 
 
 def test_password_reset_request_falls_back_to_localhost_in_dev_never_hardcodes_production():
@@ -270,22 +283,24 @@ def test_password_reset_request_falls_back_to_localhost_in_dev_never_hardcodes_p
     reset link, not silently point at production — and the reverse must
     never happen either: production always sets FRONTEND_URL explicitly,
     it never inherits a hardcoded dev value from this code."""
-    with patch("src.services.auth_service.supabase_gotrue.recover_password", return_value=None) as mock_recover, \
+    with patch("src.services.auth_service.supabase_gotrue.generate_recovery_link", return_value=_FAKE_ACTION_LINK) as mock_generate, \
+         patch("src.services.auth_service.system_email_service.send_password_reset_email", return_value=True), \
          patch("src.services.auth_service.FRONTEND_URL", "http://localhost:5173"):
         auth_service = AuthService()
         _run(auth_service.request_password_reset("reset-dev-default@example.com"))
 
-    redirect_to = mock_recover.call_args[1]["redirect_to"]
+    redirect_to = mock_generate.call_args[1]["redirect_to"]
     assert redirect_to == "http://localhost:5173/reset-password"
     assert "tresolv.online" not in redirect_to
 
 
 def test_password_reset_request_normalizes_email_case_and_whitespace():
-    with patch("src.services.auth_service.supabase_gotrue.recover_password", return_value=None) as mock_recover:
+    with patch("src.services.auth_service.supabase_gotrue.generate_recovery_link", return_value=_FAKE_ACTION_LINK) as mock_generate, \
+         patch("src.services.auth_service.system_email_service.send_password_reset_email", return_value=True):
         auth_service = AuthService()
         _run(auth_service.request_password_reset("  Reset-Case@Example.com  "))
 
-    assert mock_recover.call_args[0][0] == "reset-case@example.com"
+    assert mock_generate.call_args[0][0] == "reset-case@example.com"
 
 
 def test_password_reset_request_is_cooled_down_per_email():
@@ -296,16 +311,31 @@ def test_password_reset_request_is_cooled_down_per_email():
     email = "reset-cooldown@example.com"
     auth_service_module._last_password_reset_request.pop(email, None)
 
-    with patch("src.services.auth_service.supabase_gotrue.recover_password", return_value=None) as mock_recover:
+    with patch("src.services.auth_service.supabase_gotrue.generate_recovery_link", return_value=_FAKE_ACTION_LINK) as mock_generate, \
+         patch("src.services.auth_service.system_email_service.send_password_reset_email", return_value=True):
         auth_service = AuthService()
         first = _run(auth_service.request_password_reset(email))
         second = _run(auth_service.request_password_reset(email))
 
     assert first == second
     assert first["success"] is True
-    mock_recover.assert_called_once()  # the second call was cooled down, not sent again
+    mock_generate.assert_called_once()  # the second call was cooled down, not sent again
 
     auth_service_module._last_password_reset_request.pop(email, None)
+
+
+def test_password_reset_request_does_not_email_when_link_generation_fails():
+    """If generate_recovery_link fails (including the anti-enumeration case
+    of "no such account"), no email attempt should happen — but the
+    response must still be the identical generic success message, so a
+    client can't distinguish a real send from a silently skipped one."""
+    with patch("src.services.auth_service.supabase_gotrue.generate_recovery_link", return_value=None), \
+         patch("src.services.auth_service.system_email_service.send_password_reset_email") as mock_send:
+        auth_service = AuthService()
+        result = _run(auth_service.request_password_reset("reset-no-account@example.com"))
+
+    assert result["success"] is True
+    mock_send.assert_not_called()
 
 
 # ─── 10. Reset-password confirm — success, and invalid/expired token ───────

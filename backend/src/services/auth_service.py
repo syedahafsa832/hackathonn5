@@ -20,7 +20,7 @@ import jwt
 from passlib.context import CryptContext
 
 from src.lib.supabase_client import supabase_select, supabase_insert, supabase_update
-from src.services import supabase_gotrue
+from src.services import supabase_gotrue, system_email_service
 from src.services.supabase_gotrue import GoTrueError
 from src.services.plan_service import TRIAL_DAYS
 
@@ -441,10 +441,19 @@ class AuthService:
 
     async def request_password_reset(self, email: str) -> Dict[str, Any]:
         """
-        Send a password-reset email via Supabase Auth. Always reports the
-        same success message, whether or not the email is registered, and
-        whether or not this specific call actually triggered anything (see
-        the cooldown below) — anti-enumeration by construction.
+        Send a password-reset email. Always reports the same success
+        message, whether or not the email is registered, and whether or
+        not this specific call actually triggered anything (see the
+        cooldown below) — anti-enumeration by construction.
+
+        Generates the recovery link via Supabase's Admin API and sends it
+        ourselves, synchronously, in this same request — deliberately not
+        via Supabase's Send Email Hook, which is bound to Supabase's own
+        hard 5-second webhook timeout regardless of how long our SMTP send
+        actually takes. That external deadline caused real production
+        failures (the hook would still be mid-send when Supabase gave up
+        waiting). Doing it inline here means the only timeout that applies
+        is our own.
         """
         email = email.strip().lower()
         generic_response = {"success": True, "message": "If that email is registered, a reset link has been sent."}
@@ -458,7 +467,9 @@ class AuthService:
         _last_password_reset_request[email] = now
 
         redirect_to = f"{FRONTEND_URL}/reset-password"
-        supabase_gotrue.recover_password(email, redirect_to=redirect_to)
+        action_link = supabase_gotrue.generate_recovery_link(email, redirect_to=redirect_to)
+        if action_link:
+            system_email_service.send_password_reset_email(email, action_link)
         return generic_response
 
     async def confirm_password_reset(self, recovery_access_token: str, new_password: str) -> Dict[str, Any]:
