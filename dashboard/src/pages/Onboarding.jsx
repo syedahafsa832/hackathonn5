@@ -458,104 +458,137 @@ function StepStyle({ brandId, onNext }) {
 
 // ─────────────────────────────────────────────── Step 5: Test Luna ──
 
-// Deliberately general/policy questions, not order-specific — a brand-new
-// store has no real orders yet, so a canned "Where is my order #1234?" would
-// reliably come back "I couldn't find that order," which is the *correct*
-// safe behavior (never inventing order data) but looks like a broken demo at
-// the exact moment a merchant is deciding whether this thing works. These
-// questions instead exercise the RAG/policy-answering path, which works
-// immediately after Shopify import with zero real orders involved.
-const SAMPLE_QUESTIONS = [
-  "What's your return policy?",
-  'Do you ship internationally?',
-  'How long does shipping usually take?',
-];
+// Picks ONE question Luna can actually answer from what's already been
+// imported — never a fixed list a merchant is invited to click through.
+// Deterministic, no extra AI call just to choose a question: policy
+// questions first (most concretely verifiable against real store content),
+// then products, then a generic fallback that works with anything indexed.
+// Returns null when nothing has finished importing yet, which the caller
+// uses to keep the test disabled (see StepTestLuna's `ready`).
+function pickTestQuestion(sources) {
+  const completed = (sources || []).filter(s => s.status === 'completed');
+  if (completed.length === 0) return null;
+  const hasNamed = (fragment) => completed.some(s => (s.name || '').toLowerCase().includes(fragment));
+  const hasType = (type) => completed.some(s => s.metadata?.type === type);
+  if (hasNamed('return')) return "What's your return policy?";
+  if (hasNamed('shipping')) return 'What are your shipping rules?';
+  if (hasType('shopify_product_batch')) return 'What products do you sell?';
+  return 'What can you tell me about your store?';
+}
 
-function StepTestLuna({ brandId, onNext }) {
-  const [replies, setReplies] = useState({});
-  const [loadingQ, setLoadingQ] = useState(null);
+function StepTestLuna({ brandId, shopifyConnected, onNext }) {
+  const [knowledge, setKnowledge] = useState(null); // GET .../shopify/import-status response
+  const [loadingStatus, setLoadingStatus] = useState(true);
+  const [asking, setAsking] = useState(false);
+  const [reply, setReply] = useState(null);
+  const [passed, setPassed] = useState(null); // true | false | null (not tested yet)
   const [error, setError] = useState('');
-  const [customQuestion, setCustomQuestion] = useState('');
 
-  const ask = async (question) => {
-    setLoadingQ(question);
+  useEffect(() => {
+    if (!brandId || !shopifyConnected) { setLoadingStatus(false); return; }
+    // Reuses the exact same endpoint StepImport polls and Dashboard's
+    // checklist reads — one source of truth for "is store knowledge
+    // ready", never a second one computed here.
+    client.get(`/api/v2/brands/${brandId}/shopify/import-status`)
+      .then(res => setKnowledge(res.data))
+      .catch(() => setKnowledge(null))
+      .finally(() => setLoadingStatus(false));
+  }, [brandId, shopifyConnected]);
+
+  const question = pickTestQuestion(knowledge?.sources);
+  const ready = shopifyConnected && !!knowledge?.ready && !!question;
+
+  const runTest = async () => {
+    setAsking(true);
     setError('');
+    setReply(null);
+    setPassed(null);
     try {
+      // Exactly one model call, only ever from this explicit click.
       const res = await client.post(`/api/v2/brands/${brandId}/test-reply`, { message: question });
       if (res.data?.provider_outage) {
-        setReplies(r => ({ ...r, [question]: null }));
-        setError("Luna's AI models are all at capacity right now (usage limit reached across every connected provider). This is temporary — try again in a few minutes.");
+        setPassed(false);
+        setError("Luna's AI models are all at capacity right now. This is temporary — try again in a few minutes.");
       } else {
-        setReplies(r => ({ ...r, [question]: res.data?.reply || '(no reply generated)' }));
-        setError('');
+        setReply(res.data?.reply || '');
+        setPassed(true);
         localStorage.setItem('resolv_test_reply_done', 'true');
       }
     } catch (err) {
-      setError(extractErrorMessage(err, 'Could not generate a test reply.'));
+      setPassed(false);
+      setError(extractErrorMessage(err, 'Could not run the test right now.'));
     } finally {
-      setLoadingQ(null);
+      setAsking(false);
     }
   };
-
-  const askCustom = () => {
-    if (!customQuestion.trim()) return;
-    ask(customQuestion.trim());
-    setCustomQuestion('');
-  };
-
-  const hasAnyReply = Object.keys(replies).length > 0;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div>
         <h2 style={{ fontSize: '22px', fontWeight: '700', marginBottom: '8px' }}>Test Luna</h2>
         <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: '1.5' }}>
-          Your AI employee is ready. Try a real question below — this runs through the actual support agent, not a demo.
+          Let's make sure Luna can answer questions about your store — one real question, run through the actual support agent.
         </p>
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-        {SAMPLE_QUESTIONS.map(q => (
-          <div key={q} style={{ border: '1px solid var(--border)', borderRadius: '6px', padding: '14px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
-              <div style={{ fontSize: '14px', fontWeight: '500' }}>"{q}"</div>
-              <button
-                onClick={() => ask(q)}
-                disabled={loadingQ === q}
-                style={{ padding: '6px 14px', borderRadius: '4px', fontSize: '12px', fontWeight: '600', background: 'var(--accent)', color: 'white', cursor: loadingQ === q ? 'not-allowed' : 'pointer', flexShrink: 0 }}
-              >
-                {loadingQ === q ? 'Asking...' : replies[q] ? 'Ask again' : 'Ask Luna'}
-              </button>
+      {!shopifyConnected ? (
+        <div style={{ padding: '16px 20px', background: 'var(--bg-secondary)', borderRadius: '6px', fontSize: '14px', color: 'var(--text-secondary)' }}>
+          Luna needs your store connected first — you skipped Shopify earlier, so there's nothing to test against yet.
+          You can connect it later in Settings.
+        </div>
+      ) : loadingStatus ? (
+        <div className="skeleton" style={{ height: '90px', borderRadius: '6px' }} />
+      ) : !ready ? (
+        <div style={{ padding: '16px 20px', background: 'var(--bg-secondary)', borderRadius: '6px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)' }}>Luna is still learning your store.</div>
+          <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Try the test when your store knowledge is ready.</div>
+          {(knowledge?.report || []).length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '4px' }}>
+              {knowledge.report.map(r => (
+                <div key={r.resource} style={{ fontSize: '12.5px', color: 'var(--text-muted)' }}>
+                  {r.status === 'imported' ? '✓' : r.status === 'skipped' ? '⚠' : '○'} {r.resource} {r.status === 'imported' ? 'imported' : r.status === 'skipped' ? 'skipped' : 'importing…'}
+                </div>
+              ))}
             </div>
-            {replies[q] && (
-              <div style={{ marginTop: '10px', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px', fontSize: '13px', color: 'var(--text-primary)', whiteSpace: 'pre-line' }}>
-                {replies[q]}
-              </div>
-            )}
+          )}
+        </div>
+      ) : (
+        <div style={{ border: '1px solid var(--border)', borderRadius: '6px', padding: '16px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+            <div style={{ fontSize: '14px', fontWeight: '500' }}>"{question}"</div>
+            <button
+              onClick={runTest}
+              disabled={asking}
+              style={{ padding: '7px 16px', borderRadius: '4px', fontSize: '12px', fontWeight: '600', background: 'var(--accent)', color: 'white', cursor: asking ? 'not-allowed' : 'pointer', flexShrink: 0 }}
+            >
+              {asking ? 'Asking...' : passed === null ? 'Test Luna' : 'Run again'}
+            </button>
           </div>
-        ))}
-      </div>
 
-      <div style={{ display: 'flex', gap: '8px' }}>
-        <input
-          value={customQuestion}
-          onChange={e => setCustomQuestion(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && askCustom()}
-          placeholder="Or ask your own question..."
-          style={{ ...inputStyle, flex: 1 }}
-        />
-        <button onClick={askCustom} disabled={!customQuestion.trim() || loadingQ === customQuestion} style={{ padding: '0 18px', borderRadius: '4px', fontSize: '13px', fontWeight: '600', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)', cursor: 'pointer' }}>
-          Ask
-        </button>
-      </div>
-      <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-        Tip: for a real order-tracking example, ask about one of your actual order numbers — a made-up one will correctly come back "not found" rather than invented.
-      </div>
+          {passed === true && (
+            <div style={{ marginTop: '12px' }}>
+              <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--success)', marginBottom: '8px' }}>
+                ✓ Test passed — Luna can use your store knowledge.
+              </div>
+              {reply && (
+                <div style={{ padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px', fontSize: '13px', color: 'var(--text-primary)', whiteSpace: 'pre-line' }}>
+                  {reply}
+                </div>
+              )}
+            </div>
+          )}
+          {passed === false && !error && (
+            <div style={{ marginTop: '12px', fontSize: '13px', color: 'var(--text-secondary)' }}>
+              Couldn't answer this yet. Your store knowledge may still be importing.
+            </div>
+          )}
+        </div>
+      )}
 
       <Alert variant="error">{error}</Alert>
 
       <button onClick={onNext} style={{ ...primaryBtn(false), padding: '13px 32px', fontSize: '15px' }}>
-        {hasAnyReply ? 'Continue →' : 'Skip →'}
+        {passed === true ? 'Continue →' : 'Skip →'}
       </button>
     </div>
   );
@@ -800,7 +833,7 @@ export default function Onboarding() {
         {step === 2 && <StepImport brandId={brandId} shopifyConnected={shopifyConnected} onNext={() => setStep(3)} />}
         {step === 3 && <StepGmail brandId={brandId} onNext={() => { setGmailConnected(true); setStep(4); }} />}
         {step === 4 && <StepStyle brandId={brandId} onNext={() => setStep(5)} />}
-        {step === 5 && <StepTestLuna brandId={brandId} onNext={() => setStep(6)} />}
+        {step === 5 && <StepTestLuna brandId={brandId} shopifyConnected={shopifyConnected} onNext={() => setStep(6)} />}
         {step === 6 && <StepGoLive brandId={brandId} shopifyConnected={shopifyConnected} gmailConnected={gmailConnected} onFinish={handleFinish} />}
       </div>
     </div>
