@@ -92,6 +92,21 @@ def test_send_email_returns_false_on_smtp_failure_without_raising():
     assert result is False  # never raises past this boundary
 
 
+def test_send_logs_exception_class_name_but_not_its_message(caplog):
+    """Diagnosable-but-safe: knowing it was an SMTPAuthenticationError (vs.
+    a connection/TLS error) is useful for debugging delivery failures, but
+    the exception's message can echo the raw SMTP server conversation, so
+    only the class name may appear in logs."""
+    with patch.multiple("src.services.system_email_service", **_configured()), \
+         patch("smtplib.SMTP", side_effect=smtplib.SMTPAuthenticationError(535, b"Authentication failed for super-secret-smtp-password")):
+        with caplog.at_level("ERROR"):
+            system_email_service.send_password_reset_email("merchant@example.com", "https://example.com/reset")
+
+    all_log_text = "\n".join(r.message for r in caplog.records)
+    assert "SMTPAuthenticationError" in all_log_text
+    assert "super-secret-smtp-password" not in all_log_text
+
+
 def test_smtp_credentials_never_appear_in_log_output(caplog):
     with patch.multiple("src.services.system_email_service", **_configured()), \
          patch("smtplib.SMTP", side_effect=smtplib.SMTPAuthenticationError(535, b"Authentication failed for super-secret-smtp-password")):

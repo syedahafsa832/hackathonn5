@@ -40,10 +40,11 @@ def _is_configured() -> bool:
 
 def _send(to_email: str, subject: str, html_body: str, text_body: str) -> bool:
     """Send one email via SMTP. Returns True/False — never raises past this
-    boundary, and deliberately never logs exception detail for SMTP errors,
-    since smtplib exceptions echo back the raw SMTP server conversation
-    (which can include the AUTH exchange) — safe to know delivery failed,
-    not safe to put that conversation in a shared log stream."""
+    boundary. On failure, logs only the exception's class name, never its
+    message: smtplib exceptions can echo back the raw SMTP server
+    conversation (including the AUTH exchange), which is not safe to put
+    in a shared log stream, but the exception type alone is enough to
+    distinguish an auth failure from a connection/TLS failure."""
     if not _is_configured():
         logger.error("[SystemEmail] SMTP is not fully configured — email not sent")
         return False
@@ -68,8 +69,13 @@ def _send(to_email: str, subject: str, html_body: str, text_body: str) -> bool:
             server.sendmail(SMTP_FROM_EMAIL, [to_email], msg.as_string())
         logger.info(f"[SystemEmail] Sent '{subject}' to {to_email}")
         return True
-    except Exception:
-        logger.error(f"[SystemEmail] Delivery failed for '{subject}' to {to_email}")
+    except Exception as e:
+        # Log the exception's class only (e.g. "SMTPAuthenticationError",
+        # "SSLError", "TimeoutError") - enough to tell an auth failure from
+        # a connection/TLS failure without str(e), which for smtplib
+        # exceptions can echo back the raw SMTP server conversation
+        # (including the AUTH exchange).
+        logger.error(f"[SystemEmail] Delivery failed for '{subject}' to {to_email} ({type(e).__name__})")
         return False
 
 
