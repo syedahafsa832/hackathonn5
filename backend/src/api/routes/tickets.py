@@ -65,6 +65,38 @@ def _compute_review_status(ticket: dict) -> Optional[str]:
     return "needs_review"
 
 
+# Every place in this codebase that appends an AI-authored turn to a
+# ticket's `messages` JSONB uses one of these markers: v2_chat_widget.py
+# writes role="ai", message_processor.py's Gmail auto-reply path writes
+# role="assistant" (alongside from="AI Agent"), and
+# actions_service._post_execution_notify writes only from="AI Agent". No
+# other writer in the codebase sets either field to these values.
+_AI_MESSAGE_ROLES = {"ai", "assistant"}
+_AI_MESSAGE_SENDER = "AI Agent"
+
+
+def _ticket_has_luna_reply(ticket: dict) -> bool:
+    """True if Luna ever authored a reply on this ticket - either the
+    scalar ai_reply/ai_draft/ai_response columns _compute_review_status()
+    already checks (the Gmail/email-channel review pipeline), or an
+    AI-authored turn recorded only in the messages JSONB (the chat-widget
+    and post-execution-confirmation pipelines, which never populate those
+    scalar columns). Used for the Train Luna "AI conversations" count
+    only - _compute_review_status()'s own None/needs_review/approved/
+    edited/rejected vocabulary for the Review Luna's Work queue is
+    unchanged by this and still comes from the scalar columns alone, so a
+    conversation that resolved itself with no pending/decided human
+    review never appears there as something to review."""
+    if _compute_review_status(ticket) is not None:
+        return True
+    for m in (ticket.get("messages") or []):
+        if not isinstance(m, dict):
+            continue
+        if m.get("role") in _AI_MESSAGE_ROLES or m.get("from") == _AI_MESSAGE_SENDER:
+            return True
+    return False
+
+
 async def _get_tenant_brand_ids(tenant: TenantContext) -> Optional[List[str]]:
     """Return brand IDs owned by this tenant, or None if we can't determine ownership.
     Includes inactive brands to catch the onboarding 409 edge case where a brand is

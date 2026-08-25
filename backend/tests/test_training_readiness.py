@@ -125,6 +125,83 @@ def test_training_readiness_composes_train_verify_automate_from_real_data():
     assert data["automate"]["address_change"]["autopilot_capable"] is False
 
 
+# ── total_ai_conversations undercount fix — messages-based Luna replies ────
+# Real production data showed auto-resolved chat-widget conversations with
+# zero ai_reply/ai_draft but a real AI-authored turn in `messages`,
+# undercounting total_ai_conversations to 0 despite real activity. See
+# tickets._ticket_has_luna_reply.
+
+def test_total_ai_conversations_counts_messages_only_conversations():
+    tickets = [
+        # Auto-resolved chat-widget conversation: no scalar ai_reply/ai_draft at all.
+        {"id": "t-chat-1", "brand_id": BRAND_ID, "messages": [
+            {"direction": "inbound", "body": "where's my order?"},
+            {"direction": "outbound", "body": "Let me check.", "role": "ai"},
+        ]},
+        # Auto-resolved via the Gmail auto-reply path (from + role="assistant").
+        {"id": "t-chat-2", "brand_id": BRAND_ID, "messages": [
+            {"from": "AI Agent", "role": "assistant", "body": "Handled automatically."},
+        ]},
+        # Existing email-review pipeline ticket - still needs review as before.
+        {"id": "t-review-1", "brand_id": BRAND_ID, "ai_reply": "hi"},
+        # A ticket with only customer messages, no Luna involvement at all.
+        {"id": "t-customer-only", "brand_id": BRAND_ID, "messages": [{"direction": "inbound", "body": "hello?"}]},
+    ]
+    fake = _fake_select_factory(BRAND, tickets=tickets, feedback=[], actions=[])
+
+    with patch("src.api.routes.v2_brands.supabase_select", side_effect=fake), \
+         patch("src.services.reply_style_service.supabase_select", side_effect=fake):
+        resp = _with_tenant(lambda: client.get(f"/api/v2/brands/{BRAND_ID}/training-readiness"))
+
+    assert resp.status_code == 200, resp.text
+    verify = resp.json()["verify"]
+
+    # 3 real Luna conversations (2 messages-only + 1 scalar-column), not 0.
+    assert verify["total_ai_conversations"] == 3
+    # Unchanged: only the scalar-column ticket is in scope for human review -
+    # the two auto-resolved chat-widget conversations never needed a human
+    # decision and must not appear here or inflate this count.
+    assert verify["conversations_needing_review"] == 1
+    assert verify["conversations_reviewed"] == 0
+
+
+def test_total_ai_conversations_isolated_by_brand():
+    """A brand with zero real conversations must never see another brand's
+    messages-based conversations counted into its own total_ai_conversations."""
+    other_brand_tickets = [
+        {"id": "other-1", "brand_id": "brand-OTHER", "messages": [
+            {"direction": "outbound", "body": "Handled.", "role": "ai"},
+        ]},
+        {"id": "other-2", "brand_id": "brand-OTHER", "messages": [
+            {"direction": "outbound", "body": "Handled.", "role": "ai"},
+        ]},
+    ]
+
+    def fake_select(table, params=None):
+        params = params or {}
+        if table == "brands":
+            tid = params.get("tenant_id", "").replace("eq.", "")
+            if tid and tid != BRAND.get("tenant_id"):
+                return []
+            return [BRAND]
+        if table == "tickets":
+            # Mirrors real PostgREST behavior: the brand_id=eq.<id> filter
+            # the endpoint sends is actually enforced here, unlike a fake
+            # that just returns every ticket regardless of the filter.
+            wanted = params.get("brand_id", "").replace("eq.", "")
+            return [t for t in other_brand_tickets if t["brand_id"] == wanted]
+        return []
+
+    with patch("src.api.routes.v2_brands.supabase_select", side_effect=fake_select), \
+         patch("src.services.reply_style_service.supabase_select", side_effect=fake_select):
+        resp = _with_tenant(lambda: client.get(f"/api/v2/brands/{BRAND_ID}/training-readiness"))
+
+    assert resp.status_code == 200, resp.text
+    # BRAND_ID has no tickets of its own in this fake - the other brand's
+    # 2 real conversations must not leak in.
+    assert resp.json()["verify"]["total_ai_conversations"] == 0
+
+
 # 5. Uploaded examples do not inflate approved_reply_count (zero organic approvals, one example)
 def test_uploaded_examples_alone_never_inflate_approved_reply_count():
     fake = _fake_select_factory(BRAND, examples=[{"id": "ex-1", "content": "x"}], tickets=[])
