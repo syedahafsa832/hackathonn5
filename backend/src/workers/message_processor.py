@@ -9,7 +9,7 @@ import uuid
 
 from src.services.supabase_service import supabase_service
 from src.agent.customer_success_agent import customer_success_agent
-from src.lib.supabase_client import supabase_select, supabase_update
+from src.lib.supabase_client import supabase_select, supabase_update, supabase_insert
 # _log_conversation lives on brand_message_processor.py's singleton (BrandMessageProcessor
 # is stateless aside from a `running` flag - the method reads no self state), reused here
 # rather than duplicated. This module (message_processor.py, wired to the real EmailPoller
@@ -26,6 +26,30 @@ except ImportError:
     ACTIONS_SERVICE_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+
+def _log_ticket_event(ticket_id: Optional[str], brand_id: Optional[str], stage: str, label: str, status: str = "done", detail: Optional[str] = None) -> None:
+    """Persists one real processing milestone so the dashboard can show what
+    Luna actually did, as it actually happens - never a fabricated/animated
+    step. stage/label are always one of the fixed strings already hardcoded
+    at each real dispatch point (customer_success_agent.py's/
+    return_actions_integration.py's own `_emit` calls, or the coarse
+    milestones logged directly below), never raw LLM output. Best-effort:
+    a failure here must never break the actual reply pipeline."""
+    if not ticket_id:
+        return
+    try:
+        supabase_insert("ticket_events", {
+            "ticket_id": ticket_id,
+            "brand_id": brand_id,
+            "stage": stage,
+            "label": label,
+            "status": status,
+            "detail": detail,
+        })
+    except Exception as e:
+        logger.debug(f"[PROCESSOR] ticket_events insert failed (non-blocking): {e}")
+
 
 class UnifiedMessageProcessor:
     """Process incoming messages from all channels through the FTE agent directly using Supabase."""
@@ -99,7 +123,15 @@ class UnifiedMessageProcessor:
             is_thread_continuation = False
             if gmail_thread_id and channel == "email":
                 try:
-                    existing = supabase_select("tickets", {"gmail_thread_id": f"eq.{gmail_thread_id}"})
+                    # Scoped to this brand's own store_id — a gmail_thread_id is only
+                    # unique within one Gmail account, but this table holds every
+                    # brand's tickets, so an unscoped lookup could otherwise append
+                    # this message onto a different brand's ticket if a thread id
+                    # were ever reused/collided across mailboxes.
+                    thread_filters = {"gmail_thread_id": f"eq.{gmail_thread_id}"}
+                    if store_id:
+                        thread_filters["store_id"] = f"eq.{store_id}"
+                    existing = supabase_select("tickets", thread_filters)
                     if existing:
                         existing_ticket = existing[0]
                         early_ticket_id = existing_ticket.get("id")
@@ -158,6 +190,9 @@ class UnifiedMessageProcessor:
                 except Exception as early_err:
                     logger.warning(f"[PROCESSOR] Early ticket creation failed (non-blocking): {early_err}")
             logger.info(f"[TIMING] Ticket intake: {time.monotonic() - t_start:.2f}s")
+            _log_ticket_event(early_ticket_id, store_id, "message_received", "New customer message received")
+            if detected_order_id:
+                _log_ticket_event(early_ticket_id, store_id, "order_detected", f"Order #{detected_order_id} mentioned")
 
             # ========== STAGE 2: SYSTEM SETTINGS ==========
             settings = await supabase_service.get_system_settings(store_id)
@@ -198,14 +233,22 @@ class UnifiedMessageProcessor:
                                 tenant_id = tenants[0].get("id")
                                 logger.info(f"[PROCESSOR] Tenant found by env support email: {tenant_id}")
 
-                    # 4. Last resort: first active tenant (single-tenant dev/staging only)
-                    # WARNING: in multi-tenant production this will pick the wrong tenant
-                    # if steps 1-3 failed, which means store_id has no tenant_id set — run migration 019
-                    if not tenant_id:
+                    # 4. Last resort: first active tenant — ONLY for the single-tenant
+                    # dev/staging placeholder store_id. A real brand (store_id is an
+                    # actual brands.id) with no tenant_id must fail closed instead:
+                    # picking "the first active tenant" here would misattribute this
+                    # brand's plan/quota tracking, and — via Stage 9.5's action
+                    # detection below, which is gated on tenant_id — could otherwise
+                    # let a real customer's action be created under an unrelated
+                    # tenant's Shopify credentials. Leaving tenant_id unset simply
+                    # skips the tenant-scoped entitlement/quota/action-creation
+                    # steps for this message rather than guessing.
+                    if not tenant_id and store_id == "00000000-0000-0000-0000-000000000000":
                         tenants = supabase_select("tenants", {"is_active": "eq.true"})
                         if tenants:
                             tenant_id = tenants[0].get("id")
-                            logger.warning(f"[PROCESSOR] Using default tenant fallback: {tenant_id} — brand {store_id} has no tenant_id set, run migration 019")
+                    elif not tenant_id and store_id:
+                        logger.warning(f"[PROCESSOR] No tenant resolved for brand {store_id} — run migration 019. Proceeding without tenant-scoped entitlement/quota/action-creation for this message rather than guessing a tenant.")
 
                 except Exception as tenant_error:
                     logger.warning(f"[PROCESSOR] Tenant lookup failed: {tenant_error}")
@@ -239,6 +282,7 @@ class UnifiedMessageProcessor:
                         "status": "requires_human",
                         "escalation_reason": escalation_reason,
                     })
+                    _log_ticket_event(early_ticket_id, store_id, "requires_human", escalation_reason)
                 return {
                     "ticket_id": early_ticket_id,
                     "status": "trial_expired",
@@ -258,6 +302,7 @@ class UnifiedMessageProcessor:
                         "status": "requires_human",
                         "escalation_reason": "Daily ticket limit reached. Upgrade to Pro for unlimited AI support.",
                     })
+                    _log_ticket_event(early_ticket_id, store_id, "requires_human", "Daily ticket limit reached")
                     return {
                         "ticket_id": early_ticket_id,
                         "status": "daily_limit_reached",
@@ -283,6 +328,7 @@ class UnifiedMessageProcessor:
                 if early_ticket_id:
                     supabase_update("tickets", {"id": f"eq.{early_ticket_id}"},
                                     {"status": "requires_human"})
+                    _log_ticket_event(early_ticket_id, store_id, "requires_human", "Routed to your team (AI is in manual mode)")
                     return {"ticket_id": early_ticket_id, "status": "requires_human"}
                 ticket = await supabase_service.create_ticket({
                     "store_id": store_id,
@@ -321,6 +367,7 @@ class UnifiedMessageProcessor:
                         "status": "requires_human",
                         "escalation_reason": escalation_reason,
                     })
+                    _log_ticket_event(early_ticket_id, store_id, "requires_human", escalation_reason)
                     return {
                         "ticket_id": early_ticket_id,
                         "status": "ai_reply_limit_reached",
@@ -344,9 +391,18 @@ class UnifiedMessageProcessor:
 
             t_ai_start = time.monotonic()
             logger.info(f"[PROCESSOR] Generating AI response (tenant_id={tenant_id})...")
+
+            # Reuses the agent's existing on_progress emission points (order
+            # lookup, eligibility check, policy verified, ...) - previously
+            # only ever wired to the live chat widget's streaming response,
+            # never persisted or connected to the email pipeline. Each real
+            # dispatch-point call becomes one ticket_events row here.
+            async def _on_progress(stage: str, label: str) -> None:
+                _log_ticket_event(early_ticket_id, store_id, stage, label)
+
             ai_result = await customer_success_agent.generate_channel_appropriate_response(
                 query=content, customer_info=customer, channel=channel, tenant_id=tenant_id, store_id=store_id,
-                ticket_id=early_ticket_id,
+                ticket_id=early_ticket_id, on_progress=_on_progress,
             )
             logger.info(f"[TIMING] AI generation (RAG+LLM): {time.monotonic() - t_ai_start:.2f}s")
             # ai_reply_generated is only set on the real model-generated path —
@@ -392,6 +448,8 @@ class UnifiedMessageProcessor:
 
             logger.info(f"[PROCESSOR] AI Result - Intent: {intent}, Confidence: {confidence:.0%}, Risk: {risk_level}")
             logger.info(f"[PROCESSOR] AI Reply Preview: {reply_body[:100]}..." if reply_body else "[PROCESSOR] No reply generated")
+            if reply_body:
+                _log_ticket_event(early_ticket_id, store_id, "draft_ready", "Draft ready")
 
             # ========== STAGE 6: PREPARE TICKET ==========
             ticket_payload = {
@@ -427,7 +485,7 @@ class UnifiedMessageProcessor:
             # IMPORTANT: Only check override for EMAIL channel replies in same thread
             # Webform submissions are ALWAYS new conversations, never blocked by override
             if channel == "email":
-                is_overridden = await self._check_thread_override(customer_email, subject)
+                is_overridden = await self._check_thread_override(customer_email, subject, store_id)
 
             if is_overridden:
                 logger.info(f"[PROCESSOR] Human override active for email thread: {subject}")
@@ -549,8 +607,16 @@ class UnifiedMessageProcessor:
                 await self._send_email_with_logging(customer_email, subject, ai_result, ticket_id, store_id=store_id)
                 logger.info(f"[TIMING] Email send: {time.monotonic() - t_send_start:.2f}s")
                 email_actually_sent = True
+                _log_ticket_event(ticket_id, store_id, "sent", "Email sent")
             else:
                 logger.info(f"[PROCESSOR] Email NOT sent - should_auto_reply={should_auto_reply}, has_reply={bool(reply_body)}, auto_reply_enabled={auto_reply_enabled}")
+                _final_status = ticket_payload.get("status")
+                if _final_status in ("escalated", "requires_human"):
+                    _log_ticket_event(ticket_id, store_id, "escalated", ticket_payload.get("escalation_reason") or "Escalated for human review")
+                elif _final_status == "human_managing":
+                    _log_ticket_event(ticket_id, store_id, "human_managing", "A team member is already handling this conversation")
+                elif _final_status in ("ai_suggested", "auto_resolved_review"):
+                    _log_ticket_event(ticket_id, store_id, "needs_review", "Draft ready for your team to review")
 
             # Always append AI reply to messages so conversation replay is complete,
             # whether or not the email was actually sent.
@@ -728,8 +794,13 @@ class UnifiedMessageProcessor:
             history = history[:self._HISTORY_MAX_TOTAL_CHARS] + "..."
         return history
 
-    async def _check_thread_override(self, customer_email: str, subject: str) -> bool:
-        """Check if there's an active human override for this specific email thread."""
+    async def _check_thread_override(self, customer_email: str, subject: str, store_id: Optional[str] = None) -> bool:
+        """Check if there's an active human override for this specific email thread.
+
+        Scoped to store_id: two different brands can easily share a customer
+        email + a generic subject line ("Order issue", "Refund request"), and
+        without this check a human takeover on Brand A's ticket would
+        incorrectly suppress Brand B's unrelated AI auto-reply."""
         try:
             overrides = supabase_select("conversation_overrides", {"active": "eq.true"})
             if not overrides:
@@ -742,6 +813,10 @@ class UnifiedMessageProcessor:
 
                 ov_ticket = await supabase_service.get_ticket_by_id(convo_id)
                 if not ov_ticket:
+                    continue
+
+                ov_store_id = ov_ticket.get("store_id") or ov_ticket.get("brand_id")
+                if store_id and ov_store_id != store_id:
                     continue
 
                 # Must match BOTH email AND subject to be considered same thread

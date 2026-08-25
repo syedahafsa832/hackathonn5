@@ -104,16 +104,26 @@ def test_refund_notes_policy_blocks_auto_eligibility_even_within_structured_wind
     assert "24 hours" in result["custom_policy_text"]
 
 
-def test_knowledge_base_policy_also_blocks_auto_eligibility_when_notes_field_is_empty():
-    """Same scenario, but the merchant only ever wrote the policy into their
-    Knowledge Base (FAQ/policy doc), never the structured notes field."""
+def test_knowledge_base_policy_with_a_parseable_window_is_verified_deterministically_not_escalated():
+    """Same free-text-only scenario, but the policy expresses a confidently
+    parseable time window ("within 24 hours") — the Policy Evidence layer
+    (src/services/policy_evidence.py) now verifies this deterministically
+    against the order's real Shopify timestamp instead of blindly escalating
+    every custom policy the way this test originally asserted. This order is
+    5 days (120h) old, past the 24h window, so the correct result is a
+    deterministic INELIGIBLE — not a human re-deriving the same arithmetic
+    by hand. A policy the system can't confidently parse still escalates
+    exactly as before (see test_return_notes_policy_blocks_auto_eligibility,
+    which uses "after 3 days" wording — untouched)."""
     order = _order(days_old=5, fulfillment_status="fulfilled")
     brand = {"id": "b1", "refund_notes": ""}
     result = run(_check_eligibility(order, brand, kb_context="Our policy: refunds must be requested within 24 hours of delivery."))
 
     assert result["eligible"] is False
-    assert result["requires_manual_review"] is True
-    assert "24 hours" in result["custom_policy_text"]
+    assert result.get("requires_manual_review") is not True
+    assert result["policy_verification"]["status"] == "INELIGIBLE"
+    assert result["policy_verification"]["evidence"]["policy_window_hours"] == 24.0
+    assert result["policy_verification"]["evidence"]["elapsed_hours"] > 24.0
 
 
 def test_no_custom_policy_anywhere_still_grants_normal_eligibility():

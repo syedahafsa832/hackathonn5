@@ -169,11 +169,15 @@ async def release_ticket(
 
 # 2.5 SEND DRAFT (/api/tickets/:id/send-draft)
 @router.post("/tickets/{id}/send-draft")
-async def send_draft(id: str, request: Request):
+async def send_draft(
+    id: str,
+    request: Request,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
     """Manually approve and send an AI-generated draft."""
     try:
         logger.info(f"Send Draft Request for Ticket: {id}")
-        
+
         # Robust body parsing
         payload = {}
         try:
@@ -184,12 +188,17 @@ async def send_draft(id: str, request: Request):
             logger.info("Empty or invalid JSON body in send-draft, using stored draft only.")
 
         body_override = payload.get("reply_body")
-        
+
         # 1. Fetch ticket
         ticket = await supabase_service.get_ticket_by_id(id)
         if not ticket:
             raise HTTPException(status_code=404, detail="Ticket not found")
-            
+
+        store_id = ticket.get("brand_id") or ticket.get("store_id")
+        brand_ids = await _get_tenant_brand_ids(tenant)
+        if brand_ids is not None and store_id not in brand_ids:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+
         draft_content = body_override or ticket.get("ai_draft")
         if not draft_content:
             logger.warning(f"Draft content missing for ticket {id}")
@@ -219,12 +228,19 @@ async def send_draft(id: str, request: Request):
 
 # 3. GDPR DELETE (/api/gdpr/delete)
 @router.delete("/gdpr/delete")
-async def gdpr_delete(email: str = Query(...), store_id: str = Query("00000000-0000-0000-0000-000000000000")):
+async def gdpr_delete(
+    email: str = Query(...),
+    store_id: str = Query("00000000-0000-0000-0000-000000000000"),
+    tenant: TenantContext = Depends(get_current_tenant),
+):
     """GDPR Right to Erasure."""
     try:
+        await _assert_brand_access(store_id, tenant)
         await supabase_service.delete_customer_data(email, store_id)
         await supabase_service.log_audit(store_id, "erasure", "admin", {"target_email": email})
         return {"status": "success", "message": f"Data for {email} deleted."}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -234,10 +250,12 @@ async def export_data(
     store_id: str = Query("00000000-0000-0000-0000-000000000000"),
     format: str = Query("json", regex="^(json|csv)$"),
     start_date: Optional[str] = None,
-    end_date: Optional[str] = None
+    end_date: Optional[str] = None,
+    tenant: TenantContext = Depends(get_current_tenant),
 ):
     """Scoped data export (JSON/CSV)."""
     try:
+        await _assert_brand_access(store_id, tenant)
         params = {"store_id": f"eq.{store_id}"}
         if start_date: params["created_at"] = f"gte.{start_date}"
         if end_date: params["created_at"] = f"lte.{end_date}"
@@ -272,42 +290,64 @@ async def export_data(
             media_type="text/csv",
             headers={"Content-Disposition": f"attachment; filename=export_{store_id}.csv"}
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 # 5. DATA RETENTION SETTINGS (/api/retention)
 @router.get("/retention")
-async def get_retention(store_id: str = Query("00000000-0000-0000-0000-000000000000")):
+async def get_retention(
+    store_id: str = Query("00000000-0000-0000-0000-000000000000"),
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    await _assert_brand_access(store_id, tenant)
     settings = await supabase_service.get_system_settings(store_id)
     return {"data_retention_days": settings.get("data_retention_days", 180)}
 
 @router.post("/retention")
-async def update_retention(request: Request):
+async def update_retention(
+    request: Request,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
     try:
         payload = await request.json()
         store_id = payload.get("store_id", "00000000-0000-0000-0000-000000000000")
+        await _assert_brand_access(store_id, tenant)
         days = payload.get("days", 180)
         supabase_update("system_settings", {"store_id": f"eq.{store_id}"}, {"data_retention_days": days})
         return {"status": "success", "days": days}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 # 6. AUDIT LOGS (/api/audit-logs)
 @router.get("/audit-logs")
-async def get_audit_logs(store_id: str = Query("00000000-0000-0000-0000-000000000000")):
+async def get_audit_logs(
+    store_id: str = Query("00000000-0000-0000-0000-000000000000"),
+    tenant: TenantContext = Depends(get_current_tenant),
+):
     """Get searchable, filterable audit logs."""
+    await _assert_brand_access(store_id, tenant)
     logs = supabase_select("audit_logs", {"store_id": f"eq.{store_id}", "order": "created_at.desc"})
     return logs
 
 # 7. SYNC ORDERS FROM SHOPIFY (/api/sync-orders)
 @router.post("/sync-orders")
-async def sync_orders_from_shopify(store_id: str = Query("00000000-0000-0000-0000-000000000000")):
+async def sync_orders_from_shopify(
+    store_id: str = Query("00000000-0000-0000-0000-000000000000"),
+    tenant: TenantContext = Depends(get_current_tenant),
+):
     """Trigger sync of orders from Shopify to populate customer_email, customer_name, and order_items."""
     try:
+        await _assert_brand_access(store_id, tenant)
         from src.services.shopify_sync import shopify_sync_service
         import asyncio
         await shopify_sync_service.sync_all_orders(store_id)
         return {"status": "success", "message": "Orders synced from Shopify"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Order sync failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))

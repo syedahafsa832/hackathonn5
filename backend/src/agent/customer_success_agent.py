@@ -32,15 +32,54 @@ _UNKNOWN_NAME_PLACEHOLDERS = {"there", "customer", "website visitor", "unknown",
 
 
 def _known_customer_name(raw_name: Optional[str]) -> Optional[str]:
-    """Returns a real customer name, or None if it's missing/a placeholder.
-    Never derives a name from an email address or order number - callers
-    only ever pass what was actually verified/provided."""
+    """Returns a real customer name, or None if it's missing/a placeholder/
+    an email address. Never derives a name from an email address or order
+    number - callers only ever pass what was actually verified/provided.
+
+    customer_info["name"] sometimes IS a raw email address (e.g. the Gmail
+    poller falls back to the sender's address when the "From" header has no
+    display name) - previously that value passed straight through here
+    unfiltered, since it isn't one of the fixed placeholder words, letting
+    the model be told "Name: someone@example.com" and the post-processing
+    greeting below address the customer by their email ("Hey
+    someone@example.com,")."""
     if not raw_name:
         return None
     name = str(raw_name).strip()
     if not name or name.lower() in _UNKNOWN_NAME_PLACEHOLDERS:
         return None
+    if "@" in name:
+        return None
     return name
+
+
+# Common ways a reply can legitimately open with its own greeting/
+# acknowledgement - "Hi", "Hey", "Hello", "Dear {name}", "Good morning",
+# "Thanks for reaching out", etc. Matched at the very start of the reply
+# (post-formatting), case-insensitively.
+_GREETING_OPENER_RE = re.compile(
+    r"^\s*(hi|hey|hello|dear|greetings|good\s+(?:morning|afternoon|evening)|thanks?(?:\s+you)?(?:\s+for)?)\b",
+    re.IGNORECASE,
+)
+
+
+def _reply_already_has_greeting(reply: str) -> bool:
+    """True if the model's own reply already opens with some form of
+    greeting, regardless of whether it happens to include the customer's
+    name. This is the single source of truth for whether the email
+    safety-net greeting below should run at all.
+
+    Root cause of the reported duplicate ("Hey [email],\\n\\nHey!"): the
+    previous check asked "does the specific `name` string (which may be an
+    email, or the neutral 'there' fallback) appear in the first 30 chars of
+    the reply?" - which fails whenever the model's own greeting doesn't
+    textually contain that exact string, even though the reply plainly
+    already has a greeting. Checking for a greeting-shaped opening instead
+    of a name match makes this correct regardless of what `name` resolves
+    to, and is the one place that decides whether a greeting is already
+    present - the model is the primary/preferred greeting owner; this is
+    purely a fallback for a reply with no greeting at all."""
+    return bool(_GREETING_OPENER_RE.match(reply or ""))
 
 
 # Kept as a plain (non-f) string, assigned to a local variable before use in
@@ -1305,11 +1344,14 @@ class CustomerSuccessAgent:
             # For email: add a greeting, but only if the model's own reply
             # doesn't already open with one — Reply Style presets like
             # Professional/Premium instruct the model to write "Dear {name},"
-            # style openings, which the old "hi"/"hey"/"thanks" prefix check
-            # didn't recognize, so it prepended a second greeting on top.
-            # Chat skips this entirely — widget is already mid-conversation.
+            # style openings, and _reply_already_has_greeting() recognizes
+            # any greeting-shaped opening (not just one containing this
+            # specific `name`), so a generic "Hey!"/"Hello!" the model wrote
+            # on its own is never duplicated regardless of what `name`
+            # resolved to. Chat skips this entirely — widget is already
+            # mid-conversation.
             if not _is_chat:
-                if reply and name.lower() not in reply.lower()[:30]:
+                if reply and not _reply_already_has_greeting(reply):
                     structured["reply_body"] = f"Hey {name},\n\n{reply}"
 
             # Merchant-set signature wins verbatim; otherwise fall back to the
@@ -1518,7 +1560,14 @@ class CustomerSuccessAgent:
             "status": "escalated"
         }
 
-    async def generate_channel_appropriate_response(self, query: str, customer_info: Dict[str, Any], channel: str, tenant_id: Optional[str] = None, store_id: Optional[str] = None, ticket_id: Optional[str] = None) -> Dict[str, Any]:
-        return await self.process_customer_query(query, customer_info, tenant_id=tenant_id, store_id=store_id, ticket_id=ticket_id)
+    async def generate_channel_appropriate_response(self, query: str, customer_info: Dict[str, Any], channel: str, tenant_id: Optional[str] = None, store_id: Optional[str] = None, ticket_id: Optional[str] = None, on_progress: Optional[Callable[[str, str], Awaitable[None]]] = None) -> Dict[str, Any]:
+        # on_progress was previously dropped here — process_customer_query's
+        # real dispatch-point emissions (order lookup, eligibility check,
+        # policy verified, ...) already existed and were already forwarded
+        # into return_actions_integration, but only the chat widget's
+        # streaming path ever passed a callback through this method. The
+        # email/webform pipeline (message_processor.py) is the other caller
+        # of this method and now passes one too, to persist real events.
+        return await self.process_customer_query(query, customer_info, tenant_id=tenant_id, store_id=store_id, ticket_id=ticket_id, on_progress=on_progress)
 
 customer_success_agent = CustomerSuccessAgent()

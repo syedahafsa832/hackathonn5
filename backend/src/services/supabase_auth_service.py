@@ -105,10 +105,23 @@ class SupabaseAuthService:
             if self.jwks_client:
                 try:
                     signing_key = self.jwks_client.get_signing_key_from_jwt(token)
+                    # Must not hardcode a single algorithm — Supabase projects
+                    # created since the asymmetric-key rollout sign with
+                    # ES256, not RS256, and PyJWT rejects a token whose header
+                    # alg isn't in the allowed list (caught below as
+                    # InvalidTokenError, silently failing every authenticated
+                    # request rather than raising anything obviously
+                    # JWKS-shaped). `algorithms` is the set of algorithms
+                    # PyJWT will accept, matched against what the token's own
+                    # header declares — not a single algorithm to force.
+                    # (PyJWT 2.8, installed here, has no way to read the
+                    # algorithm off the resolved PyJWK object directly, so
+                    # list every algorithm Supabase can sign with instead of
+                    # inspecting the key.)
                     payload = jwt.decode(
                         token,
                         signing_key.key,
-                        algorithms=["RS256"],
+                        algorithms=["RS256", "ES256", "EdDSA"],
                         audience="authenticated",
                         options={"verify_exp": True}
                     )

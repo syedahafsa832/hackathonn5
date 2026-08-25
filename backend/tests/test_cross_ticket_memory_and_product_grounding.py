@@ -532,6 +532,8 @@ def test_new_thread_still_creates_a_new_ticket_and_counts_it():
     def fake_select(table, params=None):
         if table == "tickets" and params and params.get("gmail_thread_id"):
             return []  # no thread match
+        if table == "brands":
+            return [{"id": "brand-1", "tenant_id": "tenant-1"}]
         if table == "tenants":
             return [{"id": "tenant-1"}]
         return []

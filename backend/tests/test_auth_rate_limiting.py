@@ -68,3 +68,28 @@ def test_register_is_rate_limited_after_repeated_attempts():
             statuses.append(resp.status_code)
 
     assert 429 in statuses, f"Expected a 429 among repeated register attempts, got: {statuses}"
+
+
+def test_password_reset_request_is_rate_limited_after_repeated_attempts():
+    """The forgot-password endpoint must not become a free email-spam
+    vector — 5/minute per IP, tighter than login/register since it has no
+    legitimate reason to be retried quickly."""
+    with patch(
+        "src.services.auth_service.auth_service.request_password_reset",
+        new=AsyncMock(return_value={"success": True, "message": "If that email is registered, a reset link has been sent."}),
+    ):
+        statuses = []
+        for _ in range(10):
+            resp = client.post("/api/v1/auth/password/reset-request", json={"email": "a@b.com"})
+            statuses.append(resp.status_code)
+
+    assert 429 in statuses, f"Expected a 429 among repeated reset-request attempts, got: {statuses}"
+    assert statuses[0] == 200
+
+
+def test_password_reset_request_rejects_malformed_email_before_touching_the_service():
+    with patch("src.services.auth_service.auth_service.request_password_reset", new=AsyncMock()) as mock_reset:
+        resp = client.post("/api/v1/auth/password/reset-request", json={"email": "not-an-email"})
+
+    assert resp.status_code == 422
+    mock_reset.assert_not_called()

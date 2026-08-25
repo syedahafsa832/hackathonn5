@@ -5,8 +5,10 @@ Unified event stream for frontend dashboard
 import logging
 from typing import Optional
 from datetime import datetime, timezone
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Depends
 from pydantic import BaseModel
+
+from src.api.middleware.tenant_auth import get_current_tenant, TenantContext
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/events", tags=["events"])
@@ -33,21 +35,30 @@ async def list_events(
     since: Optional[str] = Query(None, description="Events after this timestamp"),
     limit: int = Query(50, ge=1, le=200),
     brand_id: Optional[str] = Query(None, description="Filter by brand"),
+    tenant: TenantContext = Depends(get_current_tenant),
 ):
     """
     Get unified event stream for dashboard.
-    Returns all events in chronological order.
+    Returns all events in chronological order, scoped to the authenticated
+    tenant's own brands only — never all tenants' tickets/actions.
     """
     try:
         from src.lib.supabase_client import supabase_select
+        from src.api.routes.tickets import _get_tenant_brand_ids
 
-        # Build filters
-        filters = {}
+        owned_brand_ids = await _get_tenant_brand_ids(tenant)
+        if not owned_brand_ids:
+            return []
+
         if brand_id:
-            filters["brand_id"] = f"eq.{brand_id}"
+            if brand_id not in owned_brand_ids:
+                return []
+            scoped_brand_ids = [brand_id]
+        else:
+            scoped_brand_ids = owned_brand_ids
 
-        # Get tickets as base events
-        tickets = supabase_select("tickets", filters)
+        # Get tickets as base events, scoped to this tenant's own brands
+        tickets = supabase_select("tickets", {"brand_id": f"in.({','.join(scoped_brand_ids)})"})
 
         if not tickets:
             return []
@@ -96,9 +107,17 @@ async def list_events(
                     },
                 })
 
+        # pending_actions has no brand/tenant column of its own, so scope it by
+        # cross-referencing against this tenant's own already brand-filtered
+        # ticket ids — never return another tenant's pending/executed actions.
+        scoped_ticket_ids = {t.get("id") for t in tickets}
+
         # Get pending actions
         try:
-            actions = supabase_select("pending_actions", {"status": "eq.Pending"})
+            actions = [
+                a for a in (supabase_select("pending_actions", {"status": "eq.Pending"}) or [])
+                if a.get("ticket_id") in scoped_ticket_ids
+            ]
             for action in actions:
                 events.append({
                     "id": f"evt-{action.get('id')}-action",
@@ -123,7 +142,10 @@ async def list_events(
 
         # Get executed actions for completion events
         try:
-            executed = supabase_select("pending_actions", {"status": "in.(Executed,Approved)"})
+            executed = [
+                a for a in (supabase_select("pending_actions", {"status": "in.(Executed,Approved)"}) or [])
+                if a.get("ticket_id") in scoped_ticket_ids
+            ]
             for action in executed:
                 events.append({
                     "id": f"evt-{action.get('id')}-executed",
@@ -159,12 +181,13 @@ async def list_events(
 
 
 @router.get("/{event_id}")
-async def get_event(event_id: str):
+async def get_event(event_id: str, tenant: TenantContext = Depends(get_current_tenant)):
     """
     Get a specific event by ID.
     """
     try:
         from src.lib.supabase_client import supabase_select
+        from src.api.routes.tickets import _get_tenant_brand_ids
 
         # Extract ID from event_id format
         ticket_id = event_id.replace("evt-", "").split("-")[0]
@@ -175,6 +198,10 @@ async def get_event(event_id: str):
             raise HTTPException(status_code=404, detail="Event not found")
 
         ticket = tickets[0]
+        ticket_brand_id = ticket.get("brand_id") or ticket.get("store_id")
+        owned_brand_ids = await _get_tenant_brand_ids(tenant)
+        if owned_brand_ids is not None and ticket_brand_id not in owned_brand_ids:
+            raise HTTPException(status_code=404, detail="Event not found")
 
         return {
             "id": event_id,

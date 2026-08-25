@@ -106,13 +106,20 @@ async def _get_tenant_brand_ids(tenant: TenantContext) -> Optional[List[str]]:
     owned = supabase_select("brands", {"tenant_id": f"eq.{tenant.tenant_id}"})
     if owned:
         return [b["id"] for b in owned]
-    # Fallback: match via shopify_domain for rows before migration 010
+    # Fallback: match via shopify_domain for rows before migration 010.
+    # Never return a brand another tenant already owns — a shared/duplicate
+    # shopify_domain value must not let one tenant inherit another's brand.
     tenant_data = await auth_service.get_tenant(tenant.tenant_id)
     shopify_domain = (tenant_data or {}).get("shopify_domain")
     if shopify_domain:
         brands = supabase_select("brands", {"shopify_domain": f"eq.{shopify_domain}"})
         if brands:
-            return [b["id"] for b in brands]
+            unclaimed_or_own = [
+                b for b in brands
+                if b.get("tenant_id") is None or b.get("tenant_id") == tenant.tenant_id
+            ]
+            if unclaimed_or_own:
+                return [b["id"] for b in unclaimed_or_own]
     return None
 
 
@@ -285,6 +292,16 @@ async def get_ticket(
             "limit": "1",
         })
         ticket["feedback"] = feedback_rows[0] if feedback_rows else None
+
+        # Real backend-driven processing activity ("Real-Time AI Employees"
+        # feature) — every row here was written by an actual dispatch point
+        # in message_processor.py/customer_success_agent.py as it happened,
+        # never invented for display. Oldest first so the timeline reads
+        # top-to-bottom in the order things actually occurred.
+        ticket["events"] = supabase_select("ticket_events", {
+            "ticket_id": f"eq.{ticket_id}",
+            "order": "created_at.asc",
+        }) or []
 
         return ticket
     except HTTPException:
