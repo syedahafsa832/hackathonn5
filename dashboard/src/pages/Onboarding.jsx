@@ -476,6 +476,7 @@ function StepTestLuna({ brandId, onNext }) {
   const [loadingQ, setLoadingQ] = useState(null);
   const [error, setError] = useState('');
   const [customQuestion, setCustomQuestion] = useState('');
+  const [customAskedQuestion, setCustomAskedQuestion] = useState(null);
 
   const ask = async (question) => {
     setLoadingQ(question);
@@ -499,7 +500,9 @@ function StepTestLuna({ brandId, onNext }) {
 
   const askCustom = () => {
     if (!customQuestion.trim()) return;
-    ask(customQuestion.trim());
+    const q = customQuestion.trim();
+    setCustomAskedQuestion(q);
+    ask(q);
     setCustomQuestion('');
   };
 
@@ -544,10 +547,31 @@ function StepTestLuna({ brandId, onNext }) {
           placeholder="Or ask your own question..."
           style={{ ...inputStyle, flex: 1 }}
         />
-        <button onClick={askCustom} disabled={!customQuestion.trim() || loadingQ === customQuestion} style={{ padding: '0 18px', borderRadius: '4px', fontSize: '13px', fontWeight: '600', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)', cursor: 'pointer' }}>
+        <button onClick={askCustom} disabled={!customQuestion.trim() || loadingQ === customAskedQuestion} style={{ padding: '0 18px', borderRadius: '4px', fontSize: '13px', fontWeight: '600', background: 'var(--bg-tertiary)', color: 'var(--text-primary)', border: '1px solid var(--border)', cursor: 'pointer' }}>
           Ask
         </button>
       </div>
+
+      {customAskedQuestion && (
+        <div style={{ border: '1px solid var(--border)', borderRadius: '6px', padding: '14px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+            <div style={{ fontSize: '14px', fontWeight: '500' }}>"{customAskedQuestion}"</div>
+            {loadingQ === customAskedQuestion && (
+              <span style={{ fontSize: '12px', color: 'var(--text-muted)', flexShrink: 0 }}>Asking...</span>
+            )}
+          </div>
+          {loadingQ === customAskedQuestion ? (
+            <div style={{ marginTop: '10px', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px', fontSize: '13px', color: 'var(--text-muted)' }}>
+              Luna is thinking…
+            </div>
+          ) : replies[customAskedQuestion] ? (
+            <div style={{ marginTop: '10px', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px', fontSize: '13px', color: 'var(--text-primary)', whiteSpace: 'pre-line' }}>
+              {replies[customAskedQuestion]}
+            </div>
+          ) : null}
+        </div>
+      )}
+
       <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
         Tip: for a real order-tracking example, ask about one of your actual order numbers — a made-up one will correctly come back "not found" rather than invented.
       </div>
