@@ -210,6 +210,48 @@ const api = {
     return res.data;
   },
 
+  // --- CUSTOM EMAIL AUTOMATION ---
+  // Merchant-configured confirmation emails for support actions. See
+  // backend src/services/email_automation_service.py for the
+  // trigger/variable contract this mirrors.
+
+  getEmailAutomations: async (brandId) => {
+    if (!brandId) return { automations: [], available_triggers: [], variables_by_trigger: {} };
+    const res = await client.get(`/api/v2/brands/${brandId}/email-automations`);
+    return res.data;
+  },
+
+  createEmailAutomation: async (brandId, payload) => {
+    const res = await client.post(`/api/v2/brands/${brandId}/email-automations`, payload);
+    return res.data;
+  },
+
+  updateEmailAutomation: async (brandId, automationId, payload) => {
+    const res = await client.put(`/api/v2/brands/${brandId}/email-automations/${automationId}`, payload);
+    return res.data;
+  },
+
+  previewEmailAutomation: async (brandId, automationId) => {
+    const res = await client.post(`/api/v2/brands/${brandId}/email-automations/${automationId}/preview`);
+    return res.data;
+  },
+
+  getPendingEmailSends: async (brandId) => {
+    if (!brandId) return { pending: [] };
+    const res = await client.get(`/api/v2/brands/${brandId}/email-automations/pending`);
+    return res.data;
+  },
+
+  sendPendingEmail: async (brandId, pendingId) => {
+    const res = await client.post(`/api/v2/brands/${brandId}/email-automations/pending/${pendingId}/send`);
+    return res.data;
+  },
+
+  dismissPendingEmail: async (brandId, pendingId) => {
+    const res = await client.post(`/api/v2/brands/${brandId}/email-automations/pending/${pendingId}/dismiss`);
+    return res.data;
+  },
+
   // --- REVIEW LUNA'S WORK ---
 
   getReviewQueue: async (params = {}) => {

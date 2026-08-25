@@ -55,6 +55,14 @@ export default function Dashboard() {
 
   const loading = statsLoading || convsLoading;
   const recentConversations = conversations?.slice(0, 3) || [];
+  // Testimonials are a curated highlight reel, not a second copy of Recent
+  // Feedback — both currently read the same chat_feedback rows, so exclude
+  // whatever Recent Feedback already surfaced (its slice(0, 5)) to avoid
+  // showing the identical quote in both sections on this page.
+  const recentFeedbackIds = new Set((feedback || []).slice(0, 5).map(f => f.id));
+  const testimonials = (feedback || []).filter(
+    f => f.rating === 'positive' && f.feedback_text && !recentFeedbackIds.has(f.id)
+  );
 
   // Request notification permission on mount and check brands for onboarding
   useEffect(() => {
@@ -392,11 +400,11 @@ export default function Dashboard() {
       {/* Customer Testimonials — trust/beta foundation. Only ever shows real
           positive feedback with a written comment; never fabricated. This
           is also the integration point for a future Trustpilot pull. */}
-      {feedback && feedback.filter(f => f.rating === 'positive' && f.feedback_text).length > 0 && (
+      {testimonials.length > 0 && (
         <section>
           <h2 style={{ margin: '0 0 12px', fontSize: '15px', fontWeight: '600', color: '#0F172A' }}>Customer Testimonials</h2>
           <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-            {feedback.filter(f => f.rating === 'positive' && f.feedback_text).slice(0, 4).map(f => (
+            {testimonials.slice(0, 4).map(f => (
               <div key={f.id} style={{ flex: '1 1 220px', padding: '16px', border: '1px solid #E4E4E7', borderRadius: '8px', background: '#F8FAFC', fontSize: '13px', color: '#0F172A', lineHeight: 1.5 }}>
                 "{f.feedback_text}"
               </div>

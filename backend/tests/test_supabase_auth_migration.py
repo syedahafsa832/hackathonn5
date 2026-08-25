@@ -248,3 +248,104 @@ def test_password_reset_request_always_reports_success():
 
     assert result["success"] is True
     mock_recover.assert_called_once_with("unknown@example.com")
+
+
+# ─── 10. Reset-password confirm — success, and invalid/expired token ───────
+
+def test_confirm_password_reset_succeeds_with_a_valid_recovery_token():
+    with patch("src.services.auth_service.supabase_gotrue.update_user_password", return_value={}) as mock_update:
+        auth_service = AuthService()
+        result = _run(auth_service.confirm_password_reset("valid-recovery-token", "newpassword123"))
+
+    assert result["success"] is True
+    mock_update.assert_called_once_with("valid-recovery-token", "newpassword123")
+
+
+def test_confirm_password_reset_rejects_an_invalid_or_expired_token():
+    def fake_update(token, new_password):
+        raise GoTrueError("Token has expired or is invalid", 401)
+
+    with patch("src.services.auth_service.supabase_gotrue.update_user_password", side_effect=fake_update):
+        auth_service = AuthService()
+        result = _run(auth_service.confirm_password_reset("expired-token", "newpassword123"))
+
+    assert result["success"] is False
+    assert "invalid or expired" in result["error"].lower()
+
+
+def test_confirm_password_reset_rejects_a_too_short_password():
+    with patch("src.services.auth_service.supabase_gotrue.update_user_password") as mock_update:
+        auth_service = AuthService()
+        result = _run(auth_service.confirm_password_reset("valid-recovery-token", "short"))
+
+    assert result["success"] is False
+    mock_update.assert_not_called()  # never sent to Supabase — rejected before the network call
+
+
+# ─── 11. Google sign-in — new tenant, and mapping an existing one ──────────
+
+def test_google_auth_creates_a_tenant_for_a_first_time_google_user():
+    def fake_signin_id_token(credential, provider):
+        return {
+            "access_token": "at-1", "refresh_token": "rt-1", "token_type": "bearer", "expires_in": 3600,
+            "user": {"id": "sb-google-1", "email": "newgoogle@example.com", "user_metadata": {"full_name": "Jamie Lee"}},
+        }
+
+    inserted = {}
+
+    def fake_insert(table, data):
+        if table == "tenants":
+            inserted["tenant"] = {"id": "tenant-google-new", **data}
+            return inserted["tenant"]
+        return {"id": "brand-1", **data}
+
+    with patch("src.services.auth_service.supabase_gotrue.sign_in_with_id_token", side_effect=fake_signin_id_token), \
+         patch("src.services.auth_service.supabase_select", return_value=[]), \
+         patch("src.services.auth_service.supabase_insert", side_effect=fake_insert), \
+         patch("src.services.auth_service.supabase_update", return_value={}):
+        auth_service = AuthService()
+        result = _run(auth_service.google_auth("fake-google-id-token"))
+
+    assert result["success"] is True
+    assert result["access_token"] == "at-1"
+    assert result["tenant_id"] == "tenant-google-new"
+    assert inserted["tenant"]["supabase_user_id"] == "sb-google-1"
+
+
+def test_google_auth_maps_to_the_existing_tenant_on_repeat_sign_in():
+    existing = {"id": "tenant-1", "email": "returning@example.com", "supabase_user_id": "sb-google-2", "is_active": True}
+
+    def fake_signin_id_token(credential, provider):
+        return {
+            "access_token": "at-2", "refresh_token": "rt-2", "token_type": "bearer", "expires_in": 3600,
+            "user": {"id": "sb-google-2", "email": "returning@example.com", "user_metadata": {}},
+        }
+
+    def fake_select(table, params=None):
+        params = params or {}
+        if table == "tenants" and params.get("supabase_user_id") == "eq.sb-google-2":
+            return [existing]
+        return []
+
+    with patch("src.services.auth_service.supabase_gotrue.sign_in_with_id_token", side_effect=fake_signin_id_token), \
+         patch("src.services.auth_service.supabase_select", side_effect=fake_select), \
+         patch("src.services.auth_service.supabase_insert") as mock_insert, \
+         patch("src.services.auth_service.supabase_update", return_value={}):
+        auth_service = AuthService()
+        result = _run(auth_service.google_auth("fake-google-id-token"))
+
+    assert result["success"] is True
+    assert result["tenant_id"] == "tenant-1"
+    mock_insert.assert_not_called()  # no duplicate tenant created for a returning Google user
+
+
+def test_google_auth_failure_returns_generic_error():
+    def fake_signin_id_token(credential, provider):
+        raise GoTrueError("Invalid Google token", 401)
+
+    with patch("src.services.auth_service.supabase_gotrue.sign_in_with_id_token", side_effect=fake_signin_id_token):
+        auth_service = AuthService()
+        result = _run(auth_service.google_auth("bad-token"))
+
+    assert result["success"] is False
+    assert result["error"] == "Google sign-in failed"

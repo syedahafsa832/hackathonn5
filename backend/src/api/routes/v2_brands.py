@@ -21,6 +21,7 @@ from src.services import reply_style_service
 from src.services import shopify_import_service
 from src.services import shopify_scope_service
 from src.services.supabase_service import supabase_service
+from src.services import email_automation_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/brands", tags=["Brands v2"])
@@ -85,6 +86,23 @@ class TestReplyRequest(BaseModel):
 
 class ExcludedIdsRequest(BaseModel):
     ids: list[int] = Field(default_factory=list)
+
+
+class CreateEmailAutomationRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    trigger: str = Field(..., pattern="^(cancel_order|refund|exchange|change_address)$")
+    subject: str = Field(..., min_length=1, max_length=255)
+    body: str = Field(..., min_length=1)
+    enabled: bool = False
+    requires_approval: bool = True
+
+
+class UpdateEmailAutomationRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=120)
+    subject: Optional[str] = Field(None, min_length=1, max_length=255)
+    body: Optional[str] = Field(None, min_length=1)
+    enabled: Optional[bool] = None
+    requires_approval: Optional[bool] = None
 
 
 class UpdateReplyStyleRequest(BaseModel):
@@ -1519,3 +1537,155 @@ async def test_reply(
     except Exception as e:
         logger.error(f"Error generating test reply: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate test reply")
+
+
+# ==================== Custom Email Automation ====================
+# Merchant-configured confirmation emails for support actions. See
+# src/services/email_automation_service.py for the trigger/variable
+# contract and src/services/actions_service.py's _post_execution_notify
+# for the (only) place these ever actually fire.
+
+def _strip_automation(row: dict) -> dict:
+    return {k: v for k, v in row.items() if k in {
+        "id", "brand_id", "name", "trigger", "subject", "body",
+        "enabled", "requires_approval", "created_at", "updated_at",
+    }}
+
+
+@router.get("/{brand_id}/email-automations")
+async def list_email_automations(brand_id: str, tenant: TenantContext = Depends(get_current_tenant)):
+    _get_owned_brand(brand_id, tenant.tenant_id)
+    rows = supabase_select("email_automations", {"brand_id": f"eq.{brand_id}"}) or []
+    return {
+        "automations": [_strip_automation(r) for r in rows],
+        "available_triggers": list(email_automation_service.SUPPORTED_TRIGGERS),
+        "variables_by_trigger": {
+            t: email_automation_service.variables_for_trigger(t)
+            for t in email_automation_service.SUPPORTED_TRIGGERS
+        },
+    }
+
+
+@router.post("/{brand_id}/email-automations")
+async def create_email_automation(
+    brand_id: str,
+    payload: CreateEmailAutomationRequest,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    _get_owned_brand(brand_id, tenant.tenant_id)
+    existing = supabase_select("email_automations", {
+        "brand_id": f"eq.{brand_id}", "trigger": f"eq.{payload.trigger}",
+    })
+    if existing:
+        raise HTTPException(status_code=400, detail="An automation for this trigger already exists — edit it instead.")
+
+    created = supabase_insert("email_automations", {
+        "brand_id": brand_id,
+        "name": payload.name,
+        "trigger": payload.trigger,
+        "subject": payload.subject,
+        "body": payload.body,
+        "enabled": payload.enabled,
+        "requires_approval": payload.requires_approval,
+    })
+    if not created:
+        raise HTTPException(status_code=500, detail="Failed to create automation")
+    return {"success": True, "automation": _strip_automation(created)}
+
+
+def _get_owned_automation(brand_id: str, automation_id: str) -> dict:
+    rows = supabase_select("email_automations", {"id": f"eq.{automation_id}", "brand_id": f"eq.{brand_id}"})
+    if not rows:
+        raise HTTPException(status_code=404, detail="Automation not found")
+    return rows[0]
+
+
+@router.put("/{brand_id}/email-automations/{automation_id}")
+async def update_email_automation(
+    brand_id: str,
+    automation_id: str,
+    payload: UpdateEmailAutomationRequest,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    _get_owned_brand(brand_id, tenant.tenant_id)
+    _get_owned_automation(brand_id, automation_id)
+
+    updates = payload.model_dump(exclude_none=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    updated = supabase_update("email_automations", {"id": f"eq.{automation_id}"}, updates)
+    if not updated:
+        raise HTTPException(status_code=500, detail="Failed to update automation")
+    return {"success": True, "automation": _strip_automation(updated)}
+
+
+@router.post("/{brand_id}/email-automations/{automation_id}/preview")
+async def preview_email_automation(
+    brand_id: str,
+    automation_id: str,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    brand = _get_owned_brand(brand_id, tenant.tenant_id)
+    automation = _get_owned_automation(brand_id, automation_id)
+
+    variables = email_automation_service.sample_variables(automation["trigger"], brand.get("name", "your store"))
+    return {
+        "subject": email_automation_service.render_template(automation["subject"], variables),
+        "body": email_automation_service.render_template(automation["body"], variables),
+        "sample_variables": variables,
+        "status": (
+            "enabled_auto_send" if automation.get("enabled") and not automation.get("requires_approval")
+            else "enabled_requires_approval" if automation.get("enabled")
+            else "draft"
+        ),
+    }
+
+
+@router.get("/{brand_id}/email-automations/pending")
+async def list_pending_email_sends(brand_id: str, tenant: TenantContext = Depends(get_current_tenant)):
+    _get_owned_brand(brand_id, tenant.tenant_id)
+    rows = supabase_select("email_automation_pending", {
+        "brand_id": f"eq.{brand_id}", "status": "eq.pending",
+    }) or []
+    return {"pending": rows}
+
+
+@router.post("/{brand_id}/email-automations/pending/{pending_id}/send")
+async def send_pending_email(
+    brand_id: str,
+    pending_id: str,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    """Merchant-approved send — the only way a requires_approval=true
+    automation's email ever actually reaches the customer."""
+    brand = _get_owned_brand(brand_id, tenant.tenant_id)
+    rows = supabase_select("email_automation_pending", {
+        "id": f"eq.{pending_id}", "brand_id": f"eq.{brand_id}", "status": "eq.pending",
+    })
+    if not rows:
+        raise HTTPException(status_code=404, detail="Pending email not found")
+    pending = rows[0]
+
+    from src.services.brand_gmail_service import brand_gmail_service
+    subject = pending["subject"] if pending["subject"].startswith("Re:") else f"Re: {pending['subject']}"
+    send_result = await brand_gmail_service.send_email(brand, pending["to_email"], subject, pending["body"])
+    if not send_result.get("success"):
+        raise HTTPException(status_code=502, detail=send_result.get("error", "Failed to send email"))
+
+    await email_automation_service.mark_pending_resolved(pending_id, brand_id, "sent")
+    return {"success": True}
+
+
+@router.post("/{brand_id}/email-automations/pending/{pending_id}/dismiss")
+async def dismiss_pending_email(
+    brand_id: str,
+    pending_id: str,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    _get_owned_brand(brand_id, tenant.tenant_id)
+    resolved = await email_automation_service.mark_pending_resolved(pending_id, brand_id, "dismissed")
+    if not resolved:
+        raise HTTPException(status_code=404, detail="Pending email not found")
+    return {"success": True}
