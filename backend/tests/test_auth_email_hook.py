@@ -45,6 +45,19 @@ def _sign(body: bytes, secret_raw: bytes = TEST_SECRET_RAW, webhook_id: str = "m
     }
 
 
+def _wait_for(predicate, timeout=2.0):
+    """The hook now sends email on a plain daemon thread (started before the
+    response is returned) rather than FastAPI's BackgroundTasks, so
+    client.post() can return before that thread finishes. Poll briefly
+    instead of asserting immediately."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
+
+
 def _recovery_payload(email="merchant@example.com", token_hash="the-real-token-hash-abc123", redirect_to="https://app.tresolv.online/reset-password"):
     return {
         "user": {"id": "user-1", "email": email},
@@ -74,7 +87,7 @@ def test_valid_signature_is_accepted_and_email_is_sent():
         resp = client.post("/api/v1/auth/email-hook", content=body, headers=headers)
 
     assert resp.status_code == 200
-    mock_send.assert_called_once()
+    assert _wait_for(lambda: mock_send.called)
     assert mock_send.call_args[0][0] == "merchant@example.com"
 
 
@@ -92,7 +105,7 @@ def test_valid_signature_accepted_with_supabase_versioned_secret_format():
         resp = client.post("/api/v1/auth/email-hook", content=body, headers=headers)
 
     assert resp.status_code == 200
-    mock_send.assert_called_once()
+    assert _wait_for(lambda: mock_send.called)
 
 
 def test_invalid_signature_is_rejected():
@@ -149,7 +162,7 @@ def test_recovery_action_type_uses_the_branded_password_reset_template():
         resp = client.post("/api/v1/auth/email-hook", content=body, headers=headers)
 
     assert resp.status_code == 200
-    mock_recovery.assert_called_once()
+    assert _wait_for(lambda: mock_recovery.called)
     mock_generic.assert_not_called()
 
 
@@ -166,8 +179,8 @@ def test_signup_action_type_uses_the_generic_template_not_recovery():
         resp = client.post("/api/v1/auth/email-hook", content=body, headers=headers)
 
     assert resp.status_code == 200
+    assert _wait_for(lambda: mock_generic.called)
     mock_recovery.assert_not_called()
-    mock_generic.assert_called_once()
 
 
 def test_constructed_verify_url_has_correct_shape():
@@ -176,6 +189,7 @@ def test_constructed_verify_url_has_correct_shape():
 
     with patch("src.services.system_email_service.send_password_reset_email", return_value=True) as mock_send:
         client.post("/api/v1/auth/email-hook", content=body, headers=headers)
+        assert _wait_for(lambda: mock_send.called)
 
     verify_url = mock_send.call_args[0][1]
     assert verify_url.startswith("https://project-ref.supabase.co/auth/v1/verify?")
@@ -211,9 +225,9 @@ def test_email_delivery_failure_is_logged_but_hook_still_returns_2xx(caplog):
     with patch("src.services.system_email_service.send_password_reset_email", return_value=False):
         with caplog.at_level("ERROR"):
             resp = client.post("/api/v1/auth/email-hook", content=body, headers=headers)
+            assert _wait_for(lambda: any("Delivery failed" in r.message for r in caplog.records))
 
     assert resp.status_code == 200
-    assert any("Delivery failed" in r.message for r in caplog.records)
 
 
 # ─── Logging safety ──────────────────────────────────────────────────────────

@@ -33,10 +33,11 @@ import hashlib
 import hmac
 import logging
 import os
+import threading
 import time
 from urllib.parse import quote
 
-from fastapi import APIRouter, Request, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Request, HTTPException
 
 from src.services import system_email_service
 
@@ -119,18 +120,23 @@ def _send_email_in_background(action_type: str, to_email: str, verify_url: str) 
 
 
 @router.post("/email-hook")
-async def send_email_hook(request: Request, background_tasks: BackgroundTasks):
+async def send_email_hook(request: Request):
     """Supabase calls this instead of sending the auth email itself, and
     enforces a hard 5-second response budget — if we don't answer in time it
     treats the underlying auth operation (recover, signup, etc.) as failed
     entirely, even though the SMTP send itself can easily take longer than
     that (connection + TLS handshake + auth + send, on top of whatever
-    latency getting to this instance at all takes). So the actual send is
-    scheduled as a background task and we return 2xx as soon as the request
-    is verified and valid — Supabase only needs to know we *accepted* the
-    job, not that delivery finished. A send failure after this point is
-    only visible in backend logs, not retried by Supabase; that's the
-    correct trade-off for a hook with an external hard timeout."""
+    latency getting to this instance at all takes, e.g. a cold Render
+    instance). So the actual send runs on a plain daemon thread started
+    before we return, not FastAPI's BackgroundTasks — Starlette only runs
+    those *after* it finishes writing the HTTP response back to the
+    caller, and if Supabase has already given up and closed the connection
+    by the time we respond, that write can fail and skip the background
+    task entirely, silently dropping the send. A bare thread starts
+    executing immediately and doesn't care whether Supabase is still
+    listening for our response. A send failure after this point is only
+    visible in backend logs, not retried by Supabase; that's the correct
+    trade-off for a hook with an external hard timeout."""
     raw_body = await request.body()
 
     if not SEND_EMAIL_HOOK_SECRET:
@@ -163,6 +169,10 @@ async def send_email_hook(request: Request, background_tasks: BackgroundTasks):
 
     verify_url = _build_verify_url(token_hash, action_type, redirect_to)
 
-    background_tasks.add_task(_send_email_in_background, action_type, to_email, verify_url)
+    threading.Thread(
+        target=_send_email_in_background,
+        args=(action_type, to_email, verify_url),
+        daemon=True,
+    ).start()
 
     return {"success": True}
