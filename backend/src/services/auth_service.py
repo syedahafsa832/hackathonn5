@@ -12,6 +12,7 @@ import os
 import logging
 import hashlib
 import secrets
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
 
@@ -24,6 +25,11 @@ from src.services.supabase_gotrue import GoTrueError
 from src.services.plan_service import TRIAL_DAYS
 
 logger = logging.getLogger(__name__)
+
+# Same variable shopify_auth.py and cors.py already use for redirect/CORS
+# config — reused here rather than introducing a second "app URL" name, so
+# password-reset links use the correct domain per environment automatically.
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 # --- Legacy custom-JWT config (deprecated) ---------------------------------
 # Kept only so tenant_auth can still verify access tokens issued before the
@@ -39,6 +45,16 @@ REFRESH_TOKEN_EXPIRE_DAYS = 30
 
 FOUNDING_COHORT_CAP = 20
 FOUNDING_DAILY_TICKET_LIMIT = 5
+
+# Per-email cooldown for password-reset requests, on top of the existing
+# per-IP slowapi limit on the route itself (10/minute in saas_auth.py). A
+# plain in-process dict — not persisted, not shared across worker
+# processes/instances — is a real limitation under multi-worker deployment,
+# but requires no schema change and stops the common single-attacker/
+# single-process spam case immediately. See PASSWORD_RESET_FLOW notes for
+# the tradeoff.
+_PASSWORD_RESET_COOLDOWN_SECONDS = 60
+_last_password_reset_request: Dict[str, float] = {}
 
 
 class FoundingCohortFullError(Exception):
@@ -424,9 +440,26 @@ class AuthService:
         return {"success": True, "message": "Logged out successfully"}
 
     async def request_password_reset(self, email: str) -> Dict[str, Any]:
-        """Send a password-reset email via Supabase Auth. Always reports success (anti-enumeration)."""
-        supabase_gotrue.recover_password(email.strip().lower())
-        return {"success": True, "message": "If that email is registered, a reset link has been sent."}
+        """
+        Send a password-reset email via Supabase Auth. Always reports the
+        same success message, whether or not the email is registered, and
+        whether or not this specific call actually triggered anything (see
+        the cooldown below) — anti-enumeration by construction.
+        """
+        email = email.strip().lower()
+        generic_response = {"success": True, "message": "If that email is registered, a reset link has been sent."}
+
+        now = time.monotonic()
+        last = _last_password_reset_request.get(email)
+        if last is not None and (now - last) < _PASSWORD_RESET_COOLDOWN_SECONDS:
+            # Same generic response either way — a cooldown-skipped request
+            # must be indistinguishable from a real one.
+            return generic_response
+        _last_password_reset_request[email] = now
+
+        redirect_to = f"{FRONTEND_URL}/reset-password"
+        supabase_gotrue.recover_password(email, redirect_to=redirect_to)
+        return generic_response
 
     async def confirm_password_reset(self, recovery_access_token: str, new_password: str) -> Dict[str, Any]:
         """Set a new password using the access token from a Supabase recovery link."""

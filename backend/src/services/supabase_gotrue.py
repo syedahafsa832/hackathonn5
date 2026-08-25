@@ -139,9 +139,22 @@ def sign_out(access_token: str) -> None:
         logger.warning(f"[GoTrue] Logout returned {resp.status_code}: {_extract_error(resp)}")
 
 
-def recover_password(email: str) -> None:
-    """Send a password-reset email. Always appears to succeed (anti-enumeration)."""
-    resp = _session.post(_url("recover"), headers=_headers(), json={"email": email}, timeout=_TIMEOUT)
+def recover_password(email: str, redirect_to: Optional[str] = None) -> None:
+    """
+    Trigger a password-reset email. Always appears to succeed (anti-enumeration).
+
+    `redirect_to` becomes the `redirect_to` field in the Send Email Hook
+    payload (see auth_email_hook.py) and, if Supabase's own built-in sender
+    is used instead, where the confirmation link ultimately lands the user
+    after verification — it's a query parameter on this request (matching
+    the JS client's `resetPasswordForEmail(email, {redirectTo})`, which
+    passes it as a sibling request option, not inside the JSON body), never
+    the project's dashboard-configured default Site URL. Passing it
+    explicitly is what keeps dev pointed at localhost and production at the
+    real domain regardless of what's configured in the Supabase dashboard.
+    """
+    params = {"redirect_to": redirect_to} if redirect_to else None
+    resp = _session.post(_url("recover"), headers=_headers(), params=params, json={"email": email}, timeout=_TIMEOUT)
     if resp.status_code >= 400:
         # Don't raise — recover() must not reveal whether the email exists.
         logger.warning(f"[GoTrue] Password recovery request returned {resp.status_code}: {_extract_error(resp)}")
