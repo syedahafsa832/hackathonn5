@@ -474,7 +474,7 @@ async def get_training_readiness(
     returns a customer name, email, or message body."""
     try:
         brand = _get_owned_brand(brand_id, tenant.tenant_id)
-        from src.api.routes.tickets import _compute_review_status
+        from src.api.routes.tickets import _compute_review_status, _ticket_has_luna_reply
 
         # ---- Train: what the merchant has taught Luna ----
         kb_sources = supabase_select("knowledge_base_sources", {"brand_id": f"eq.{brand_id}"}) or []
@@ -513,12 +513,23 @@ async def get_training_readiness(
         rejected_n = sum(1 for s in reviewable_statuses if s == "rejected")
         reviewed_total = approved_n + edited_n + rejected_n
 
+        # total_ai_conversations must count every ticket Luna actually
+        # replied to, not just the subset _compute_review_status() finds
+        # via the scalar ai_reply/ai_draft/ai_response columns — an
+        # auto-resolved chat-widget conversation's reply lives only in
+        # `messages` (see _ticket_has_luna_reply). conversations_reviewed/
+        # needing_review/the rates above are deliberately untouched: they
+        # answer "of the conversations that needed a human decision, what
+        # happened", which is a real, different question from "how many
+        # conversations did Luna handle at all".
+        total_ai_conversations = sum(1 for t in all_tickets if _ticket_has_luna_reply(t))
+
         feedback = supabase_select("chat_feedback", {"brand_id": f"eq.{brand_id}"}) or []
         starred = [f["rating_stars"] for f in feedback if f.get("rating_stars")]
         csat = {"average": round(sum(starred) / len(starred), 1), "total": len(starred)} if starred else None
 
         verify = {
-            "total_ai_conversations": len(reviewable_statuses),
+            "total_ai_conversations": total_ai_conversations,
             "conversations_reviewed": reviewed_total,
             "conversations_needing_review": needs_review,
             "approval_rate": round(100 * (approved_n + edited_n) / reviewed_total, 1) if reviewed_total else None,

@@ -21,7 +21,7 @@ from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from src.api.routes import tickets as tickets_module  # noqa: E402
-from src.api.routes.tickets import _compute_review_status  # noqa: E402
+from src.api.routes.tickets import _compute_review_status, _ticket_has_luna_reply  # noqa: E402
 from src.api.middleware.tenant_auth import get_current_tenant, TenantContext  # noqa: E402
 from src.services import reply_style_service  # noqa: E402
 
@@ -91,6 +91,73 @@ def test_compute_review_status_transitions():
     assert _compute_review_status({"ai_reply": "hi", "human_rejected": True}) == "rejected"
     # Rejected always wins, even over a stale approved flag from an earlier state.
     assert _compute_review_status({"ai_reply": "hi", "human_approved": True, "human_rejected": True}) == "rejected"
+
+
+# ── _ticket_has_luna_reply: the Train Luna "AI conversations" undercount fix ──
+# An auto-resolved chat-widget conversation never populates ai_reply/
+# ai_draft/ai_response - its reply lives only in `messages`. Real production
+# data confirmed the exact message shapes each writer uses (see the
+# function's own docstring); these cover every one of them.
+
+def test_ticket_has_luna_reply_true_when_scalar_columns_set():
+    # Anything _compute_review_status() already recognizes must still count.
+    assert _ticket_has_luna_reply({"ai_reply": "hi", "messages": []}) is True
+    assert _ticket_has_luna_reply({"ai_draft": "hi", "messages": []}) is True
+
+
+def test_ticket_has_luna_reply_true_for_chat_widget_message_shape():
+    # v2_chat_widget.py's shape: role="ai", no ai_reply/ai_draft set at all.
+    ticket = {
+        "ai_reply": None, "ai_draft": None,
+        "messages": [
+            {"direction": "inbound", "body": "where is my order"},
+            {"direction": "outbound", "body": "Let me check that for you.", "role": "ai"},
+        ],
+    }
+    assert _ticket_has_luna_reply(ticket) is True
+
+
+def test_ticket_has_luna_reply_true_for_gmail_auto_reply_message_shape():
+    # message_processor.py's shape: from="AI Agent" + role="assistant".
+    ticket = {
+        "ai_reply": None, "ai_draft": None,
+        "messages": [{"from": "AI Agent", "role": "assistant", "body": "Handled automatically."}],
+    }
+    assert _ticket_has_luna_reply(ticket) is True
+
+
+def test_ticket_has_luna_reply_true_for_post_execution_confirmation_message_shape():
+    # actions_service._post_execution_notify's shape: from="AI Agent" only, no role key.
+    ticket = {
+        "ai_reply": None, "ai_draft": None,
+        "messages": [{"from": "AI Agent", "body": "Your cancellation has been processed."}],
+    }
+    assert _ticket_has_luna_reply(ticket) is True
+
+
+def test_ticket_has_luna_reply_false_for_customer_only_messages():
+    ticket = {
+        "ai_reply": None, "ai_draft": None,
+        "messages": [{"direction": "inbound", "body": "hello?"}],
+    }
+    assert _ticket_has_luna_reply(ticket) is False
+
+
+def test_ticket_has_luna_reply_false_with_no_messages_and_no_scalar_reply():
+    assert _ticket_has_luna_reply({"ai_reply": None, "ai_draft": None, "messages": []}) is False
+    assert _ticket_has_luna_reply({"ai_reply": None, "ai_draft": None}) is False
+
+
+def test_ticket_has_luna_reply_never_widens_compute_review_status_itself():
+    # Critical: a messages-only AI reply must NOT make _compute_review_status
+    # (the Review Luna's Work queue) start showing this ticket as
+    # needing/awaiting review - it already auto-resolved with no human step.
+    ticket = {
+        "ai_reply": None, "ai_draft": None,
+        "messages": [{"direction": "outbound", "body": "Handled.", "role": "ai"}],
+    }
+    assert _ticket_has_luna_reply(ticket) is True
+    assert _compute_review_status(ticket) is None
 
 
 # 2. Real approved reply increments organic learning count
