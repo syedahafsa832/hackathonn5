@@ -75,11 +75,15 @@ def sign_up(email: str, password: str) -> Dict[str, Any]:
     if resp.status_code >= 400:
         raise GoTrueError(_extract_error(resp), resp.status_code)
     data = resp.json()
-    # Supabase returns a 200 with an empty `identities` array instead of an
-    # error when the email is already registered (anti-enumeration
-    # behavior) — surface it the same way a real error would be.
+    # Supabase returns a 200 for a duplicate email instead of an error
+    # (anti-enumeration behavior), but the exact shape varies: sometimes
+    # `user` has an empty `identities` array, sometimes `user` is null
+    # outright. A genuine new signup pending confirmation always comes back
+    # with a real `user.id` even without a session — so "no session and no
+    # usable user.id" is the reliable signal for "this email already
+    # exists," not just the empty-identities case.
     user = data.get("user") or {}
-    if not data.get("session") and user.get("id") and user.get("identities") == []:
+    if not data.get("session") and (not user.get("id") or user.get("identities") == []):
         raise GoTrueError("Email already registered", 400)
     return data
 
