@@ -204,7 +204,7 @@ function StoreCard({ brand, highlightGmail }) {
               <input
                 value={agentName}
                 onChange={e => setAgentName(e.target.value)}
-                placeholder="Luna"
+                placeholder="luna"
                 maxLength={20}
                 style={{ padding: '7px 10px', borderRadius: '4px', border: '1px solid var(--border)', fontSize: '13px', width: '160px' }}
               />
@@ -214,7 +214,7 @@ function StoreCard({ brand, highlightGmail }) {
               <input
                 value={brandName}
                 onChange={e => setBrandName(e.target.value)}
-                placeholder="My Store"
+                placeholder="luna clothing"
                 style={{ padding: '7px 10px', borderRadius: '4px', border: '1px solid var(--border)', fontSize: '13px', width: '200px' }}
               />
             </div>
@@ -223,7 +223,7 @@ function StoreCard({ brand, highlightGmail }) {
               <input
                 value={emailSignature}
                 onChange={e => setEmailSignature(e.target.value)}
-                placeholder={`— The ${brandName || 'Store'} Team`}
+                placeholder="with care, luna"
                 style={{ padding: '7px 10px', borderRadius: '4px', border: '1px solid var(--border)', fontSize: '13px', width: '220px' }}
               />
             </div>
