@@ -4,9 +4,10 @@ Knowledge Base API Routes (v2)
 Per-brand knowledge base management for RAG.
 """
 
+import io
 import logging
 from typing import Optional, List
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File, Form
 from pydantic import BaseModel, Field
 
 from src.api.middleware.tenant_auth import get_current_tenant, TenantContext
@@ -29,6 +30,43 @@ class UploadTextRequest(BaseModel):
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1)
     top_k: int = Field(5, ge=1, le=20)
+
+
+# Max upload size and supported extensions for the file-upload endpoint
+# below. Kept small/simple on purpose - the goal is merchant policy docs
+# (return policy, FAQ, shipping info as .txt/.md/.pdf/.docx), not a general
+# document management system.
+_MAX_UPLOAD_FILE_BYTES = 10 * 1024 * 1024  # 10MB
+_SUPPORTED_FILE_EXTENSIONS = {"txt", "md", "pdf", "docx"}
+
+
+def _extract_text_from_file(filename: str, raw: bytes) -> str:
+    """Extracts plain text from a supported document file. Raises ValueError
+    with a merchant-facing message for anything unsupported or unreadable -
+    never silently returns empty/garbage text."""
+    ext = (filename.rsplit(".", 1)[-1] if "." in filename else "").lower()
+    if ext not in _SUPPORTED_FILE_EXTENSIONS:
+        supported = ", ".join(f".{e}" for e in sorted(_SUPPORTED_FILE_EXTENSIONS))
+        raise ValueError(f"Unsupported file type — supported types: {supported}")
+
+    if ext in ("txt", "md"):
+        return raw.decode("utf-8", errors="ignore")
+
+    if ext == "pdf":
+        from pypdf import PdfReader
+        try:
+            reader = PdfReader(io.BytesIO(raw))
+            return "\n\n".join(page.extract_text() or "" for page in reader.pages)
+        except Exception as e:
+            raise ValueError(f"Could not read this PDF: {e}")
+
+    # ext == "docx"
+    from docx import Document
+    try:
+        doc = Document(io.BytesIO(raw))
+        return "\n".join(p.text for p in doc.paragraphs)
+    except Exception as e:
+        raise ValueError(f"Could not read this Word document: {e}")
 
 
 class SourceResponse(BaseModel):
@@ -143,6 +181,71 @@ async def upload_text(
     except Exception as e:
         logger.error(f"Error uploading KB content: {e}")
         raise HTTPException(status_code=500, detail="Failed to upload content")
+
+
+@router.post("/upload-file")
+async def upload_file(
+    brand_id: str,
+    file: UploadFile = File(...),
+    name: Optional[str] = Form(None),
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    """
+    Upload a document FILE (.txt/.md/.pdf/.docx) to the knowledge base.
+
+    Extracts plain text from the file, then hands off to the exact same
+    brand_knowledge_service.upload_text() pipeline the paste-text /upload
+    endpoint above already uses for chunking, embedding, and storage -
+    no second ingestion system, no new source_type.
+    """
+    try:
+        _get_owned_brand(brand_id, tenant.tenant_id)
+
+        raw = await file.read()
+        if not raw:
+            raise HTTPException(status_code=400, detail="The uploaded file is empty.")
+        if len(raw) > _MAX_UPLOAD_FILE_BYTES:
+            raise HTTPException(status_code=400, detail="File is too large (10MB limit).")
+
+        try:
+            text = _extract_text_from_file(file.filename or "", raw)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        text = text.strip()
+        if len(text) < 10:
+            raise HTTPException(status_code=400, detail="Couldn't extract readable text from this file.")
+
+        doc_name = (name or file.filename or "Untitled document").strip()[:255]
+        logger.info(f"[KB] Uploading file '{file.filename}' as '{doc_name}' for brand {brand_id}")
+
+        result = await brand_knowledge_service.upload_text(
+            brand_id=brand_id,
+            name=doc_name,
+            content=text,
+            user_id=tenant.tenant_id,
+            metadata={"type": "file_upload", "original_filename": file.filename},
+        )
+
+        if not result.get("success"):
+            raise HTTPException(
+                status_code=400,
+                detail=result.get("error", "Failed to process this file")
+            )
+
+        return {
+            "success": True,
+            "message": f"Processed {result.get('chunk_count')} chunks",
+            "source_id": result.get("source_id"),
+            "chunk_count": result.get("chunk_count"),
+            "total_tokens": result.get("total_tokens")
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error uploading KB file: {e}")
+        raise HTTPException(status_code=500, detail="Failed to upload file")
 
 
 @router.delete("/sources/{source_id}")
