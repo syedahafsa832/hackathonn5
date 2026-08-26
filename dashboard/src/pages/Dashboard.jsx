@@ -121,13 +121,17 @@ export default function Dashboard() {
   const shopifyConnected = !!activeBrand?.shopify_connected || !!activeBrand?.shopify_domain;
   const replyStyleDone = localStorage.getItem('resolv_reply_style_done') === 'true';
   const testReplyDone = localStorage.getItem('resolv_test_reply_done') === 'true';
+  // A merchant who explicitly skipped the onboarding test (rather than
+  // running one) made a deliberate choice — the checklist shouldn't keep
+  // nagging "Run your first AI conversation" on every dashboard visit.
+  const testReplySkipped = localStorage.getItem('resolv_test_reply_skipped') === 'true';
 
   const onboardingSteps = {
     shopify: shopifyConnected,
     knowledge: knowledgeImported,
     gmail: gmailConnected,
     replyStyle: replyStyleDone,
-    testAi: testReplyDone,
+    testAi: testReplyDone || testReplySkipped,
     goLive: !!isLive,
   };
 

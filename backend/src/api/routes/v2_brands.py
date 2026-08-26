@@ -1120,6 +1120,24 @@ async def start_shopify_import(
         if shopify_import_service.get_import_status(brand_id) == "running":
             return {"success": True, "status": "running"}
 
+        # get_import_status() is an in-memory, single-process flag - it
+        # resets to "not_started" on every restart/redeploy even though the
+        # real knowledge (knowledge_base_sources rows + their rag_chunks)
+        # is still there in the database. Without this check, onboarding
+        # simply re-mounting this step after a restart would wipe and
+        # re-fetch/re-embed the merchant's entire catalog for no reason
+        # (see _clear_previous_import). knowledge_base_sources.status is
+        # the real, persisted source of truth - reuse it instead of a
+        # second one.
+        already_imported = supabase_select("knowledge_base_sources", {
+            "brand_id": f"eq.{brand_id}",
+            "source_type": f"eq.{shopify_import_service.SOURCE_TYPE}",
+            "status": "eq.completed",
+            "limit": "1",
+        })
+        if already_imported:
+            return {"success": True, "status": "done"}
+
         granted = brand.get("shopify_granted_scopes")
         if granted is None:
             # Brand connected before scope tracking existed - check live now
@@ -1169,10 +1187,29 @@ async def get_shopify_import_status(
             "order": "created_at.asc",
         })
         blocked_scopes = shopify_scope_service.get_blocked(brand_id)
-        status = "blocked_missing_scopes" if blocked_scopes else shopify_import_service.get_import_status(brand_id)
+        in_memory_status = shopify_import_service.get_import_status(brand_id)
+        has_completed = any(s.get("status") == "completed" for s in (sources or []))
+
+        if blocked_scopes:
+            status = "blocked_missing_scopes"
+        elif in_memory_status == "running":
+            status = "running"
+        elif has_completed:
+            # knowledge_base_sources is the real, persisted truth - report
+            # "done" from it even if this process's in-memory status was
+            # reset by a restart/redeploy and would otherwise say
+            # "not_started" for knowledge that's actually already there.
+            status = "done"
+        else:
+            status = in_memory_status  # "not_started" or "failed"
+
         missing_scopes = blocked_scopes if blocked_scopes else shopify_import_service.get_missing_scopes(brand_id)
         return {
             "status": status,
+            # Single flag the rest of the app (Test Luna gating, Dashboard's
+            # checklist) can read instead of each re-deriving "any source
+            # completed and nothing currently running" itself.
+            "ready": has_completed and status != "running",
             "missing_scopes": missing_scopes,
             "report": shopify_import_service.get_import_report(brand_id),
             "sources": [

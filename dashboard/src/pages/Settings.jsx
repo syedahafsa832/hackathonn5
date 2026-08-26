@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
-import client from '../api/client';
+import client, { extractErrorMessage } from '../api/client';
 import ChatWidget from '../components/ChatWidget';
 import Alert from '../components/Alert';
 import GmailUnverifiedNotice from '../components/GmailUnverifiedNotice';
@@ -643,6 +643,10 @@ function KnowledgeBaseTab() {
   const [form, setForm] = useState({ title: '', content: '' });
   const [uploading, setUploading] = useState(false);
   const [uploadMsg, setUploadMsg] = useState('');
+  const [uploadingFile, setUploadingFile] = useState(false);
+  const [fileUploadMsg, setFileUploadMsg] = useState('');
+  const [fileUploadError, setFileUploadError] = useState(false);
+  const fileInputRef = useRef(null);
   // Same brandId-resolution pattern as ShopifyTab above — the v1 tenant-only
   // knowledge-base endpoints wrote rows with no brand_id, which the live
   // agent's brand-scoped retrieval (match_brand_rag_chunks) can never see.
@@ -694,6 +698,33 @@ function KnowledgeBaseTab() {
     }
   };
 
+  const handleFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // allow re-selecting the same file later
+    if (!file) return;
+    if (!brandId) {
+      setFileUploadError(true);
+      setFileUploadMsg("Couldn't find your workspace. Please refresh and try again.");
+      return;
+    }
+    setUploadingFile(true);
+    setFileUploadMsg('');
+    setFileUploadError(false);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      await client.post(`/api/v2/brands/${brandId}/knowledge/upload-file`, formData);
+      setFileUploadMsg(`"${file.name}" uploaded successfully.`);
+      setFileUploadError(false);
+      fetchSources();
+    } catch (err) {
+      setFileUploadError(true);
+      setFileUploadMsg(extractErrorMessage(err, 'Upload failed. Please try again.'));
+    } finally {
+      setUploadingFile(false);
+    }
+  };
+
   const handleDelete = async (id) => {
     if (!brandId) return;
     try {
@@ -735,6 +766,31 @@ function KnowledgeBaseTab() {
         >
           {uploading ? 'Uploading...' : 'Upload'}
         </button>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', margin: '4px 0' }}>
+          <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
+          <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>OR</span>
+          <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
+        </div>
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".txt,.md,.pdf,.docx"
+          onChange={handleFileUpload}
+          style={{ display: 'none' }}
+        />
+        <Alert variant={fileUploadError ? 'error' : 'success'}>{fileUploadMsg}</Alert>
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          disabled={uploadingFile}
+          style={{ padding: '9px 20px', borderRadius: '4px', border: '1px solid var(--border-strong, #D1D1D6)', background: uploadingFile ? 'var(--bg-tertiary)' : 'white', color: uploadingFile ? 'var(--text-muted)' : 'var(--text-primary)', fontWeight: '500', fontSize: '14px', cursor: uploadingFile ? 'not-allowed' : 'pointer', alignSelf: 'flex-start' }}
+        >
+          {uploadingFile ? 'Uploading...' : '+ Add document'}
+        </button>
+        <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+          Upload a .txt, .md, .pdf, or .docx file — up to 10MB.
+        </div>
       </div>
 
       <div>
