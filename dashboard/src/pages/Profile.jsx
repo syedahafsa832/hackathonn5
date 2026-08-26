@@ -14,6 +14,12 @@ export default function Profile() {
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState('');
 
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [changingPassword, setChangingPassword] = useState(false);
+  const [passwordMsg, setPasswordMsg] = useState('');
+
   useEffect(() => {
     document.title = 'Profile — tResolv';
   }, []);
@@ -49,6 +55,34 @@ export default function Profile() {
       setMsg('Failed to save.');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const changePassword = async () => {
+    setPasswordMsg('');
+    if (newPassword.length < 8) {
+      setPasswordMsg('New password must be at least 8 characters.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordMsg('Passwords do not match.');
+      return;
+    }
+    setChangingPassword(true);
+    try {
+      await client.post('/api/v1/auth/change-password', {
+        current_password: currentPassword,
+        new_password: newPassword,
+      });
+      setPasswordMsg('Password updated.');
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      setPasswordMsg(typeof detail === 'string' ? detail : 'Could not update password.');
+    } finally {
+      setChangingPassword(false);
     }
   };
 
@@ -141,6 +175,84 @@ export default function Profile() {
             autoDismissMs={2500}
           >
             {msg}
+          </Alert>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', padding: '20px', marginTop: '20px' }}>
+        <div style={{ fontSize: '14px', fontWeight: '600', color: '#0F172A' }}>
+          Password
+        </div>
+
+        <div>
+          <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: '#64748B', marginBottom: '5px' }}>
+            Current password
+          </label>
+          <input
+            type="password"
+            value={currentPassword}
+            onChange={e => setCurrentPassword(e.target.value)}
+            autoComplete="current-password"
+            style={{
+              width: '100%', padding: '9px 12px', border: '1px solid #E4E4E7', borderRadius: '6px',
+              fontSize: '14px', color: '#0F172A',
+            }}
+          />
+        </div>
+
+        <div>
+          <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: '#64748B', marginBottom: '5px' }}>
+            New password
+          </label>
+          <input
+            type="password"
+            value={newPassword}
+            onChange={e => setNewPassword(e.target.value)}
+            autoComplete="new-password"
+            placeholder="Min. 8 characters"
+            style={{
+              width: '100%', padding: '9px 12px', border: '1px solid #E4E4E7', borderRadius: '6px',
+              fontSize: '14px', color: '#0F172A',
+            }}
+          />
+        </div>
+
+        <div>
+          <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: '#64748B', marginBottom: '5px' }}>
+            Confirm new password
+          </label>
+          <input
+            type="password"
+            value={confirmPassword}
+            onChange={e => setConfirmPassword(e.target.value)}
+            autoComplete="new-password"
+            placeholder="Re-enter new password"
+            style={{
+              width: '100%', padding: '9px 12px', border: '1px solid #E4E4E7', borderRadius: '6px',
+              fontSize: '14px', color: '#0F172A',
+            }}
+          />
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <button
+            onClick={changePassword}
+            disabled={changingPassword || !currentPassword || !newPassword || !confirmPassword}
+            style={{
+              padding: '8px 18px', borderRadius: '6px', border: 'none', background: '#06B6D4',
+              color: 'white', fontSize: '13px', fontWeight: '600',
+              cursor: (changingPassword || !currentPassword || !newPassword || !confirmPassword) ? 'not-allowed' : 'pointer',
+              opacity: (changingPassword || !currentPassword || !newPassword || !confirmPassword) ? 0.6 : 1,
+            }}
+          >
+            {changingPassword ? 'Updating…' : 'Change password'}
+          </button>
+          <Alert
+            variant={passwordMsg === 'Password updated.' ? 'success' : 'error'}
+            onDismiss={() => setPasswordMsg('')}
+            autoDismissMs={2500}
+          >
+            {passwordMsg}
           </Alert>
         </div>
       </div>
