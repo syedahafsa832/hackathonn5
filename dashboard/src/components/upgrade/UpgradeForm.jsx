@@ -95,7 +95,7 @@ export default function UpgradeForm({ plan, initialName, initialEmail, onSuccess
           color: 'var(--text-tertiary)', fontSize: '12.5px', cursor: 'not-allowed',
         }}>
           <Upload size={14} />
-          Coming soon — for now, just include your transaction reference above
+          Coming soon. For now, just include your transaction reference above
         </div>
       </Field>
 

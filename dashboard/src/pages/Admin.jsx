@@ -29,7 +29,7 @@ export default function Admin() {
   const [activateError, setActivateError] = useState('');
 
   useEffect(() => {
-    document.title = 'Admin — tResolv';
+    document.title = 'Admin: tResolv';
   }, []);
 
   const load = useCallback(async () => {
@@ -101,7 +101,7 @@ export default function Admin() {
           Tenants ({tenants.length})
         </h2>
         <p style={{ fontSize: '13px', color: '#64748B', marginBottom: '16px' }}>
-          Read-only overview — plan, signup date, connection status, ticket volume.
+          Read-only overview: plan, signup date, connection status, ticket volume.
         </p>
 
         <div style={{ background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', overflow: 'hidden' }}>
@@ -143,7 +143,7 @@ export default function Admin() {
           Upgrade Requests {pendingRequests.length > 0 && `(${pendingRequests.length} pending)`}
         </h2>
         <p style={{ fontSize: '13px', color: '#64748B', marginBottom: '16px' }}>
-          Manually activate after confirming payment (bank transfer) — no automatic billing.
+          Manually activate after confirming payment (bank transfer). No automatic billing.
         </p>
         <div style={{ marginBottom: activateError ? '16px' : 0 }}>
           <Alert variant="error" onDismiss={() => setActivateError('')} autoDismissMs={5000}>{activateError}</Alert>

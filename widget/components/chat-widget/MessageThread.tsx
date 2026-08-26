@@ -62,7 +62,7 @@ export function MessageThread({
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '2px 0' }}>
           <div style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.07)' }} />
           <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.25)', whiteSpace: 'nowrap' }}>
-            — Earlier today —
+            Earlier today
           </span>
           <div style={{ flex: 1, height: '1px', background: 'rgba(255,255,255,0.07)' }} />
         </div>

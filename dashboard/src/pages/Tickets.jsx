@@ -35,7 +35,7 @@ export default function Tickets() {
   }, [refetch]);
 
   useEffect(() => {
-    document.title = "Conversations — tResolv";
+    document.title = "Conversations: tResolv";
     client.get('/api/v1/settings/gmail/status')
       .then(res => setGmailConnected(!!res.data?.connected))
       // A failed status check (cold start, transient network error) is not proof
@@ -179,7 +179,7 @@ export default function Tickets() {
       {gmailConnected === false && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', background: '#FAFAFA', border: '1px solid #E4E4E7', borderRadius: '6px', fontSize: '13px' }}>
           <span style={{ color: '#475569' }}>
-            Gmail not connected — new emails will not be polled until you connect.
+            Gmail not connected. New emails will not be polled until you connect.
           </span>
           <Link to="/settings" style={{ padding: '5px 12px', borderRadius: '4px', background: '#06B6D4', color: 'white', fontSize: '12px', fontWeight: '600', textDecoration: 'none' }}>
             Connect Gmail →

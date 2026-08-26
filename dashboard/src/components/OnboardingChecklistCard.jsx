@@ -36,7 +36,7 @@ const STEP_DEFS = [
     // backend ai_mode, fetched by Dashboard.jsx, never inferred.
     key: 'goLive', title: 'Go Live', icon: Rocket, cta: 'Go Live',
     doneCopy: 'Luna is live and handling real conversations',
-    pendingCopy: "Everything's ready — activate Luna when you want it live",
+    pendingCopy: "Everything's ready. Activate Luna when you want it live",
   },
 ];
 
@@ -131,7 +131,7 @@ export default function OnboardingChecklistCard({ steps, onDismiss }) {
             </h3>
             <p style={{ margin: '2px 0 0', fontSize: '13px', color: 'var(--text-secondary)' }}>
               {allDone
-                ? "Every step is complete and Luna is active — she's handling incoming tickets now."
+                ? "Every step is complete and Luna is active. She's handling incoming tickets now."
                 : 'Finish setup, then activate Luna so she can start resolving tickets automatically.'}
             </p>
           </div>

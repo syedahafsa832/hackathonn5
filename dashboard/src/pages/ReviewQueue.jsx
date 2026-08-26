@@ -86,7 +86,7 @@ function ReviewItem({ item, onOpen }) {
 
       {item.review_status === 'rejected' && item.human_outcome?.rejection_reason && (
         <div style={{ fontSize: '11.5px', color: '#B91C1C', marginBottom: '10px' }}>
-          Rejected — {item.human_outcome.rejection_reason}
+          Rejected: {item.human_outcome.rejection_reason}
         </div>
       )}
 

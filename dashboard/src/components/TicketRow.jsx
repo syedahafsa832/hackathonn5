@@ -2,7 +2,7 @@ import { useNavigate } from 'react-router-dom';
 import Badge from './Badge';
 
 function formatDate(iso) {
-  if (!iso) return '—';
+  if (!iso) return '-';
   const d = new Date(iso);
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
@@ -26,10 +26,10 @@ export default function TicketRow({ ticket, index }) {
         #{String(id).slice(0, 8)}
       </td>
       <td style={{ padding: '10px 16px', color: 'var(--text-primary)' }}>
-        {ticket.customer_email || ticket.customer_name || '—'}
+        {ticket.customer_email || ticket.customer_name || '-'}
       </td>
       <td style={{ padding: '10px 16px', color: 'var(--text-primary)', maxWidth: '260px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        {ticket.subject || ticket.message?.slice(0, 60) || '—'}
+        {ticket.subject || ticket.message?.slice(0, 60) || '-'}
       </td>
       <td style={{ padding: '10px 16px', color: 'var(--text-secondary)', fontSize: '13px' }}>
         {ticket.channel || ticket.source_channel || 'email'}

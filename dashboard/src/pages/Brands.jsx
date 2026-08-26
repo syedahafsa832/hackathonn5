@@ -223,7 +223,7 @@ function StoreCard({ brand, highlightGmail }) {
               <input
                 value={emailSignature}
                 onChange={e => setEmailSignature(e.target.value)}
-                placeholder={`— The ${brandName || 'Store'} Team`}
+                placeholder={`From the ${brandName || 'Store'} Team`}
                 style={{ padding: '7px 10px', borderRadius: '4px', border: '1px solid var(--border)', fontSize: '13px', width: '220px' }}
               />
             </div>
@@ -313,13 +313,13 @@ function StoreCard({ brand, highlightGmail }) {
               )}
             </div>
             <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '8px' }}>
-              Refunds always require your one-tap approval before executing in Shopify — this policy only shapes what the AI recommends, not whether approval is needed.
+              Refunds always require your one-tap approval before executing in Shopify. This policy only shapes what the AI recommends, not whether approval is needed.
             </p>
           </div>
 
           {testResult?.shop && (
             <div style={{ padding: '8px 12px', background: 'var(--success-light)', borderRadius: '4px', fontSize: '12px', color: 'var(--success)', marginBottom: '12px' }}>
-              ✓ {testResult.shop.name} — {testResult.shop.plan_name} plan · {testResult.shop.currency}
+              ✓ {testResult.shop.name}: {testResult.shop.plan_name} plan · {testResult.shop.currency}
             </div>
           )}
 
@@ -428,8 +428,8 @@ export default function Brands() {
         <div style={{ padding: '48px', textAlign: 'center', border: '1px solid var(--border)', borderRadius: '6px', background: 'var(--bg-primary)' }}>
           <div style={{ fontWeight: '600', marginBottom: '6px' }}>We couldn't find your store</div>
           <div style={{ color: 'var(--text-muted)', fontSize: '13px' }}>
-            This can happen briefly right after signup — try refreshing. If it persists,{' '}
-            <HelpContactLink variant="inline" context="Store — couldn't find store" label="contact support" />.
+            This can happen briefly right after signup. Try refreshing. If it persists,{' '}
+            <HelpContactLink variant="inline" context="Store: couldn't find store" label="contact support" />.
           </div>
         </div>
       )}

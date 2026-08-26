@@ -8,7 +8,7 @@ import { useState } from 'react';
 const INSTALL_STEPS = [
   {
     title: '1. Click "Connect Shopify Store"',
-    caption: 'You\'ll leave tResolv briefly and land on your store\'s Shopify admin — that\'s expected.',
+    caption: 'You\'ll leave tResolv briefly and land on your store\'s Shopify admin, that\'s expected.',
   },
   {
     title: '2. Log in to your Shopify admin, if not already',
@@ -20,7 +20,7 @@ const INSTALL_STEPS = [
   },
   {
     title: '4. Click "Install app"',
-    caption: 'Confirms the access described above — nothing more.',
+    caption: 'Confirms the access described above, nothing more.',
   },
   {
     title: '5. Success',
