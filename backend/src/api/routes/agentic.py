@@ -475,7 +475,7 @@ async def get_ticket_analysis(ticket_id: str, tenant: TenantContext = Depends(ge
         ticket = tickets[0]
         ticket_brand_id = ticket.get("brand_id") or ticket.get("store_id")
         brand_ids = await _get_tenant_brand_ids(tenant)
-        if brand_ids is not None and ticket_brand_id not in brand_ids:
+        if ticket_brand_id not in brand_ids:
             raise HTTPException(status_code=404, detail="Ticket not found")
 
         return ticket
