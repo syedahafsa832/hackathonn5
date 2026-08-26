@@ -11,6 +11,7 @@ calls (supabase_gotrue.*) are mocked — no live Supabase project required.
 import asyncio
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -26,6 +27,16 @@ from src.services.supabase_gotrue import GoTrueError  # noqa: E402
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+@pytest.fixture(autouse=True)
+def _no_password_reset_timing_pad():
+    """request_password_reset() pads its response time to mask whether the
+    email exists (see test_password_reset_request_pads_a_fast_response,
+    which tests that behavior directly) — every other test in this file
+    doesn't care about timing and shouldn't pay a real ~1s sleep per call."""
+    with patch("src.services.auth_service._PASSWORD_RESET_MIN_RESPONSE_SECONDS", 0):
+        yield
 
 
 # ─── 1. New Supabase user with no existing tenant → creates one ────────────
@@ -212,6 +223,8 @@ def test_change_password_rejects_when_current_password_is_wrong():
         raise GoTrueError("Invalid login credentials", 400)
 
     with patch("src.services.auth_service.supabase_gotrue.sign_in_with_password", side_effect=fake_signin), \
+         patch("src.services.auth_service.supabase_auth_service.verify_jwt",
+               return_value={"app_metadata": {"provider": "email", "providers": ["email"]}}), \
          patch("src.services.auth_service.supabase_gotrue.update_user_password") as mock_update:
         auth_service = AuthService()
         result = _run(auth_service.change_password(
@@ -237,6 +250,58 @@ def test_change_password_succeeds_when_current_password_verifies():
 
     assert result["success"] is True
     mock_update.assert_called_once_with("at-1", "newpassword123")
+
+
+def test_change_password_gives_a_clear_message_for_a_google_only_account():
+    """A Google-only account (never set a password) fails
+    sign_in_with_password the same generic way a wrong password would
+    (Supabase doesn't distinguish, by anti-enumeration design) - but the
+    error shown to the user should say why, not just call a nonexistent
+    password "incorrect". Detected from the verified access token's own
+    app_metadata.providers, since Supabase doesn't expose "has a password"
+    any other way."""
+    def fake_signin(email, password):
+        raise GoTrueError("Invalid login credentials", 400)
+
+    google_only_payload = {"app_metadata": {"provider": "google", "providers": ["google"]}}
+
+    with patch("src.services.auth_service.supabase_gotrue.sign_in_with_password", side_effect=fake_signin), \
+         patch("src.services.auth_service.supabase_auth_service.verify_jwt", return_value=google_only_payload), \
+         patch("src.services.auth_service.supabase_gotrue.update_user_password") as mock_update:
+        auth_service = AuthService()
+        result = _run(auth_service.change_password(
+            tenant_id="tenant-1", email="google-user@example.com",
+            current_password="anything", new_password="newpassword123",
+            access_token="at-google-1",
+        ))
+
+    assert result["success"] is False
+    assert "google" in result["error"].lower()
+    assert "incorrect" not in result["error"].lower()
+    mock_update.assert_not_called()
+
+
+def test_change_password_still_says_incorrect_for_a_real_email_account_with_wrong_password():
+    """The improved Google-account messaging must not swallow the ordinary
+    wrong-password case for accounts that do have a password."""
+    def fake_signin(email, password):
+        raise GoTrueError("Invalid login credentials", 400)
+
+    email_account_payload = {"app_metadata": {"provider": "email", "providers": ["email"]}}
+
+    with patch("src.services.auth_service.supabase_gotrue.sign_in_with_password", side_effect=fake_signin), \
+         patch("src.services.auth_service.supabase_auth_service.verify_jwt", return_value=email_account_payload), \
+         patch("src.services.auth_service.supabase_gotrue.update_user_password") as mock_update:
+        auth_service = AuthService()
+        result = _run(auth_service.change_password(
+            tenant_id="tenant-1", email="a@b.com",
+            current_password="wrong", new_password="newpassword123",
+            access_token="at-1",
+        ))
+
+    assert result["success"] is False
+    assert "incorrect" in result["error"].lower()
+    mock_update.assert_not_called()
 
 
 # ─── 9. Password reset never reveals whether the email is registered ───────
@@ -294,6 +359,24 @@ def test_password_reset_request_falls_back_to_localhost_in_dev_never_hardcodes_p
     assert "tresolv.online" not in redirect_to
 
 
+def test_password_reset_request_pads_a_fast_response():
+    """A registered email does strictly more work (an extra Resend call)
+    than an unregistered one, which without padding would leak account
+    existence through response TIME even though the response BODY is
+    already identical either way. Overrides the autouse fixture above to
+    actually exercise the padding for this one test."""
+    with patch("src.services.auth_service._PASSWORD_RESET_MIN_RESPONSE_SECONDS", 0.05), \
+         patch("src.services.auth_service.supabase_gotrue.generate_recovery_link", return_value=None), \
+         patch("src.services.auth_service.system_email_service.send_password_reset_email") as mock_send:
+        auth_service = AuthService()
+        start = time.monotonic()
+        _run(auth_service.request_password_reset("reset-timing-pad@example.com"))
+        elapsed = time.monotonic() - start
+
+    mock_send.assert_not_called()  # unregistered-email path — nothing to actually send
+    assert elapsed >= 0.05  # but the response was still padded up to the floor
+
+
 def test_password_reset_request_normalizes_email_case_and_whitespace():
     with patch("src.services.auth_service.supabase_gotrue.generate_recovery_link", return_value=_FAKE_ACTION_LINK) as mock_generate, \
          patch("src.services.auth_service.system_email_service.send_password_reset_email", return_value=True):
@@ -340,8 +423,13 @@ def test_password_reset_request_does_not_email_when_link_generation_fails():
 
 # ─── 10. Reset-password confirm — success, and invalid/expired token ───────
 
+_RECOVERY_JWT_PAYLOAD = {"amr": [{"method": "otp", "timestamp": 1700000000}]}
+_PASSWORD_LOGIN_JWT_PAYLOAD = {"amr": [{"method": "password", "timestamp": 1700000000}]}
+
+
 def test_confirm_password_reset_succeeds_with_a_valid_recovery_token():
-    with patch("src.services.auth_service.supabase_gotrue.update_user_password", return_value={}) as mock_update:
+    with patch("src.services.auth_service.supabase_auth_service.verify_jwt", return_value=_RECOVERY_JWT_PAYLOAD), \
+         patch("src.services.auth_service.supabase_gotrue.update_user_password", return_value={}) as mock_update:
         auth_service = AuthService()
         result = _run(auth_service.confirm_password_reset("valid-recovery-token", "newpassword123"))
 
@@ -350,19 +438,56 @@ def test_confirm_password_reset_succeeds_with_a_valid_recovery_token():
 
 
 def test_confirm_password_reset_rejects_an_invalid_or_expired_token():
+    """verify_jwt returns None for a token whose signature is bad or whose
+    exp has passed — must fail the same generic way, before ever reaching
+    Supabase's own update-password call."""
+    with patch("src.services.auth_service.supabase_auth_service.verify_jwt", return_value=None), \
+         patch("src.services.auth_service.supabase_gotrue.update_user_password") as mock_update:
+        auth_service = AuthService()
+        result = _run(auth_service.confirm_password_reset("expired-token", "newpassword123"))
+
+    assert result["success"] is False
+    assert "invalid or expired" in result["error"].lower()
+    mock_update.assert_not_called()
+
+
+def test_confirm_password_reset_rejects_a_token_not_from_the_recovery_flow():
+    """Security fix: an ordinary logged-in session's access token (amr=
+    password) must NOT be usable to reset the password without knowing the
+    current one — that would silently bypass change_password()'s
+    current-password check. Only a token whose amr shows it came from the
+    recovery-link flow (amr=otp — this app has no magic-link login, so otp
+    is unambiguous) may reach Supabase's update-password call."""
+    with patch("src.services.auth_service.supabase_auth_service.verify_jwt", return_value=_PASSWORD_LOGIN_JWT_PAYLOAD), \
+         patch("src.services.auth_service.supabase_gotrue.update_user_password") as mock_update:
+        auth_service = AuthService()
+        result = _run(auth_service.confirm_password_reset("a-normal-login-session-token", "newpassword123"))
+
+    assert result["success"] is False
+    assert "invalid or expired" in result["error"].lower()
+    mock_update.assert_not_called()
+
+
+def test_confirm_password_reset_rejects_when_supabase_itself_rejects_the_token():
+    """A token that passes our own signature/amr checks can still be
+    rejected by Supabase at the point of use (e.g. the recovery link was
+    already consumed once) — must still fail safely with the same generic
+    message, not leak Supabase's internal error detail."""
     def fake_update(token, new_password):
         raise GoTrueError("Token has expired or is invalid", 401)
 
-    with patch("src.services.auth_service.supabase_gotrue.update_user_password", side_effect=fake_update):
+    with patch("src.services.auth_service.supabase_auth_service.verify_jwt", return_value=_RECOVERY_JWT_PAYLOAD), \
+         patch("src.services.auth_service.supabase_gotrue.update_user_password", side_effect=fake_update):
         auth_service = AuthService()
-        result = _run(auth_service.confirm_password_reset("expired-token", "newpassword123"))
+        result = _run(auth_service.confirm_password_reset("already-used-token", "newpassword123"))
 
     assert result["success"] is False
     assert "invalid or expired" in result["error"].lower()
 
 
 def test_confirm_password_reset_rejects_a_too_short_password():
-    with patch("src.services.auth_service.supabase_gotrue.update_user_password") as mock_update:
+    with patch("src.services.auth_service.supabase_auth_service.verify_jwt", return_value=_RECOVERY_JWT_PAYLOAD), \
+         patch("src.services.auth_service.supabase_gotrue.update_user_password") as mock_update:
         auth_service = AuthService()
         result = _run(auth_service.confirm_password_reset("valid-recovery-token", "short"))
 

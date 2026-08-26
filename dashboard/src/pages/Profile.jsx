@@ -3,10 +3,12 @@ import { Crown } from 'lucide-react';
 import client from '../api/client';
 import Avatar from '../components/Avatar';
 import Alert from '../components/Alert';
+import { useAuth } from '../hooks/useAuth';
 
 const PAID_PLANS = ['starter', 'growth', 'enterprise'];
 
 export default function Profile() {
+  const { logout } = useAuth();
   const [profile, setProfile] = useState({ full_name: '', email: '', created_at: null });
   const [plan, setPlan] = useState(null);
   const [planLabel, setPlanLabel] = useState(null);
@@ -78,10 +80,13 @@ export default function Profile() {
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
+      // Re-authentication with the new password is required after a
+      // password change, so the session is signed out rather than left
+      // running on a token issued under the old one.
+      setTimeout(logout, 1200);
     } catch (err) {
       const detail = err.response?.data?.detail;
       setPasswordMsg(typeof detail === 'string' ? detail : 'Could not update password.');
-    } finally {
       setChangingPassword(false);
     }
   };
@@ -180,8 +185,13 @@ export default function Profile() {
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', padding: '20px', marginTop: '20px' }}>
-        <div style={{ fontSize: '14px', fontWeight: '600', color: '#0F172A' }}>
-          Password
+        <div>
+          <div style={{ fontSize: '14px', fontWeight: '600', color: '#0F172A' }}>
+            Password
+          </div>
+          <div style={{ fontSize: '12px', color: '#94A3B8', marginTop: '2px' }}>
+            Change your password.
+          </div>
         </div>
 
         <div>

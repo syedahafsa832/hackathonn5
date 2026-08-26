@@ -1,23 +1,39 @@
-import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { useState, useEffect, useRef } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import client from '../api/client';
 import Alert from '../components/Alert';
 
 export default function ResetPassword() {
+  const navigate = useNavigate();
   const [accessToken, setAccessToken] = useState(null);
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [done, setDone] = useState(false);
+  const initialized = useRef(false);
 
   useEffect(() => {
     document.title = "Reset password — tResolv";
+    // React 18 StrictMode double-invokes effects in dev (mount, cleanup,
+    // mount again) on the same component instance — without this guard,
+    // the second pass would read the hash this same effect already
+    // scrubbed on the first pass and incorrectly overwrite the correct
+    // state with "invalid link".
+    if (initialized.current) return;
+    initialized.current = true;
+
     // Supabase's recovery email redirects here with the session in the URL
     // hash fragment (#access_token=...&type=recovery), not a query string.
     const params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
     const token = params.get('access_token');
+    // Scrub the token out of the visible URL/history immediately — the
+    // hash fragment is never sent to any server, but it stays in the
+    // address bar and browser history for as long as this page is open
+    // otherwise, which is its own exposure (shoulder-surfing, screen
+    // shares, synced history) even though it's never transmitted.
+    window.history.replaceState(null, '', window.location.pathname);
     if (params.get('type') !== 'recovery' || !token) {
       setError('This reset link is invalid or has expired. Request a new one.');
       return;
@@ -47,6 +63,7 @@ export default function ResetPassword() {
         { headers: { Authorization: `Bearer ${accessToken}` }, timeout: 35000 }
       );
       setDone(true);
+      setTimeout(() => navigate('/login', { replace: true }), 2000);
     } catch (err) {
       const msg = err.response?.data?.detail || 'Could not reset your password. The link may have expired.';
       setError(typeof msg === 'string' ? msg : JSON.stringify(msg));

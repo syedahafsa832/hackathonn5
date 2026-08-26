@@ -13,6 +13,7 @@ import logging
 import hashlib
 import secrets
 import time
+import asyncio
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
 
@@ -22,6 +23,7 @@ from passlib.context import CryptContext
 from src.lib.supabase_client import supabase_select, supabase_insert, supabase_update
 from src.services import supabase_gotrue, system_email_service
 from src.services.supabase_gotrue import GoTrueError
+from src.services.supabase_auth_service import supabase_auth_service
 from src.services.plan_service import TRIAL_DAYS
 
 logger = logging.getLogger(__name__)
@@ -55,6 +57,12 @@ FOUNDING_DAILY_TICKET_LIMIT = 5
 # the tradeoff.
 _PASSWORD_RESET_COOLDOWN_SECONDS = 60
 _last_password_reset_request: Dict[str, float] = {}
+
+# A registered email does strictly more work than an unregistered one (an
+# extra Resend API call), which without padding would make response time
+# itself an enumeration side channel even though the response body is
+# already identical either way.
+_PASSWORD_RESET_MIN_RESPONSE_SECONDS = 1.0
 
 
 class FoundingCohortFullError(Exception):
@@ -466,16 +474,44 @@ class AuthService:
             return generic_response
         _last_password_reset_request[email] = now
 
+        start = time.monotonic()
         redirect_to = f"{FRONTEND_URL}/reset-password"
         action_link = supabase_gotrue.generate_recovery_link(email, redirect_to=redirect_to)
         if action_link:
             system_email_service.send_password_reset_email(email, action_link)
+
+        elapsed = time.monotonic() - start
+        if elapsed < _PASSWORD_RESET_MIN_RESPONSE_SECONDS:
+            await asyncio.sleep(_PASSWORD_RESET_MIN_RESPONSE_SECONDS - elapsed)
+
         return generic_response
 
     async def confirm_password_reset(self, recovery_access_token: str, new_password: str) -> Dict[str, Any]:
-        """Set a new password using the access token from a Supabase recovery link."""
+        """
+        Set a new password using the access token from a Supabase recovery
+        link.
+
+        Requires the token to actually be recovery-issued, not just any
+        valid session — Supabase's own "update password with any valid
+        access token" API doesn't distinguish the two, so an ordinary
+        logged-in session's token would otherwise work here too, silently
+        bypassing change_password()'s current-password check. This app has
+        no magic-link login (the only other flow that also produces an
+        "otp"-method token), so amr containing "otp" is a reliable signal
+        that this token came from the recovery-link flow specifically.
+        """
         if len(new_password) < 8:
             return {"success": False, "error": "Password must be at least 8 characters"}
+
+        payload = supabase_auth_service.verify_jwt(recovery_access_token)
+        if not payload:
+            return {"success": False, "error": "Reset link is invalid or expired"}
+
+        amr_methods = {entry.get("method") for entry in (payload.get("amr") or [])}
+        if "otp" not in amr_methods:
+            logger.warning("[Auth] Password reset confirmation rejected: token is not from a recovery link")
+            return {"success": False, "error": "Reset link is invalid or expired"}
+
         try:
             supabase_gotrue.update_user_password(recovery_access_token, new_password)
         except GoTrueError as e:
@@ -504,6 +540,21 @@ class AuthService:
         try:
             supabase_gotrue.sign_in_with_password(email, current_password)
         except GoTrueError:
+            # Supabase returns the same generic "invalid credentials" error
+            # whether the password was simply wrong or the account never had
+            # one at all (e.g. Google-only sign-up) - anti-enumeration by
+            # design, so it can't be told apart from the sign-in attempt
+            # alone. Check the verified token's own provider list instead:
+            # a Google-only account never gained an "email" identity, so it
+            # has no password to be "incorrect" in the first place.
+            payload = supabase_auth_service.verify_jwt(access_token)
+            providers = ((payload or {}).get("app_metadata") or {}).get("providers") or []
+            if "email" not in providers:
+                return {
+                    "success": False,
+                    "error": "This account signed up with Google and doesn't have a password yet. "
+                             "Use \"Forgot password\" on the sign-in page to set one.",
+                }
             return {"success": False, "error": "Current password is incorrect"}
 
         try:
