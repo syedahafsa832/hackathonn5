@@ -111,7 +111,7 @@ export function ThinkingIndicator({ steps, slow = false }: Props) {
             paddingLeft: '19px',
           }}
         >
-          Still working on it — thanks for your patience
+          Still working on it. Thanks for your patience
         </motion.span>
       )}
     </div>

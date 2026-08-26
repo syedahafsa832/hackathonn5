@@ -12,7 +12,7 @@ export default function Login() {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    document.title = "Sign in — tResolv";
+    document.title = "Sign in: tResolv";
   }, []);
 
   const handleGoogleSuccess = (data) => {
@@ -35,7 +35,7 @@ export default function Login() {
       navigate('/dashboard');
     } catch (err) {
       if (!err.response) {
-        setError('Cannot reach the server right now. This can happen briefly while it wakes up — try again in a few seconds.');
+        setError('Cannot reach the server right now. This can happen briefly while it wakes up. Try again in a few seconds.');
       } else {
         const msg = err.response?.data?.detail || err.response?.data?.error || 'Invalid email or password.';
         setError(typeof msg === 'string' ? msg : JSON.stringify(msg));

@@ -7,7 +7,7 @@ import Alert from '../components/Alert';
 import { useConversations, useMarkRead } from '../hooks/useApi';
 
 function formatDate(iso) {
-  if (!iso) return '—';
+  if (!iso) return '-';
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
@@ -35,7 +35,7 @@ export default function Tickets() {
   }, [refetch]);
 
   useEffect(() => {
-    document.title = "Conversations — tResolv";
+    document.title = "Conversations: tResolv";
     client.get('/api/v1/settings/gmail/status')
       .then(res => setGmailConnected(!!res.data?.connected))
       // A failed status check (cold start, transient network error) is not proof
@@ -179,7 +179,7 @@ export default function Tickets() {
       {gmailConnected === false && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', background: '#FAFAFA', border: '1px solid #E4E4E7', borderRadius: '6px', fontSize: '13px' }}>
           <span style={{ color: '#475569' }}>
-            Gmail not connected — new emails will not be polled until you connect.
+            Gmail not connected. New emails will not be polled until you connect.
           </span>
           <Link to="/settings" style={{ padding: '5px 12px', borderRadius: '4px', background: '#06B6D4', color: 'white', fontSize: '12px', fontWeight: '600', textDecoration: 'none' }}>
             Connect Gmail →
@@ -207,10 +207,10 @@ export default function Tickets() {
                 <span style={{ color: '#64748B' }}>{formatDate(c.updated_at)}</span>
               </div>
               <div style={{ fontWeight: c.unread_count > 0 ? '600' : '500', color: '#0F172A' }}>
-                {c.customer_email || c.sender_id || '—'}
+                {c.customer_email || c.sender_id || '-'}
               </div>
               <div style={{ fontSize: '12.5px', color: '#64748B', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {c.last_message || '—'}
+                {c.last_message || '-'}
               </div>
               <div className="mobile-card-row">
                 <span style={{ textTransform: 'capitalize' }}>{c.channel}</span>
@@ -279,10 +279,10 @@ export default function Tickets() {
                       {c.channel}
                     </td>
                     <td style={{ padding: '0 16px', color: '#1E293B' }}>
-                      {c.customer_email || c.sender_id || '—'}
+                      {c.customer_email || c.sender_id || '-'}
                     </td>
                     <td style={{ padding: '0 16px', color: '#64748B', fontSize: '13px', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {c.last_message || '—'}
+                      {c.last_message || '-'}
                     </td>
                     <td style={{ padding: '0 16px' }}>
                       <Badge status={c.status} />

@@ -27,7 +27,7 @@ export default function StatCard({ label, value, subtitle, loading, isAi, labelC
             lineHeight: '1',
             marginBottom: '4px',
           }}>
-            {value ?? '—'}
+            {value ?? '-'}
           </div>
           {subtitle && (
             <div style={{ fontSize: '12px', color: '#94A3B8' }}>{subtitle}</div>

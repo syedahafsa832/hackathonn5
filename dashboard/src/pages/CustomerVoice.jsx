@@ -5,7 +5,7 @@ import { useBrandFeedback, useBrandAnalytics } from '../hooks/useApi';
 import StatCard from '../components/StatCard';
 
 function formatDate(iso) {
-  if (!iso) return '—';
+  if (!iso) return '-';
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
@@ -162,7 +162,7 @@ export default function CustomerVoice() {
               Luna has successfully handled {analytics.autopilot_readiness.eligible_cancellations} eligible cancellation
               request{analytics.autopilot_readiness.eligible_cancellations === 1 ? '' : 's'} with
               a {analytics.autopilot_readiness.approval_rate}% merchant approval rate. Autopilot would let Luna cancel
-              eligible orders automatically — it stays off until you explicitly turn it on, and every action still
+              eligible orders automatically. It stays off until you explicitly turn it on, and every action still
               requires your approval today.
             </p>
             <button

@@ -85,7 +85,7 @@ export default function ChatDemoPage() {
             marginBottom: '22px',
           }}
         >
-          New Summer Drop — 2026
+          New Summer Drop 2026
         </div>
         <h1
           style={{

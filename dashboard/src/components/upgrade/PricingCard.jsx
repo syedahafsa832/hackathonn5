@@ -55,7 +55,7 @@ export default function PricingCard({ plan, isCurrent, isPopular, foundingActive
           color: 'var(--cyan-700, #0E7490)', background: 'var(--cyan-50, #ECFEFF)',
           border: '1px solid var(--cyan-200, #A5F3FC)', borderRadius: '999px', padding: '3px 10px',
         }}>
-          {plan.id === 'starter' ? 'Founding price — limited founding spots' : 'Founding price'}
+          {plan.id === 'starter' ? 'Founding price, limited founding spots' : 'Founding price'}
         </div>
       )}
 

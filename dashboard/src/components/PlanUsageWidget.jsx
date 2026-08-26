@@ -158,7 +158,7 @@ function TrialEndedCard({ variant }) {
       }}>
         <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#F87171', flexShrink: 0 }} />
         <span style={{ fontSize: '12px', color: '#FCA5A5', fontWeight: '600' }}>
-          AI replies are paused — new customer emails are still received, but Luna won't respond until you upgrade.
+          AI replies are paused. New customer emails are still received, but Luna won't respond until you upgrade.
         </span>
       </div>
 

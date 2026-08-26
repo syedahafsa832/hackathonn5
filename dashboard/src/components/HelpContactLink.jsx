@@ -12,7 +12,7 @@ import { LifeBuoy } from 'lucide-react';
 const SUPPORT_EMAIL = 'hello@tresolv.online';
 
 function buildMailto(context) {
-  const subject = context ? `tResolv help — ${context}` : 'tResolv help';
+  const subject = context ? `tResolv help: ${context}` : 'tResolv help';
   return `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(subject)}`;
 }
 

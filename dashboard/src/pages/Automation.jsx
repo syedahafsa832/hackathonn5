@@ -181,7 +181,7 @@ function AutopilotOnCard({ title, description, secondLine, emptyStateText, escal
 
       {disableMutation.isError && (
         <p style={{ margin: '0 0 12px', fontSize: '12.5px', color: '#B91C1C' }}>
-          Couldn't turn off Autopilot — please try again.
+          Couldn't turn off Autopilot. Please try again.
         </p>
       )}
       <button
@@ -232,7 +232,7 @@ function RecentFailures({ failures }) {
         {failures.map((f, i) => (
           <div key={i} style={{ padding: '10px 12px', borderRadius: '6px', background: '#FAFAFA', border: '1px solid #E4E4E7' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: '12.5px', fontWeight: '600', color: '#0F172A' }}>Order #{f.order_id ?? '—'}</span>
+              <span style={{ fontSize: '12.5px', fontWeight: '600', color: '#0F172A' }}>Order #{f.order_id ?? '-'}</span>
               <span style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                 <span style={{
                   fontSize: '10px', fontWeight: '600', color: CATEGORY_COLOR[f.category] || '#475569',
@@ -270,7 +270,7 @@ function ReadinessDetail({
   };
 
   const enableError = enableMutation.isError
-    ? (enableMutation.error?.response?.data?.detail || `${autopilotLabel} could not be enabled — please try again.`)
+    ? (enableMutation.error?.response?.data?.detail || `${autopilotLabel} could not be enabled. Please try again.`)
     : null;
 
   return (
@@ -428,7 +428,7 @@ export default function Automation() {
         <h1 style={{ margin: '0 0 4px', fontSize: '20px', fontWeight: '700', color: '#0F172A', display: 'flex', alignItems: 'center', gap: '6px' }}>
           Automation
           <span
-            title="Autopilot: Luna completes the action without asking you first. It will only do this for requests that pass your store's existing safety, Shopify, and policy checks — anything uncertain still comes to your team."
+            title="Autopilot: Luna completes the action without asking you first. It will only do this for requests that pass your store's existing safety, Shopify, and policy checks. Anything uncertain still comes to your team."
             style={{
               display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
               width: '16px', height: '16px', borderRadius: '50%', border: '1px solid #CBD5E1',
@@ -439,7 +439,7 @@ export default function Automation() {
           </span>
         </h1>
         <p style={{ margin: 0, fontSize: '13px', color: '#94A3B8' }}>
-          From Copilot to Autopilot — decide when Luna is trusted to act on its own.
+          From Copilot to Autopilot: decide when Luna is trusted to act on its own.
         </p>
       </div>
 
@@ -462,7 +462,7 @@ export default function Automation() {
             name="Cancellation"
             badge={cancellationBadge}
             description={cancellationOn
-              ? 'Luna automatically cancels eligible orders — anything uncertain still goes to your team.'
+              ? 'Luna automatically cancels eligible orders. Anything uncertain still goes to your team.'
               : "Luna prepares eligible cancellations and asks your team for approval."}
             action={
               <button
@@ -479,7 +479,7 @@ export default function Automation() {
             financial
             description={
               refundOn
-                ? 'Luna automatically processes eligible refunds — anything uncertain still goes to your team.'
+                ? 'Luna automatically processes eligible refunds. Anything uncertain still goes to your team.'
                 : refund?.total_requests
                   ? `Luna has handled ${refund.total_requests} refund request${refund.total_requests === 1 ? '' : 's'}.`
                   : 'Luna prepares refunds for your team to approve.'
@@ -522,7 +522,7 @@ export default function Automation() {
               sectionTitle="Cancellation automation"
               currentModeText="Luna currently asks your team for approval before cancelling an order."
               explanationFn={readinessExplanation}
-              notReadyHelpText="Not ready yet — Luna needs more verified cancellation outcomes first. Every cancellation still requires your team's approval today."
+              notReadyHelpText="Not ready yet. Luna needs more verified cancellation outcomes first. Every cancellation still requires your team's approval today."
               enableButtonLabel="Enable Cancellation Autopilot"
               dialogTitle="Turn on Cancellation Autopilot?"
               dialogBody1="Luna will automatically cancel eligible orders when all of your store's cancellation rules are satisfied."
@@ -556,9 +556,9 @@ export default function Automation() {
           ) : (
             <ReadinessDetail
               sectionTitle="Refund automation"
-              currentModeText="Refunds still require your approval — Luna currently asks your team before refunding an order."
+              currentModeText="Refunds still require your approval. Luna currently asks your team before refunding an order."
               explanationFn={refundReadinessExplanation}
-              notReadyHelpText="Not ready yet — Luna needs more verified refund outcomes first. Every refund still requires your team's approval today."
+              notReadyHelpText="Not ready yet. Luna needs more verified refund outcomes first. Every refund still requires your team's approval today."
               enableButtonLabel="Enable Refund Autopilot"
               dialogTitle="Turn on Refund Autopilot?"
               dialogBody1="Luna will automatically refund eligible orders when all of your store's refund rules are satisfied. This is a financial action."

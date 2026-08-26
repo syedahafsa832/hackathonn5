@@ -3,7 +3,7 @@ import { GeistSans } from 'geist/font/sans'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'Resolution Canvas — tResolv AI Support',
+  title: 'Resolution Canvas for tResolv AI Support',
   description: 'Next-gen AI customer support widget. Resolution over conversation.',
 }
 

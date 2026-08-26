@@ -102,7 +102,7 @@ function OrderPanel({ ticketId, ticket }) {
       const res = await client.post(`/api/v2/tickets/${ticketId}/actions/${type}`, {}, { timeout: 30000 });
       const msg = res.data?.message || 'Done.';
       const emailNote = res.data?.email_sent === false
-        ? ' Confirmation email could not be sent — check Gmail connection.'
+        ? ' Confirmation email could not be sent. Check Gmail connection.'
         : '';
       setActionResult({ ok: true, msg: msg + emailNote });
       setTimeout(() => window.location.reload(), 1800);
@@ -184,7 +184,7 @@ function OrderPanel({ ticketId, ticket }) {
             const isRestocked = !!order.cancelled_at && order.fulfillment_status === 'restocked';
             return isRestocked ? (
               <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--text-muted)', padding: '8px 10px', background: 'rgba(255,255,255,0.03)', borderRadius: '6px', borderTop: '1px solid var(--border)', paddingTop: '10px' }}>
-                Order was cancelled and inventory restocked. Cannot be restored — customer must place a new order.
+                Order was cancelled and inventory restocked. Cannot be restored. Customer must place a new order.
               </div>
             ) : null;
           })()}
@@ -273,7 +273,7 @@ function ActivityTimeline({ events, ticketStatus }) {
 }
 
 function formatDate(iso) {
-  if (!iso) return '—';
+  if (!iso) return '-';
   return new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
@@ -364,7 +364,7 @@ function buildEscalationBrief(ticket) {
 
   const whyStopped = ticket.escalation_reason
     || (ticket.risk_level === 'high' && 'The request carries financial/policy risk (e.g. refund, cancellation, or a legal/pricing concern) that needs a human decision.')
-    || (sentiment === 'angry' && 'The customer sounds angry or frustrated — routed to a human to avoid a scripted reply landing badly.')
+    || (sentiment === 'angry' && 'The customer sounds angry or frustrated. Routed to a human to avoid a scripted reply landing badly.')
     || 'The AI was not confident enough in its answer to reply automatically.';
 
   const orderContext = ticket.detected_order_id
@@ -377,13 +377,13 @@ function buildEscalationBrief(ticket) {
   if (isProviderOutage) {
     recommendedAction = 'Review conversation and reply manually.';
   } else if (tags.includes('cancel') && ticket.detected_order_id) {
-    recommendedAction = `Check order #${ticket.detected_order_id} in Shopify — cancel/restock if it hasn't shipped, otherwise explain why it can't be cancelled.`;
+    recommendedAction = `Check order #${ticket.detected_order_id} in Shopify. Cancel/restock if it hasn't shipped, otherwise explain why it can't be cancelled.`;
   } else if (tags.includes('refund') && ticket.detected_order_id) {
     recommendedAction = `Verify order #${ticket.detected_order_id} qualifies for a refund, then use the Refund action or explain the policy if it doesn't.`;
   } else if (tags.includes('damaged') || tags.includes('exchange')) {
     recommendedAction = 'Confirm the issue with the customer and arrange a replacement/exchange or refund as appropriate.';
   } else if (ticket.ai_draft) {
-    recommendedAction = "Review the AI's suggested draft below — edit and send it, or write your own reply.";
+    recommendedAction = "Review the AI's suggested draft below. Edit and send it, or write your own reply.";
   }
 
   let confidencePct = null;
@@ -430,7 +430,7 @@ export default function TicketDetail() {
   }, [messages]);
 
   useEffect(() => {
-    document.title = `Ticket ${ticket_id} — tResolv`;
+    document.title = `Ticket ${ticket_id}: tResolv`;
   }, [ticket_id]);
 
   const handleSend = () => {
@@ -712,7 +712,7 @@ export default function TicketDetail() {
           return (
             <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--warning, #F59E0B)', borderRadius: '6px', padding: '16px 20px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)' }}>⚠ Escalated — Needs Your Attention</div>
+                <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)' }}>⚠ Escalated: Needs Your Attention</div>
                 <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                   {risk && (
                     <span style={{ fontSize: '11px', fontWeight: '600', color: risk.color }}>{risk.label}</span>
