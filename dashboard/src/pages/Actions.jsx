@@ -7,7 +7,7 @@ import { useEscalations, useStats, useActions, useApproveAction, useRejectAction
 import api from '../api/services';
 
 function formatDate(iso) {
-  if (!iso) return '—';
+  if (!iso) return '-';
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
@@ -49,16 +49,16 @@ const EXECUTION_MESSAGES = {
   refund: (r) => `$${r?.amount ?? ''} refunded via Shopify. Customer will receive Shopify's confirmation email.`,
   cancel_order: (r) => `Order ${r?.order_name ?? ''} cancelled. Stock restocked. Customer notified by Shopify.`,
   change_address: (r) => r?.manual_action_required
-    ? `Queued — update address manually in Shopify admin.${r?.new_address_text ? ' New address: ' + r.new_address_text : ''}`
+    ? `Queued. Update address manually in Shopify admin.${r?.new_address_text ? ' New address: ' + r.new_address_text : ''}`
     : `Shipping address updated automatically in Shopify.`,
-  reship: () => `Queued — please create a replacement shipment in Shopify admin.`,
+  reship: () => `Queued. Please create a replacement shipment in Shopify admin.`,
   restore_order: (r) => `Order ${r?.order_name ?? ''} has been restored and is active again. Customer has been notified.`,
   REFUND: (r) => `$${r?.amount ?? ''} refunded via Shopify. Customer will receive Shopify's confirmation email.`,
   CANCEL: (r) => `Order ${r?.order_name ?? ''} cancelled.`,
   ADDRESS_CHANGE: (r) => r?.manual_action_required
-    ? `Queued — update address manually in Shopify admin.${r?.new_address_text ? ' New address: ' + r.new_address_text : ''}`
+    ? `Queued. Update address manually in Shopify admin.${r?.new_address_text ? ' New address: ' + r.new_address_text : ''}`
     : `Shipping address updated automatically in Shopify.`,
-  RESHIP: () => `Queued — please create a replacement shipment in Shopify admin.`,
+  RESHIP: () => `Queued. Please create a replacement shipment in Shopify admin.`,
   RESTORE_ORDER: (r) => `Order ${r?.order_name ?? ''} has been restored and is active again. Customer has been notified.`,
 };
 
@@ -229,7 +229,7 @@ function ActionCard({ action, onApprove, onReject }) {
             {isRefund && (
               <div style={{ marginBottom: '8px' }}>
                 <label style={{ display: 'block', fontSize: '12px', color: '#64748B', marginBottom: '4px' }}>
-                  Partial refund amount (optional — leave blank for the full ${(action.amount || 0).toFixed(2)})
+                  Partial refund amount (optional, leave blank for the full ${(action.amount || 0).toFixed(2)})
                 </label>
                 <input
                   type="number" min="0.01" step="0.01"
@@ -310,12 +310,12 @@ export default function Actions() {
     try {
       await rejectAction({ id, reason });
     } catch (err) {
-      setPageError(err?.response?.data?.detail || 'Failed to reject action — it has been restored to the list.');
+      setPageError(err?.response?.data?.detail || 'Failed to reject action. It has been restored to the list.');
     }
   };
 
   useEffect(() => {
-    document.title = "Escalations — tResolv";
+    document.title = "Escalations: tResolv";
   }, []);
 
   const loading = loadingEscalations || loadingActions;
@@ -502,7 +502,7 @@ export default function Actions() {
                     {action.rejection_reason && (
                       <div style={{ fontSize: '13px', color: '#64748B' }}>
                         <strong style={{ color: '#475569' }}>Reason:</strong> {action.rejection_reason}
-                        {action.approved_by && <span style={{ color: '#94A3B8' }}> — by {action.approved_by}</span>}
+                        {action.approved_by && <span style={{ color: '#94A3B8' }}>, by {action.approved_by}</span>}
                       </div>
                     )}
                   </div>
@@ -571,7 +571,7 @@ export default function Actions() {
                     <span style={{ fontFamily: 'DM Mono, monospace', fontSize: '12px', color: '#64748B' }}>#{String(c.id).slice(0, 8)}</span>
                     <span style={{ color: '#64748B' }}>{formatDate(c.updated_at)}</span>
                   </div>
-                  <div style={{ fontWeight: '500', color: '#0F172A' }}>{c.customer_email || c.sender_id || '—'}</div>
+                  <div style={{ fontWeight: '500', color: '#0F172A' }}>{c.customer_email || c.sender_id || '-'}</div>
                   <div className="mobile-card-row">
                     <span style={{ textTransform: 'capitalize' }}>{c.channel || 'email'}</span>
                     <Badge status={c.status} />
@@ -615,7 +615,7 @@ export default function Actions() {
                       </button>
                     </td>
                     <td style={{ padding: '0 16px', textTransform: 'capitalize', color: '#1E293B' }}>{c.channel || 'email'}</td>
-                    <td style={{ padding: '0 16px', color: '#1E293B' }}>{c.customer_email || c.sender_id || '—'}</td>
+                    <td style={{ padding: '0 16px', color: '#1E293B' }}>{c.customer_email || c.sender_id || '-'}</td>
                     <td style={{ padding: '0 16px' }}><Badge status={c.status} /></td>
                     <td style={{ padding: '0 16px', color: '#64748B', fontSize: '12px', fontFamily: 'DM Mono, monospace' }}>{formatDate(c.updated_at)}</td>
                   </tr>

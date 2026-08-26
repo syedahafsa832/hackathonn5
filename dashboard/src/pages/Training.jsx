@@ -45,7 +45,7 @@ function CheckRow({ ok, label, detail }) {
 function StatBlock({ label, value }) {
   return (
     <div>
-      <div style={{ fontFamily: 'DM Mono, monospace', fontSize: '20px', fontWeight: '700', color: '#0F172A' }}>{value ?? '—'}</div>
+      <div style={{ fontFamily: 'DM Mono, monospace', fontSize: '20px', fontWeight: '700', color: '#0F172A' }}>{value ?? '-'}</div>
       <div style={{ fontSize: '11.5px', color: '#94A3B8', marginTop: '2px' }}>{label}</div>
     </div>
   );

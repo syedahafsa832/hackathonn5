@@ -22,12 +22,12 @@ const STATUS_BADGE = {
 const REJECTION_REASONS = ['Wrong tone', 'Wrong information', 'Missing information', 'Policy issue', 'Too verbose', 'Other'];
 
 function excerpt(text, max = 160) {
-  if (!text) return '—';
+  if (!text) return '-';
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
 function formatDate(iso) {
-  if (!iso) return '—';
+  if (!iso) return '-';
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 

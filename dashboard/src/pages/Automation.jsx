@@ -232,7 +232,7 @@ function RecentFailures({ failures }) {
         {failures.map((f, i) => (
           <div key={i} style={{ padding: '10px 12px', borderRadius: '6px', background: '#FAFAFA', border: '1px solid #E4E4E7' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: '12.5px', fontWeight: '600', color: '#0F172A' }}>Order #{f.order_id ?? '—'}</span>
+              <span style={{ fontSize: '12.5px', fontWeight: '600', color: '#0F172A' }}>Order #{f.order_id ?? '-'}</span>
               <span style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                 <span style={{
                   fontSize: '10px', fontWeight: '600', color: CATEGORY_COLOR[f.category] || '#475569',

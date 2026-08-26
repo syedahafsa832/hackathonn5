@@ -7,7 +7,7 @@ import Alert from '../components/Alert';
 import { useConversations, useMarkRead } from '../hooks/useApi';
 
 function formatDate(iso) {
-  if (!iso) return '—';
+  if (!iso) return '-';
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
@@ -207,10 +207,10 @@ export default function Tickets() {
                 <span style={{ color: '#64748B' }}>{formatDate(c.updated_at)}</span>
               </div>
               <div style={{ fontWeight: c.unread_count > 0 ? '600' : '500', color: '#0F172A' }}>
-                {c.customer_email || c.sender_id || '—'}
+                {c.customer_email || c.sender_id || '-'}
               </div>
               <div style={{ fontSize: '12.5px', color: '#64748B', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {c.last_message || '—'}
+                {c.last_message || '-'}
               </div>
               <div className="mobile-card-row">
                 <span style={{ textTransform: 'capitalize' }}>{c.channel}</span>
@@ -279,10 +279,10 @@ export default function Tickets() {
                       {c.channel}
                     </td>
                     <td style={{ padding: '0 16px', color: '#1E293B' }}>
-                      {c.customer_email || c.sender_id || '—'}
+                      {c.customer_email || c.sender_id || '-'}
                     </td>
                     <td style={{ padding: '0 16px', color: '#64748B', fontSize: '13px', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {c.last_message || '—'}
+                      {c.last_message || '-'}
                     </td>
                     <td style={{ padding: '0 16px' }}>
                       <Badge status={c.status} />

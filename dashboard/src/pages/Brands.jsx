@@ -176,7 +176,7 @@ function StoreCard({ brand, highlightGmail }) {
         </div>
         <div style={{ textAlign: 'right', fontSize: '12px', color: 'var(--text-secondary)' }}>
           <div style={{ marginBottom: '2px', fontFamily: 'DM Mono, monospace', fontSize: '14px', fontWeight: '500' }}>
-            {brand.ticket_count || brand.tickets_count || '—'} tickets
+            {brand.ticket_count || brand.tickets_count || '-'} tickets
           </div>
           <div>{connected ? '● Connected' : '○ Not connected'}</div>
         </div>
@@ -186,10 +186,10 @@ function StoreCard({ brand, highlightGmail }) {
         <div style={{ padding: '0 24px 20px', borderTop: '1px solid var(--border)', paddingTop: '16px' }}>
           <div style={{ display: 'flex', gap: '24px', marginBottom: '16px', flexWrap: 'wrap' }}>
             {[
-              ['Store', brand.shopify_shop_name || '—'],
-              ['Support email', brand.support_email || '—'],
-              ['Return window', brand.return_policy_days != null ? `${brand.return_policy_days} days` : '—'],
-              ['Auto-approve ≤', brand.auto_approve_threshold != null ? `$${brand.auto_approve_threshold}` : '—'],
+              ['Store', brand.shopify_shop_name || '-'],
+              ['Support email', brand.support_email || '-'],
+              ['Return window', brand.return_policy_days != null ? `${brand.return_policy_days} days` : '-'],
+              ['Auto-approve ≤', brand.auto_approve_threshold != null ? `$${brand.auto_approve_threshold}` : '-'],
             ].map(([label, value]) => (
               <div key={label}>
                 <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '2px' }}>{label}</div>

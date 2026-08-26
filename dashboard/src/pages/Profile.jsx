@@ -23,7 +23,7 @@ export default function Profile() {
   const [passwordMsg, setPasswordMsg] = useState('');
 
   useEffect(() => {
-    document.title = 'Profile — tResolv';
+    document.title = 'Profile: tResolv';
   }, []);
 
   useEffect(() => {
@@ -158,7 +158,7 @@ export default function Profile() {
             Avatar
           </label>
           <p style={{ fontSize: '12px', color: '#94A3B8' }}>
-            No avatar uploaded — showing your initials. Avatar upload isn't available yet.
+            No avatar uploaded. Showing your initials. Avatar upload isn't available yet.
           </p>
         </div>
 

@@ -813,7 +813,7 @@ function KnowledgeBaseTab() {
                 <div>
                   <div style={{ fontWeight: '500', fontSize: '14px', color: 'var(--text-primary)' }}>{src.name || src.title}</div>
                   <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>
-                    {src.created_at ? new Date(src.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—'}
+                    {src.created_at ? new Date(src.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '-'}
                   </div>
                 </div>
                 <button
@@ -1426,7 +1426,7 @@ function ReplyStyleTab() {
                 <div style={{ fontSize: '13px', color: 'var(--text-primary)', fontWeight: '500' }}>
                   {typeof data.learned_profile[key] === 'boolean'
                     ? (data.learned_profile[key] ? 'Yes' : 'No')
-                    : (data.learned_profile[key] || '—')}
+                    : (data.learned_profile[key] || '-')}
                 </div>
               </div>
             ))}

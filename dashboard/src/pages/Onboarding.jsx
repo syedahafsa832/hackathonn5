@@ -115,7 +115,7 @@ function StepShopify({ brandId, onNext, onConnected }) {
     } catch (err) {
       setError(err.response
         ? extractErrorMessage(err, 'Could not start the Shopify connection. Check your store URL.')
-        : "Couldn't reach the server right now. This can happen briefly while it wakes up — try again in a few seconds.");
+        : "Couldn't reach the server right now. This can happen briefly while it wakes up. Try again in a few seconds.");
       clearTimeout(slowTimerRef.current);
       setSlowConnect(false);
       setLoading(false);
@@ -144,7 +144,7 @@ function StepShopify({ brandId, onNext, onConnected }) {
       <div>
         <h2 style={{ fontSize: '22px', fontWeight: '700', marginBottom: '8px' }}>Connect Shopify</h2>
         <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: '1.5' }}>
-          We'll import your products, policies, and pages so Luna understands your store automatically — no manual setup.
+          We'll import your products, policies, and pages so Luna understands your store automatically. No manual setup.
         </p>
       </div>
 
@@ -164,7 +164,7 @@ function StepShopify({ brandId, onNext, onConnected }) {
         <button onClick={onNext} style={skipBtn}>Skip for now</button>
         {slowConnect && (
           <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-            Still working — this can take longer than usual if our server just woke up.
+            Still working. This can take longer than usual if our server just woke up.
           </span>
         )}
       </div>
@@ -284,12 +284,12 @@ function StepImport({ brandId, shopifyConnected, onNext }) {
             </span>
           </div>
         ))}
-        {stillGoing && <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Still working — this continues in the background either way.</div>}
+        {stillGoing && <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Still working. This continues in the background either way.</div>}
       </div>
 
       {!stillGoing && missingScopes.length > 0 && (
         <Alert variant="error">
-          You can continue using tResolv now — reconnect Shopify later with an updated access token to import
+          You can continue using tResolv now. Reconnect Shopify later with an updated access token to import
           {' '}{missingScopes.map(s => SCOPE_LABELS[s] || s).join(' and ')}. In Shopify Admin, go to Settings →
           Apps and sales channels → Develop apps → your app → Configuration, add the missing scope(s), save,
           then reinstall the app and reconnect Shopify here.
@@ -413,7 +413,7 @@ function StepStyle({ brandId, onNext }) {
       <div>
         <h2 style={{ fontSize: '22px', fontWeight: '700', marginBottom: '8px' }}>How should Luna reply?</h2>
         <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: '1.5' }}>
-          Pick a starting style. This becomes active immediately — you can fine-tune it later in Settings.
+          Pick a starting style. This becomes active immediately. You can fine-tune it later in Settings.
         </p>
       </div>
 
@@ -508,7 +508,7 @@ function StepTestLuna({ brandId, shopifyConnected, onNext }) {
       const res = await client.post(`/api/v2/brands/${brandId}/test-reply`, { message: question });
       if (res.data?.provider_outage) {
         setPassed(false);
-        setError("Luna's AI models are all at capacity right now. This is temporary — try again in a few minutes.");
+        setError("Luna's AI models are all at capacity right now. This is temporary. Try again in a few minutes.");
       } else {
         setReply(res.data?.reply || '');
         setPassed(true);
@@ -527,13 +527,13 @@ function StepTestLuna({ brandId, shopifyConnected, onNext }) {
       <div>
         <h2 style={{ fontSize: '22px', fontWeight: '700', marginBottom: '8px' }}>Test Luna</h2>
         <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: '1.5' }}>
-          Let's make sure Luna can answer questions about your store — one real question, run through the actual support agent.
+          Let's make sure Luna can answer questions about your store. One real question, run through the actual support agent.
         </p>
       </div>
 
       {!shopifyConnected ? (
         <div style={{ padding: '16px 20px', background: 'var(--bg-secondary)', borderRadius: '6px', fontSize: '14px', color: 'var(--text-secondary)' }}>
-          Luna needs your store connected first — you skipped Shopify earlier, so there's nothing to test against yet.
+          Luna needs your store connected first. You skipped Shopify earlier, so there's nothing to test against yet.
           You can connect it later in Settings.
         </div>
       ) : loadingStatus ? (
@@ -568,7 +568,7 @@ function StepTestLuna({ brandId, shopifyConnected, onNext }) {
           {passed === true && (
             <div style={{ marginTop: '12px' }}>
               <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--success)', marginBottom: '8px' }}>
-                ✓ Test passed — Luna can use your store knowledge.
+                ✓ Test passed. Luna can use your store knowledge.
               </div>
               {reply && (
                 <div style={{ padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px', fontSize: '13px', color: 'var(--text-primary)', whiteSpace: 'pre-line' }}>
@@ -654,14 +654,14 @@ function StepGoLive({ brandId, shopifyConnected, gmailConnected, onFinish }) {
         <div style={{ padding: '16px 20px', background: 'var(--success-bg, #ECFDF5)', border: '1px solid var(--success, #10B981)', borderRadius: '6px', display: 'flex', alignItems: 'center', gap: '10px' }}>
           <span style={{ fontSize: '18px' }}>🟢</span>
           <span style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)' }}>
-            tResolv is live — it's handling real customer conversations now.
+            tResolv is live. It's handling real customer conversations now.
           </span>
         </div>
       ) : (
         <div style={{ padding: '16px 20px', background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: '6px', display: 'flex', alignItems: 'center', gap: '10px' }}>
           <span style={{ fontSize: '18px' }}>⏸</span>
           <span style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-secondary)' }}>
-            tResolv is paused — it is not responding to real customers yet.
+            tResolv is paused. It is not responding to real customers yet.
           </span>
         </div>
       )}
@@ -790,13 +790,13 @@ export default function Onboarding() {
         <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '40px', maxWidth: '440px', textAlign: 'center' }}>
           <h2 style={{ fontSize: '18px', fontWeight: '700', marginBottom: '10px' }}>You've been signed out</h2>
           <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: '1.5', marginBottom: '20px' }}>
-            Your session isn't valid anymore — log in again to continue setting up your account.
+            Your session isn't valid anymore. Log in again to continue setting up your account.
           </p>
           <button onClick={() => navigate('/login')} style={{ padding: '10px 24px', borderRadius: '4px', fontSize: '14px', fontWeight: '600', background: 'var(--accent)', color: 'white', cursor: 'pointer' }}>
             Go to login
           </button>
           <div style={{ marginTop: '14px', fontSize: '12px', color: 'var(--text-muted)' }}>
-            <HelpContactLink variant="inline" context="Onboarding — signed out" label="Need help instead?" />
+            <HelpContactLink variant="inline" context="Onboarding: signed out" label="Need help instead?" />
           </div>
         </div>
       </div>
@@ -815,7 +815,7 @@ export default function Onboarding() {
             Retry
           </button>
           <div style={{ marginTop: '14px', fontSize: '12px', color: 'var(--text-muted)' }}>
-            Still stuck? <HelpContactLink variant="inline" context="Onboarding — couldn't load account" label="Email us" />
+            Still stuck? <HelpContactLink variant="inline" context="Onboarding: couldn't load account" label="Email us" />
           </div>
         </div>
       </div>
@@ -825,7 +825,7 @@ export default function Onboarding() {
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px', position: 'relative' }}>
       <div style={{ position: 'absolute', top: '20px', right: '24px' }}>
-        <HelpContactLink context={`Onboarding — step ${step}`} />
+        <HelpContactLink context={`Onboarding: step ${step}`} />
       </div>
       <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', padding: '40px', width: '100%', maxWidth: '600px' }}>
         <div style={{ marginBottom: '32px' }}>

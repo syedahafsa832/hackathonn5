@@ -10,7 +10,7 @@ import { useNotifications } from '../hooks/useNotifications';
 import { useStats, useConversations, useBrandFeedback } from '../hooks/useApi';
 
 function formatTime(iso) {
-  if (!iso) return '—';
+  if (!iso) return '-';
   return new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 }
 
@@ -104,8 +104,8 @@ export default function Dashboard() {
   // Update document title with pending count
   useEffect(() => {
     const pending = stats?.escalatedChats ?? 0;
-    document.title = pending > 0 ? `(${pending}) Dashboard — tResolv` : 'Dashboard — tResolv';
-    return () => { document.title = 'Dashboard — tResolv'; };
+    document.title = pending > 0 ? `(${pending}) Dashboard: tResolv` : 'Dashboard: tResolv';
+    return () => { document.title = 'Dashboard: tResolv'; };
   }, [stats?.escalatedChats]);
 
   // Notify on new active tickets
@@ -158,7 +158,7 @@ export default function Dashboard() {
       {/* Cold-start notice */}
       {loading && slowLoad && (
         <div style={{ textAlign: 'center', fontSize: '13px', color: '#94A3B8', padding: '8px' }}>
-          Starting up the server — this takes about 20 seconds on first load. Hang tight...
+          Getting things ready. The first load can take about 20 seconds.
         </div>
       )}
 
@@ -209,35 +209,35 @@ export default function Dashboard() {
 
       {/* Stat cards — statsError && no cached data means the request itself
           failed (cold start / network), not that activity is genuinely
-          zero. Show '—' instead of a confident-but-wrong 0 in that case. */}
+          zero. Show '-' instead of a confident-but-wrong 0 in that case. */}
       {statsError && !stats && (
         <div style={{ fontSize: '12.5px', color: '#B45309', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: '6px', padding: '8px 12px' }}>
-          Couldn't load live stats — retrying automatically. These numbers aren't final yet.
+          Couldn't load live stats. Retrying automatically. These numbers aren't final yet.
         </div>
       )}
       <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
         <StatCard
           label="Active Conversations"
-          value={stats ? stats.activeConversations : (statsError ? '—' : 0)}
+          value={stats ? stats.activeConversations : (statsError ? '-' : 0)}
           loading={loading}
           subtitle="Real-time open chats"
         />
         <StatCard
           label="AI Responded"
-          value={stats?.aiHandledPct != null ? `${stats.aiHandledPct}%` : '—'}
+          value={stats?.aiHandledPct != null ? `${stats.aiHandledPct}%` : '-'}
           loading={loading}
           subtitle="Replies sent by AI automatically"
           isAi={true}
         />
         <StatCard
           label="Escalated Chats"
-          value={stats ? stats.escalatedChats : (statsError ? '—' : 0)}
+          value={stats ? stats.escalatedChats : (statsError ? '-' : 0)}
           loading={loading}
           subtitle="Need immediate attention"
         />
         <StatCard
           label="Pending Approvals"
-          value={stats ? stats.pendingApprovals : (statsError ? '—' : 0)}
+          value={stats ? stats.pendingApprovals : (statsError ? '-' : 0)}
           loading={loading}
           subtitle="Actions awaiting review"
         />
@@ -245,7 +245,7 @@ export default function Dashboard() {
           label="Avg Response Time"
           value={(() => {
             const s = stats?.avgResponseSeconds;
-            if (s == null) return '—';
+            if (s == null) return '-';
             if (s < 60) return `${s}s`;
             return `${Math.floor(s / 60)}m ${s % 60}s`;
           })()}
@@ -254,19 +254,19 @@ export default function Dashboard() {
         />
         <StatCard
           label="Resolved"
-          value={stats ? stats.resolvedCount : (statsError ? '—' : 0)}
+          value={stats ? stats.resolvedCount : (statsError ? '-' : 0)}
           loading={loading}
           subtitle="Conversations closed out"
         />
         <StatCard
           label="Customer Satisfaction"
-          value={stats?.csatPct != null ? `${stats.csatPct}%` : '—'}
+          value={stats?.csatPct != null ? `${stats.csatPct}%` : '-'}
           loading={loading}
           subtitle={stats?.csatPct != null ? 'Positive CSAT responses' : 'No CSAT surveys sent yet'}
         />
         <StatCard
           label="Avg AI Confidence"
-          value={stats?.avgConfidencePct != null ? `${stats.avgConfidencePct}%` : '—'}
+          value={stats?.avgConfidencePct != null ? `${stats.avgConfidencePct}%` : '-'}
           loading={loading}
           subtitle="Model's own certainty in its replies"
         />
@@ -328,8 +328,8 @@ export default function Dashboard() {
                   onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                 >
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: '13px', fontWeight: '500', color: '#0F172A' }}>{c.customer_email || c.sender_id || '—'}</div>
-                    <div style={{ fontSize: '12px', color: '#94A3B8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.last_message || '—'}</div>
+                    <div style={{ fontSize: '13px', fontWeight: '500', color: '#0F172A' }}>{c.customer_email || c.sender_id || '-'}</div>
+                    <div style={{ fontSize: '12px', color: '#94A3B8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.last_message || '-'}</div>
                   </div>
                   <span style={{ fontFamily: 'DM Mono, monospace', fontSize: '12px', color: '#64748B', flexShrink: 0, marginLeft: '12px' }}>{formatTime(c.updated_at)}</span>
                 </div>
@@ -354,7 +354,7 @@ export default function Dashboard() {
           </div>
         ) : statsError && !stats ? (
           <div style={{ padding: '32px', textAlign: 'center', border: '1px solid #FDE68A', borderRadius: '8px', background: '#FFFBEB', color: '#B45309', fontSize: '14px' }}>
-            Couldn't check for escalations right now — retrying automatically.
+            Couldn't check for escalations right now. Retrying automatically.
           </div>
         ) : (stats?.escalatedChats ?? 0) === 0 ? (
           <div style={{ padding: '32px', textAlign: 'center', border: '1px solid #E4E4E7', borderRadius: '8px', background: 'white', color: '#64748B', fontSize: '14px' }}>
@@ -376,7 +376,7 @@ export default function Dashboard() {
         <h2 style={{ margin: '0 0 12px', fontSize: '15px', fontWeight: '600', color: '#0F172A' }}>Recent Feedback</h2>
         {!feedback || feedback.length === 0 ? (
           <div style={{ padding: '32px', textAlign: 'center', border: '1px solid #E4E4E7', borderRadius: '8px', background: 'white', color: '#64748B', fontSize: '14px' }}>
-            No customer feedback yet — it'll show up here once customers rate a conversation.
+            No customer feedback yet. It'll show up here once customers rate a conversation.
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
