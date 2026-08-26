@@ -1043,11 +1043,27 @@ async def _connect_shopify_credentials(brand_id: str, tenant_id: str, shop_domai
     # Best-effort: record which scopes this token actually has, right
     # now, so onboarding/import can show a precise message instead of
     # discovering a missing permission mid-import.
-    await shopify_scope_service.check_and_store_scopes(active_brand_id, client_shopify)
+    scope_result = await shopify_scope_service.check_and_store_scopes(active_brand_id, client_shopify)
 
     await supabase_service.log_onboarding_event(active_brand_id, "shopify_connected", {
         "shop_domain": shop_domain,
     })
+
+    # Auto-start Shopify -> Knowledge Base ingestion right after a
+    # successful connection, regardless of which surface initiated it
+    # (onboarding, Settings, or the OAuth callback) - the merchant should
+    # never have to separately remember to trigger the import that
+    # already exists. Reuses the exact same idempotent, scope-gated
+    # kickoff the explicit POST /shopify/import endpoint uses. Best-effort:
+    # never fail a successful connection over an import that couldn't start.
+    try:
+        await _start_shopify_import_if_needed(
+            active_brand_id,
+            {"id": active_brand_id, "shopify_connected": True, "shopify_granted_scopes": scope_result.get("granted_scopes")},
+            client=client_shopify,
+        )
+    except Exception as e:
+        logger.warning(f"[v2/brands] Could not auto-start Shopify import for brand {active_brand_id}: {e}")
 
     return {
         "success": True,
@@ -1056,6 +1072,69 @@ async def _connect_shopify_credentials(brand_id: str, tenant_id: str, shop_domai
         "brand_id": active_brand_id,  # May differ from URL brand_id after 409 resolution
         "client": client_shopify,  # reused by callers that want get_counts() without reconnecting
     }
+
+
+async def _start_shopify_import_if_needed(brand_id: str, brand: dict, client=None, force: bool = False) -> dict:
+    """Kick off background KB ingestion for a connected brand, unless it's
+    already running or already completed - the exact logic the explicit
+    POST /shopify/import endpoint used to inline. Pulled out so a
+    successful Shopify connection (OAuth callback or manual token connect,
+    from onboarding or Settings) can trigger the same ingestion
+    automatically instead of requiring the merchant to separately visit
+    onboarding's import step. Idempotent by construction: the
+    knowledge_base_sources completed-check and the in-memory running-check
+    below are the same guards the manual endpoint always had, so calling
+    this on every (re)connect never duplicates an import."""
+    if shopify_import_service.get_import_status(brand_id) == "running":
+        return {"success": True, "status": "running"}
+
+    # get_import_status() is an in-memory, single-process flag - it
+    # resets to "not_started" on every restart/redeploy even though the
+    # real knowledge (knowledge_base_sources rows + their rag_chunks)
+    # is still there in the database. Without this check, onboarding
+    # simply re-mounting this step after a restart would wipe and
+    # re-fetch/re-embed the merchant's entire catalog for no reason
+    # (see _clear_previous_import). knowledge_base_sources.status is
+    # the real, persisted source of truth - reuse it instead of a
+    # second one.
+    if not force:
+        already_imported = supabase_select("knowledge_base_sources", {
+            "brand_id": f"eq.{brand_id}",
+            "source_type": f"eq.{shopify_import_service.SOURCE_TYPE}",
+            "status": "eq.completed",
+            "limit": "1",
+        })
+        if already_imported:
+            return {"success": True, "status": "done"}
+
+    granted = brand.get("shopify_granted_scopes")
+    if granted is None:
+        # Brand connected before scope tracking existed - check live now
+        # rather than starting an import that's blind to what will fail.
+        shopify_client = client or shopify_import_service._get_client_for_brand(brand)
+        if shopify_client:
+            result = await shopify_scope_service.check_and_store_scopes(brand_id, shopify_client)
+            granted = result.get("granted_scopes")
+        granted = granted or []
+
+    missing = shopify_scope_service.missing_scopes(granted, shopify_scope_service.IMPORT_SCOPES)
+    if len(missing) == len(shopify_scope_service.IMPORT_SCOPES):
+        # Neither read_products nor read_content is granted - every
+        # resource the importer knows how to fetch would 403. Don't run
+        # a doomed import; tell the merchant exactly what's missing.
+        shopify_scope_service.set_blocked(brand_id, missing)
+        return {
+            "success": True,
+            "status": "blocked_missing_scopes",
+            "missing_scopes": missing,
+            "message": "Your Shopify connection works, but additional permissions are required to import products and store content.",
+            "reason": "These permissions allow tResolv to understand your products, policies, and store information so Luna can answer customers accurately.",
+        }
+    shopify_scope_service.clear_blocked(brand_id)
+
+    await supabase_service.log_onboarding_event(brand_id, "shopify_import_started", {})
+    asyncio.create_task(shopify_import_service.run_shopify_import(brand_id))
+    return {"success": True, "status": "running"}
 
 
 @router.get("/{brand_id}/shopify/oauth/start")
@@ -1108,6 +1187,7 @@ async def connect_shopify(
 @router.post("/{brand_id}/shopify/import")
 async def start_shopify_import(
     brand_id: str,
+    force: bool = Query(False, description="Re-run the import even if it already completed - used by the Knowledge Base's 'Retry sync' action. Sources the merchant has manually edited are preserved (see _clear_previous_import)."),
     tenant: TenantContext = Depends(get_current_tenant),
 ):
     """Kick off the background import of products/policies/pages into the
@@ -1116,56 +1196,7 @@ async def start_shopify_import(
         brand = _get_owned_brand(brand_id, tenant.tenant_id)
         if not brand.get("shopify_connected"):
             raise HTTPException(status_code=400, detail="Connect Shopify before importing.")
-
-        if shopify_import_service.get_import_status(brand_id) == "running":
-            return {"success": True, "status": "running"}
-
-        # get_import_status() is an in-memory, single-process flag - it
-        # resets to "not_started" on every restart/redeploy even though the
-        # real knowledge (knowledge_base_sources rows + their rag_chunks)
-        # is still there in the database. Without this check, onboarding
-        # simply re-mounting this step after a restart would wipe and
-        # re-fetch/re-embed the merchant's entire catalog for no reason
-        # (see _clear_previous_import). knowledge_base_sources.status is
-        # the real, persisted source of truth - reuse it instead of a
-        # second one.
-        already_imported = supabase_select("knowledge_base_sources", {
-            "brand_id": f"eq.{brand_id}",
-            "source_type": f"eq.{shopify_import_service.SOURCE_TYPE}",
-            "status": "eq.completed",
-            "limit": "1",
-        })
-        if already_imported:
-            return {"success": True, "status": "done"}
-
-        granted = brand.get("shopify_granted_scopes")
-        if granted is None:
-            # Brand connected before scope tracking existed - check live now
-            # rather than starting an import that's blind to what will fail.
-            client = shopify_import_service._get_client_for_brand(brand)
-            if client:
-                result = await shopify_scope_service.check_and_store_scopes(brand_id, client)
-                granted = result.get("granted_scopes")
-            granted = granted or []
-
-        missing = shopify_scope_service.missing_scopes(granted, shopify_scope_service.IMPORT_SCOPES)
-        if len(missing) == len(shopify_scope_service.IMPORT_SCOPES):
-            # Neither read_products nor read_content is granted - every
-            # resource the importer knows how to fetch would 403. Don't run
-            # a doomed import; tell the merchant exactly what's missing.
-            shopify_scope_service.set_blocked(brand_id, missing)
-            return {
-                "success": True,
-                "status": "blocked_missing_scopes",
-                "missing_scopes": missing,
-                "message": "Your Shopify connection works, but additional permissions are required to import products and store content.",
-                "reason": "These permissions allow tResolv to understand your products, policies, and store information so Luna can answer customers accurately.",
-            }
-        shopify_scope_service.clear_blocked(brand_id)
-
-        await supabase_service.log_onboarding_event(brand_id, "shopify_import_started", {})
-        asyncio.create_task(shopify_import_service.run_shopify_import(brand_id))
-        return {"success": True, "status": "running"}
+        return await _start_shopify_import_if_needed(brand_id, brand, force=force)
     except HTTPException:
         raise
     except Exception as e:

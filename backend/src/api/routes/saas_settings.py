@@ -186,13 +186,29 @@ async def connect_shopify(
     # so onboarding/import can show a precise message instead of discovering
     # a missing permission mid-import.
     if mirrored_brand_id:
+        scope_result = None
         try:
             from src.services import shopify_scope_service
             from src.services.shopify_service import ShopifyClient
             scope_client = ShopifyClient(result.get("shop_domain"), request.access_token)
-            await shopify_scope_service.check_and_store_scopes(mirrored_brand_id, scope_client)
+            scope_result = await shopify_scope_service.check_and_store_scopes(mirrored_brand_id, scope_client)
         except Exception as e:
             logger.warning(f"[Settings] Could not check Shopify scopes: {e}")
+
+        # Auto-start Shopify -> Knowledge Base ingestion the same way the
+        # v2 OAuth connect path does, so a merchant who (re)connects via
+        # this legacy Settings token flow doesn't have to separately visit
+        # onboarding to trigger the import. Reuses the same idempotent,
+        # scope-gated kickoff - safe to call on every reconnect.
+        try:
+            from src.api.routes.v2_brands import _start_shopify_import_if_needed
+            await _start_shopify_import_if_needed(
+                mirrored_brand_id,
+                {"id": mirrored_brand_id, "shopify_connected": True,
+                 "shopify_granted_scopes": (scope_result or {}).get("granted_scopes")},
+            )
+        except Exception as e:
+            logger.warning(f"[Settings] Could not auto-start Shopify import: {e}")
 
     return {
         "success": True,

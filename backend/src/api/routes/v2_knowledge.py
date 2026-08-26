@@ -32,6 +32,11 @@ class SearchRequest(BaseModel):
     top_k: int = Field(5, ge=1, le=20)
 
 
+class UpdateSourceRequest(BaseModel):
+    content: str = Field(..., min_length=1)
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+
+
 # Max upload size and supported extensions for the file-upload endpoint
 # below. Kept small/simple on purpose - the goal is merchant policy docs
 # (return policy, FAQ, shipping info as .txt/.md/.pdf/.docx), not a general
@@ -123,12 +128,17 @@ async def get_source(
 
         source = sources[0]
 
-        # Get chunk count
+        # Reconstruct the readable content from its stored chunks - this is
+        # the only place the text lives (knowledge_base_sources never stored
+        # raw content), so the document viewer/editor reads from here.
         chunks = supabase_select("rag_chunks", {
             "source_id": f"eq.{source_id}",
-            "select": "id"
+            "brand_id": f"eq.{brand_id}",
+            "select": "content,chunk_index",
+            "order": "chunk_index.asc",
         })
         source["actual_chunk_count"] = len(chunks) if chunks else 0
+        source["content"] = "\n\n".join(c.get("content", "") for c in (chunks or []))
 
         return {"source": source}
 
@@ -137,6 +147,44 @@ async def get_source(
     except Exception as e:
         logger.error(f"Error getting KB source: {e}")
         raise HTTPException(status_code=500, detail="Failed to get source")
+
+
+@router.put("/sources/{source_id}")
+async def update_source(
+    brand_id: str,
+    source_id: str,
+    request: UpdateSourceRequest,
+    tenant: TenantContext = Depends(get_current_tenant),
+):
+    """Edit a knowledge base source's content and re-index it in place
+    (same source_id, so Shopify tagging/ownership on it survives). This is
+    also how a source that failed with no content gets "retried": the
+    merchant pastes the content back in here and Save re-embeds it."""
+    try:
+        _get_owned_brand(brand_id, tenant.tenant_id)
+        result = await brand_knowledge_service.update_source_content(
+            brand_id=brand_id,
+            source_id=source_id,
+            content=request.content.strip(),
+            name=request.name.strip() if request.name else None,
+        )
+
+        if not result.get("success"):
+            not_found = "not found" in (result.get("error") or "").lower()
+            raise HTTPException(status_code=404 if not_found else 400, detail=result.get("error"))
+
+        return {
+            "success": True,
+            "source_id": result.get("source_id"),
+            "chunk_count": result.get("chunk_count"),
+            "total_tokens": result.get("total_tokens"),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating KB source: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update source")
 
 
 @router.post("/upload")
