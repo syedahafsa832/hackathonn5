@@ -97,10 +97,22 @@ def _ticket_has_luna_reply(ticket: dict) -> bool:
     return False
 
 
-async def _get_tenant_brand_ids(tenant: TenantContext) -> Optional[List[str]]:
-    """Return brand IDs owned by this tenant, or None if we can't determine ownership.
-    Includes inactive brands to catch the onboarding 409 edge case where a brand is
-    deactivated but still has Gmail connected and active tickets."""
+async def _get_tenant_brand_ids(tenant: TenantContext) -> List[str]:
+    """Return brand IDs owned by this tenant — an empty list if it owns
+    none, NEVER None. Every caller in this codebase treats "can't
+    determine ownership" and "owns nothing" as the same thing (deny), and
+    several previously did that via `if brand_ids is not None and X not in
+    brand_ids`, which silently skipped the ownership check entirely for a
+    None return - a real, confirmed cross-tenant IDOR (a tenant with zero
+    owned brands, a documented reachable state after signup, could pass
+    any other tenant's store_id/brand_id and read/act on their data). This
+    function returning only a real list, always, closes that at the root
+    for every caller rather than relying on each one to remember to guard
+    against None.
+
+    Includes inactive brands to catch the onboarding 409 edge case where a
+    brand is deactivated but still has Gmail connected and active tickets.
+    """
     from src.services.auth_service import auth_service
     # Return ALL brands for this tenant (active or not) — tickets may belong to inactive brands
     owned = supabase_select("brands", {"tenant_id": f"eq.{tenant.tenant_id}"})
@@ -120,7 +132,7 @@ async def _get_tenant_brand_ids(tenant: TenantContext) -> Optional[List[str]]:
             ]
             if unclaimed_or_own:
                 return [b["id"] for b in unclaimed_or_own]
-    return None
+    return []
 
 
 @router.get("")
@@ -136,10 +148,16 @@ async def list_tickets(
         return cached[0]
 
     try:
-        # If caller specifies a store_id, verify it belongs to this tenant
+        # If caller specifies a store_id, verify it belongs to this tenant.
+        # Must deny by default: a tenant that owns zero brands (a real,
+        # reachable state — see _create_default_brand's own error-handling
+        # comment on default-brand creation failing after signup) must
+        # never be treated as "unscoped", which would let it pass through
+        # an arbitrary store_id and read another tenant's tickets. Only a
+        # store_id present in this tenant's OWN brand_ids may proceed.
         if store_id:
             brand_ids = await _get_tenant_brand_ids(tenant)
-            if brand_ids and store_id not in brand_ids:
+            if store_id not in brand_ids:
                 return []  # return empty rather than 403 (don't confirm existence)
             tickets = await supabase_service.get_tickets(store_id=store_id, status=status)
         else:
@@ -274,7 +292,7 @@ async def get_ticket(
 
         # Verify the ticket belongs to one of this tenant's brands
         brand_ids = await _get_tenant_brand_ids(tenant)
-        if brand_ids is not None and ticket_brand_id not in brand_ids:
+        if ticket_brand_id not in brand_ids:
             # Auto-heal: if this brand has no tenant_id yet, link it to the current tenant
             if ticket_brand_id:
                 brand_row = supabase_select("brands", {"id": f"eq.{ticket_brand_id}"})
@@ -317,7 +335,7 @@ async def _assert_ticket_access(ticket_id: str, tenant: TenantContext) -> dict:
         raise HTTPException(status_code=404, detail="Ticket not found")
     ticket_brand_id = ticket.get("brand_id") or ticket.get("store_id")
     brand_ids = await _get_tenant_brand_ids(tenant)
-    if brand_ids is not None and ticket_brand_id not in brand_ids:
+    if ticket_brand_id not in brand_ids:
         raise HTTPException(status_code=404, detail="Ticket not found")
     return ticket
 

@@ -121,7 +121,7 @@ export default function ActionCard({ action, onApproved, onRejected, compact }) 
 
       <div style={{ marginBottom: '12px', display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
         <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-          <strong>Customer:</strong> {action.customer_email || action.customer_name || '—'}
+          <strong>Customer:</strong> {action.customer_email || action.customer_name || '-'}
         </span>
         {(action.order_id || action.order_number) && (
           <span style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
@@ -147,7 +147,7 @@ export default function ActionCard({ action, onApproved, onRejected, compact }) 
           {result.success ? (
             <div>
               <strong>Executed</strong>
-              {result.amount && <span> — ${Number(result.amount).toFixed(2)} refund issued</span>}
+              {result.amount && <span>: ${Number(result.amount).toFixed(2)} refund issued</span>}
               {result.shopify_refund_id && <div style={{ fontSize: '11px', opacity: 0.8, marginTop: '3px', fontFamily: 'DM Mono, monospace' }}>Shopify ID: {result.shopify_refund_id}</div>}
             </div>
           ) : (
@@ -159,7 +159,7 @@ export default function ActionCard({ action, onApproved, onRejected, compact }) 
       {!result && !rejecting && action.action_type === 'refund' && (
         <div style={{ marginBottom: '10px' }}>
           <label style={{ display: 'block', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
-            Partial refund amount (optional — leave blank for the full ${(action.amount || 0).toFixed(2)})
+            Partial refund amount (optional, leave blank for the full ${(action.amount || 0).toFixed(2)})
           </label>
           <input
             type="number" min="0.01" step="0.01"

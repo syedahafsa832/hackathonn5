@@ -200,7 +200,7 @@ async def get_event(event_id: str, tenant: TenantContext = Depends(get_current_t
         ticket = tickets[0]
         ticket_brand_id = ticket.get("brand_id") or ticket.get("store_id")
         owned_brand_ids = await _get_tenant_brand_ids(tenant)
-        if owned_brand_ids is not None and ticket_brand_id not in owned_brand_ids:
+        if ticket_brand_id not in owned_brand_ids:
             raise HTTPException(status_code=404, detail="Event not found")
 
         return {

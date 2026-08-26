@@ -25,7 +25,7 @@ async def _assert_brand_access(store_id: str, tenant: TenantContext):
     if store_id == DEFAULT_STORE_ID:
         return
     brand_ids = await _get_tenant_brand_ids(tenant)
-    if brand_ids is not None and store_id not in brand_ids:
+    if store_id not in brand_ids:
         raise HTTPException(status_code=404, detail="Store not found")
 
 
@@ -121,7 +121,7 @@ async def takeover_ticket(
 
         store_id = ticket.get("brand_id") or ticket.get("store_id")
         brand_ids = await _get_tenant_brand_ids(tenant)
-        if brand_ids is not None and store_id not in brand_ids:
+        if store_id not in brand_ids:
             raise HTTPException(status_code=404, detail="Ticket not found")
 
         supabase_insert("conversation_overrides", {
@@ -152,7 +152,7 @@ async def release_ticket(
 
         store_id = ticket.get("brand_id") or ticket.get("store_id")
         brand_ids = await _get_tenant_brand_ids(tenant)
-        if brand_ids is not None and store_id not in brand_ids:
+        if store_id not in brand_ids:
             raise HTTPException(status_code=404, detail="Ticket not found")
 
         supabase_update("conversation_overrides",
@@ -196,7 +196,7 @@ async def send_draft(
 
         store_id = ticket.get("brand_id") or ticket.get("store_id")
         brand_ids = await _get_tenant_brand_ids(tenant)
-        if brand_ids is not None and store_id not in brand_ids:
+        if store_id not in brand_ids:
             raise HTTPException(status_code=404, detail="Ticket not found")
 
         draft_content = body_override or ticket.get("ai_draft")

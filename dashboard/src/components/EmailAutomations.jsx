@@ -8,7 +8,7 @@ import Alert from './Alert';
 
 const TRIGGERS = [
   { value: 'cancel_order', label: 'Cancellation confirmation', help: 'Sent after Luna successfully cancels an order for a customer.' },
-  { value: 'refund', label: 'Refund confirmation', help: 'Sent after a refund has actually gone through — never before.' },
+  { value: 'refund', label: 'Refund confirmation', help: 'Sent after a refund has actually gone through, never before.' },
   { value: 'exchange', label: 'Exchange confirmation', help: 'Sent after an exchange is confirmed or ready.' },
   { value: 'change_address', label: 'Address change confirmation', help: "Sent after a customer's shipping address is updated." },
 ];
@@ -43,8 +43,8 @@ function InfoDot({ text }) {
 function statusMeta(automation) {
   if (!automation) return { label: 'Not set up', color: '#94A3B8', bg: '#F8FAFC', border: '#E4E4E7' };
   if (!automation.enabled) return { label: 'Draft (not sending)', color: '#94A3B8', bg: '#F8FAFC', border: '#E4E4E7' };
-  if (automation.requires_approval) return { label: 'On — waits for your OK', color: '#B45309', bg: '#FFFBEB', border: '#FDE68A' };
-  return { label: 'On — sends automatically', color: '#059669', bg: '#ECFDF5', border: '#A7F3D0' };
+  if (automation.requires_approval) return { label: 'On, waits for your OK', color: '#B45309', bg: '#FFFBEB', border: '#FDE68A' };
+  return { label: 'On, sends automatically', color: '#059669', bg: '#ECFDF5', border: '#A7F3D0' };
 }
 
 function EditorForm({ trigger, existing, brandId, onDone }) {
@@ -143,15 +143,15 @@ function EditorForm({ trigger, existing, brandId, onDone }) {
       <div>
         <div style={{ ...label, marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
           When it's ready to send
-          <InfoDot text="This only controls the EMAIL. The underlying action (cancelling, refunding, etc.) still always follows your existing approval rules — this email only ever goes out after that action has actually succeeded." />
+          <InfoDot text="This only controls the EMAIL. The underlying action (cancelling, refunding, etc.) still always follows your existing approval rules. This email only ever goes out after that action has actually succeeded." />
         </div>
         <label style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', fontSize: '13px', color: 'var(--text-primary)', marginBottom: '8px', cursor: 'pointer' }}>
           <input type="radio" checked={requiresApproval} onChange={() => setRequiresApproval(true)} style={{ marginTop: '3px' }} />
-          <span>Let me approve each one first <span style={{ color: '#94A3B8' }}>— it'll wait in a queue for you to send</span></span>
+          <span>Let me approve each one first <span style={{ color: '#94A3B8' }}>, it'll wait in a queue for you to send</span></span>
         </label>
         <label style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', fontSize: '13px', color: 'var(--text-primary)', cursor: 'pointer' }}>
           <input type="radio" checked={!requiresApproval} onChange={() => setRequiresApproval(false)} style={{ marginTop: '3px' }} />
-          <span>Luna sends it automatically <span style={{ color: '#94A3B8' }}>— as soon as the action succeeds</span></span>
+          <span>Luna sends it automatically <span style={{ color: '#94A3B8' }}>, as soon as the action succeeds</span></span>
         </label>
       </div>
 
@@ -191,7 +191,7 @@ function PendingOutbox({ brandId }) {
   return (
     <section>
       <h3 style={{ margin: '0 0 4px', fontSize: '13.5px', fontWeight: '700', color: '#0F172A' }}>Waiting for your OK</h3>
-      <p style={{ margin: '0 0 10px', fontSize: '12px', color: '#94A3B8' }}>These emails are ready — nothing is sent until you approve.</p>
+      <p style={{ margin: '0 0 10px', fontSize: '12px', color: '#94A3B8' }}>These emails are ready. Nothing is sent until you approve.</p>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
         {pending.map(p => (
           <div key={p.id} style={{ padding: '12px 14px', border: '1px solid #FDE68A', background: '#FFFBEB', borderRadius: '6px' }}>

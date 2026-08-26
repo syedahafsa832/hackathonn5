@@ -176,7 +176,7 @@ function StoreCard({ brand, highlightGmail }) {
         </div>
         <div style={{ textAlign: 'right', fontSize: '12px', color: 'var(--text-secondary)' }}>
           <div style={{ marginBottom: '2px', fontFamily: 'DM Mono, monospace', fontSize: '14px', fontWeight: '500' }}>
-            {brand.ticket_count || brand.tickets_count || '—'} tickets
+            {brand.ticket_count || brand.tickets_count || '-'} tickets
           </div>
           <div>{connected ? '● Connected' : '○ Not connected'}</div>
         </div>
@@ -186,10 +186,10 @@ function StoreCard({ brand, highlightGmail }) {
         <div style={{ padding: '0 24px 20px', borderTop: '1px solid var(--border)', paddingTop: '16px' }}>
           <div style={{ display: 'flex', gap: '24px', marginBottom: '16px', flexWrap: 'wrap' }}>
             {[
-              ['Store', brand.shopify_shop_name || '—'],
-              ['Support email', brand.support_email || '—'],
-              ['Return window', brand.return_policy_days != null ? `${brand.return_policy_days} days` : '—'],
-              ['Auto-approve ≤', brand.auto_approve_threshold != null ? `$${brand.auto_approve_threshold}` : '—'],
+              ['Store', brand.shopify_shop_name || '-'],
+              ['Support email', brand.support_email || '-'],
+              ['Return window', brand.return_policy_days != null ? `${brand.return_policy_days} days` : '-'],
+              ['Auto-approve ≤', brand.auto_approve_threshold != null ? `$${brand.auto_approve_threshold}` : '-'],
             ].map(([label, value]) => (
               <div key={label}>
                 <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '2px' }}>{label}</div>
@@ -313,13 +313,13 @@ function StoreCard({ brand, highlightGmail }) {
               )}
             </div>
             <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '8px' }}>
-              Refunds always require your one-tap approval before executing in Shopify — this policy only shapes what the AI recommends, not whether approval is needed.
+              Refunds always require your one-tap approval before executing in Shopify. This policy only shapes what the AI recommends, not whether approval is needed.
             </p>
           </div>
 
           {testResult?.shop && (
             <div style={{ padding: '8px 12px', background: 'var(--success-light)', borderRadius: '4px', fontSize: '12px', color: 'var(--success)', marginBottom: '12px' }}>
-              ✓ {testResult.shop.name} — {testResult.shop.plan_name} plan · {testResult.shop.currency}
+              ✓ {testResult.shop.name}: {testResult.shop.plan_name} plan · {testResult.shop.currency}
             </div>
           )}
 
@@ -428,8 +428,8 @@ export default function Brands() {
         <div style={{ padding: '48px', textAlign: 'center', border: '1px solid var(--border)', borderRadius: '6px', background: 'var(--bg-primary)' }}>
           <div style={{ fontWeight: '600', marginBottom: '6px' }}>We couldn't find your store</div>
           <div style={{ color: 'var(--text-muted)', fontSize: '13px' }}>
-            This can happen briefly right after signup — try refreshing. If it persists,{' '}
-            <HelpContactLink variant="inline" context="Store — couldn't find store" label="contact support" />.
+            This can happen briefly right after signup. Try refreshing. If it persists,{' '}
+            <HelpContactLink variant="inline" context="Store: couldn't find store" label="contact support" />.
           </div>
         </div>
       )}

@@ -18,7 +18,7 @@ export default function Upgrade() {
   const [upgradePlan, setUpgradePlan] = useState(null); // plan object -> modal open, null -> closed
 
   useEffect(() => {
-    document.title = 'Upgrade — tResolv';
+    document.title = 'Upgrade: tResolv';
   }, []);
 
   useEffect(() => {
@@ -40,14 +40,14 @@ export default function Upgrade() {
       <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', gap: '10px', maxWidth: '520px', margin: '0 auto' }}>
         {foundingActive && (
           <div>
-            <PlanBadge tone="warning">🔥 Founding pricing — {foundingSlotsRemaining} of 20 spots left</PlanBadge>
+            <PlanBadge tone="warning">🔥 Founding pricing: {foundingSlotsRemaining} of 20 spots left</PlanBadge>
           </div>
         )}
         <h1 style={{ margin: 0, fontSize: '28px', fontWeight: '700', color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
           Simple, transparent pricing
         </h1>
         <p style={{ margin: 0, fontSize: '14px', color: 'var(--text-secondary)', lineHeight: '1.6' }}>
-          Upgrade anytime. Payments are verified manually — submit your transaction reference after sending payment
+          Upgrade anytime. Payments are verified manually. Submit your transaction reference after sending payment
           and we'll activate your plan.
         </p>
       </div>

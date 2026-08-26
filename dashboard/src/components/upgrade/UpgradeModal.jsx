@@ -43,7 +43,7 @@ export default function UpgradeModal({ plan, me, onClose }) {
             </div>
             {!submitted && (
               <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '2px' }}>
-                Step {step} of 2 — {step === 1 ? 'Payment instructions' : 'Your details'}
+                Step {step} of 2: {step === 1 ? 'Payment instructions' : 'Your details'}
               </div>
             )}
           </div>
@@ -80,7 +80,7 @@ export default function UpgradeModal({ plan, me, onClose }) {
                 <Landmark size={16} color="var(--cyan-600)" style={{ flexShrink: 0, marginTop: '1px' }} />
                 <p style={{ margin: 0, fontSize: '12.5px', color: 'var(--text-secondary)', lineHeight: '1.6' }}>
                   Payments are currently verified manually. Send payment to the account below, then continue to submit
-                  your transaction reference — we'll activate your account once it's confirmed.
+                  your transaction reference. We'll activate your account once it's confirmed.
                 </p>
               </div>
               <BankDetails />

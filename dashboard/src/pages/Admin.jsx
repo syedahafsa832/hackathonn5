@@ -7,7 +7,7 @@ import Alert from '../components/Alert';
 const PAID_PLANS = ['starter', 'growth', 'enterprise'];
 
 function formatDate(iso) {
-  if (!iso) return '—';
+  if (!iso) return '-';
   return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
@@ -29,7 +29,7 @@ export default function Admin() {
   const [activateError, setActivateError] = useState('');
 
   useEffect(() => {
-    document.title = 'Admin — tResolv';
+    document.title = 'Admin: tResolv';
   }, []);
 
   const load = useCallback(async () => {
@@ -101,7 +101,7 @@ export default function Admin() {
           Tenants ({tenants.length})
         </h2>
         <p style={{ fontSize: '13px', color: '#64748B', marginBottom: '16px' }}>
-          Read-only overview — plan, signup date, connection status, ticket volume.
+          Read-only overview: plan, signup date, connection status, ticket volume.
         </p>
 
         <div style={{ background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', overflow: 'hidden' }}>
@@ -121,7 +121,7 @@ export default function Admin() {
                   <td style={{ padding: '0 16px' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontWeight: '500', color: '#0F172A' }}>
                       {PAID_PLANS.includes(t.plan) && <Crown size={13} color="#D97706" />}
-                      {t.company_name || '—'} {t.is_super_admin && <span style={{ fontSize: '10px', color: '#06B6D4', fontWeight: '600', marginLeft: '4px' }}>ADMIN</span>}
+                      {t.company_name || '-'} {t.is_super_admin && <span style={{ fontSize: '10px', color: '#06B6D4', fontWeight: '600', marginLeft: '4px' }}>ADMIN</span>}
                     </div>
                     <div style={{ fontSize: '12px', color: '#64748B' }}>{t.email}</div>
                   </td>
@@ -143,7 +143,7 @@ export default function Admin() {
           Upgrade Requests {pendingRequests.length > 0 && `(${pendingRequests.length} pending)`}
         </h2>
         <p style={{ fontSize: '13px', color: '#64748B', marginBottom: '16px' }}>
-          Manually activate after confirming payment (bank transfer) — no automatic billing.
+          Manually activate after confirming payment (bank transfer). No automatic billing.
         </p>
         <div style={{ marginBottom: activateError ? '16px' : 0 }}>
           <Alert variant="error" onDismiss={() => setActivateError('')} autoDismissMs={5000}>{activateError}</Alert>
@@ -170,10 +170,10 @@ export default function Admin() {
                   <tr key={r.id} style={{ borderBottom: '1px solid #F1F5F9', height: '48px' }}>
                     <td style={{ padding: '0 16px', color: '#1E293B' }}>{r.name}</td>
                     <td style={{ padding: '0 16px', color: '#1E293B' }}>{r.email}</td>
-                    <td style={{ padding: '0 16px', color: '#1E293B' }}>{r.brand || '—'}</td>
+                    <td style={{ padding: '0 16px', color: '#1E293B' }}>{r.brand || '-'}</td>
                     <td style={{ padding: '0 16px', color: '#1E293B', textTransform: 'capitalize' }}>{r.requested_plan}</td>
                     <td style={{ padding: '0 16px', color: r.transaction_reference ? '#1E293B' : '#CBD5E1', fontFamily: 'DM Mono, monospace', fontSize: '12px', maxWidth: '160px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.transaction_reference || ''}>
-                      {r.transaction_reference || '—'}
+                      {r.transaction_reference || '-'}
                     </td>
                     <td style={{ padding: '0 16px' }}>
                       <span style={{

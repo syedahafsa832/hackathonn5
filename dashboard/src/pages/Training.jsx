@@ -17,7 +17,7 @@ function readinessReason(readiness, categoryLabel) {
   if (!readiness) return '';
   const { status, total_requests, failed_executions } = readiness;
   if (status === 'not_ready') {
-    if (!total_requests) return `No verified ${categoryLabel.toLowerCase()} outcomes yet — Luna is still handling these with your team's approval.`;
+    if (!total_requests) return `No verified ${categoryLabel.toLowerCase()} outcomes yet. Luna is still handling these with your team's approval.`;
     return `Luna has handled ${total_requests} ${categoryLabel.toLowerCase()} request${total_requests === 1 ? '' : 's'}. More verified outcomes are needed before this is ready.`;
   }
   if (status === 'almost_there') {
@@ -45,7 +45,7 @@ function CheckRow({ ok, label, detail }) {
 function StatBlock({ label, value }) {
   return (
     <div>
-      <div style={{ fontFamily: 'DM Mono, monospace', fontSize: '20px', fontWeight: '700', color: '#0F172A' }}>{value ?? '—'}</div>
+      <div style={{ fontFamily: 'DM Mono, monospace', fontSize: '20px', fontWeight: '700', color: '#0F172A' }}>{value ?? '-'}</div>
       <div style={{ fontSize: '11.5px', color: '#94A3B8', marginTop: '2px' }}>{label}</div>
     </div>
   );
@@ -120,7 +120,7 @@ export default function Training() {
       <div>
         <h1 style={{ margin: '0 0 4px', fontSize: '20px', fontWeight: '700', color: '#0F172A' }}>Train Luna</h1>
         <p style={{ margin: 0, fontSize: '13px', color: '#94A3B8' }}>
-          You're training and supervising an AI employee — not just configuring a chatbot.
+          You're training and supervising an AI employee, not just configuring a chatbot.
         </p>
       </div>
 

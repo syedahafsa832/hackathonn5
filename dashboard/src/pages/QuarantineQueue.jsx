@@ -3,7 +3,7 @@ import client from '../api/client';
 import Alert from '../components/Alert';
 
 function formatAge(iso) {
-  if (!iso) return '—';
+  if (!iso) return '-';
   const mins = Math.round((Date.now() - new Date(iso)) / 60000);
   if (mins < 60) return `${mins}m ago`;
   const hrs = Math.round(mins / 60);
@@ -12,7 +12,7 @@ function formatAge(iso) {
 }
 
 function pct(confidence) {
-  if (confidence == null) return '—';
+  if (confidence == null) return '-';
   return `${Math.round(confidence * 100)}%`;
 }
 
@@ -35,7 +35,7 @@ export default function QuarantineQueue() {
   const [actionError, setActionError] = useState('');
 
   useEffect(() => {
-    document.title = "Quarantine — tResolv";
+    document.title = "Quarantine: tResolv";
   }, []);
 
   const fetchQueue = useCallback(async () => {
@@ -172,7 +172,7 @@ export default function QuarantineQueue() {
                     fontWeight: '600',
                     flexShrink: 0,
                   }}>
-                    {CLASSIFICATION_LABELS[item.ai_classification] || item.ai_classification || '—'} · {pct(item.ai_confidence)}
+                    {CLASSIFICATION_LABELS[item.ai_classification] || item.ai_classification || '-'} · {pct(item.ai_confidence)}
                   </span>
                 </div>
 

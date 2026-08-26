@@ -271,15 +271,15 @@ function EmailTab() {
                 width: '100%', padding: '12px 14px', background: '#FFFBEB', border: '1px solid #FDE68A',
                 borderRadius: '6px', fontSize: '13px', color: '#92400E', lineHeight: '1.5',
               }}>
-                Google access for <strong>{gmailStatus?.email}</strong> was revoked or expired — this can
+                Google access for <strong>{gmailStatus?.email}</strong> was revoked or expired. This can
                 happen after a password change, a Google security review, or removing tResolv's access in
-                your Google Account. tResolv has stopped monitoring this inbox. Reconnect to resume — your
+                your Google Account. tResolv has stopped monitoring this inbox. Reconnect to resume. Your
                 settings and past conversations are unaffected.
               </div>
             )}
 
             <div style={{ fontSize: '14px', color: '#475569', lineHeight: '1.5' }}>
-              Resolv will monitor this inbox every 60 seconds for new customer emails and send replies from it — directly from your address.
+              Resolv will monitor this inbox every 60 seconds for new customer emails and send replies from it, directly from your address.
             </div>
             <div style={{ width: '100%' }}>
               <GmailUnverifiedNotice />
@@ -816,7 +816,7 @@ function KnowledgeBaseTab() {
           {uploadingFile ? 'Uploading...' : '+ Add document'}
         </button>
         <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-          Upload a .txt, .md, .pdf, or .docx file — up to 10MB.
+          Upload a .txt, .md, .pdf, or .docx file, up to 10MB.
         </div>
       </div>
 
@@ -1451,7 +1451,7 @@ function ReplyStyleTab() {
       setMsg('Reply Style regenerated from your recent approved replies.');
       load(brandId);
     } catch (err) {
-      setError(err.response?.data?.detail || 'Could not regenerate — check the approved reply count below.');
+      setError(err.response?.data?.detail || 'Could not regenerate. Check the approved reply count below.');
     } finally {
       setRegenerating(false);
     }
@@ -1542,7 +1542,7 @@ function ReplyStyleTab() {
       <div style={card}>
         <div style={sectionTitle}>Identity</div>
         <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '14px' }}>
-          Who your AI is — its name and how it signs off. Separate from Reply Style, which controls tone and wording.
+          Who your AI is: its name and how it signs off. Separate from Reply Style, which controls tone and wording.
         </div>
         <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
           <div>
@@ -1585,7 +1585,7 @@ function ReplyStyleTab() {
           <div>
             <div style={sectionTitle}>Reply Style</div>
             <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-              Controls how your AI agent's replies sound — tone, greetings, formatting. It never changes facts, refund decisions, or policy.
+              Controls how your AI agent's replies sound: tone, greetings, formatting. It never changes facts, refund decisions, or policy.
             </div>
           </div>
           <div style={{
@@ -1623,7 +1623,7 @@ function ReplyStyleTab() {
       {mode !== 'disabled' && data.learned_profile && mode !== 'learned' && (
         <div style={{ ...card, background: '#ECFEFF', borderColor: '#A5F3FC' }}>
           <div style={{ fontSize: '13px', fontWeight: '600', color: '#0E7490', marginBottom: '8px' }}>
-            A learned writing style is ready from your approved replies — you can switch to it anytime.
+            A learned writing style is ready from your approved replies. You can switch to it anytime.
           </div>
           <button
             onClick={switchToLearned}
@@ -1640,7 +1640,7 @@ function ReplyStyleTab() {
           <div style={sectionTitle}>Presets</div>
           <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '14px' }}>
             Pick a starting style. This is active immediately.
-            {mode === 'learned' && " Your learned style stays saved — switch back to it anytime."}
+            {mode === 'learned' && " Your learned style stays saved. Switch back to it anytime."}
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '12px' }}>
             {presets.map(p => {
@@ -1681,7 +1681,7 @@ function ReplyStyleTab() {
                 <div style={{ fontSize: '13px', color: 'var(--text-primary)', fontWeight: '500' }}>
                   {typeof data.learned_profile[key] === 'boolean'
                     ? (data.learned_profile[key] ? 'Yes' : 'No')
-                    : (data.learned_profile[key] || '—')}
+                    : (data.learned_profile[key] || '-')}
                 </div>
               </div>
             ))}
@@ -1734,7 +1734,7 @@ function ReplyStyleTab() {
         <div style={card}>
           <div style={sectionTitle}>Uploaded Examples (optional)</div>
           <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
-            Seed data for faster personalization. Not required — approved replies work on their own.
+            Seed data for faster personalization. Not required. Approved replies work on their own.
           </div>
           <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '14px' }}>
             Show Luna how your team would reply. You don't need to use the exact wording a real customer would use.
@@ -2010,12 +2010,12 @@ function ChatWidgetTab() {
         <div style={{ fontSize: '14px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '6px' }}>Chat Widget</div>
         <div style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: '1.6' }}>
           Add a floating chat bubble to your Shopify store. Customers can ask questions, look up their orders,
-          and request refunds or changes — all handled by Luna in real time.
+          and request refunds or changes, all handled by Luna in real time.
         </div>
       </div>
 
       <div style={section}>
-        <div style={label}>Embed code — paste before {'</body>'} in your Shopify theme</div>
+        <div style={label}>Embed code: paste before {'</body>'} in your Shopify theme</div>
         <div style={{ position: 'relative' }}>
           <pre style={{
             background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: '6px',
@@ -2023,7 +2023,7 @@ function ChatWidgetTab() {
             fontFamily: 'DM Mono, monospace', overflowX: 'auto', margin: 0,
             whiteSpace: 'pre-wrap', wordBreak: 'break-all',
           }}>
-            {embedCode || 'No store found — check your Shopify connection in Settings.'}
+            {embedCode || 'No store found. Check your Shopify connection in Settings.'}
           </pre>
           {embedCode && (
             <button
@@ -2129,7 +2129,7 @@ function ChatWidgetTab() {
         <div style={label}>Customization (window.tResolvConfig keys)</div>
         <div style={{ ...card, fontSize: '12px', fontFamily: 'DM Mono, monospace', color: 'var(--text-secondary)', lineHeight: '2' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span style={{ color: 'var(--accent)' }}>color</span>: &quot;{accentColor}&quot; — widget accent color
+            <span style={{ color: 'var(--accent)' }}>color</span>: &quot;{accentColor}&quot;. Widget accent color
             <input
               type="color"
               value={accentColor}
@@ -2146,9 +2146,9 @@ function ChatWidgetTab() {
               }}
             />
           </div>
-          <div><span style={{ color: 'var(--accent)' }}>botName</span>: &quot;Luna&quot; — AI agent name shown in header</div>
-          <div><span style={{ color: 'var(--accent)' }}>brandLabel</span>: &quot;AI Support&quot; — subtitle in header</div>
-          <div><span style={{ color: 'var(--accent)' }}>apiBase</span>: &quot;https://…&quot; — override API URL (optional)</div>
+          <div><span style={{ color: 'var(--accent)' }}>botName</span>: &quot;Luna&quot;. AI agent name shown in header</div>
+          <div><span style={{ color: 'var(--accent)' }}>brandLabel</span>: &quot;AI Support&quot;. Subtitle in header</div>
+          <div><span style={{ color: 'var(--accent)' }}>apiBase</span>: &quot;https://…&quot;. Override API URL (optional)</div>
         </div>
       </div>
 
@@ -2229,7 +2229,7 @@ function IntegrationsTab() {
       {/* Aftership */}
       <div style={card}>
         <div style={{ fontSize: '14px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '4px' }}>
-          Aftership — Live Tracking
+          Aftership: Live Tracking
         </div>
         <div style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: '1.6', marginBottom: '16px' }}>
           Connect Aftership to let Luna give customers real-time tracking updates
@@ -2325,7 +2325,7 @@ export default function Settings() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   useEffect(() => {
-    document.title = "Settings — tResolv";
+    document.title = "Settings: tResolv";
   }, []);
 
   // If a deep link or prior session lands on an Advanced tab, keep the

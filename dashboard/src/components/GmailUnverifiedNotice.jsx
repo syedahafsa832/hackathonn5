@@ -9,7 +9,7 @@ const OAUTH_STEPS = [
   {
     src: '/gmail-onboarding/01-settings-connect.png',
     title: '1. Click "Connect Gmail"',
-    caption: 'Starts the Google sign-in. You\'ll leave tResolv briefly — that\'s expected.',
+    caption: 'Starts the Google sign-in. You\'ll leave tResolv briefly, that\'s expected.',
   },
   {
     src: '/gmail-onboarding/02-choose-account.png',
@@ -19,7 +19,7 @@ const OAUTH_STEPS = [
   {
     src: '/gmail-onboarding/03-unverified-warning-advanced.png',
     title: '3. Click "Advanced"',
-    caption: 'Google shows this because tResolv is still mid-verification (see above) — click Advanced to see the option to continue.',
+    caption: 'Google shows this because tResolv is still mid-verification (see above). Click Advanced to see the option to continue.',
   },
   {
     src: '/gmail-onboarding/04-unverified-warning-continue.png',
@@ -29,7 +29,7 @@ const OAUTH_STEPS = [
   {
     src: '/gmail-onboarding/05-consent-screen.png',
     title: '5. Review the permissions, then click "Continue"',
-    caption: 'Confirms the exact access described above — nothing more.',
+    caption: 'Confirms the exact access described above, nothing more.',
   },
   {
     src: '/gmail-onboarding/06-connected-success.png',
@@ -73,7 +73,7 @@ export default function GmailUnverifiedNotice() {
       <p style={{ margin: '0 0 8px' }}>
         <strong>To continue:</strong> on Google's screen, click <em>"Advanced"</em>, then
         <em> "Go to tResolv (unsafe)"</em>. That wording is Google's standard label for any app
-        mid-verification — it isn't tResolv's own description of itself.
+        mid-verification. It isn't tResolv's own description of itself.
       </p>
 
       <button

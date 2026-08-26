@@ -15,7 +15,7 @@ export default function ResetPassword() {
   const initialized = useRef(false);
 
   useEffect(() => {
-    document.title = "Reset password — tResolv";
+    document.title = "Reset password: tResolv";
     // React 18 StrictMode double-invokes effects in dev (mount, cleanup,
     // mount again) on the same component instance — without this guard,
     // the second pass would read the hash this same effect already

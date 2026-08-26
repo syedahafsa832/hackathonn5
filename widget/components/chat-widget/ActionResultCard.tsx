@@ -132,7 +132,7 @@ export function ActionResultCard({ data }: { data: ActionResult }) {
         <div style={rowMuted}>
           {data.status === 'executed'
             ? 'Your order has been cancelled. If you paid by card, your refund will appear in your account within 3–5 business days.'
-            : "We couldn't complete this automatically — our team has been notified and will follow up with you by email shortly."}
+            : "We couldn't complete this automatically. Our team has been notified and will follow up with you by email shortly."}
         </div>
       </motion.div>
     )

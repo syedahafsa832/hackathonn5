@@ -41,6 +41,7 @@ from src.api.routes.saas_auth import router as saas_auth_router  # noqa: E402
 from src.api.routes.v2_brands import router as v2_brands_router  # noqa: E402
 from src.api.routes.v2_tickets import router as v2_tickets_router  # noqa: E402
 from src.api.routes.brands import router as brands_router  # noqa: E402
+from src.api.routes.tickets import router as tickets_router  # noqa: E402
 
 
 # ─── Minimal app: only the routers under test, real prefixes matching main.py ──
@@ -50,6 +51,7 @@ app.include_router(saas_auth_router, prefix="/api/v1")
 app.include_router(v2_brands_router, prefix="/api/v2")
 app.include_router(v2_tickets_router, prefix="/api/v2")
 app.include_router(brands_router, prefix="/api")
+app.include_router(tickets_router, prefix="/api")
 client = TestClient(app)
 
 
@@ -77,7 +79,7 @@ class _FakeDB:
         else:
             return []
 
-        for key in ("id", "tenant_id", "brand_id", "organization_id", "email", "supabase_user_id"):
+        for key in ("id", "tenant_id", "brand_id", "organization_id", "email", "supabase_user_id", "store_id"):
             if key in params:
                 wanted = self._eq(params[key])
                 rows = [r for r in rows if r.get(key) == wanted]
@@ -149,6 +151,10 @@ def _patched_supabase():
          patch("src.api.routes.v2_tickets.supabase_select", side_effect=db.select), \
          patch("src.api.routes.v2_tickets.supabase_update", side_effect=db.update), \
          patch("src.api.routes.brands.supabase_select", side_effect=db.select), \
+         patch("src.api.routes.tickets.supabase_select", side_effect=db.select), \
+         patch("src.api.routes.tickets.supabase_update", side_effect=db.update), \
+         patch("src.services.supabase_service.supabase_select", side_effect=db.select), \
+         patch("src.services.supabase_service.supabase_update", side_effect=db.update), \
          patch("src.services.brand_manager.supabase_select", side_effect=db.select), \
          patch("src.services.brand_manager.supabase_update", side_effect=db.update), \
          patch("src.api.middleware.auth_middleware.supabase_auth_service.verify_jwt",
@@ -160,6 +166,8 @@ def _patched_supabase():
     _token_claims.clear()
     from src.services.brand_manager import brand_manager as _bm
     _bm._brand_cache.clear()
+    from src.api.routes.tickets import _invalidate_tickets_cache
+    _invalidate_tickets_cache()
 
 
 def _register(email: str) -> dict:
@@ -174,6 +182,20 @@ def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+@pytest.fixture
+def zero_brand_tenant():
+    """A tenant with ZERO owned brands — the exact reachable state
+    (documented in _create_default_brand's own docstring: default-brand
+    creation can fail, or a brand can later be unlinked/removed) that used
+    to make _get_tenant_brand_ids() return None instead of []. Registration
+    auto-creates one default brand, so this strips it back out to reproduce
+    the zero-brand case deterministically."""
+    org_c = _register("org-c@example.com")
+    for bid in [b["id"] for b in db.brands.values() if b["tenant_id"] == org_c["tenant_id"]]:
+        del db.brands[bid]
+    return org_c
+
+
 # ─── Setup: two real tenants, each with a ticket on their auto-created brand ─
 
 @pytest.fixture
@@ -184,8 +206,11 @@ def two_tenants():
     brand_a = next(iter(db.brands.values()))
     brand_b = next(b for b in db.brands.values() if b["tenant_id"] == org_b["tenant_id"])
 
-    ticket_a = db.insert("tickets", {"brand_id": brand_a["id"], "subject": "A's issue", "status": "open", "customer_email": "cust@a.com"})
-    ticket_b = db.insert("tickets", {"brand_id": brand_b["id"], "subject": "B's issue", "status": "open", "customer_email": "cust@b.com"})
+    # store_id is the tickets table's real brand FK (brand_id is a secondary
+    # alias present on some rows — see tickets.py's get_ticket comment); set
+    # both so fixture data matches production shape for every router under test.
+    ticket_a = db.insert("tickets", {"brand_id": brand_a["id"], "store_id": brand_a["id"], "subject": "A's issue", "status": "open", "customer_email": "cust@a.com"})
+    ticket_b = db.insert("tickets", {"brand_id": brand_b["id"], "store_id": brand_b["id"], "subject": "B's issue", "status": "open", "customer_email": "cust@b.com"})
 
     return {
         "org_a": org_a, "org_b": org_b,
@@ -331,3 +356,73 @@ def test_10_own_org_can_still_read_and_update_its_own_brand_via_plain_router(two
     )
     assert put_resp.status_code == 200
     assert db.brands[two_tenants["brand_a"]["id"]]["email_signature"] == "— The A Team"
+
+
+# ─── 11-15. tickets.py's own router (/api/tickets) — regression coverage for
+# the _get_tenant_brand_ids() None/[] finding. This helper used to return
+# None when a tenant owned zero brands, and several call sites here checked
+# `if brand_ids is not None and X not in brand_ids`, which skipped the
+# ownership check entirely for a None return - letting a zero-brand tenant
+# pass through ANY other tenant's store_id/ticket_id untouched. Fixed by
+# always returning a real list ([] for "owns nothing") and comparing against
+# it unconditionally at every call site. ─────────────────────────────────
+
+def test_11_tickets_list_by_store_id_cross_tenant_returns_empty_not_data(two_tenants):
+    """GET /api/tickets?store_id=<other tenant's brand> must not return their tickets."""
+    resp = client.get(
+        f"/api/tickets?store_id={two_tenants['brand_b']['id']}",
+        headers=_auth(two_tenants["org_a"]["access_token"]),
+    )
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_12_tickets_get_single_cross_tenant_returns_404_not_data(two_tenants):
+    resp = client.get(
+        f"/api/tickets/{two_tenants['ticket_b']['id']}",
+        headers=_auth(two_tenants["org_a"]["access_token"]),
+    )
+    assert resp.status_code == 404
+    assert "B's issue" not in resp.text
+
+
+def test_13_zero_brand_tenant_cannot_list_another_tenants_store(two_tenants, zero_brand_tenant):
+    """The core regression: a tenant that owns zero brands must not be able
+    to pass another tenant's store_id through and read their tickets."""
+    resp = client.get(
+        f"/api/tickets?store_id={two_tenants['brand_a']['id']}",
+        headers=_auth(zero_brand_tenant["access_token"]),
+    )
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_14_zero_brand_tenant_cannot_get_another_tenants_ticket(two_tenants, zero_brand_tenant):
+    """Same regression, single-ticket-fetch path (GET /api/tickets/{id})."""
+    resp = client.get(
+        f"/api/tickets/{two_tenants['ticket_a']['id']}",
+        headers=_auth(zero_brand_tenant["access_token"]),
+    )
+    assert resp.status_code == 404
+    assert "A's issue" not in resp.text
+
+
+def test_15_own_org_can_still_list_and_get_own_tickets_via_tickets_router(two_tenants):
+    """Positive control: the fix must not break a tenant's access to its own
+    data — proves the 404/empty results above are real isolation, not a
+    broken endpoint that denies everyone."""
+    list_resp = client.get(
+        "/api/tickets",
+        headers=_auth(two_tenants["org_a"]["access_token"]),
+    )
+    assert list_resp.status_code == 200
+    subjects = [t["subject"] for t in list_resp.json()]
+    assert "A's issue" in subjects
+    assert "B's issue" not in subjects
+
+    get_resp = client.get(
+        f"/api/tickets/{two_tenants['ticket_a']['id']}",
+        headers=_auth(two_tenants["org_a"]["access_token"]),
+    )
+    assert get_resp.status_code == 200
+    assert get_resp.json()["subject"] == "A's issue"
