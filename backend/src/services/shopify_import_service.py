@@ -70,12 +70,20 @@ def _get_client_for_brand(brand: Dict[str, Any]) -> Optional[ShopifyClient]:
 
 async def _clear_previous_import(brand_id: str) -> None:
     """Re-running import shouldn't pile up duplicate/stale RAG chunks — old
-    shopify_sync sources cascade-delete their rag_chunks via the FK."""
+    shopify_sync sources cascade-delete their rag_chunks via the FK.
+
+    Exception: a source the merchant has manually edited in the Knowledge
+    Base (metadata.merchant_edited, set by
+    brand_knowledge_service.update_source_content) is left alone. Without
+    this, any resync would silently overwrite an edit the merchant made on
+    purpose the next time this runs."""
     existing = supabase_select("knowledge_base_sources", {
         "brand_id": f"eq.{brand_id}",
         "source_type": f"eq.{SOURCE_TYPE}",
     })
     for row in existing or []:
+        if (row.get("metadata") or {}).get("merchant_edited"):
+            continue
         supabase_delete("knowledge_base_sources", {"id": f"eq.{row['id']}"})
 
 
@@ -94,6 +102,40 @@ def _is_scope_error(message: str) -> bool:
     "nothing found"."""
     m = (message or "").lower()
     return "merchant approval" in m or "access scope" in m
+
+
+async def _import_store_info(client: ShopifyClient, brand_id: str) -> Dict[str, Any]:
+    """shop.json needs no extra scope beyond the base connection - the same
+    call validate_connection() already makes at connect time - so store
+    name/contact/currency/location was available and simply wasn't being
+    put into the knowledge base. One short "Store Information" source."""
+    try:
+        resp = await asyncio.to_thread(client._request, "GET", "shop.json")
+    except Exception as e:
+        logger.warning(f"[ShopifyImport] shop.json fetch failed for brand {brand_id}: {e}")
+        return {"found": False, "count": 0}
+
+    shop = (resp.get("data") or {}).get("shop", {})
+    if not shop:
+        return {"found": False, "count": 0}
+
+    lines = [f"Store name: {shop.get('name')}"]
+    if shop.get("email"):
+        lines.append(f"Contact email: {shop['email']}")
+    address_bits = [shop.get(k) for k in ("address1", "city", "province", "zip", "country_name") if shop.get(k)]
+    if address_bits:
+        lines.append(f"Address: {', '.join(address_bits)}")
+    if shop.get("currency"):
+        lines.append(f"Currency: {shop['currency']}")
+    if shop.get("domain"):
+        lines.append(f"Store URL: https://{shop['domain']}")
+
+    content = "\n".join(lines)
+    result = await brand_knowledge_service.upload_text(
+        brand_id, name="Store Information", content=content,
+        metadata={"type": "shopify_store_info"}, source_type=SOURCE_TYPE,
+    )
+    return {"found": bool(result.get("success")), "count": 1 if result.get("success") else 0}
 
 
 async def _import_products(client: ShopifyClient, brand_id: str) -> Dict[str, Any]:
@@ -135,14 +177,22 @@ async def _import_products(client: ShopifyClient, brand_id: str) -> Dict[str, An
         for p in batch:
             title = p.get("title", "Untitled product")
             description = _strip_html(p.get("body_html", ""))
-            # Price is intentionally NOT included here. This text gets
-            # embedded into RAG chunks with no freshness/TTL mechanism, so a
-            # price baked in at import time goes stale the moment the
-            # merchant changes it in Shopify - and unlike order/inventory
-            # data, nothing marks this content as non-authoritative before
-            # it reaches the prompt. Live price must come from the
-            # live-Shopify product-lookup tool, never from RAG.
-            parts.append(f"Product: {title}\nDescription: {description}")
+            # Price and inventory are intentionally NOT included here. This
+            # text gets embedded into RAG chunks with no freshness/TTL
+            # mechanism, so a price/stock count baked in at import time goes
+            # stale the moment the merchant changes it in Shopify - and
+            # unlike this static text, nothing marks RAG content as
+            # non-authoritative before it reaches the prompt. Live
+            # price/inventory must come from the live-Shopify product-lookup
+            # tool, never from RAG.
+            handle = p.get("handle")
+            lines = [f"Product: {title}", f"Description: {description}"]
+            if handle:
+                lines.append(f"URL: https://{client.shop_domain}/products/{handle}")
+            image_src = (p.get("image") or {}).get("src")
+            if image_src:
+                lines.append(f"Image: {image_src}")
+            parts.append("\n".join(lines))
         content = "\n\n".join(parts)
         result = await brand_knowledge_service.upload_text(
             brand_id, name=f"Products (batch {i // PRODUCTS_PER_CHUNK_DOC + 1})", content=content,
@@ -189,7 +239,13 @@ async def _import_collections(client: ShopifyClient, brand_id: str) -> Dict[str,
 
 
 async def _import_policies(client: ShopifyClient, brand_id: str) -> Dict[str, Any]:
-    results = {"return_policy": {"found": False}, "shipping_policy": {"found": False}}
+    """Imports every policy Shopify's policies.json actually returns for
+    this store - return/refund and shipping as before, but also privacy
+    policy, terms of service, and any other published policy - instead of
+    only the two the old keyword match recognized. Named directly from
+    each policy's own title, so whatever the merchant has published (in
+    whatever wording Shopify used) becomes a real, findable KB source."""
+    results: Dict[str, Any] = {"count": 0, "found": False}
     try:
         resp = await asyncio.to_thread(client._request, "GET", "policies.json")
     except ShopifyError as e:
@@ -202,24 +258,21 @@ async def _import_policies(client: ShopifyClient, brand_id: str) -> Dict[str, An
         return results
 
     policies = (resp.get("data") or {}).get("policies", [])
+    imported = 0
     for policy in policies:
-        title = (policy.get("title") or "").lower()
+        title = (policy.get("title") or "Store Policy").strip()
         body = _strip_html(policy.get("body", ""))
         if not body:
             continue
-        if "refund" in title or "return" in title:
-            r = await brand_knowledge_service.upload_text(
-                brand_id, name="Return Policy", content=body,
-                metadata={"type": "shopify_policy"}, source_type=SOURCE_TYPE,
-            )
-            results["return_policy"] = {"found": bool(r.get("success"))}
-        elif "shipping" in title:
-            r = await brand_knowledge_service.upload_text(
-                brand_id, name="Shipping Policy", content=body,
-                metadata={"type": "shopify_policy"}, source_type=SOURCE_TYPE,
-            )
-            results["shipping_policy"] = {"found": bool(r.get("success"))}
+        r = await brand_knowledge_service.upload_text(
+            brand_id, name=title, content=body,
+            metadata={"type": "shopify_policy", "policy_title": title}, source_type=SOURCE_TYPE,
+        )
+        if r.get("success"):
+            imported += 1
 
+    results["count"] = imported
+    results["found"] = imported > 0
     return results
 
 
@@ -283,6 +336,9 @@ def _build_import_report(summary: Dict[str, Any]) -> List[Dict[str, Any]]:
         else:
             report.append({"resource": resource, "status": "empty", "count": 0, "reason": None})
 
+    store_info = summary.get("store_info", {})
+    _add("Store Information", store_info.get("count", 0), None)
+
     products = summary.get("products", {})
     _add("Products", products.get("count", 0), products.get("scope_error"))
 
@@ -290,8 +346,7 @@ def _build_import_report(summary: Dict[str, Any]) -> List[Dict[str, Any]]:
     _add("Collections", collections.get("count", 0), collections.get("scope_error"))
 
     policies = summary.get("policies", {})
-    policy_count = sum(1 for k in ("return_policy", "shipping_policy") if policies.get(k, {}).get("found"))
-    _add("Policies", policy_count, policies.get("scope_error"))
+    _add("Policies", policies.get("count", 0), policies.get("scope_error"))
 
     pages = summary.get("pages", {})
     _add("Pages", pages.get("count", 0), pages.get("scope_error"))
@@ -321,6 +376,7 @@ async def run_shopify_import(brand_id: str) -> None:
 
         await _clear_previous_import(brand_id)
 
+        summary["store_info"] = await _import_store_info(client, brand_id)
         summary["products"] = await _import_products(client, brand_id)
         summary["collections"] = await _import_collections(client, brand_id)
         summary["policies"] = await _import_policies(client, brand_id)

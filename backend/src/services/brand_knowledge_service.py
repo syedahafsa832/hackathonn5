@@ -232,6 +232,115 @@ class BrandKnowledgeService:
             logger.error(f"[KB] Upload error: {e}")
             return {"success": False, "error": str(e)}
 
+    async def update_source_content(
+        self,
+        brand_id: str,
+        source_id: str,
+        content: str,
+        name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Re-index an existing source in place (same id, so any Shopify
+        tagging on it survives) instead of upload_text()'s create-a-new-id
+        path. Used by the Knowledge Base editor's Save action - also doubles
+        as "retry" for a source that failed with no chunks: the merchant
+        pastes the content back in and Save re-embeds it under the same id.
+        Marks the source merchant_edited so a future Shopify resync
+        (_clear_previous_import) knows to leave it alone instead of
+        silently wiping the edit."""
+        try:
+            sources = supabase_select("knowledge_base_sources", {
+                "id": f"eq.{source_id}",
+                "brand_id": f"eq.{brand_id}",
+            })
+            if not sources:
+                return {"success": False, "error": "Source not found"}
+            source = sources[0]
+
+            tenant_id = source.get("tenant_id") or self._get_tenant_id(brand_id)
+            if not tenant_id:
+                return {"success": False, "error": "Could not resolve tenant for this brand"}
+
+            display_name = name or source.get("name")
+            chunks = self._chunk_text(content, display_name)
+            if not chunks:
+                return {"success": False, "error": "No content to process"}
+
+            supabase_update("knowledge_base_sources", {"id": f"eq.{source_id}"}, {"status": "processing"})
+            # Old chunks are replaced wholesale by the edited content - never
+            # left mixed with the new version.
+            supabase_delete("rag_chunks", {"source_id": f"eq.{source_id}"})
+
+            source_metadata = {**(source.get("metadata") or {}), "merchant_edited": True}
+            successful_chunks = 0
+            total_tokens = 0
+            for chunk in chunks:
+                embedding = await asyncio.to_thread(self._get_embedding, chunk["content"])
+                if not embedding:
+                    logger.warning(f"[KB] Failed to embed chunk {chunk['chunk_index']} while updating {source_id}")
+                    continue
+
+                chunk_record = {
+                    "id": str(uuid.uuid4()),
+                    "brand_id": brand_id,
+                    "tenant_id": tenant_id,
+                    "source_id": source_id,
+                    "content": chunk["content"],
+                    "embedding": embedding,
+                    "source_name": chunk["source_name"],
+                    "chunk_index": chunk["chunk_index"],
+                    "token_count": len(chunk["content"].split()),
+                    "metadata": source_metadata,
+                }
+                supabase_insert("rag_chunks", chunk_record)
+                successful_chunks += 1
+                total_tokens += chunk_record["token_count"]
+
+            update_fields: Dict[str, Any] = {
+                "chunk_count": successful_chunks,
+                "total_tokens": total_tokens,
+                "metadata": source_metadata,
+            }
+            if name and name != source.get("name"):
+                update_fields["name"] = name
+
+            if successful_chunks == 0:
+                update_fields["status"] = "failed"
+                update_fields["error_message"] = "Failed to generate embeddings"
+                supabase_update("knowledge_base_sources", {"id": f"eq.{source_id}"}, update_fields)
+                return {"success": False, "error": "Failed to generate embeddings"}
+
+            update_fields["status"] = "completed"
+            update_fields["error_message"] = None
+            supabase_update("knowledge_base_sources", {"id": f"eq.{source_id}"}, update_fields)
+            logger.info(f"[KB] Updated source {source_id}: {successful_chunks} chunks")
+            return {
+                "success": True,
+                "source_id": source_id,
+                "chunk_count": successful_chunks,
+                "total_tokens": total_tokens,
+            }
+
+        except Exception as e:
+            logger.error(f"[KB] Update error: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def get_source_content(self, brand_id: str, source_id: str) -> Optional[str]:
+        """Reconstructs a source's readable text from its stored chunks
+        (ordered by chunk_index) - the only place the text lives, since
+        knowledge_base_sources itself never stored raw content. Adjacent
+        chunks overlap slightly by design (see _chunk_text), so this is a
+        readable approximation of the original for viewing/editing, not a
+        byte-exact reproduction."""
+        chunks = supabase_select("rag_chunks", {
+            "source_id": f"eq.{source_id}",
+            "brand_id": f"eq.{brand_id}",
+            "select": "content,chunk_index",
+            "order": "chunk_index.asc",
+        })
+        if not chunks:
+            return None
+        return "\n\n".join(c.get("content", "") for c in chunks)
+
     async def get_sources(self, brand_id: str) -> List[Dict[str, Any]]:
         """Get all knowledge base sources for a brand."""
         try:

@@ -636,6 +636,12 @@ function ShopifyTab() {
 
 // ──────────────────────────────────────────────────── Knowledge Base Tab ──
 
+const KB_STATUS_STYLES = {
+  completed: { label: 'Ready', bg: 'var(--success-bg, #DCFCE7)', color: 'var(--success, #16A34A)' },
+  processing: { label: 'Processing...', bg: '#FEF3C7', color: '#B45309' },
+  failed: { label: 'Failed', bg: '#FEE2E2', color: '#DC2626' },
+};
+
 function KnowledgeBaseTab() {
   const [sources, setSources] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -647,6 +653,9 @@ function KnowledgeBaseTab() {
   const [fileUploadMsg, setFileUploadMsg] = useState('');
   const [fileUploadError, setFileUploadError] = useState(false);
   const fileInputRef = useRef(null);
+  const [openSourceId, setOpenSourceId] = useState(null);
+  const [retrying, setRetrying] = useState(false);
+  const [retryMsg, setRetryMsg] = useState('');
   // Same brandId-resolution pattern as ShopifyTab above — the v1 tenant-only
   // knowledge-base endpoints wrote rows with no brand_id, which the live
   // agent's brand-scoped retrieval (match_brand_rag_chunks) can never see.
@@ -730,8 +739,26 @@ function KnowledgeBaseTab() {
     try {
       await client.delete(`/api/v2/brands/${brandId}/knowledge/sources/${id}`);
       setSources(s => s.filter(src => src.id !== id));
+      if (openSourceId === id) setOpenSourceId(null);
     } catch {
       setError('Failed to delete source.');
+    }
+  };
+
+  const hasFailedShopifySource = sources.some(s => s.source_type === 'shopify_sync' && s.status === 'failed');
+
+  const handleRetrySync = async () => {
+    if (!brandId) return;
+    setRetrying(true);
+    setRetryMsg('');
+    try {
+      await client.post(`/api/v2/brands/${brandId}/shopify/import`, null, { params: { force: true } });
+      setRetryMsg('Retrying — Luna is re-importing your store. This can take a minute; the list below will update as sources finish.');
+      fetchSources();
+    } catch (err) {
+      setRetryMsg(extractErrorMessage(err, 'Could not restart the sync. Please try again.'));
+    } finally {
+      setRetrying(false);
     }
   };
 
@@ -794,36 +821,264 @@ function KnowledgeBaseTab() {
       </div>
 
       <div>
-        <div style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '12px' }}>Knowledge Sources</div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
+          <div style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)' }}>Knowledge Sources</div>
+          {hasFailedShopifySource && (
+            <button
+              onClick={handleRetrySync}
+              disabled={retrying}
+              style={{ padding: '5px 12px', borderRadius: '4px', border: '1px solid var(--border)', background: retrying ? 'var(--bg-tertiary)' : 'white', color: 'var(--text-primary)', fontSize: '12px', fontWeight: '500', cursor: retrying ? 'not-allowed' : 'pointer' }}
+            >
+              {retrying ? 'Retrying...' : '↻ Retry Shopify sync'}
+            </button>
+          )}
+        </div>
         <div style={{ marginBottom: error ? '12px' : 0 }}>
           <Alert variant="error">{error}</Alert>
         </div>
+        {retryMsg && (
+          <div style={{ marginBottom: '12px' }}>
+            <Alert variant={retryMsg.startsWith('Could not') ? 'error' : 'success'}>{retryMsg}</Alert>
+          </div>
+        )}
         {loading ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {[1,2,3].map(i => <div key={i} className="skeleton" style={{ height: '48px', borderRadius: '4px' }} />)}
           </div>
         ) : sources.length === 0 ? (
           <div style={{ padding: '32px', textAlign: 'center', color: 'var(--text-muted)', border: '1px dashed var(--border)', borderRadius: '6px', fontSize: '14px' }}>
-            Add your return policy, shipping info, and FAQs. Resolv uses this to answer questions accurately.
+            Add your return policy, shipping info, and FAQs — or connect Shopify to import your store automatically. Resolv uses this to answer questions accurately.
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {sources.map(src => (
-              <div key={src.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', border: '1px solid var(--border)', borderRadius: '6px', background: 'var(--bg-primary)' }}>
-                <div>
-                  <div style={{ fontWeight: '500', fontSize: '14px', color: 'var(--text-primary)' }}>{src.name || src.title}</div>
-                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>
-                    {src.created_at ? new Date(src.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '-'}
-                  </div>
-                </div>
-                <button
-                  onClick={() => handleDelete(src.id)}
-                  style={{ padding: '5px 12px', borderRadius: '4px', border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--danger)', fontSize: '12px', cursor: 'pointer' }}
+            {sources.map(src => {
+              const isShopify = src.source_type === 'shopify_sync';
+              const statusStyle = KB_STATUS_STYLES[src.status] || KB_STATUS_STYLES.processing;
+              return (
+                <div
+                  key={src.id}
+                  onClick={() => setOpenSourceId(src.id)}
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '12px 16px', border: '1px solid var(--border)', borderRadius: '6px', background: 'var(--bg-primary)', cursor: 'pointer' }}
                 >
-                  Delete
-                </button>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                      <div style={{ fontWeight: '500', fontSize: '14px', color: 'var(--text-primary)' }}>{src.name || src.title}</div>
+                      <span style={{ fontSize: '10px', fontWeight: '600', padding: '2px 7px', borderRadius: '999px', background: isShopify ? '#DBEAFE' : 'var(--bg-tertiary)', color: isShopify ? '#1D4ED8' : 'var(--text-secondary)' }}>
+                        {isShopify ? 'Shopify' : 'Uploaded'}
+                      </span>
+                      <span style={{ fontSize: '10px', fontWeight: '600', padding: '2px 7px', borderRadius: '999px', background: statusStyle.bg, color: statusStyle.color }}>
+                        {statusStyle.label}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '3px' }}>
+                      {src.status === 'failed' && src.error_message
+                        ? src.error_message
+                        : (src.updated_at || src.created_at
+                          ? `Updated ${new Date(src.updated_at || src.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
+                          : '—')}
+                    </div>
+                  </div>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleDelete(src.id); }}
+                    style={{ padding: '5px 12px', borderRadius: '4px', border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--danger)', fontSize: '12px', cursor: 'pointer', flexShrink: 0 }}
+                  >
+                    Delete
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {openSourceId && (
+        <KnowledgeSourceModal
+          brandId={brandId}
+          sourceId={openSourceId}
+          onClose={() => setOpenSourceId(null)}
+          onSaved={fetchSources}
+          onDeleted={() => { handleDelete(openSourceId); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Detail/edit view for a single Knowledge Base source. Opened by clicking a
+// row in KnowledgeBaseTab above. Reads the source's reconstructed content
+// from GET .../sources/{id} and, for Save, re-indexes via PUT
+// .../sources/{id} - the same brand_knowledge_service pipeline every other
+// KB write already goes through, never a second one.
+function KnowledgeSourceModal({ brandId, sourceId, onClose, onSaved, onDeleted }) {
+  const [detail, setDetail] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState('');
+  const [content, setContent] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState('');
+  const [saveError, setSaveError] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setLoadError('');
+    client.get(`/api/v2/brands/${brandId}/knowledge/sources/${sourceId}`)
+      .then(res => {
+        if (cancelled) return;
+        const source = res.data?.source;
+        setDetail(source);
+        setName(source?.name || '');
+        setContent(source?.content || '');
+      })
+      .catch(() => { if (!cancelled) setLoadError("Couldn't load this document."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [brandId, sourceId]);
+
+  const isShopify = detail?.source_type === 'shopify_sync';
+  const statusStyle = KB_STATUS_STYLES[detail?.status] || KB_STATUS_STYLES.processing;
+  const hasNoContent = detail && detail.status === 'failed' && !detail.content;
+
+  const handleSave = async () => {
+    if (!content.trim()) {
+      setSaveError(true);
+      setSaveMsg('Content is required.');
+      return;
+    }
+    setSaving(true);
+    setSaveError(false);
+    setSaveMsg('');
+    try {
+      const res = await client.put(`/api/v2/brands/${brandId}/knowledge/sources/${sourceId}`, {
+        name: name.trim() || undefined,
+        content: content.trim(),
+      });
+      setSaveError(false);
+      setSaveMsg(`Saved and re-indexed (${res.data?.chunk_count ?? 0} chunks). Luna will use the updated content.`);
+      setEditing(false);
+      setDetail(d => ({ ...d, name: name.trim() || d.name, content: content.trim(), status: 'completed' }));
+      onSaved();
+    } catch (err) {
+      setSaveError(true);
+      setSaveMsg(extractErrorMessage(err, "Couldn't save — the update was not applied. Please try again."));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '20px' }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{ background: 'var(--bg-primary)', borderRadius: '10px', width: '100%', maxWidth: '640px', maxHeight: '85vh', display: 'flex', flexDirection: 'column', boxShadow: '0 20px 50px rgba(0,0,0,0.25)' }}
+      >
+        <div style={{ padding: '18px 22px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px' }}>
+          <div style={{ minWidth: 0 }}>
+            {editing ? (
+              <input
+                value={name}
+                onChange={e => setName(e.target.value)}
+                style={{ ...inputStyle, fontSize: '15px', fontWeight: '600', padding: '5px 8px' }}
+              />
+            ) : (
+              <div style={{ fontSize: '16px', fontWeight: '700', color: 'var(--text-primary)' }}>{detail?.name || 'Document'}</div>
+            )}
+            {detail && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '6px', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '10px', fontWeight: '600', padding: '2px 7px', borderRadius: '999px', background: isShopify ? '#DBEAFE' : 'var(--bg-tertiary)', color: isShopify ? '#1D4ED8' : 'var(--text-secondary)' }}>
+                  {isShopify ? 'From Shopify' : 'Uploaded'}
+                </span>
+                <span style={{ fontSize: '10px', fontWeight: '600', padding: '2px 7px', borderRadius: '999px', background: statusStyle.bg, color: statusStyle.color }}>
+                  {statusStyle.label}
+                </span>
+                <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                  Updated {detail.updated_at || detail.created_at ? new Date(detail.updated_at || detail.created_at).toLocaleString() : '—'}
+                </span>
               </div>
-            ))}
+            )}
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: '18px', color: 'var(--text-muted)', cursor: 'pointer', lineHeight: 1 }}>✕</button>
+        </div>
+
+        <div style={{ padding: '18px 22px', overflowY: 'auto', flex: 1 }}>
+          {loading ? (
+            <div className="skeleton" style={{ height: '160px', borderRadius: '6px' }} />
+          ) : loadError ? (
+            <Alert variant="error">{loadError}</Alert>
+          ) : (
+            <>
+              {isShopify && (
+                <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '10px', lineHeight: 1.5 }}>
+                  This document was imported from Shopify. Editing it is safe — a future Shopify sync will not overwrite your changes.
+                </div>
+              )}
+              {hasNoContent && (
+                <div style={{ fontSize: '12px', color: '#B45309', marginBottom: '10px', lineHeight: 1.5 }}>
+                  This document failed to process and no content was saved. Paste the content below and Save to try again.
+                </div>
+              )}
+              {editing || hasNoContent ? (
+                <textarea
+                  value={content}
+                  onChange={e => setContent(e.target.value)}
+                  rows={12}
+                  style={{ ...inputStyle, resize: 'vertical', lineHeight: '1.5', fontFamily: 'inherit', width: '100%' }}
+                />
+              ) : (
+                <div style={{ fontSize: '13.5px', color: 'var(--text-primary)', lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                  {detail?.content || <span style={{ color: 'var(--text-muted)' }}>No content available.</span>}
+                </div>
+              )}
+              {saveMsg && (
+                <div style={{ marginTop: '12px' }}>
+                  <Alert variant={saveError ? 'error' : 'success'}>{saveMsg}</Alert>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {!loading && !loadError && (
+          <div style={{ padding: '14px 22px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', gap: '10px' }}>
+            <button
+              onClick={() => { if (window.confirm(`Delete "${detail?.name || 'this document'}"? This cannot be undone.`)) onDeleted(); }}
+              style={{ padding: '8px 16px', borderRadius: '4px', border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--danger)', fontSize: '13px', cursor: 'pointer' }}
+            >
+              Delete
+            </button>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              {editing || hasNoContent ? (
+                <>
+                  {editing && (
+                    <button
+                      onClick={() => { setEditing(false); setContent(detail?.content || ''); setName(detail?.name || ''); setSaveMsg(''); }}
+                      style={{ padding: '8px 16px', borderRadius: '4px', border: '1px solid var(--border)', background: 'white', color: 'var(--text-primary)', fontSize: '13px', cursor: 'pointer' }}
+                    >
+                      Cancel
+                    </button>
+                  )}
+                  <button
+                    onClick={handleSave}
+                    disabled={saving}
+                    style={{ padding: '8px 18px', borderRadius: '4px', background: saving ? 'var(--bg-tertiary)' : 'var(--accent)', color: saving ? 'var(--text-muted)' : 'white', fontWeight: '500', fontSize: '13px', cursor: saving ? 'not-allowed' : 'pointer' }}
+                  >
+                    {saving ? 'Saving...' : 'Save'}
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => setEditing(true)}
+                  style={{ padding: '8px 18px', borderRadius: '4px', border: '1px solid var(--border)', background: 'white', color: 'var(--text-primary)', fontWeight: '500', fontSize: '13px', cursor: 'pointer' }}
+                >
+                  Edit
+                </button>
+              )}
+            </div>
           </div>
         )}
       </div>
