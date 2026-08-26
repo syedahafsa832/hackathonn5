@@ -587,7 +587,17 @@ function StepTestLuna({ brandId, shopifyConnected, onNext }) {
 
       <Alert variant="error">{error}</Alert>
 
-      <button onClick={onNext} style={{ ...primaryBtn(false), padding: '13px 32px', fontSize: '15px' }}>
+      <button
+        onClick={() => {
+          // Passing through without a real test (skipped, or knowledge
+          // wasn't ready) must not leave Dashboard's onboarding checklist
+          // nagging "Run your first AI conversation" forever — the
+          // merchant made a deliberate choice to move on.
+          if (passed !== true) localStorage.setItem('resolv_test_reply_skipped', 'true');
+          onNext();
+        }}
+        style={{ ...primaryBtn(false), padding: '13px 32px', fontSize: '15px' }}
+      >
         {passed === true ? 'Continue →' : 'Skip →'}
       </button>
     </div>

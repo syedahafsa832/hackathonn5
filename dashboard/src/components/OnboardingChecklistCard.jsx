@@ -27,7 +27,7 @@ const STEP_DEFS = [
   },
   {
     key: 'testAi', title: 'Test AI', icon: PlayCircle, cta: 'Start test',
-    doneCopy: 'First conversation completed',
+    doneCopy: 'Test run or skipped',
     pendingCopy: 'Run your first AI conversation',
   },
   {
