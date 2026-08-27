@@ -1477,7 +1477,7 @@ function ReplyStyleTab() {
   const addExample = async () => {
     if (!brandId || !newExampleQuestion.trim() || !newExampleReply.trim()) return;
     if (!data?.use_uploaded_only) {
-      setExampleBlockedMsg('Enable "Use uploaded examples only (ignore ticket history)" above to add examples. Your text is kept — just enable it and click Add again.');
+      setExampleBlockedMsg('Enable "Use uploaded examples only (ignore ticket history)" above to add examples. Your text is kept, just enable it and click Add again.');
       return;
     }
     setExampleBlockedMsg('');
