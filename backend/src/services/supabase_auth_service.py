@@ -143,7 +143,14 @@ class SupabaseAuthService:
             return None
 
         except jwt.ExpiredSignatureError:
-            logger.warning("JWT token expired")
+            # Routine, not exceptional: the dashboard's access tokens are
+            # short-lived by design and the frontend already refreshes and
+            # transparently retries on the resulting 401 (client.js) -
+            # every active session hits this constantly and self-heals with
+            # no visible failure. WARNING is reserved for InvalidTokenError
+            # (malformed/tampered/wrong-signature) below, which is not an
+            # expected, self-healing condition.
+            logger.debug("JWT token expired")
             return None
         except jwt.InvalidTokenError as e:
             logger.warning(f"Invalid JWT token: {e}")
