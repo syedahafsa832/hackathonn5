@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, Link } from 'react-router-dom';
 import client, { extractErrorMessage } from '../api/client';
 import ChatWidget from '../components/ChatWidget';
 import Alert from '../components/Alert';
@@ -1643,6 +1643,51 @@ function ReplyStyleTab() {
 
       {mode !== 'disabled' && (
         <div style={card}>
+          <div style={sectionTitle}>How Luna learns</div>
+          <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '14px' }}>
+            Think of it like teaching a new employee.
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '14px', marginBottom: '18px' }}>
+            {[
+              ['1. Pick a style', 'Choose Warm & Friendly, Professional, Short & Direct, or another preset below.'],
+              ['2. Show her examples', 'Add examples of customer messages and the replies you’d like Luna to give.'],
+              ['3. Review her work', 'Approve good replies. Edit ones that need changes, then approve them.'],
+              ['4. Keep teaching', 'After 20 approved replies, Learned Style unlocks. You can keep teaching Luna forever.'],
+            ].map(([title, body]) => (
+              <div key={title}>
+                <div style={{ fontSize: '12.5px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '3px' }}>{title}</div>
+                <div style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>{body}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12.5px' }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: 'left', padding: '6px 10px 6px 0', color: 'var(--text-muted)', fontWeight: '600', borderBottom: '1px solid var(--border)' }}>Feature</th>
+                  <th style={{ textAlign: 'left', padding: '6px 0', color: 'var(--text-muted)', fontWeight: '600', borderBottom: '1px solid var(--border)' }}>What it does</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[
+                  ['Preset', 'Gives Luna a default tone to start from.'],
+                  ['Uploaded Examples', 'Shows Luna exactly how you want certain replies to sound. Works immediately.'],
+                  ['Approved Replies', 'Teaches Luna from real conversations your team has actually approved or edited.'],
+                  ['Learned Style', 'Builds a broader version of your team’s writing style once you’ve approved 20+ replies.'],
+                ].map(([feature, desc]) => (
+                  <tr key={feature}>
+                    <td style={{ padding: '7px 10px 7px 0', color: 'var(--text-primary)', fontWeight: '600', borderBottom: '1px solid var(--border)', whiteSpace: 'nowrap' }}>{feature}</td>
+                    <td style={{ padding: '7px 0', color: 'var(--text-secondary)', borderBottom: '1px solid var(--border)' }}>{desc}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {mode !== 'disabled' && (
+        <div style={card}>
           <div style={sectionTitle}>Presets</div>
           <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '14px' }}>
             Pick a starting style. This is active immediately.
@@ -1710,12 +1755,21 @@ function ReplyStyleTab() {
       {mode !== 'disabled' && (
         <div style={card}>
           <div style={sectionTitle}>Learning</div>
+          <div style={{ fontSize: '20px', fontWeight: '700', color: 'var(--text-primary)', marginBottom: '2px' }}>
+            {data.approved_reply_count} approved {data.approved_reply_count === 1 ? 'reply' : 'replies'}
+          </div>
           <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '10px' }}>
-            {data.approved_reply_count} of {data.min_replies_required} approved replies needed to learn your team's real writing style.
+            {data.eligible_for_learning
+              ? `✓ Learned Style is ${mode === 'learned' ? 'active' : 'available'}. Keep approving replies to help Luna get even better, there's no limit.`
+              : `${data.min_replies_required} approved replies needed to unlock Learned Style. That's a minimum, not a maximum, you can keep teaching Luna after that.`}
           </div>
           <div style={{ height: '6px', borderRadius: '999px', background: 'var(--bg-tertiary)', overflow: 'hidden', marginBottom: '16px' }}>
-            <div style={{ height: '100%', width: `${progressPct}%`, background: 'var(--accent)' }} />
+            <div style={{ height: '100%', width: `${progressPct}%`, background: data.eligible_for_learning ? 'var(--success)' : 'var(--accent)' }} />
           </div>
+
+          <Link to="/review" style={{ display: 'inline-block', fontSize: '13px', color: 'var(--accent)', fontWeight: '600', textDecoration: 'none', marginBottom: '16px' }}>
+            Review Luna's Work →
+          </Link>
 
           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
             <input
@@ -1796,6 +1850,30 @@ function ReplyStyleTab() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {mode !== 'disabled' && (
+        <div style={card}>
+          <div style={sectionTitle}>Need help with Reply Style?</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '10px' }}>
+            {[
+              ["Why isn't Luna copying my example exactly?", "Examples teach Luna patterns and wording. They're not meant to make every reply identical, Luna still needs to answer the customer's actual question and follow your store's policies."],
+              ['Why does Luna still use my preset tone?', "Your selected preset is Luna's fallback style. Uploaded examples and Learned Style give Luna more information about how your team writes, and take priority over the preset when they're available."],
+              ['When does Learned Style unlock?', 'After 20 approved or edited-and-approved replies.'],
+              ['Can I keep teaching Luna after 20 replies?', 'Yes. 20 is only the minimum needed to unlock Learned Style. You can keep teaching Luna with more approved replies, with no limit.'],
+              ['Do uploaded examples count toward the 20?', 'No. Uploaded examples are separate and work immediately, before Learned Style is even available.'],
+              ['Do rejected replies teach Luna?', "No. Rejected replies aren't used as positive style examples."],
+              ["What should I do if Luna writes something I don't like?", 'Edit the reply, then approve it. The edited version is what Luna learns from.'],
+              ['Can I go back to a preset?', 'Yes. You can switch between your learned style and your selected preset at any time.'],
+              ['Does Reply Style change store policies?', "No. Reply Style controls how Luna sounds. Your Knowledge Base and policy rules control what Luna is allowed to say and do, and always win over style."],
+            ].map(([q, a]) => (
+              <div key={q}>
+                <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)', marginBottom: '2px' }}>{q}</div>
+                <div style={{ fontSize: '12.5px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>{a}</div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>

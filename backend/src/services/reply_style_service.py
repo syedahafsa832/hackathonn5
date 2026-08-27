@@ -37,10 +37,15 @@ STYLE_PROFILE_KEYS = [
 def _approved_reply_texts(brand_id: str, limit: int = MAX_REPLIES_FOR_PROFILE_GENERATION) -> List[str]:
     """Human-approved/sent reply bodies, newest first. A reply counts if a
     human either approved it as-is (human_approved) or edited it before
-    sending (human_response) — both mean a person stood behind the wording."""
+    sending (human_response) — both mean a person stood behind the wording.
+    human_rejected is excluded outright, as a hard invariant rather than an
+    incidental side effect of today's UI never offering Reject after an
+    approval — a rejected reply must never count toward Learned Style
+    regardless of how that state was reached."""
     tickets = supabase_select("tickets", {
         "brand_id": f"eq.{brand_id}",
         "or": "(human_approved.is.true,human_response.not.is.null)",
+        "human_rejected": "not.is.true",
         "order": "updated_at.desc",
         "limit": str(limit),
     })
@@ -87,14 +92,28 @@ def get_brand_reply_style(brand_id: str) -> Optional[Dict]:
 
 def get_active_style(brand: Dict) -> Optional[Dict]:
     """Returns the style dict currently in effect for this brand, or None if
-    Reply Style is disabled (agent should fall back to a neutral baseline)."""
+    Reply Style is disabled (agent should fall back to a neutral baseline).
+
+    Learned Style is "preset baseline + merchant-specific refinement", never
+    a full replacement of every field: the brand keeps its own selected
+    preset (reply_style_preset) even while mode='learned', so any
+    STYLE_PROFILE_KEYS field the learned profile didn't confidently
+    determine (missing, None, or empty string) falls back to that preset's
+    own value for the same field — never a generic hardcoded default that
+    ignores what the merchant actually chose."""
     mode = brand.get("reply_style_mode") or "preset"
     if mode == "disabled":
         return None
+    preset_style = get_preset(brand.get("reply_style_preset") or DEFAULT_PRESET_ID).as_style_dict()
     if mode == "learned" and brand.get("reply_style_profile"):
-        return brand["reply_style_profile"]
-    preset = get_preset(brand.get("reply_style_preset") or DEFAULT_PRESET_ID)
-    return preset.as_style_dict()
+        learned = brand["reply_style_profile"]
+        merged = dict(preset_style)
+        for key in STYLE_PROFILE_KEYS:
+            value = learned.get(key)
+            if value not in (None, ""):
+                merged[key] = value
+        return merged
+    return preset_style
 
 
 def get_uploaded_example_snippets(brand_id: str, limit: int = 3) -> List[str]:
