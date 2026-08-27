@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import client from '../api/client';
 import Alert from '../components/Alert';
 import GoogleAuthButton from '../components/GoogleAuthButton';
+import { setLoggedInCookie } from '../api/sessionCookie';
 
 export default function Signup() {
   const navigate = useNavigate();
@@ -17,6 +18,7 @@ export default function Signup() {
     if (data.access_token) {
       localStorage.setItem('resolv_token', data.access_token);
       if (data.refresh_token) localStorage.setItem('resolv_refresh_token', data.refresh_token);
+      setLoggedInCookie(data.expires_in);
       navigate('/onboarding');
     } else {
       navigate('/login');
@@ -37,10 +39,11 @@ export default function Signup() {
         password: form.password,
         company_name: form.company_name,
       });
-      const { access_token, refresh_token, email_confirmation_required } = res.data;
+      const { access_token, refresh_token, expires_in, email_confirmation_required } = res.data;
       if (access_token) {
         localStorage.setItem('resolv_token', access_token);
         if (refresh_token) localStorage.setItem('resolv_refresh_token', refresh_token);
+        setLoggedInCookie(expires_in);
         navigate('/onboarding');
       } else if (email_confirmation_required) {
         setConfirmEmailSent(true);

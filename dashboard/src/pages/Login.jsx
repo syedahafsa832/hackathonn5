@@ -3,6 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import client from '../api/client';
 import Alert from '../components/Alert';
 import GoogleAuthButton from '../components/GoogleAuthButton';
+import { setLoggedInCookie } from '../api/sessionCookie';
 
 export default function Login() {
   const navigate = useNavigate();
@@ -19,6 +20,7 @@ export default function Login() {
     if (!data.access_token) return;
     localStorage.setItem('resolv_token', data.access_token);
     if (data.refresh_token) localStorage.setItem('resolv_refresh_token', data.refresh_token);
+    setLoggedInCookie(data.expires_in);
     navigate('/dashboard');
   };
 
@@ -28,10 +30,11 @@ export default function Login() {
     setLoading(true);
     try {
       const res = await client.post('/api/v1/auth/login', { email, password });
-      const { access_token, refresh_token } = res.data;
+      const { access_token, refresh_token, expires_in } = res.data;
       if (!access_token) throw new Error('No token returned');
       localStorage.setItem('resolv_token', access_token);
       if (refresh_token) localStorage.setItem('resolv_refresh_token', refresh_token);
+      setLoggedInCookie(expires_in);
       navigate('/dashboard');
     } catch (err) {
       if (!err.response) {

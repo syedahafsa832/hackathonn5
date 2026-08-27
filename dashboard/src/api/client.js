@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { setLoggedInCookie, clearLoggedInCookie } from './sessionCookie';
 
 const client = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || 'https://backend.tresolv.online',
@@ -28,15 +29,24 @@ function refreshSession() {
     refreshPromise = axios
       .post(`${client.defaults.baseURL}/api/v1/auth/refresh`, { refresh_token: refreshToken }, { timeout: 35000 })
       .then((res) => {
-        const { access_token, refresh_token } = res.data || {};
+        const { access_token, refresh_token, expires_in } = res.data || {};
         if (!access_token) throw new Error('No access token in refresh response');
         localStorage.setItem('resolv_token', access_token);
         if (refresh_token) localStorage.setItem('resolv_refresh_token', refresh_token);
+        // Slides forward with every successful silent refresh, so the
+        // marketing-site flag stays accurate for as long as the session
+        // keeps renewing itself.
+        setLoggedInCookie(expires_in);
         return true;
       })
       .catch(() => {
+        // The refresh token itself was invalid/expired — the session is
+        // genuinely over, not just the access token. Clear the flag so the
+        // marketing site never shows "Dashboard" for a session that's
+        // actually gone.
         localStorage.removeItem('resolv_token');
         localStorage.removeItem('resolv_refresh_token');
+        clearLoggedInCookie();
         return false;
       })
       .finally(() => {
@@ -66,6 +76,7 @@ client.interceptors.response.use(
         redirecting = true;
         localStorage.removeItem('resolv_token');
         localStorage.removeItem('resolv_refresh_token');
+        clearLoggedInCookie();
         window.location.href = '/login';
       }
     }
