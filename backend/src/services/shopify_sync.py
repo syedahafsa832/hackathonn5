@@ -142,7 +142,15 @@ class ShopifySyncService:
                 "last_updated": datetime.now(timezone.utc).isoformat()
             }
 
-            existing = supabase_select("orders", {"shopify_order_id": f"eq.{o_payload['shopify_order_id']}"})
+            # Shopify's numeric order IDs are per-shop, not globally unique —
+            # two different tenants' independent stores can have colliding
+            # IDs (especially in dev/test stores with low IDs). Scoping by
+            # store_id too prevents one tenant's sync from silently
+            # overwriting another tenant's order row on a collision.
+            existing = supabase_select("orders", {
+                "shopify_order_id": f"eq.{o_payload['shopify_order_id']}",
+                "store_id": f"eq.{store_id}",
+            })
             if existing:
                 supabase_update("orders", {"id": f"eq.{existing[0]['id']}"}, o_payload)
                 order_id = existing[0]["id"]
@@ -161,8 +169,14 @@ class ShopifySyncService:
                     "price": float(item.get("price", 0)),
                     "sku": item.get("sku", "")
                 }
-                # Upsert by shopify_line_item_id
-                existing_item = supabase_select("order_items", {"shopify_line_item_id": f"eq.{item.get('id')}"})
+                # Scope by order_id too — same cross-tenant collision risk
+                # as the order lookup above (shopify_line_item_id is also
+                # per-shop, not globally unique). order_id here is always
+                # the already-store_id-scoped order resolved just above.
+                existing_item = supabase_select("order_items", {
+                    "shopify_line_item_id": f"eq.{item.get('id')}",
+                    "order_id": f"eq.{order_id}",
+                })
                 if existing_item:
                     supabase_update("order_items", {"id": f"eq.{existing_item[0]['id']}"}, item_payload)
                 else:
@@ -201,8 +215,12 @@ class ShopifySyncService:
             if embedding:
                 p_payload["embedding"] = embedding
             
-            # 3. Upsert Product
-            existing = supabase_select("products", {"shopify_id": f"eq.{p_payload['shopify_id']}"})
+            # 3. Upsert Product — scoped by store_id too, for the same
+            # cross-tenant Shopify-ID-collision reason as orders above.
+            existing = supabase_select("products", {
+                "shopify_id": f"eq.{p_payload['shopify_id']}",
+                "store_id": f"eq.{store_id}",
+            })
             if existing:
                 p_id = existing[0]["id"]
                 supabase_update("products", {"id": f"eq.{p_id}"}, p_payload)
@@ -219,7 +237,13 @@ class ShopifySyncService:
                     "size": v["option1"],
                     "price": float(v["price"])
                 }
-                v_existing = supabase_select("variants", {"shopify_variant_id": f"eq.{v_payload['shopify_variant_id']}"})
+                # Scope by product_id too — same collision reasoning as
+                # order_items above; product_id here is the already
+                # store_id-scoped product resolved just above.
+                v_existing = supabase_select("variants", {
+                    "shopify_variant_id": f"eq.{v_payload['shopify_variant_id']}",
+                    "product_id": f"eq.{p_id}",
+                })
                 if v_existing:
                     supabase_update("variants", {"id": f"eq.{v_existing[0]['id']}"}, v_payload)
                 else:

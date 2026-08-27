@@ -117,10 +117,6 @@ def _map_action_result(intent: Optional[str], action_taken: Optional[dict], orde
     return None
 
 
-class EmailCaptureRequest(BaseModel):
-    email: str
-
-
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 def _get_brand(brand_id: str) -> dict:
@@ -132,8 +128,22 @@ def _get_brand(brand_id: str) -> dict:
 
 
 def _get_or_create_session(session_id: str, brand_id: str, customer_email: Optional[str] = None, customer_name: Optional[str] = None) -> dict:
-    """Look up existing chat ticket by session_id or create one."""
-    existing = supabase_select("tickets", {"gmail_thread_id": f"eq.{session_id}", "channel": "eq.chat"})
+    """Look up existing chat ticket by session_id or create one.
+
+    session_id is generated client-side (widget/components/chat-widget/
+    ChatWidget.tsx's makeSessionId(), Math.random()+Date.now() — not a
+    server-issued or cryptographically random token, so it must never be
+    trusted as sufficient on its own to identify a conversation. The
+    lookup MUST also require the caller's own brand_id, or a request that
+    supplies (or happens to guess/collide on) another brand's session_id
+    would read/append to that brand's conversation — a real cross-tenant
+    conversation hijack, not just a theoretical one.
+    """
+    existing = supabase_select("tickets", {
+        "gmail_thread_id": f"eq.{session_id}",
+        "channel": "eq.chat",
+        "brand_id": f"eq.{brand_id}",
+    })
     if existing:
         return existing[0]
 
@@ -672,49 +682,16 @@ async def get_widget_action_status(action_id: str, request: Request):
     return {k: action.get(k) for k in _ACTION_STATUS_FIELDS}
 
 
-@router.get("/widget/chat/{session_id}")
-async def get_chat_history(session_id: str):
-    """Return the full conversation history for a session (for restore on reload)."""
-    tickets = supabase_select("tickets", {"gmail_thread_id": f"eq.{session_id}", "channel": "eq.chat"})
-    if not tickets:
-        return {"session_id": session_id, "messages": [], "customer_email": None}
-
-    ticket = tickets[0]
-    msgs = ticket.get("messages") or []
-    if isinstance(msgs, str):
-        import json
-        try:
-            msgs = json.loads(msgs)
-        except Exception:
-            msgs = []
-
-    return {
-        "session_id": session_id,
-        "messages": [
-            {
-                "role":       "user" if m.get("direction") == "inbound" else "assistant",
-                "content":    m.get("body", ""),
-                "created_at": m.get("created_at", ""),
-            }
-            for m in msgs
-        ],
-        "customer_email": ticket.get("customer_email"),
-    }
-
-
-@router.post("/widget/chat/{session_id}/email")
-async def update_session_email(session_id: str, body: EmailCaptureRequest):
-    """Attach customer email to a chat session."""
-    email = _sanitize(body.email, 254)
-    if not email or "@" not in email:
-        raise HTTPException(status_code=400, detail="Invalid email")
-
-    tickets = supabase_select("tickets", {"gmail_thread_id": f"eq.{session_id}", "channel": "eq.chat"})
-    if not tickets:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    supabase_update("tickets", {"id": f"eq.{tickets[0]['id']}"}, {
-        "customer_email": email,
-        "updated_at":     datetime.now(timezone.utc).isoformat(),
-    })
-    return {"success": True}
+# get_chat_history (GET /widget/chat/{session_id}) and update_session_email
+# (POST /widget/chat/{session_id}/email) were removed: both looked up a
+# ticket by session_id ALONE, with no brand_id check of any kind (unlike
+# _get_or_create_session above, which now requires one) - session_id is a
+# client-generated, non-cryptographic value (Math.random()+Date.now()), so
+# either endpoint let any caller who guessed/observed another brand's
+# session_id read that conversation's full message history and customer
+# email, or overwrite that customer's email, across tenant boundaries.
+# Confirmed zero live callers anywhere in widget/ or dashboard/ - the
+# widget restores session state from browser sessionStorage instead
+# (ChatWidget.tsx's loadSession/saveSession) - so removed rather than
+# scoped, matching how get_ticket_by_email (support.py) was already
+# handled for the identical "unused + unauthenticated" shape.

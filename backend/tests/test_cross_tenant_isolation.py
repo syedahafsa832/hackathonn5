@@ -407,6 +407,34 @@ def test_14_zero_brand_tenant_cannot_get_another_tenants_ticket(two_tenants, zer
     assert "A's issue" not in resp.text
 
 
+def test_15b_zero_brand_tenant_after_brand_creation_sees_only_its_own_tickets(two_tenants, zero_brand_tenant):
+    """The full lifecycle the fix must support end to end: a tenant that
+    currently owns zero brands is denied (proven above), but once it gains
+    a real brand of its own, requesting that store must return only its
+    own tickets — never brand A's or brand B's — proving the fix denies
+    by default without ever becoming a blanket/permanent lockout."""
+    own_brand = db.insert("brands", {"tenant_id": zero_brand_tenant["tenant_id"], "name": "Newly Created Brand"})
+    own_ticket = db.insert("tickets", {"brand_id": own_brand["id"], "store_id": own_brand["id"], "subject": "C's own issue", "status": "open", "customer_email": "cust@c.com"})
+
+    resp = client.get(
+        f"/api/tickets?store_id={own_brand['id']}",
+        headers=_auth(zero_brand_tenant["access_token"]),
+    )
+    assert resp.status_code == 200
+    subjects = [t["subject"] for t in resp.json()]
+    assert subjects == ["C's own issue"]
+    assert two_tenants["ticket_a"]["subject"] not in subjects
+    assert two_tenants["ticket_b"]["subject"] not in subjects
+
+    # Still denied for someone else's store, even now that it owns one of its own.
+    other_resp = client.get(
+        f"/api/tickets?store_id={two_tenants['brand_a']['id']}",
+        headers=_auth(zero_brand_tenant["access_token"]),
+    )
+    assert other_resp.status_code == 200
+    assert other_resp.json() == []
+
+
 def test_15_own_org_can_still_list_and_get_own_tickets_via_tickets_router(two_tenants):
     """Positive control: the fix must not break a tenant's access to its own
     data — proves the 404/empty results above are real isolation, not a

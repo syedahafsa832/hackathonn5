@@ -39,7 +39,27 @@ def verify_shopify_webhook(data: bytes, hmac_header: str) -> bool:
     computed_hmac = base64.b64encode(digest).decode()
     return hmac.compare_digest(computed_hmac, hmac_header)
 
-async def process_shopify_event(topic: str, payload: dict, event_id: str):
+def _resolve_store_id_for_shop(shop_domain: str) -> "str | None":
+    """Map a webhook's shop domain to the one brand that owns it.
+
+    Every previous handler in this file hardcoded store_id to the all-zero
+    placeholder UUID regardless of which shop actually sent the webhook -
+    every tenant's product-update events were silently attributed to the
+    same fake store. Shopify always sends X-Shopify-Shop-Domain, and every
+    brand's own real domain is already stored (shopify_auth.py's OAuth
+    callback sets it on connect), so this is the same shop_domain match
+    tickets.py/brands.py already use elsewhere - never guessed from the
+    payload body, always from the header Shopify itself sets.
+    """
+    if not shop_domain:
+        return None
+    brands = supabase_select("brands", {"shopify_domain": f"eq.{shop_domain}"})
+    if not brands:
+        return None
+    return brands[0]["id"]
+
+
+async def process_shopify_event(topic: str, payload: dict, event_id: str, shop_domain: str):
     """Async processing of Shopify webhook events."""
     try:
         # 1. Idempotency Check
@@ -55,14 +75,24 @@ async def process_shopify_event(topic: str, payload: dict, event_id: str):
             "payload": payload
         })
 
-        # 3. Handle specific topics
+        # 3. Handle specific topics — every topic that writes tenant-owned
+        # data must resolve its own store_id from the shop domain first.
+        # Fail closed (skip, don't process) when no matching brand is
+        # found, rather than falling back to a shared placeholder that
+        # would misattribute this shop's data to every other tenant using
+        # that same placeholder.
         if topic == "products/update":
-            # Trigger sync for single product
+            store_id = _resolve_store_id_for_shop(shop_domain)
+            if not store_id:
+                logger.warning(f"[ShopifyWebhook] No brand found for shop domain '{shop_domain}' — skipping products/update")
+                return
             from src.services.shopify_sync import shopify_sync_service
-            await shopify_sync_service.sync_single_product(payload, store_id="00000000-0000-0000-0000-000000000000")
-        
+            await shopify_sync_service.sync_single_product(payload, store_id=store_id)
+
         elif topic == "orders/create":
-            # Logic to create order in our DB mirror
+            # Not yet implemented — intentionally a no-op, not a bug this
+            # audit needs to fix (nothing here writes or misattributes
+            # data since it does nothing at all).
             pass
 
     except Exception as e:
@@ -74,12 +104,13 @@ async def shopify_webhook(request: Request, background_tasks: BackgroundTasks):
     hmac_header = request.headers.get('X-Shopify-Hmac-Sha256')
     topic = request.headers.get('X-Shopify-Topic')
     event_id = request.headers.get('X-Shopify-Webhook-Id')
+    shop_domain = request.headers.get('X-Shopify-Shop-Domain', '')
 
     if not verify_shopify_webhook(data, hmac_header):
         logger.warning("Invalid Shopify webhook signature")
         raise HTTPException(status_code=401, detail="Invalid signature")
 
     payload = json.loads(data)
-    background_tasks.add_task(process_shopify_event, topic, payload, event_id)
-    
+    background_tasks.add_task(process_shopify_event, topic, payload, event_id, shop_domain)
+
     return {"status": "received"}

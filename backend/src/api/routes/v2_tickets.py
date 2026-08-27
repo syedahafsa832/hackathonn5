@@ -471,6 +471,12 @@ async def create_ticket(
 
         ticket_data = {
             "brand_id": request.brand_id,
+            "store_id": request.brand_id,  # tickets.py's list endpoint (the dashboard's actual
+                                            # Conversations view) reads store_id, not brand_id —
+                                            # same dual-write already used in v2_chat_widget.py.
+                                            # Without this, a manually-created ticket is inserted
+                                            # successfully but never appears in the Conversations
+                                            # list for anyone (invisible, not cross-tenant exposed).
             "customer_email": request.customer_email,
             "customer_name": request.customer_name,
             "subject": request.subject,
