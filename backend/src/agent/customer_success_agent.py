@@ -627,8 +627,13 @@ class CustomerSuccessAgent:
                         _agent_name = _b[0].get("agent_name") or "Luna"
                         _email_signature = _b[0].get("email_signature") or None
                         try:
-                            from src.services.reply_style_service import get_active_style
-                            _style_block = build_style_prompt_block(get_active_style(_b[0]))
+                            from src.services.reply_style_service import get_active_style, get_uploaded_example_snippets
+                            _active_style = get_active_style(_b[0])
+                            # Uploaded Examples are independent seed data (see reply_style_service.py) —
+                            # they must reach the live prompt on their own, not only via the learned-
+                            # profile pipeline, which gates on approved-reply volume unrelated to examples.
+                            _examples = get_uploaded_example_snippets(_b[0]["id"]) if _active_style is not None else None
+                            _style_block = build_style_prompt_block(_active_style, _examples)
                         except Exception as _style_err:
                             logger.warning(f"[Agent] Reply Style resolution failed: {_style_err}")
                         if _b[0].get("shopify_connected") or _b[0].get("shopify_access_token"):
