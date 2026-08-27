@@ -212,6 +212,22 @@ def test_reject_does_not_set_approved_fields_or_count_toward_learning():
         assert reply_style_service.count_eligible_approved_replies(BRAND_ID) == 0
 
 
+def test_review_response_contains_exactly_what_the_frontend_needs_for_an_instant_update():
+    """Regression guard for the "Approve feels slow/does nothing" fix:
+    dashboard/src/hooks/useApi.js's useSubmitTicketReview() now patches its
+    own review-queue cache straight from this response instead of waiting
+    on a second, slower GET /review/queue round trip (measured ~1.5s+
+    against live Supabase) before the item's badge visibly changes. That
+    only works if this response reliably carries `success` and
+    `review_status` with no dependency on a second request - never
+    silently drop or rename these without also updating that hook."""
+    resp, _ = _post_review({"decision": "approve"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["success"] is True
+    assert body["review_status"] == "approved"
+
+
 def test_review_requires_an_existing_luna_reply():
     ticket = _ticket(ai_reply=None, ai_draft=None)
     resp, _ = _post_review({"decision": "approve"}, ticket=ticket)

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useReviewQueue, useSubmitTicketReview } from '../hooks/useApi';
 
@@ -42,12 +42,21 @@ function ReviewItem({ item, onOpen }) {
 
   const badge = STATUS_BADGE[item.review_status] || STATUS_BADGE.needs_review;
   const busy = submitReview.isPending;
+  // Belt-and-suspenders alongside the buttons' own disabled={busy}: a ref
+  // (not state) so it's set synchronously on the very first click, closing
+  // the brief window between "user clicks" and "React re-renders with
+  // isPending: true" where a second, fast click could otherwise slip
+  // through and fire a duplicate request.
+  const submittingRef = useRef(false);
 
   const decide = (decision, extra = {}) => {
+    if (submittingRef.current || busy) return;
+    submittingRef.current = true;
     setError('');
     submitReview.mutate({ ticketId: item.ticket_id, decision, ...extra }, {
       onSuccess: () => { setEditing(false); setRejecting(false); },
       onError: (err) => setError(err.response?.data?.detail || 'Failed to record review.'),
+      onSettled: () => { submittingRef.current = false; },
     });
   };
 

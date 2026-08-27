@@ -283,6 +283,37 @@ export function useSubmitTicketReview() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ ticketId, ...payload }) => api.submitTicketReview(ticketId, payload),
+    // Patch every cached review-queue page directly from this response
+    // (which already carries the new review_status) instead of waiting on
+    // invalidateQueries' refetch below - that round trip alone measured
+    // ~1.5s+ against live Supabase for this endpoint, on top of the
+    // request that just completed, which is what made a single click feel
+    // "very slow / does nothing": the button re-enabled right away, but
+    // the item's badge didn't visibly change until that second fetch
+    // finished. This makes the UI update the instant the write succeeds,
+    // matching what /review already confirmed happened server-side.
+    onSuccess: (data, { ticketId, decision, edited_response, rejection_reason }) => {
+      queryClient.setQueriesData({ queryKey: ['review-queue'] }, (old) => {
+        if (!old?.items) return old;
+        return {
+          ...old,
+          items: old.items.map((item) => item.ticket_id !== ticketId ? item : {
+            ...item,
+            review_status: data?.review_status ?? item.review_status,
+            luna_reply: decision === 'edit_approve' ? edited_response : item.luna_reply,
+            human_outcome: {
+              approved: decision !== 'reject',
+              edited: decision === 'edit_approve',
+              rejected: decision === 'reject',
+              rejection_reason: decision === 'reject' ? rejection_reason : item.human_outcome?.rejection_reason,
+            },
+          }),
+        };
+      });
+    },
+    // Still reconcile with the server in the background (e.g. a tab whose
+    // filter no longer matches this item's new status should still drop
+    // it eventually) - just no longer what the visible update waits on.
     onSettled: () => {
       queryClient.invalidateQueries(['review-queue']);
       queryClient.invalidateQueries(['training-readiness']);
