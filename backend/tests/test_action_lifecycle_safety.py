@@ -86,13 +86,24 @@ def _fake_backend(action):
             return []
         return [dict(row)]
 
+    def _status_filter_matches(filter_value, current_status):
+        # Mirrors real PostgREST filter syntax for the two forms this
+        # codebase's conditional claims actually use: "eq.X" and
+        # "in.(a,b,c)" (see actions_service.approve_action's retry-from-
+        # failed claim, which widened from a bare eq.pending to
+        # in.(pending,failed)).
+        if filter_value.startswith("in.("):
+            allowed = filter_value[len("in."):].strip("()").split(",")
+            return current_status in allowed
+        return filter_value == f"eq.{current_status}"
+
     def fake_update(table, match, data):
         if table != "actions":
             return [data]
         row = state["row"]
         if match.get("id") != f"eq.{row['id']}":
             return []
-        if "status" in match and match["status"] != f"eq.{row['status']}":
+        if "status" in match and not _status_filter_matches(match["status"], row["status"]):
             return []  # conditional claim failed - no rows matched
         row.update(data)
         return [dict(row)]
