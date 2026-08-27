@@ -257,7 +257,14 @@ async def _generate_reply(
             on_progress=on_progress,
         )
 
-        reply_body = result.get("reply_body", "Hey! Let me look into that for you.")
+        # Falls back to the widget's own generic opener only when reply_body
+        # is entirely absent (an older/unexpected result shape) — an AI
+        # provider outage now deliberately returns reply_body="" (see
+        # customer_success_agent._get_provider_failure_response), which must
+        # stay empty here, never be papered over with invented text.
+        reply_body = result.get("reply_body")
+        if reply_body is None:
+            reply_body = "Hey! Let me look into that for you."
         # Keep sign-off line if present. Plain hyphen, not an em dash - matches
         # the sign-off format customer_success_agent.py generates (GLOBAL
         # no-em-dash rule).
@@ -266,7 +273,7 @@ async def _generate_reply(
             sign_idx = reply_body.find(sign_off_marker)
             reply_clean = reply_body[:sign_idx].strip()
         else:
-            reply_clean = reply_body
+            reply_clean = reply_body.strip()
 
         result_confidence = result.get("confidence_score")
         agent_intent = result.get("intent")
@@ -314,19 +321,25 @@ async def _generate_reply(
         except Exception:
             pass
 
-    # Append the agent's reply
-    stored_msgs.append({
-        "direction": "outbound",
-        "body": reply_clean,
-        "role": "ai",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    })
+    # An AI-provider outage with the customer-facing fallback disabled
+    # (the default) leaves reply_clean genuinely empty - never append a
+    # blank "AI" bubble to the transcript, and never claim a reply was
+    # sent. The conversation is escalated (ticket_escalate is already set)
+    # and waits for a human to actually respond.
+    has_reply = bool(reply_clean)
+    if has_reply:
+        stored_msgs.append({
+            "direction": "outbound",
+            "body": reply_clean,
+            "role": "ai",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
 
     # Update ticket
     ticket_update: dict = {
         "messages":       stored_msgs,
         "customer_email": body.customer_email or ticket.get("customer_email"),
-        "email_sent":     True,
+        "email_sent":     has_reply,
         "updated_at":     datetime.now(timezone.utc).isoformat(),
     }
     if ticket_status_update:

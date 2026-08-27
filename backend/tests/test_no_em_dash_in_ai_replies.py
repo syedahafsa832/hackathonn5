@@ -137,8 +137,17 @@ def test_fallback_and_provider_failure_responses_never_contain_an_em_dash():
     fb = customer_success_agent._get_fallback_response("boom", brand_name="Test Brand", agent_name="Zoe")
     assert EM_DASH not in fb["reply_body"]
 
-    pf = customer_success_agent._get_provider_failure_response(brand_name="Test Brand", agent_name="Zoe")
-    assert EM_DASH not in pf["reply_body"]
+    # Default (customer-facing fallback disabled): reply_body is empty, so
+    # there's nothing to check - the real assertion is exercising the
+    # non-empty branch below, where the sign-off is actually appended.
+    pf_default = customer_success_agent._get_provider_failure_response(brand_name="Test Brand", agent_name="Zoe")
+    assert EM_DASH not in pf_default["reply_body"]
+
+    pf_enabled = customer_success_agent._get_provider_failure_response(
+        brand_name="Test Brand", agent_name="Zoe", send_customer_fallback=True,
+    )
+    assert EM_DASH not in pf_enabled["reply_body"]
+    assert "- Zoe" in pf_enabled["reply_body"]
 
 
 def test_em_dash_stripping_does_not_touch_the_customer_own_message():

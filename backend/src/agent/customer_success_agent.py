@@ -259,6 +259,17 @@ def _build_order_context(order: dict, tracking_context: str = "") -> str:
 # _get_provider_failure_response with a bare MagicMock() as self.
 PROVIDER_OUTAGE_REASON = "AI reply limit reached — every connected AI model is temporarily out of quota. This resolves on its own once quota resets; reply manually for now."
 
+# Deliberately generic — must read naturally whether the original message
+# was about an order, a refund, a product question, or anything else. Never
+# a specific claim ("I've flagged this") beyond what escalate=True on the
+# same response already guarantees is true. Module-level for the same
+# bare-MagicMock-as-self reason as PROVIDER_OUTAGE_REASON above.
+PROVIDER_OUTAGE_CUSTOMER_MESSAGE = (
+    "Hi! Thanks for reaching out. We've got your message and want to make sure "
+    "we take care of this properly. Our team is reviewing it now and will get "
+    "back to you as soon as possible. \U0001F49B"
+)
+
 # Rule 1 backstop (safety-non-negotiable): refunds/cancellations/address changes
 # are only ever *staged* for merchant approval by return_actions_integration.py -
 # this pipeline never executes them synchronously. The system prompt already
@@ -640,6 +651,13 @@ class CustomerSuccessAgent:
             _brand_name = "our store"
             _agent_name = "Luna"
             _email_signature = None
+            # Default OFF: without this explicit merchant opt-in, an AI-
+            # provider outage produces no customer-facing text at all (see
+            # _get_provider_failure_response) - never Luna's old "I've
+            # flagged this for my team" claim, which promised a real
+            # escalation whether or not this specific message actually got
+            # one routed to a human in time.
+            _provider_outage_fallback_enabled = False
             from src.services.reply_style_service import build_style_prompt_block
             _style_block = build_style_prompt_block(None)
             _brand_shopify_domain = None
@@ -655,6 +673,7 @@ class CustomerSuccessAgent:
                         _brand_name = _b[0].get("name") or _b[0].get("brand_name") or "our store"
                         _agent_name = _b[0].get("agent_name") or "Luna"
                         _email_signature = _b[0].get("email_signature") or None
+                        _provider_outage_fallback_enabled = bool(_b[0].get("provider_outage_fallback_enabled"))
                         try:
                             from src.services.reply_style_service import get_active_style, get_uploaded_example_snippets
                             await _emit("style_check", "Checking reply style…")
@@ -1290,7 +1309,10 @@ class CustomerSuccessAgent:
                 )
             except AllProvidersFailedError as api_error:
                 logger.error(f"[Agent] All AI providers failed: {api_error}")
-                return self._get_provider_failure_response(brand_name=_brand_name, agent_name=_agent_name, email_signature=_email_signature)
+                return self._get_provider_failure_response(
+                    brand_name=_brand_name, agent_name=_agent_name, email_signature=_email_signature,
+                    send_customer_fallback=_provider_outage_fallback_enabled,
+                )
 
             raw_content = response.choices[0].message.content
             if not raw_content:
@@ -1584,13 +1606,32 @@ class CustomerSuccessAgent:
             "status": "escalated"
         }
 
-    def _get_provider_failure_response(self, brand_name: str = "", agent_name: str = "Luna", email_signature: str = None) -> Dict[str, Any]:
+    def _get_provider_failure_response(
+        self, brand_name: str = "", agent_name: str = "Luna", email_signature: str = None,
+        send_customer_fallback: bool = False,
+    ) -> Dict[str, Any]:
         """Every configured AI provider (all Mistral keys, all Groq fallback keys)
         failed for this request — distinct from _get_fallback_response so the
         escalation card reads as a known, temporary quota problem, not a generic
         "system error". provider_outage=True lets callers (Test Luna) detect this
-        specific case without string-matching escalation_reason."""
-        sign_off = email_signature or (f"- {agent_name}\n{brand_name}" if brand_name else f"- {agent_name}")
+        specific case without string-matching escalation_reason.
+
+        Never auto-sends Luna's own wording during an outage — there is no
+        real generated reply to send, only a canned placeholder, and
+        claiming "I've flagged this for my team" is not something this
+        function alone can guarantee actually happened for this message.
+        The customer's message is still saved and the ticket still
+        escalates exactly as before (both handled by the callers of this
+        function, unchanged); only whether a customer-facing reply_body is
+        produced at all is gated here, on the brand's own explicit
+        provider_outage_fallback_enabled opt-in (default off). When off,
+        reply_body is empty — every existing caller (email routing, chat
+        widget) already treats an empty/falsy reply_body as "nothing to
+        send", which is exactly the desired behavior: wait for a human."""
+        reply_body = ""
+        if send_customer_fallback:
+            sign_off = email_signature or (f"- {agent_name}\n{brand_name}" if brand_name else f"- {agent_name}")
+            reply_body = f"{PROVIDER_OUTAGE_CUSTOMER_MESSAGE}\n\n{sign_off}"
         return {
             "intent": "general_inquiry",
             "sentiment": "neutral",
@@ -1599,8 +1640,9 @@ class CustomerSuccessAgent:
             "escalate": True,
             "provider_outage": True,
             "escalation_reason": PROVIDER_OUTAGE_REASON,
-            "reply_body": f"Hey there!\n\nThanks for reaching out. I'm having a bit of trouble processing your message right now, but I've flagged this for my team to take a look.\n\nWe'll follow up once it's reviewed.\n\n{sign_off}",
-            "status": "escalated"
+            "reply_body": reply_body,
+            "ai_reply_generated": False,
+            "status": "escalated",
         }
 
     async def generate_channel_appropriate_response(self, query: str, customer_info: Dict[str, Any], channel: str, tenant_id: Optional[str] = None, store_id: Optional[str] = None, ticket_id: Optional[str] = None, on_progress: Optional[Callable[[str, str], Awaitable[None]]] = None) -> Dict[str, Any]:

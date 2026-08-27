@@ -202,24 +202,52 @@ async def test_mistral_exhausted_falls_back_to_groq():
 
 def test_provider_failure_escalation_copy():
     """The agent's total-failure path must produce a specific, actionable
-    escalation — not the generic 'System error: ...' the fallback path uses."""
+    escalation — not the generic 'System error: ...' the fallback path uses.
+
+    Customer-facing text is a separate, explicit opt-in
+    (send_customer_fallback / brands.provider_outage_fallback_enabled):
+    by default, no reply is auto-sent during a provider outage — the
+    message is still saved and the ticket still escalates (asserted here),
+    but nothing goes out claiming a human is already on it unless the
+    merchant turned that on."""
     from src.agent.customer_success_agent import CustomerSuccessAgent
     result = CustomerSuccessAgent._get_provider_failure_response(
         MagicMock(), brand_name="Acme", agent_name="Luna"
     )
     assert result["escalate"] is True
     assert result["provider_outage"] is True
+    assert result["status"] == "escalated"
     # Plain-language for a non-technical store owner reading the Escalations
     # list — must name the actual cause (quota), not vague infra jargon.
     assert "quota" in result["escalation_reason"].lower()
     assert "system error" not in result["escalation_reason"].lower()
-    assert result["reply_body"]  # customer still gets an acknowledgment, not a blank reply
+    # Default: no customer-facing reply at all - never Luna's own wording
+    # for a request that was never actually processed.
+    assert result["reply_body"] == ""
     # A failed AI call must never consume trial/plan quota — callers
     # (message_processor.py, v2_chat_widget.py) gate record_ai_reply_event()
-    # on this flag being present and truthy, not on reply_body alone (which
-    # is always non-empty here, since the customer still gets a canned
-    # acknowledgment).
-    assert "ai_reply_generated" not in result
+    # on this flag being truthy, never on reply_body alone.
+    assert result["ai_reply_generated"] is False
+
+
+def test_provider_failure_with_customer_fallback_enabled_sends_the_generic_message():
+    """When the merchant has explicitly opted in
+    (provider_outage_fallback_enabled), a fixed, deliberately generic
+    placeholder is sent instead of nothing — but the escalation/outage
+    signals are unchanged, so a human is still guaranteed to review it."""
+    from src.agent.customer_success_agent import CustomerSuccessAgent
+    result = CustomerSuccessAgent._get_provider_failure_response(
+        MagicMock(), brand_name="Acme", agent_name="Luna", send_customer_fallback=True,
+    )
+    assert result["escalate"] is True
+    assert result["provider_outage"] is True
+    assert result["ai_reply_generated"] is False
+    assert "reviewing it now" in result["reply_body"]
+    assert "- Luna" in result["reply_body"]
+    assert "Acme" in result["reply_body"]
+    # Must stay generic enough to fit any request type - never a specific
+    # claim like the old "I've flagged this for my team" wording.
+    assert "flagged" not in result["reply_body"].lower()
 
 
 @pytest.mark.asyncio

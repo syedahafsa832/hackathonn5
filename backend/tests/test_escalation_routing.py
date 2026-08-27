@@ -71,6 +71,20 @@ def test_escalated_with_no_safe_reply_stores_draft_and_does_not_send():
     assert result["ai_draft"] == "Uncertain reply"
 
 
+def test_provider_outage_empty_reply_never_auto_sends():
+    """AI-provider outage (_get_provider_failure_response's real
+    confidence_score=40, risk_level='medium', reply_body='' by default -
+    see customer_success_agent.py): must never auto-send, and must never
+    store a fabricated draft in place of the empty reply. The ticket still
+    escalates - Reply Style/KB weren't even reached, there's nothing safe
+    to say, so it waits for a human exactly like any other no-safe-reply
+    escalation."""
+    result = _route(confidence=0.40, risk_level="medium", reply_body="", ai_flagged_escalate=False)
+    assert result["status"] == "escalated"
+    assert result["should_auto_reply"] is False
+    assert result["ai_draft"] == ""
+
+
 def test_human_override_suppresses_ai_reply_but_keeps_draft_visible():
     """Merchant has taken over the thread - AI must not talk over them, but
     its draft is still stored so nothing is lost."""
