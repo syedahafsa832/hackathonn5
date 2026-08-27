@@ -1337,6 +1337,7 @@ function ReplyStyleTab() {
   const [newExampleQuestion, setNewExampleQuestion] = useState('');
   const [newExampleReply, setNewExampleReply] = useState('');
   const [addingExample, setAddingExample] = useState(false);
+  const [exampleBlockedMsg, setExampleBlockedMsg] = useState('');
 
   // Identity (assistant name, signature) is a separate concept from Reply
   // Style — it's who the AI is, not how it sounds. Kept as its own
@@ -1475,6 +1476,11 @@ function ReplyStyleTab() {
 
   const addExample = async () => {
     if (!brandId || !newExampleQuestion.trim() || !newExampleReply.trim()) return;
+    if (!data?.use_uploaded_only) {
+      setExampleBlockedMsg('Enable "Use uploaded examples only (ignore ticket history)" above to add examples. Your text is kept — just enable it and click Add again.');
+      return;
+    }
+    setExampleBlockedMsg('');
     setAddingExample(true);
     try {
       // Stored as a single "content" string - no backend/schema change.
@@ -1739,6 +1745,7 @@ function ReplyStyleTab() {
           <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '14px' }}>
             Show Luna how your team would reply. You don't need to use the exact wording a real customer would use.
           </div>
+          <Alert variant="error" onDismiss={() => setExampleBlockedMsg('')} style={{ marginBottom: '14px' }}>{exampleBlockedMsg}</Alert>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '14px' }}>
             <div>
               <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>Example customer message</div>
