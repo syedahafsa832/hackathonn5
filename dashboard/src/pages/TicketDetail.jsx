@@ -81,6 +81,14 @@ function OrderPanel({ ticketId, ticket }) {
   const [actionLoading, setActionLoading] = useState(null);
   const [actionResult, setActionResult] = useState(null);
   const [stagingAction, setStagingAction] = useState('');
+  const [addressFormOpen, setAddressFormOpen] = useState(false);
+  const [addressForm, setAddressForm] = useState({ name: '', address1: '', address2: '', city: '', province: '', zip: '', country: '', phone: '' });
+  const [addressSubmitting, setAddressSubmitting] = useState(false);
+  // Separate from actionResult/stagingAction on purpose - this is the one
+  // place a real Shopify mutation can both succeed and fail, and it must
+  // never be confused with (or silently cleared by) Refund/Cancel's own
+  // result state or Reship's stage-only "Queued" state.
+  const [addressResult, setAddressResult] = useState(null); // { status: 'success'|'duplicate'|'error', message, oldAddress, newAddress, escalationId }
 
   useEffect(() => {
     client.get(`/api/v2/tickets/${ticketId}/order`)
@@ -138,6 +146,65 @@ function OrderPanel({ ticketId, ticket }) {
       setStagingAction((isDuplicate ? 'duplicate:' : 'done:') + type);
     } catch {
       setStagingAction('err:' + type);
+    }
+  };
+
+  // Change Address — the one action here that's a REAL, immediately-
+  // executed Shopify mutation, not a stage-for-later-approval. A merchant
+  // acting directly on their own dashboard already IS the human approval
+  // step (same precedent as Refund/Cancel above), so this creates the
+  // action (for dedup + the audit trail) and, only when that create call
+  // returns a genuinely new pending action (not a duplicate), immediately
+  // approves it - reusing the exact same /create and /{id}/approve
+  // endpoints the Escalations page uses, so authorization, dedup, and the
+  // real update_shipping_address() Shopify call are all inherited
+  // unchanged. Never invents an address - the merchant must fill in the
+  // form below.
+  const extractErrorDetail = (err, fallback) => {
+    const detail = err?.response?.data?.detail;
+    return (typeof detail === 'object' ? detail?.error : detail) || err?.message || fallback;
+  };
+
+  const changeAddress = async () => {
+    const required = ['address1', 'city', 'country'];
+    if (required.some(f => !addressForm[f]?.trim())) {
+      setAddressResult({ status: 'error', message: 'Street address, city, and country are required.' });
+      return;
+    }
+    setAddressSubmitting(true);
+    setAddressResult(null);
+    try {
+      const newAddressText = [addressForm.address1, addressForm.address2, addressForm.city, addressForm.province, addressForm.zip, addressForm.country]
+        .filter(Boolean).join(', ');
+      const createRes = await client.post(`/api/v1/actions/create`, {
+        ticket_id: ticketId,
+        action_type: 'change_address',
+        order_id: order?.id || order?.order_number,
+        customer_email: ticket?.customer_email || '',
+        customer_name: ticket?.customer_name || ticket?.customer_email || '',
+        ai_reasoning: 'Manually staged by brand owner from conversation detail',
+        extracted_data: { new_address: addressForm, new_address_text: newAddressText },
+      });
+
+      if (createRes.data?.status === 'duplicate_skipped') {
+        setAddressResult({ status: 'duplicate', escalationId: createRes.data.action_id });
+        return;
+      }
+
+      const actionId = createRes.data?.action_id;
+      const approveRes = await client.post(`/api/v1/actions/${actionId}/approve`, {});
+      const execResult = approveRes.data?.execution_result || {};
+      setAddressResult({
+        status: 'success',
+        message: approveRes.data?.message || 'Address updated.',
+        oldAddress: execResult.old_address,
+        newAddress: execResult.new_address,
+      });
+      setAddressFormOpen(false);
+    } catch (err) {
+      setAddressResult({ status: 'error', message: extractErrorDetail(err, 'Could not update the address.') });
+    } finally {
+      setAddressSubmitting(false);
     }
   };
 
@@ -221,9 +288,20 @@ function OrderPanel({ ticketId, ticket }) {
               </button>
             )}
 
-            {/* Address change + Reship — stage for approval queue; hidden when restocked */}
+            {/* Change Address — real, immediately-executed Shopify mutation (see changeAddress above).
+                Hidden once fulfilled, same eligibility update_shipping_address() itself re-checks live. */}
+            {order.fulfillment_status !== 'fulfilled' && !order.cancelled_at && (
+              <button
+                onClick={() => { setAddressFormOpen(o => !o); setAddressResult(null); }}
+                disabled={!!actionLoading}
+                style={{ padding: '5px 10px', fontSize: '11px', borderRadius: '3px', border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-secondary)', cursor: 'pointer', fontWeight: '500' }}
+              >
+                Change Address
+              </button>
+            )}
+
+            {/* Reship — stays manual (stage-for-approval only, see stageAction). Hidden when restocked. */}
             {[
-              { type: 'ADDRESS_CHANGE', label: 'Update Address', show: order.fulfillment_status !== 'fulfilled' && !order.cancelled_at },
               { type: 'RESHIP', label: 'Reship', show: !(order.cancelled_at && order.fulfillment_status === 'restocked') },
             ].filter(a => a.show).map(({ type, label }) => {
               const isDone = stagingAction === 'done:' + type;
@@ -260,6 +338,70 @@ function OrderPanel({ ticketId, ticket }) {
           {stagingAction.startsWith('err:') && (
             <div style={{ fontSize: '11px', color: 'var(--error, #EF4444)', marginTop: '2px' }}>
               Couldn't queue this action. Please try again.
+            </div>
+          )}
+
+          {addressFormOpen && (
+            <div style={{ marginTop: '4px', padding: '10px', background: 'var(--bg-secondary)', borderRadius: '6px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <div style={{ fontSize: '11px', fontWeight: '600', color: 'var(--text-secondary)' }}>New shipping address</div>
+              {[
+                ['name', 'Full name'], ['address1', 'Street address *'], ['address2', 'Apt / suite (optional)'],
+                ['city', 'City *'], ['province', 'State / province'], ['zip', 'ZIP / postal code'],
+                ['country', 'Country *'], ['phone', 'Phone (optional)'],
+              ].map(([field, placeholder]) => (
+                <input
+                  key={field}
+                  value={addressForm[field]}
+                  onChange={e => setAddressForm(f => ({ ...f, [field]: e.target.value }))}
+                  placeholder={placeholder}
+                  disabled={addressSubmitting}
+                  style={{ padding: '6px 8px', fontSize: '12px', borderRadius: '4px', border: '1px solid var(--border)', background: 'var(--bg-primary)', color: 'var(--text-primary)' }}
+                />
+              ))}
+              <div style={{ display: 'flex', gap: '6px', marginTop: '4px' }}>
+                <button
+                  onClick={changeAddress}
+                  disabled={addressSubmitting}
+                  style={{ padding: '6px 14px', fontSize: '12px', fontWeight: '600', borderRadius: '4px', border: 'none', background: 'var(--accent)', color: 'white', cursor: addressSubmitting ? 'not-allowed' : 'pointer', opacity: addressSubmitting ? 0.6 : 1 }}
+                >
+                  {addressSubmitting ? 'Updating…' : 'Change Address'}
+                </button>
+                <button
+                  onClick={() => setAddressFormOpen(false)}
+                  disabled={addressSubmitting}
+                  style={{ padding: '6px 12px', fontSize: '12px', borderRadius: '4px', border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Persistent - never auto-dismissed. Completion means the Shopify
+              mutation actually succeeded, never just that the button was clicked. */}
+          {addressResult?.status === 'success' && (
+            <div style={{ fontSize: '12px', color: 'var(--success)', background: 'var(--success-light)', border: '1px solid var(--success)', borderRadius: '6px', padding: '8px 10px', marginTop: '4px' }}>
+              <div style={{ fontWeight: '600' }}>✓ Address updated</div>
+              {addressResult.newAddress?.address1 && (
+                <div style={{ marginTop: '4px', fontSize: '11px', opacity: 0.9 }}>
+                  {addressResult.oldAddress?.address1 && <div>From: {[addressResult.oldAddress.address1, addressResult.oldAddress.city, addressResult.oldAddress.country].filter(Boolean).join(', ')}</div>}
+                  <div>To: {[addressResult.newAddress.address1, addressResult.newAddress.city, addressResult.newAddress.country].filter(Boolean).join(', ')}</div>
+                </div>
+              )}
+            </div>
+          )}
+          {addressResult?.status === 'duplicate' && (
+            <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>
+              This action is already pending approval.{' '}
+              <button onClick={() => navigate('/actions')} style={{ background: 'none', border: 'none', padding: 0, color: 'var(--accent)', cursor: 'pointer', fontSize: 'inherit', fontWeight: '600' }}>
+                View Escalation →
+              </button>
+            </div>
+          )}
+          {addressResult?.status === 'error' && (
+            <div style={{ fontSize: '12px', color: 'var(--error, #EF4444)', background: 'rgba(239,68,68,0.08)', border: '1px solid var(--error, #EF4444)', borderRadius: '6px', padding: '8px 10px', marginTop: '4px' }}>
+              <div style={{ fontWeight: '600' }}>✗ Address could not be updated</div>
+              <div style={{ marginTop: '2px' }}>{addressResult.message}</div>
             </div>
           )}
         </div>

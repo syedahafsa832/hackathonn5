@@ -45,19 +45,23 @@ const ACTION_EXECUTE_LABELS = {
 };
 
 // Text only — Alert supplies its own ✓/✗ icon, so these no longer carry one.
+function formatExecutedAddress(addr) {
+  return addr ? [addr.address1, addr.city, addr.country].filter(Boolean).join(', ') : null;
+}
+
 const EXECUTION_MESSAGES = {
   refund: (r) => `$${r?.amount ?? ''} refunded via Shopify. Customer will receive Shopify's confirmation email.`,
   cancel_order: (r) => `Order ${r?.order_name ?? ''} cancelled. Stock restocked. Customer notified by Shopify.`,
   change_address: (r) => r?.manual_action_required
     ? `Queued. Update address manually in Shopify admin.${r?.new_address_text ? ' New address: ' + r.new_address_text : ''}`
-    : `Shipping address updated automatically in Shopify.`,
+    : `✓ Address updated in Shopify.${formatExecutedAddress(r?.new_address) ? ' Now: ' + formatExecutedAddress(r.new_address) : ''}`,
   reship: () => `Queued. Please create a replacement shipment in Shopify admin.`,
   restore_order: (r) => `Order ${r?.order_name ?? ''} has been restored and is active again. Customer has been notified.`,
   REFUND: (r) => `$${r?.amount ?? ''} refunded via Shopify. Customer will receive Shopify's confirmation email.`,
   CANCEL: (r) => `Order ${r?.order_name ?? ''} cancelled.`,
   ADDRESS_CHANGE: (r) => r?.manual_action_required
     ? `Queued. Update address manually in Shopify admin.${r?.new_address_text ? ' New address: ' + r.new_address_text : ''}`
-    : `Shipping address updated automatically in Shopify.`,
+    : `✓ Address updated in Shopify.${formatExecutedAddress(r?.new_address) ? ' Now: ' + formatExecutedAddress(r.new_address) : ''}`,
   RESHIP: () => `Queued. Please create a replacement shipment in Shopify admin.`,
   RESTORE_ORDER: (r) => `Order ${r?.order_name ?? ''} has been restored and is active again. Customer has been notified.`,
 };
@@ -89,10 +93,30 @@ function ActionCard({ action, onApprove, onReject }) {
   // below is rendered only "where available", never invented.
   const orderSnapshot = action.extracted_data?.order_snapshot;
   const shippingAddr = orderSnapshot?.shipping_address;
-  const shippingAddrLine = shippingAddr
-    ? [shippingAddr.address1, shippingAddr.address2, shippingAddr.city, shippingAddr.province, shippingAddr.zip, shippingAddr.country]
-        .filter(Boolean).join(', ')
+  const formatAddr = (a) => a
+    ? [a.address1, a.address2, a.city, a.province, a.zip, a.country].filter(Boolean).join(', ')
     : null;
+  const shippingAddrLine = formatAddr(shippingAddr);
+
+  // Change Address escalations: shows what's being changed FROM (the live
+  // order's address at staging time - current_shipping_address) and what's
+  // being requested (new_address / new_address_text). Absent for a
+  // manually-staged action created before this field existed - rendered
+  // only where available, never invented.
+  const isAddressChange = action.action_type === 'change_address';
+  const currentAddrLine = isAddressChange ? formatAddr(action.extracted_data?.current_shipping_address) : null;
+  const requestedAddrLine = isAddressChange
+    ? (formatAddr(action.extracted_data?.new_address) || action.extracted_data?.new_address_text)
+    : null;
+  const currentFulfillmentStatus = isAddressChange ? action.extracted_data?.current_fulfillment_status : null;
+  // identity_verified is only ever set by the customer-initiated staging
+  // path (return_actions_integration.py) - explicitly `false` means the
+  // order's Shopify email didn't match (or had none to compare against)
+  // the conversation's sender email. Missing entirely (undefined) means
+  // either a merchant-initiated action (Order Context - always trusted,
+  // no customer identity involved) or an older action staged before this
+  // check existed - neither should show a warning.
+  const identityUnverified = isAddressChange && action.extracted_data?.identity_verified === false;
 
   const meta = ACTION_LABELS[action.action_type] || { label: action.action_type, color: '#0E7490', isDestructive: false };
   const execMsg = action.execution_result
@@ -182,7 +206,19 @@ function ActionCard({ action, onApprove, onReject }) {
                   Policy check required
                 </span>
               )}
+              {identityUnverified && (
+                <span style={{ flexShrink: 0, fontSize: '10.5px', fontWeight: '600', color: '#B91C1C', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: '999px', padding: '2px 9px' }}>
+                  ⚠ Identity not verified
+                </span>
+              )}
             </div>
+          </div>
+        )}
+
+        {identityUnverified && (
+          <div style={{ padding: '8px 12px', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: '4px', fontSize: '12.5px', color: '#991B1B' }}>
+            <strong>Could not confirm this order belongs to the requester.</strong>{' '}
+            {action.extracted_data?.identity_verification_reason || 'Verify the customer\'s identity manually before approving.'}
           </div>
         )}
 
@@ -211,6 +247,19 @@ function ActionCard({ action, onApprove, onReject }) {
               {shippingAddrLine && (
                 <div><strong>Shipping to:</strong> {shippingAddrLine}</div>
               )}
+            </div>
+          </div>
+        )}
+
+        {isAddressChange && (currentAddrLine || requestedAddrLine) && (
+          <div>
+            <div style={{ fontSize: '10.5px', fontWeight: '600', color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '3px' }}>
+              Address change
+            </div>
+            <div style={{ padding: '8px 12px', background: '#F8FAFC', borderRadius: '4px', fontSize: '12.5px', color: '#475569', lineHeight: '1.6' }}>
+              {currentAddrLine && <div><strong>Current:</strong> {currentAddrLine}</div>}
+              {requestedAddrLine && <div><strong>Requested:</strong> {requestedAddrLine}</div>}
+              {currentFulfillmentStatus && <div><strong>Fulfillment:</strong> {currentFulfillmentStatus}{currentFulfillmentStatus === 'fulfilled' ? ' — Shopify will reject this update' : ''}</div>}
             </div>
           </div>
         )}

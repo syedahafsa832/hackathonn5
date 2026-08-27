@@ -780,6 +780,9 @@ class ShopifyClient:
         order_result = await self.get_order(order_id)
         order = order_result.get("order", {})
         shopify_order_id = order.get("id")
+        # Snapshot the address as it stood before this mutation - the only
+        # place this is ever known, needed for the audit trail (old vs new).
+        old_address = order.get("shipping_address")
 
         # Check if fulfilled
         if order.get("fulfillment_status") == "fulfilled":
@@ -847,6 +850,7 @@ class ShopifyClient:
             "success": True,
             "order_id": order_id,
             "order_name": order.get("name"),
+            "old_address": old_address,
             "new_address": returned_address,
             "message": f"Successfully updated shipping address for order {order.get('name')}"
         }

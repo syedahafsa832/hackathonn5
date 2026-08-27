@@ -185,6 +185,15 @@ class ReturnActionsIntegration:
                 )
                 return result
 
+            # Same duplicate-request guard as refund/cancel/reship above
+            # (PART 6) - "please update my address" repeated across several
+            # messages must never stage a second address-change escalation
+            # for the same order.
+            existing_action = await self._find_active_action(tenant_id, order_id, "change_address")
+            if existing_action:
+                result["action_context"] = self._duplicate_status_context(existing_action, intent_type)
+                return result
+
             new_address_text = intent_result.raw_address or None
 
             # Parse raw address into structured fields for automatic Shopify update.
@@ -235,10 +244,69 @@ class ReturnActionsIntegration:
                 )
                 return result
 
+            # Best-effort: fetch the order's CURRENT shipping address and
+            # fulfillment status so the escalation shows what's being
+            # changed FROM, not just the requested new address, and whether
+            # Shopify is even expected to allow it (see
+            # update_shipping_address's own live fulfillment check, which
+            # remains the actual authority at approval time - this is
+            # display-only, never a second eligibility gate). Never blocks
+            # staging on failure.
+            #
+            # Same fetch also establishes customer/order identity - the
+            # exact same order.email-vs-sender-email comparison
+            # check_return_eligibility already does for refund/cancel
+            # (actions_manager.py Step 2), reused here rather than
+            # reimplemented, since address_change never ran that check at
+            # all (confirmed gap - see the read-only security trace before
+            # this fix). Stricter than that existing comparison on one
+            # point: a MISSING order email there is treated as "nothing to
+            # compare against, proceed" (lenient); here it's treated as
+            # unverified - the customer is asking to redirect a physical
+            # shipment, not just view/adjust their own order, so the
+            # default on ambiguity is "can't confirm this is their order"
+            # rather than "no conflict found". Never blocks staging either
+            # way - the existing human-approval gate is what actually
+            # prevents an unverified mutation; this only makes sure that
+            # gate is shown accurate information instead of none.
+            current_shipping_address = None
+            current_fulfillment_status = None
+            identity_verified = False
+            identity_verification_reason = "Could not verify - order lookup failed"
+            if tenant_id:
+                try:
+                    from src.services.shopify_service import shopify_service
+                    client = await shopify_service.get_client_for_tenant(tenant_id)
+                    order_resp = await client.get_order(order_id)
+                    if order_resp.get("success") and order_resp.get("order"):
+                        current_shipping_address = order_resp["order"].get("shipping_address")
+                        current_fulfillment_status = order_resp["order"].get("fulfillment_status")
+                        order_owner_email = (order_resp["order"].get("email") or "").strip().lower()
+                        sender_email = (email or "").strip().lower()
+                        if not order_owner_email:
+                            identity_verification_reason = "Order has no customer email on file to verify against"
+                        elif not sender_email:
+                            identity_verification_reason = "No verified sender email available for this conversation"
+                        elif order_owner_email == sender_email:
+                            identity_verified = True
+                            identity_verification_reason = None
+                        else:
+                            identity_verification_reason = "Sender email does not match the order's customer email on file"
+                            logger.warning(
+                                f"[ReturnActions] Address-change identity mismatch for order {order_id}: "
+                                f"order email={order_owner_email!r}, sender email={sender_email!r}"
+                            )
+                    else:
+                        identity_verification_reason = "Could not verify - order not found in Shopify"
+                except Exception as e:
+                    logger.warning(f"[ReturnActions] Address-change order lookup failed for order {order_id} (continuing without it): {e}")
+
             ai_reasoning = (
                 f"Customer requests address change for order #{order_id}. "
                 f"Requested address: {new_address_text} [Auto-parsed ✓]"
             )
+            if not identity_verified:
+                ai_reasoning += f" ⚠ IDENTITY NOT VERIFIED: {identity_verification_reason}. Confirm the requester before approving."
             staged = await self._create_action(
                 tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
                 action_type="change_address", order_id=order_id, email=email or "",
@@ -246,6 +314,10 @@ class ReturnActionsIntegration:
                 ai_reasoning=ai_reasoning, eligibility={},
                 new_address_text=new_address_text,
                 structured_address=structured_address,
+                identity_verified=identity_verified,
+                identity_verification_reason=identity_verification_reason,
+                current_shipping_address=current_shipping_address,
+                current_fulfillment_status=current_fulfillment_status,
             )
             result["staged"] = staged
             result["action_context"] = (
@@ -730,7 +802,8 @@ class ReturnActionsIntegration:
         both the refund/return/cancel path and the exchange path."""
         noun = "exchange" if existing.get("action_type") == "exchange" else (
             "return" if intent_type == "return" else "refund" if intent_type == "refund"
-            else "reship" if intent_type == "reship" else "cancellation"
+            else "reship" if intent_type == "reship"
+            else "address change" if intent_type == "address_change" else "cancellation"
         )
         status = existing.get("status")
         if status == "pending":
@@ -1278,6 +1351,10 @@ class ReturnActionsIntegration:
         price_difference: Optional[float] = None,
         policy_evidence: Optional[str] = None,
         reship_order_snapshot: Optional[dict] = None,
+        current_shipping_address: Optional[dict] = None,
+        current_fulfillment_status: Optional[str] = None,
+        identity_verified: Optional[bool] = None,
+        identity_verification_reason: Optional[str] = None,
     ) -> dict:
         """Create action in `actions` table (new system) when tenant_id is available,
         otherwise fall back to legacy `pending_actions` via stage_pending_action."""
@@ -1312,6 +1389,13 @@ class ReturnActionsIntegration:
                     extracted["policy_evidence"] = policy_evidence
                 if reship_order_snapshot:
                     extracted["order_snapshot"] = reship_order_snapshot
+                if current_shipping_address is not None:
+                    extracted["current_shipping_address"] = current_shipping_address
+                if current_fulfillment_status is not None:
+                    extracted["current_fulfillment_status"] = current_fulfillment_status
+                if identity_verified is not None:
+                    extracted["identity_verified"] = identity_verified
+                    extracted["identity_verification_reason"] = identity_verification_reason
                 return await actions_service.create_action(
                     tenant_id=tenant_id,
                     brand_id=brand_id,
