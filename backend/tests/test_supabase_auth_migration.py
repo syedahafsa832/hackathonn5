@@ -191,6 +191,8 @@ def test_register_reports_email_confirmation_required_without_a_session():
         return {"id": "brand-1", **data}
 
     with patch("src.services.auth_service.supabase_gotrue.sign_up", side_effect=fake_signup), \
+         patch("src.services.auth_service.supabase_gotrue.generate_signup_confirmation_link", return_value=_FAKE_ACTION_LINK) as mock_generate, \
+         patch("src.services.auth_service.system_email_service.send_generic_auth_email", return_value=True) as mock_send, \
          patch("src.services.auth_service.supabase_select", return_value=[]), \
          patch("src.services.auth_service.supabase_insert", side_effect=fake_insert), \
          patch("src.services.auth_service.supabase_update", return_value={}):
@@ -200,6 +202,45 @@ def test_register_reports_email_confirmation_required_without_a_session():
     assert result["success"] is True
     assert result.get("email_confirmation_required") is True
     assert result.get("access_token") is None
+
+    # The confirmation email must not depend on Supabase's own unreliable
+    # mailer/Send Email Hook - it's generated and sent directly, the same
+    # way the password-reset email already is.
+    mock_generate.assert_called_once()
+    assert mock_generate.call_args.args[0] == "new@example.com"
+    assert mock_generate.call_args.args[1] == "supersecret123"
+    assert mock_generate.call_args.kwargs["redirect_to"].endswith("/login")
+    mock_send.assert_called_once()
+    send_args, send_kwargs = mock_send.call_args
+    assert send_args[0] == "new@example.com"
+    assert send_kwargs["action_url"] == _FAKE_ACTION_LINK
+
+
+def test_register_does_not_crash_if_confirmation_link_generation_fails():
+    """generate_signup_confirmation_link returning None (e.g. Supabase's
+    admin API is unreachable) must not fail the signup itself - the tenant
+    is already created at this point; the merchant can still use "resend
+    confirmation" or contact support instead of losing the account."""
+    def fake_signup(email, password):
+        return {"user": {"id": "sb-unconfirmed", "email": email}, "session": None}
+
+    def fake_insert(table, data):
+        if table == "tenants":
+            return {"id": "tenant-1", **data}
+        return {"id": "brand-1", **data}
+
+    with patch("src.services.auth_service.supabase_gotrue.sign_up", side_effect=fake_signup), \
+         patch("src.services.auth_service.supabase_gotrue.generate_signup_confirmation_link", return_value=None), \
+         patch("src.services.auth_service.system_email_service.send_generic_auth_email") as mock_send, \
+         patch("src.services.auth_service.supabase_select", return_value=[]), \
+         patch("src.services.auth_service.supabase_insert", side_effect=fake_insert), \
+         patch("src.services.auth_service.supabase_update", return_value={}):
+        auth_service = AuthService()
+        result = _run(auth_service.register("new@example.com", "supersecret123"))
+
+    assert result["success"] is True
+    assert result.get("email_confirmation_required") is True
+    mock_send.assert_not_called()  # no link - nothing to send
 
 
 # ─── 7. login() never leaks account-existence detail for a bad password ────
