@@ -53,6 +53,23 @@ def _with_tenant(fn):
         app.dependency_overrides.clear()
 
 
+def _eligible_tickets(n=20):
+    return [{"human_approved": True, "ai_reply": f"reply {i}", "updated_at": "2026-01-01"} for i in range(n)]
+
+
+def _select_side_effect(brand, tickets=None):
+    """reply_style_service.switch_to_learned reads both 'brands' (for the
+    profile) and 'tickets' (for the eligibility gate) via the same
+    supabase_select import — a flat return_value can't distinguish them."""
+    def fn(table, params=None):
+        if table == "brands":
+            return [brand]
+        if table == "tickets":
+            return tickets or []
+        return []
+    return fn
+
+
 def _brand(**overrides):
     b = {
         "id": BRAND_ID, "tenant_id": TENANT_ID,
@@ -114,7 +131,7 @@ def test_switch_back_to_learned_still_works_after_selecting_a_preset():
     # which reads/writes via its own supabase_select/supabase_update import —
     # a separate reference from v2_brands', so both must be patched.
     with patch("src.api.routes.v2_brands.supabase_select", return_value=[brand]), \
-         patch("src.services.reply_style_service.supabase_select", return_value=[brand]), \
+         patch("src.services.reply_style_service.supabase_select", side_effect=_select_side_effect(brand, tickets=_eligible_tickets())), \
          patch("src.services.reply_style_service.supabase_update", return_value={**brand, "reply_style_mode": "learned"}) as mock_update:
         resp = _with_tenant(lambda: client.post(f"/api/v2/brands/{BRAND_ID}/reply-style/switch-to-learned"))
     assert resp.status_code == 200, resp.text
@@ -148,7 +165,7 @@ def test_learned_to_premium_to_learned_round_trip_preserves_profile():
 
     brand_after_preset = _brand(reply_style_mode="preset", reply_style_preset="premium_luxury")
     with patch("src.api.routes.v2_brands.supabase_select", return_value=[brand_after_preset]), \
-         patch("src.services.reply_style_service.supabase_select", return_value=[brand_after_preset]), \
+         patch("src.services.reply_style_service.supabase_select", side_effect=_select_side_effect(brand_after_preset, tickets=_eligible_tickets())), \
          patch("src.services.reply_style_service.supabase_update", return_value={**brand_after_preset, "reply_style_mode": "learned"}) as mock_update2:
         resp2 = _with_tenant(lambda: client.post(f"/api/v2/brands/{BRAND_ID}/reply-style/switch-to-learned"))
     assert resp2.status_code == 200

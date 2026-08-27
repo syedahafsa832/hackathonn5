@@ -83,11 +83,14 @@ def test_brand_a_learned_profile_never_consumes_brand_b_examples_or_replies():
         result_b = run(svc.generate_learned_profile("brand-B", force=True))
     assert result_b["success"] is False  # nothing to learn from - brand-A's data never leaked in
 
+    # force=True: brand-A only seeds 1 approved reply here, which is enough
+    # to exercise the isolation check but would otherwise fail the
+    # (unrelated) MIN_APPROVED_REPLIES_TO_LEARN eligibility gate.
     with patch("src.services.reply_style_service.supabase_select", side_effect=fake_select), \
          patch("src.services.reply_style_service.supabase_update"), \
          patch("src.services.ai_provider_manager.ai_provider_manager",
                MagicMock(has_providers=True, create_chat_completion=AsyncMock(side_effect=capturing_llm_call))):
-        result_a = run(svc.generate_learned_profile("brand-A"))
+        result_a = run(svc.generate_learned_profile("brand-A", force=True))
 
     assert result_a["success"] is True
     prompt_text = seen_prompts["messages"][1]["content"]

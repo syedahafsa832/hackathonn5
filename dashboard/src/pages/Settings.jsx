@@ -1626,7 +1626,7 @@ function ReplyStyleTab() {
         </label>
       </div>
 
-      {mode !== 'disabled' && data.learned_profile && mode !== 'learned' && (
+      {mode !== 'disabled' && data.learned_profile && data.eligible_for_learning && mode !== 'learned' && (
         <div style={{ ...card, background: '#ECFEFF', borderColor: '#A5F3FC' }}>
           <div style={{ fontSize: '13px', fontWeight: '600', color: '#0E7490', marginBottom: '8px' }}>
             A learned writing style is ready from your approved replies. You can switch to it anytime.
@@ -1744,6 +1744,7 @@ function ReplyStyleTab() {
           </div>
           <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '14px' }}>
             Show Luna how your team would reply. You don't need to use the exact wording a real customer would use.
+            Uploaded examples don't count toward the approved-reply total above, and won't make Learned Style available on their own.
           </div>
           <Alert variant="error" onDismiss={() => setExampleBlockedMsg('')} style={{ marginBottom: '14px' }}>{exampleBlockedMsg}</Alert>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '14px' }}>

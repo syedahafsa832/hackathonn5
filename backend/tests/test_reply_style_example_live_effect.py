@@ -14,6 +14,15 @@ force=False) itself, best-effort, right after inserting the example — the
 exact existing pipeline, no new system, no mode auto-switch (becoming the
 active style is still the merchant's explicit "Switch to Learned Style"
 action, unchanged).
+
+Note: generate_learned_profile's own eligibility gate was later corrected to
+always require MIN_APPROVED_REPLIES_TO_LEARN real approved replies,
+regardless of uploaded examples (see test_reply_style_uploaded_examples.py
+and test_reply_style_learned_readiness.py) — a single uploaded example with
+0 approved replies must NOT produce a profile. The tests below that exercise
+the upload-triggers-regeneration wiring now seed enough approved tickets to
+be eligible, so they keep testing "does upload trigger regeneration" rather
+than eligibility itself.
 """
 import os
 import sys
@@ -52,6 +61,12 @@ def _with_tenant(fn, tenant_id=TENANT_ID):
         return fn()
     finally:
         app.dependency_overrides.clear()
+
+
+def _eligible_tickets(n=20):
+    """20 approved tickets — the minimum for generate_learned_profile's
+    eligibility gate, independent of any uploaded examples."""
+    return [{"human_approved": True, "ai_reply": f"approved reply #{i}", "updated_at": "2026-01-01"} for i in range(n)]
 
 
 def _brand(brand_id=BRAND_ID, **overrides):
@@ -123,7 +138,7 @@ def test_first_example_upload_immediately_generates_a_learned_profile():
     capture = {}
     resp, mock_update = _post_example(
         "Customer: Hi\n\nLuna's reply: helloo how can we help you?",
-        brand, tickets=[], examples=[], capture=capture,
+        brand, tickets=_eligible_tickets(), examples=[], capture=capture,
     )
 
     assert resp.status_code == 200, resp.text
@@ -146,7 +161,7 @@ def test_example_upload_regenerates_even_when_a_profile_already_exists():
     capture = {}
     resp, mock_update = _post_example(
         "Customer: Hey, need help\n\nLuna's reply: helloo, happy to help!",
-        brand, tickets=[], examples=[{"id": "ex-old", "content": "old example"}], capture=capture,
+        brand, tickets=_eligible_tickets(), examples=[{"id": "ex-old", "content": "old example"}], capture=capture,
     )
 
     assert resp.status_code == 200, resp.text
@@ -161,7 +176,7 @@ def test_example_influences_profile_but_is_never_copied_verbatim():
     brand = _brand(reply_style_profile=None)
     _, mock_update = _post_example(
         "Customer: Hi\n\nLuna's reply: helloo how can we help you?",
-        brand, tickets=[], examples=[],
+        brand, tickets=_eligible_tickets(), examples=[],
     )
     profile_updates = [c.args[2] for c in mock_update.call_args_list if "reply_style_profile" in c.args[2]]
     profile = profile_updates[0]["reply_style_profile"]
@@ -190,7 +205,7 @@ def test_generated_profile_drops_non_style_fields_even_if_model_returns_them():
         return (response, "label", "model", {})
 
     content = "Customer: Hi\n\nLuna's reply: helloo how can we help you?"
-    fake_select = _fake_db(brand, tickets=[], examples=[{"id": "ex-new", "content": content}])
+    fake_select = _fake_db(brand, tickets=_eligible_tickets(), examples=[{"id": "ex-new", "content": content}])
     with patch("src.api.routes.v2_brands.supabase_select", side_effect=fake_select), \
          patch("src.api.routes.v2_brands.supabase_insert", return_value={"id": "ex-new"}), \
          patch("src.services.reply_style_service.supabase_select", side_effect=fake_select), \

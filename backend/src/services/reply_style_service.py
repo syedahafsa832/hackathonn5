@@ -131,6 +131,12 @@ def switch_to_learned(brand_id: str) -> Dict:
     brand = get_brand_reply_style(brand_id)
     if not brand or not brand.get("reply_style_profile"):
         return {"success": False, "error": "No learned profile available yet."}
+    # Belt-and-suspenders: reject even if a profile row exists (e.g. one
+    # generated before this eligibility fix, or written by force=True) —
+    # switching must always require this brand's own current approved-reply
+    # count to have actually crossed the threshold shown on Settings.
+    if count_eligible_approved_replies(brand_id) < MIN_APPROVED_REPLIES_TO_LEARN:
+        return {"success": False, "error": f"Need at least {MIN_APPROVED_REPLIES_TO_LEARN} approved replies to switch to Learned Style."}
     supabase_update("brands", {"id": f"eq.{brand_id}"}, {
         "reply_style_mode": "learned",
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -170,23 +176,26 @@ async def generate_learned_profile(brand_id: str, force: bool = False) -> Dict:
     if not brand:
         return {"success": False, "error": "Brand not found"}
 
-    texts = []
-    if not brand.get("reply_style_use_uploaded_only"):
-        texts = _approved_reply_texts(brand_id)
-    uploaded_texts = _uploaded_example_texts(brand_id)
-    texts = texts + uploaded_texts
+    approved_count = count_eligible_approved_replies(brand_id)
 
-    # Uploaded examples are merchant-curated by hand, not organically
-    # collected - they don't need the same volume floor as real approved
-    # replies to be usable. Any uploaded example present skips the gate
-    # entirely; the gate still applies when learning purely from approved
-    # replies (no examples uploaded), unchanged from before.
-    if not force and not uploaded_texts and len(texts) < MIN_APPROVED_REPLIES_TO_LEARN:
+    # Eligibility is always decided by real approved-reply volume, matching
+    # the fixed "X of 20 approved replies" the Settings page states as the
+    # requirement. Uploaded examples are merchant-curated seed data that
+    # enrich the extraction prompt once eligible; they must never make
+    # Learned Style look "ready" on their own — doing so previously produced
+    # a profile (and the "ready to switch" banner) from a single example
+    # with 0 approved replies, directly contradicting the "0 of 20" counter
+    # shown right next to it.
+    if not force and approved_count < MIN_APPROVED_REPLIES_TO_LEARN:
         return {
             "success": False,
             "error": f"Need at least {MIN_APPROVED_REPLIES_TO_LEARN} approved replies "
-                     f"(have {len(texts)}).",
+                     f"(have {approved_count}).",
         }
+
+    approved_texts = [] if brand.get("reply_style_use_uploaded_only") else _approved_reply_texts(brand_id)
+    uploaded_texts = _uploaded_example_texts(brand_id)
+    texts = approved_texts + uploaded_texts
     if not texts:
         return {"success": False, "error": "No approved replies or examples to learn from."}
 
@@ -256,12 +265,10 @@ async def regenerate_if_due(brand_id: str) -> None:
             new_since_last = count_approved_replies_since(brand_id, last_generated)
             due_by_volume = new_since_last >= REGENERATE_AFTER_NEW_REPLIES
         else:
-            # An uploaded example is enough on its own to trigger the first
-            # learned profile - same floor-skip as generate_learned_profile.
-            due_by_volume = (
-                bool(_uploaded_example_texts(brand_id, limit=1))
-                or count_eligible_approved_replies(brand_id) >= MIN_APPROVED_REPLIES_TO_LEARN
-            )
+            # Matches generate_learned_profile's own gate: only real
+            # approved-reply volume decides eligibility for the first
+            # profile, regardless of uploaded examples.
+            due_by_volume = count_eligible_approved_replies(brand_id) >= MIN_APPROVED_REPLIES_TO_LEARN
 
         if due_by_volume or (has_profile and due_by_time):
             await generate_learned_profile(brand_id)
