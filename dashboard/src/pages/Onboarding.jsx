@@ -509,6 +509,14 @@ function StepTestLuna({ brandId, shopifyConnected, onNext }) {
       if (res.data?.provider_outage) {
         setPassed(false);
         setError("Luna's AI models are all at capacity right now. This is temporary. Try again in a few minutes.");
+      } else if (res.data?.escalate) {
+        // Luna's own low-confidence/escalate signal fired (typically an
+        // empty or unhelpful knowledge-base match) - a reply came back, but
+        // it isn't grounded enough to call this a passed test. Show the
+        // reply so the merchant can see what Luna said, without the false
+        // "Test passed" checkmark.
+        setReply(res.data?.reply || '');
+        setPassed(false);
       } else {
         setReply(res.data?.reply || '');
         setPassed(true);
@@ -578,8 +586,15 @@ function StepTestLuna({ brandId, shopifyConnected, onNext }) {
             </div>
           )}
           {passed === false && !error && (
-            <div style={{ marginTop: '12px', fontSize: '13px', color: 'var(--text-secondary)' }}>
-              Couldn't answer this yet. Your store knowledge may still be importing.
+            <div style={{ marginTop: '12px' }}>
+              <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: reply ? '8px' : 0 }}>
+                Couldn't answer this confidently yet. Your store knowledge may still be importing.
+              </div>
+              {reply && (
+                <div style={{ padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px', fontSize: '13px', color: 'var(--text-primary)', whiteSpace: 'pre-line' }}>
+                  {reply}
+                </div>
+              )}
             </div>
           )}
         </div>

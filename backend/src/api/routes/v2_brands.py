@@ -1610,6 +1610,13 @@ async def test_reply(
             # clear "AI is at capacity" notice instead of presenting the generic
             # customer-facing fallback copy as if it were a real Luna reply.
             "provider_outage": result.get("provider_outage", False),
+            # Surfaces the agent's own low-confidence/escalate signal (set
+            # whenever it couldn't ground the reply well) so the onboarding UI
+            # can tell "Luna answered but wasn't confident she had grounded
+            # store knowledge" apart from a genuine pass, instead of treating
+            # any non-erroring HTTP response as a passed test regardless of
+            # what the reply actually says.
+            "escalate": bool(result.get("escalate")),
         }
     except HTTPException:
         raise

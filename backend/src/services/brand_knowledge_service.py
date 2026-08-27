@@ -23,6 +23,27 @@ from src.lib.supabase_client import (
 
 logger = logging.getLogger(__name__)
 
+# Shopify's Privacy Policy / Terms of Service are dense, generic legal
+# boilerplate that shopify_import_service imports like any other policy
+# (see its own docstring) but that never actually helps answer a customer
+# question. For a small store, a single Privacy Policy import can produce
+# far more chunks than every other source combined (e.g. 24 vs 5 product
+# chunks observed live) - since match_brand_rag_chunks ranks purely by raw
+# cosine similarity with no per-source cap, those chunks statistically
+# dominate the top-k for almost any short/generic query and crowd out the
+# actually-relevant handful of chunks (product catalog, real policies)
+# entirely. Excluded from retrieval only - the rows/chunks themselves are
+# left untouched, so no data is deleted or migrated.
+_LOW_VALUE_POLICY_TITLES = ("privacy policy", "terms of service", "terms & conditions", "terms and conditions")
+
+
+def _is_low_value_policy_chunk(result: Dict[str, Any]) -> bool:
+    metadata = result.get("metadata") or {}
+    if metadata.get("type") != "shopify_policy":
+        return False
+    title = (metadata.get("policy_title") or result.get("source_name") or "").strip().lower()
+    return any(t in title for t in _LOW_VALUE_POLICY_TITLES)
+
 
 class BrandKnowledgeService:
     """
@@ -410,13 +431,19 @@ class BrandKnowledgeService:
             if not embedding:
                 return ""
 
-            # Search brand's knowledge base using RPC function
-            results = supabase_rpc("match_brand_rag_chunks", {
+            # Search brand's knowledge base using RPC function. Over-fetch a
+            # wider candidate pool than top_k, then drop low-value policy
+            # chunks (see _is_low_value_policy_chunk) before truncating to
+            # top_k - filtering only the requested top_k itself would just
+            # shrink the result set on a store whose Privacy Policy already
+            # fills every slot, not surface the relevant chunks underneath it.
+            raw_results = supabase_rpc("match_brand_rag_chunks", {
                 "p_brand_id": brand_id,
                 "query_embedding": embedding,
                 "match_threshold": 0.5,
-                "match_count": top_k
+                "match_count": max(top_k * 10, 100)
             })
+            results = [r for r in (raw_results or []) if not _is_low_value_policy_chunk(r)][:top_k]
 
             if not results:
                 logger.info(f"[KB] No matching context for brand {brand_id}")
