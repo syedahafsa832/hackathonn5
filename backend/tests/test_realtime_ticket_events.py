@@ -191,6 +191,23 @@ def test_events_are_tagged_with_the_owning_brand():
         assert c.args[1] == "brand-OTHER"
 
 
+# Regression guard for the "cancel + refund both created" bug: Stage 9.5
+# used to run its own independent action_detect_and_create() call after the
+# primary agent call, entirely unaware of what return_actions_integration.py
+# (called from inside generate_channel_appropriate_response, two stages
+# earlier) had already decided — for a fulfilled order, that produced a
+# correctly-typed "refund" action from the primary path AND an incorrectly-
+# typed "cancel_order" action from this second, independent path, since each
+# path's own dedup check only ever looked for its own action_type. Stage 9.5
+# is retired; this must never fire again regardless of what the agent
+# returns or detects.
+def test_stage_9_5_never_independently_detects_or_creates_an_action():
+    agent_fn = _emitted_progress_result([], reply_body="Sure, I'll help with that cancellation.")
+    with patch("src.workers.message_processor.actions_service.detect_and_create", new=AsyncMock()) as mock_detect:
+        _run(_message(content="can you cancel my order #1002"), agent_fn)
+    mock_detect.assert_not_awaited()
+
+
 # The wiring fix itself: generate_channel_appropriate_response used to drop
 # on_progress silently. Confirm it now forwards it into process_customer_query.
 def test_generate_channel_appropriate_response_forwards_on_progress():

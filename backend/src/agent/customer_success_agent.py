@@ -576,7 +576,11 @@ class CustomerSuccessAgent:
             # that persists `query` verbatim (actions.original_message,
             # shown to merchants on the Escalations page).
             _is_chat = customer_info.get("channel") == "chat"
-            await _emit("received", "New customer message received")
+            # No "received" emit here — message_processor.py already logs its
+            # own "message_received" ticket_events row earlier (right after
+            # ticket intake, before this function even runs) for every email
+            # ticket. Emitting a second one here duplicated it verbatim in
+            # the Activity timeline (see test_no_duplicate_activity_events.py).
             await _emit("thinking", "Analyzing request…")
 
             # 1. RAG Retrieval - brand_knowledge_service.get_brand_context() is scoped
@@ -1443,7 +1447,12 @@ class CustomerSuccessAgent:
             structured["ai_reply_generated"] = True
             if _needs_identity_verification:
                 structured["needs_identity_verification"] = True
-            await _emit("draft_ready", "Draft ready for your team to review")
+            # No "draft_ready" emit here — message_processor.py already logs
+            # its own "draft_ready"/"Draft ready" event right after this call
+            # returns, and a further "needs_review"/"Draft ready for your
+            # team to review" event once it knows the ticket won't be
+            # auto-sent. Emitting a third, overlapping event here duplicated
+            # both in the Activity timeline (see test_no_duplicate_activity_events.py).
             return structured
 
         except Exception as e:

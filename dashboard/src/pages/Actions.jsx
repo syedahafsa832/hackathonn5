@@ -290,6 +290,13 @@ export default function Actions() {
   const { data: actions = [], isLoading: loadingActions, refetch: refetchActions } = useActions('pending');
   const { data: history = [], isLoading: loadingHistory } = useActions('history');
   const rejectedActions = history.filter(a => a.status === 'rejected');
+  // Persistent failure surface (was: a toast that vanished on refresh).
+  // get_action_history() already includes status='failed' rows — the data
+  // was always there, it just had nowhere to render. actions_service._mark_failed()
+  // already persists action_type/order_id/created_at (all already columns
+  // on the row) plus a human-readable error_message, so no backend change
+  // was needed to have something to show here.
+  const failedActions = history.filter(a => a.status === 'failed');
   const { data: stats } = useStats();
   const { mutateAsync: approveAction } = useApproveAction();
   const { mutateAsync: rejectAction } = useRejectAction();
@@ -298,6 +305,8 @@ export default function Actions() {
   const [selectedEscalationIds, setSelectedEscalationIds] = useState(new Set());
   const [bulkEscalWorking, setBulkEscalWorking] = useState(false);
   const [showRejected, setShowRejected] = useState(false);
+  const [showFailed, setShowFailed] = useState(true);
+  const [retryingId, setRetryingId] = useState(null);
   const [pageError, setPageError] = useState('');
 
   // ActionCard's own onReject already awaits this and shows its own working
@@ -311,6 +320,23 @@ export default function Actions() {
       await rejectAction({ id, reason });
     } catch (err) {
       setPageError(err?.response?.data?.detail || 'Failed to reject action. It has been restored to the list.');
+    }
+  };
+
+  // Retry reuses the exact same approve call — the backend now accepts a
+  // re-claim from status='failed' (see actions_service.approve_action).
+  // useApproveAction's onSettled invalidates ['actions'] regardless of
+  // outcome, so this card moves itself out of Failed (into pending/executed,
+  // or right back into Failed with the new error) on the next refetch.
+  const handleRetry = async (id) => {
+    setRetryingId(id);
+    setPageError('');
+    try {
+      await approveAction({ id });
+    } catch (err) {
+      setPageError(err?.response?.data?.detail || 'Retry failed. See the error below for details.');
+    } finally {
+      setRetryingId(null);
     }
   };
 
@@ -505,6 +531,73 @@ export default function Actions() {
                         {action.approved_by && <span style={{ color: '#94A3B8' }}>, by {action.approved_by}</span>}
                       </div>
                     )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Failed Actions — persists after refresh, unlike a toast. A merchant
+          clicked Cancel/Refund in Shopify and execution failed; the row
+          stays here (fetched from the same history endpoint as Rejected,
+          just filtered to status='failed') until it's retried. */}
+      {loadingHistory ? null : failedActions.length > 0 && (
+        <section>
+          <div className="header-row" style={{ marginBottom: '10px' }}>
+            <button
+              onClick={() => setShowFailed(s => !s)}
+              style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: '14px', fontWeight: '600', color: '#B91C1C' }}
+            >
+              <span style={{ display: 'inline-block', transition: 'transform 0.15s', transform: showFailed ? 'rotate(90deg)' : 'none' }}>▸</span>
+              Failed ({failedActions.length})
+            </button>
+          </div>
+          {showFailed && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {failedActions.map(action => {
+                const meta = ACTION_LABELS[action.action_type] || { label: action.action_type, color: '#0E7490' };
+                return (
+                  <div key={action.id} style={{ background: 'white', border: '1px solid #FECACA', borderRadius: '8px', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <span style={{ fontSize: '14px', fontWeight: '600', color: meta.color }}>{meta.label}</span>
+                        {(action.order_id || action.order_number) && (
+                          <span style={{ fontSize: '12px', background: '#F8FAFC', color: '#475569', padding: '2px 8px', borderRadius: '4px' }}>
+                            Order #{action.order_id || action.order_number}
+                          </span>
+                        )}
+                        <span style={{ fontSize: '11px', background: '#FEF2F2', color: '#B91C1C', padding: '2px 8px', borderRadius: '10px', fontWeight: '600' }}>Failed</span>
+                      </div>
+                      <span style={{ fontSize: '11px', color: '#94A3B8', fontFamily: 'DM Mono, monospace' }}>{formatDate(action.updated_at || action.created_at)}</span>
+                    </div>
+                    <div style={{ fontSize: '13px', color: '#64748B' }}>
+                      <strong style={{ fontSize: '14px', fontWeight: '500', color: '#0F172A' }}>{action.customer_name || action.customer_email}</strong>
+                    </div>
+                    {/* Human-readable reason only — never a raw stack trace or
+                        internal error detail. actions_service._mark_failed()
+                        already stores a ShopifyError's own merchant-facing
+                        .message (e.g. "Cannot cancel a fulfilled order"),
+                        never a Python exception string, for every known
+                        failure path except a genuinely unexpected exception,
+                        which still only ever reaches this field as str(e) —
+                        no traceback, no internal file paths. */}
+                    {action.error_message && (
+                      <div style={{ fontSize: '13px', color: '#991B1B', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: '4px', padding: '8px 10px' }}>
+                        {decodeHtml(action.error_message)}
+                      </div>
+                    )}
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <button
+                        onClick={() => handleRetry(action.id)}
+                        disabled={retryingId === action.id}
+                        style={{ padding: '7px 16px', borderRadius: '4px', background: '#06B6D4', color: 'white', border: 'none', fontSize: '13px', fontWeight: '600', cursor: retryingId === action.id ? 'not-allowed' : 'pointer', opacity: retryingId === action.id ? 0.6 : 1 }}
+                      >
+                        {retryingId === action.id ? 'Retrying…' : 'Retry'}
+                      </button>
+                      <span style={{ fontSize: '12px', color: '#94A3B8' }}>Retries the same action against Shopify.</span>
+                    </div>
                   </div>
                 );
               })}

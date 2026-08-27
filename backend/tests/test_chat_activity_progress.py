@@ -107,10 +107,7 @@ def _run(query: str, *, order_status=None, inventory=None, recommendations=None,
 def test_activity_state_appears_immediately_for_every_query():
     _, events = _run("what are your store hours?")
     assert events, "on_progress was never called - customer would see a dead loading state"
-    # 'received' always fires first (the query has genuinely reached the
-    # agent by this point), immediately followed by 'thinking'.
-    assert events[0] == ("received", "New customer message received")
-    assert events[1] == ("thinking", "Analyzing request…")
+    assert events[0] == ("thinking", "Analyzing request…")
 
 
 # ── 2. The stage shown matches what actually ran ──────────────────────────
@@ -258,8 +255,7 @@ def test_kb_check_stage_only_appears_when_a_store_id_is_provided():
     _, events = _run("what are your store hours?")
     stages = [s for s, _ in events]
     assert "kb_check" in stages  # _run always passes store_id="brand-1"
-    assert stages.index("kb_check") < stages.index("thinking") + 5  # sanity: near the start
-    assert stages.index("received") < stages.index("kb_check")
+    assert stages.index("thinking") < stages.index("kb_check")  # sanity: near the start
 
 
 def test_style_check_stage_only_appears_when_a_brand_row_was_actually_found():
@@ -306,10 +302,8 @@ def test_final_generation_stage_always_precedes_the_model_call():
     _, events = _run("hi there!")
     stages = [s for s, _ in events]
     assert "preparing" in stages
-    # 'preparing' is the last status before the model call; 'draft_ready'
-    # fires once right after, when the reply is genuinely finished.
-    assert stages[stages.index("preparing") + 1] == "draft_ready"
-    assert stages[-1] == "draft_ready"
+    # 'preparing' is the last status before the reply is generated
+    assert stages[-1] == "preparing"
 
 
 # ── 3. No internal details ever leak into a label ─────────────────────────

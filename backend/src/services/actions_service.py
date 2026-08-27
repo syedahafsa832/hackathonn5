@@ -180,6 +180,34 @@ class ActionsService:
             }
 
         except Exception as e:
+            # 409 = idx_actions_dedup_active (migration 053) rejected a
+            # concurrent duplicate insert — two requests for the same
+            # tenant+order+action_type both passed the app-level
+            # check-then-insert dedup before either had committed. This is
+            # the exact race that check is meant to catch; look up and
+            # return the row that actually won instead of surfacing a raw
+            # failure, matching detect_and_create()'s own duplicate_skipped
+            # shape for the same situation.
+            if "409" in str(e):
+                logger.warning(f"[Actions] Duplicate insert caught by DB constraint for tenant {tenant_id}, order {order_id}, type {action_type} — returning existing action")
+                try:
+                    existing = supabase_select("actions", {
+                        "tenant_id": f"eq.{tenant_id}",
+                        "order_id": f"eq.{order_id}",
+                        "action_type": f"eq.{action_type}",
+                        "status": "in.(pending,approved,executed)",
+                        "order": "created_at.desc",
+                        "limit": "1",
+                    })
+                    if existing:
+                        return {
+                            "success": True,
+                            "action_id": existing[0]["id"],
+                            "action_type": action_type,
+                            "status": "duplicate_skipped",
+                        }
+                except Exception as lookup_err:
+                    logger.warning(f"[Actions] Could not look up the winning duplicate action: {lookup_err}")
             logger.error(f"[Actions] Create error: {e}")
             return {"success": False, "error": str(e)}
 
@@ -409,16 +437,22 @@ class ActionsService:
                         return cached["result"]
                     return {"success": False, "error": cached.get("error_detail") or "Action failed on the original attempt."}
 
-            if action["status"] != ActionStatus.PENDING.value:
+            # A previously-failed action (e.g. Shopify was briefly down, or
+            # the store's token had expired and has since been reconnected)
+            # may be retried from here — same call, same code path, no
+            # separate retry endpoint. Anything else already actioned
+            # (approved/executed/rejected) is not.
+            if action["status"] not in (ActionStatus.PENDING.value, ActionStatus.FAILED.value):
                 return {"success": False, "error": f"Action already {action['status']}"}
 
-            # Atomically claim the action (conditioned on it still being "pending")
-            # before touching Shopify. Closes the race where two concurrent approve
-            # calls (double-click, retry) could both pass the check above and each
-            # execute a real refund/cancel against the same order.
+            # Atomically claim the action (conditioned on it still being
+            # "pending" or "failed") before touching Shopify. Closes the race
+            # where two concurrent approve calls (double-click, retry) could
+            # both pass the check above and each execute a real refund/cancel
+            # against the same order.
             claimed = supabase_update(
                 "actions",
-                {"id": f"eq.{action_id}", "status": f"eq.{ActionStatus.PENDING.value}"},
+                {"id": f"eq.{action_id}", "status": f"in.({ActionStatus.PENDING.value},{ActionStatus.FAILED.value})"},
                 {
                     "status": ActionStatus.APPROVED.value,
                     "approved_by": approved_by,
@@ -620,12 +654,19 @@ class ActionsService:
             return final_result
 
         except Exception as e:
+            # Unlike a ShopifyError (whose .message is already a curated,
+            # merchant-safe string set at each raise site), this is a
+            # genuinely unexpected exception — str(e) can be an arbitrary
+            # library/network error and must never be shown to the merchant
+            # verbatim (it's logged and kept in the audit trail for staff,
+            # never in the row error_message/response the dashboard renders).
             logger.error(f"[Actions] Approve error: {e}")
-            await self._mark_failed(action_id, str(e), "unknown_error")
+            safe_message = "Something went wrong completing this action. Please try again or check Shopify directly."
+            await self._mark_failed(action_id, safe_message, "unknown_error")
             if 'action' in locals():
                 self._record_financial_audit(action, idempotency_key, ip_address, approved_by,
                                               status="failed", error_detail=str(e))
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": safe_message}
 
     async def _post_execution_notify(
         self,

@@ -121,6 +121,33 @@ def test_genuine_refund_request_on_fulfilled_order_still_creates_refund_action()
     assert result["staged"]["success"] is True
 
 
+# ── 3b. Cancel request on a FULFILLED order needing manual review (e.g.
+# sender email doesn't match the order on file) stages a refund, never a
+# cancel_order action — the exact reported bug: "can you cancel my order
+# #1002" on a fulfilled order produced BOTH a Cancel Order approval AND a
+# Refund approval. A fulfilled order can only ever be refunded (Shopify has
+# already shipped it), so the "NOT ELIGIBLE and fulfilled" manual-review
+# branch (return_actions_integration.py ~line 550) must always stage
+# action_type="refund", regardless of the customer's own "cancel" wording. ──
+
+def test_cancel_request_on_fulfilled_order_needing_manual_review_stages_refund_not_cancel():
+    eligibility = {
+        "eligible": False, "requires_manual_review": True,
+        "reason": "sender email does not match order email on file",
+        "order": {"fulfillment_status": "fulfilled"},
+        "items": [{"title": "QA Test Mug", "price": "15.00"}], "order_total": "15.00",
+    }
+    result, mock_create = _run(
+        "can you cancel my order #1002", _intent("cancel", "1002"), eligibility,
+    )
+
+    mock_create.assert_awaited_once()
+    _, kwargs = mock_create.call_args
+    assert kwargs["action_type"] == "refund"
+    assert kwargs["action_type"] != "cancel_order"
+    assert "MANUAL REVIEW" in result["action_context"]
+
+
 # ── 4. Repeated cancellation request does not create a second action ──────
 
 def test_repeated_cancellation_request_does_not_create_a_second_action():
@@ -132,6 +159,29 @@ def test_repeated_cancellation_request_does_not_create_a_second_action():
     result, mock_create = _run(
         "did you cancel my order #1013 yet?", _intent("cancel", "1013"), eligibility,
         existing_action=existing,
+    )
+
+    mock_create.assert_not_awaited()
+    assert "ALREADY PENDING" in result["action_context"]
+    assert "staged" not in result
+
+
+# ── 5. The exact reported two-message scenario end-to-end: a fulfilled
+# order's cancel request first needs manual review (email mismatch), staging
+# a refund action; the customer's very next message confirms their email and
+# repeats "cancel my order #1002" — the dedup guard checks for an existing
+# action of EITHER action_type ("refund" OR "cancel_order") before ever
+# re-running eligibility, so it must recognize the refund action already on
+# file and never create a second, contradictory cancel_order action. ───────
+
+def test_followup_message_after_email_confirmation_finds_existing_refund_not_a_new_cancel():
+    existing_refund = {"id": "refund-action-1", "action_type": "refund", "status": "pending"}
+    # Eligibility is never even reached — _find_active_action short-circuits
+    # before check_return_eligibility runs, exactly like the real dedup
+    # guard in handle_return_intent (checked "refund" then "cancel_order").
+    result, mock_create = _run(
+        "the email i ordered from was also mine, and cancel my order #1002",
+        _intent("cancel", "1002"), eligibility={}, existing_action=existing_refund,
     )
 
     mock_create.assert_not_awaited()

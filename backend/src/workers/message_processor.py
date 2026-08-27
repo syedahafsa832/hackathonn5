@@ -550,54 +550,35 @@ class UnifiedMessageProcessor:
                 ticket_id = ticket.get('id') if ticket else None
                 logger.info(f"[PROCESSOR] ✓ Ticket created (fallback): {ticket_id}")
 
-            # ========== STAGE 9.5: ACTION DETECTION (Multi-Tenant SaaS) ==========
-            # Detect actions (refund, cancel, address change) and create in queue
-            # NOTE: tenant_id is already resolved from Stage 2.5 — do not overwrite with message.get()
-
-            try:
-                if ACTIONS_SERVICE_AVAILABLE and tenant_id:
-                    action_result = await actions_service.detect_and_create(
-                        tenant_id=tenant_id,
-                        customer_email=customer_email,
-                        customer_name=customer_name,
-                        message=content,
-                        ai_analysis={"reasoning": ai_result.get("intent", ""), "confidence": confidence},
-                        brand_id=store_id,
-                        ticket_id=ticket_id,
-                    )
-                    if action_result and action_result.get("success"):
-                        logger.info(f"[Stage 9.5] Action detection completed for ticket {ticket_id}: {action_result.get('action_id')} ({action_result.get('action_type')})")
-                    else:
-                        logger.info(f"[Stage 9.5] Action detection completed for ticket {ticket_id}: no actionable request detected")
-                else:
-                    logger.warning(f"[Stage 9.5] Skipping action detection: ACTIONS_SERVICE_AVAILABLE={ACTIONS_SERVICE_AVAILABLE}, tenant_id={tenant_id}")
-                    # Inline fallback using AI intent detector
-                    if tenant_id:
-                        try:
-                            from src.services.intent_detector import intent_detector as _idet
-                            from src.lib.supabase_client import supabase_insert as _sb_insert
-                            _intent = await _idet.detect(content)
-                            if _intent.has_action:
-                                _atype_map = {'cancel': 'cancel_order', 'refund': 'refund', 'address_change': 'change_address', 'reship': 'reship'}
-                                _atype = _atype_map.get(_intent.action_type)
-                                if _atype and _intent.order_id:  # Never create without order_id
-                                    _sb_insert("actions", {
-                                        "tenant_id": tenant_id,
-                                        "action_type": _atype,
-                                        "customer_email": customer_email,
-                                        "customer_name": customer_name,
-                                        "order_id": _intent.order_id,
-                                        "original_message": content[:500],
-                                        "status": "pending",
-                                        "confidence": _intent.confidence,
-                                        "ai_reasoning": f"Inline detection: {_intent.action_type} (source={_intent.source})",
-                                        "ticket_id": ticket_id,
-                                    })
-                                    logger.info(f"[Stage 9.5 fallback] Created {_atype} action via intent_detector")
-                        except Exception as _fe:
-                            logger.warning(f"[Stage 9.5 fallback] Intent detection error: {_fe}")
-            except Exception as e:
-                logger.error(f"[Stage 9.5] Action detection failed: {e}", exc_info=True)
+            # ========== STAGE 9.5: ACTION DETECTION — RETIRED ==========
+            # This used to run its own independent detect_and_create() call
+            # (plus an inline regex/intent_detector fallback) on every
+            # message, entirely separate from and unaware of the action
+            # customer_success_agent.generate_channel_appropriate_response()
+            # already staged two stages earlier via
+            # return_actions_integration.handle_return_intent() — which runs
+            # unconditionally, "identically for chat and Gmail" (see its own
+            # comment), and is documented there as "the only source of truth
+            # for whether an action actually exists".
+            #
+            # Root cause of the reported "cancel + refund both created for
+            # one request" bug: for a FULFILLED order, handle_return_intent
+            # correctly stages a REFUND (a fulfilled order can only be
+            # refunded, never cancelled) — but this stage's own action_map
+            # had no such fulfillment-aware downgrade, so it independently
+            # mapped the same customer message's "cancel" intent straight to
+            # a cancel_order action. The two paths use different action_types
+            # for the same request, so neither path's own dedup check (which
+            # only looks for an existing row of its OWN action_type) ever saw
+            # the other's row — both created a real, competing pending
+            # approval for the exact same order and message.
+            #
+            # Since the primary path already covers 100% of this stage's
+            # cases (same detector, called on every message before this
+            # point is ever reached), it's retired rather than reconciled —
+            # two independent action-creation pipelines for one request is
+            # the bug, not a missing dedup rule between them.
+            pass
 
             # ========== STAGE 10: SEND EMAIL RESPONSE ==========
             email_actually_sent = False
