@@ -28,6 +28,13 @@ class CreateActionRequest(BaseModel):
     extracted_data: Optional[dict] = None
     confidence: Optional[float] = 0.8
     ai_reasoning: Optional[str] = None
+    # Links a manually-staged action (e.g. Order Context's Reship/Update
+    # Address buttons) back to the ticket it was staged from, so approval's
+    # post-execution flow can resolve that ticket and append the
+    # confirmation message the same way an AI-staged action already does.
+    # Previously silently dropped (Pydantic ignores unknown fields by
+    # default) even though the frontend already sent it.
+    ticket_id: Optional[str] = None
 
 
 class ApproveActionRequest(BaseModel):
@@ -290,7 +297,8 @@ async def create_action(
         message=request.message,
         extracted_data=request.extracted_data,
         confidence=request.confidence,
-        ai_reasoning=request.ai_reasoning
+        ai_reasoning=request.ai_reasoning,
+        ticket_id=request.ticket_id,
     )
 
     if not result.get("success"):

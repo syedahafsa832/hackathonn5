@@ -814,13 +814,26 @@ class ActionsService:
                         f"Luna\n{brand_name}"
                     )
             elif action_type == ActionType.RESHIP.value:
-                body = (
-                    f"Hey {customer_name},\n\n"
-                    f"We've looked into your delivery issue for order {order_name} and "
-                    f"arranged a replacement shipment for you.\n\n"
-                    f"You'll receive a tracking update once it ships.\n\n"
-                    f"Luna\n{brand_name}"
-                )
+                # Reship has no automated Shopify operation (see approve_action's
+                # RESHIP branch - always manual_action_required=True): a team
+                # member still has to create the replacement shipment by hand.
+                # Never tell the customer it's "arranged" or that it "will
+                # ship" - that claims a step that hasn't actually happened yet.
+                if execution_result.get("manual_action_required"):
+                    body = (
+                        f"Hey {customer_name},\n\n"
+                        f"We've looked into your delivery issue for order {order_name} and our team "
+                        f"is arranging a replacement shipment now.\n\n"
+                        f"You'll get a tracking update as soon as it's created.\n\n"
+                        f"Luna\n{brand_name}"
+                    )
+                else:
+                    body = (
+                        f"Hey {customer_name},\n\n"
+                        f"Your replacement shipment for order {order_name} has been arranged.\n\n"
+                        f"You'll receive a tracking update once it ships.\n\n"
+                        f"Luna\n{brand_name}"
+                    )
             elif action_type == ActionType.RESTORE_ORDER.value:
                 body = (
                     f"Hey {customer_name},\n\n"

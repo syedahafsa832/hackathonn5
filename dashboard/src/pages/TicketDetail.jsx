@@ -75,6 +75,7 @@ const ACTION_TYPE_MAP = {
 };
 
 function OrderPanel({ ticketId, ticket }) {
+  const navigate = useNavigate();
   const [order, setOrder] = useState(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(null);
@@ -113,12 +114,19 @@ function OrderPanel({ ticketId, ticket }) {
     }
   };
 
-  // Address change / Reship — stage for approval queue
+  // Address change / Reship — stage for approval queue. The backend
+  // (actions_service.create_action) already refuses to create a second
+  // active action for the same order+type - either app-level (an existing
+  // pending/approved/executed row) or, for a genuine race, a DB-level
+  // unique index caught and translated into the same shape - and returns
+  // status: "duplicate_skipped" with the id of the EXISTING escalation
+  // instead of a new one. This must render differently from a real new
+  // "Queued", or clicking twice looks like it queued two requests.
   const stageAction = async (type) => {
     setStagingAction(type);
     const actionType = ACTION_TYPE_MAP[type] || type.toLowerCase();
     try {
-      await client.post(`/api/v1/actions/create`, {
+      const res = await client.post(`/api/v1/actions/create`, {
         ticket_id: ticketId,
         action_type: actionType,
         order_id: order?.id || order?.order_number,
@@ -126,7 +134,8 @@ function OrderPanel({ ticketId, ticket }) {
         customer_name: ticket?.customer_name || ticket?.customer_email || '',
         ai_reasoning: `Manually staged by brand owner from conversation detail`,
       });
-      setStagingAction('done:' + type);
+      const isDuplicate = res.data?.status === 'duplicate_skipped';
+      setStagingAction((isDuplicate ? 'duplicate:' : 'done:') + type);
     } catch {
       setStagingAction('err:' + type);
     }
@@ -216,20 +225,41 @@ function OrderPanel({ ticketId, ticket }) {
             {[
               { type: 'ADDRESS_CHANGE', label: 'Update Address', show: order.fulfillment_status !== 'fulfilled' && !order.cancelled_at },
               { type: 'RESHIP', label: 'Reship', show: !(order.cancelled_at && order.fulfillment_status === 'restocked') },
-            ].filter(a => a.show).map(({ type, label }) => (
-              <button
-                key={type}
-                onClick={() => stageAction(type)}
-                disabled={!!actionLoading || stagingAction === type}
-                style={{ padding: '5px 10px', fontSize: '11px', borderRadius: '3px', border: '1px solid var(--border)', background: stagingAction === 'done:' + type ? 'var(--success-light)' : 'var(--bg-secondary)', color: stagingAction === 'done:' + type ? 'var(--success)' : 'var(--text-secondary)', cursor: 'pointer', fontWeight: '500' }}
-              >
-                {stagingAction === 'done:' + type ? '✓ Queued' : stagingAction === 'err:' + type ? '✗ Failed' : label}
-              </button>
-            ))}
+            ].filter(a => a.show).map(({ type, label }) => {
+              const isDone = stagingAction === 'done:' + type;
+              const isDuplicate = stagingAction === 'duplicate:' + type;
+              const isErr = stagingAction === 'err:' + type;
+              return (
+                <button
+                  key={type}
+                  onClick={() => stageAction(type)}
+                  disabled={!!actionLoading || stagingAction === type}
+                  style={{ padding: '5px 10px', fontSize: '11px', borderRadius: '3px', border: '1px solid var(--border)', background: isDone ? 'var(--success-light)' : isDuplicate ? 'var(--bg-tertiary)' : 'var(--bg-secondary)', color: isDone ? 'var(--success)' : isDuplicate ? 'var(--text-secondary)' : 'var(--text-secondary)', cursor: 'pointer', fontWeight: '500' }}
+                >
+                  {isDone ? '✓ Queued' : isDuplicate ? 'Already pending' : isErr ? '✗ Failed' : label}
+                </button>
+              );
+            })}
           </div>
           {stagingAction.startsWith('done:') && (
             <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
-              Go to <strong>Escalations</strong> to approve and execute.
+              Added to Escalations. This action is waiting for your approval. Go to{' '}
+              <button onClick={() => navigate('/actions')} style={{ background: 'none', border: 'none', padding: 0, color: 'var(--accent)', cursor: 'pointer', fontSize: 'inherit', fontWeight: '600' }}>
+                Escalations
+              </button>{' '}to approve and execute.
+            </div>
+          )}
+          {stagingAction.startsWith('duplicate:') && (
+            <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+              This action is already pending approval.{' '}
+              <button onClick={() => navigate('/actions')} style={{ background: 'none', border: 'none', padding: 0, color: 'var(--accent)', cursor: 'pointer', fontSize: 'inherit', fontWeight: '600' }}>
+                View Escalation →
+              </button>
+            </div>
+          )}
+          {stagingAction.startsWith('err:') && (
+            <div style={{ fontSize: '11px', color: 'var(--error, #EF4444)', marginTop: '2px' }}>
+              Couldn't queue this action. Please try again.
             </div>
           )}
         </div>

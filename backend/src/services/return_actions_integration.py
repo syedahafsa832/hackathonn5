@@ -262,12 +262,57 @@ class ReturnActionsIntegration:
                 )
                 return result
 
+            # Same duplicate-request guard as refund/cancel above (PART 6) -
+            # "my package never arrived" repeated across several messages
+            # must never stage a second reship escalation for the same order.
+            existing_action = await self._find_active_action(tenant_id, order_id, "reship")
+            if existing_action:
+                result["action_context"] = self._duplicate_status_context(existing_action, intent_type)
+                return result
+
+            # Best-effort order enrichment so the human reviewer sees what's
+            # actually being requested (item/qty, shipping address,
+            # fulfillment + tracking status) instead of a bare order number.
+            # Reship never runs the return-eligibility/policy gate (a
+            # lost-in-transit package isn't a return), so this fetches the
+            # raw order directly rather than going through
+            # check_return_eligibility. Never blocks staging on failure -
+            # the escalation must still be created even if this lookup fails.
+            order_snapshot = None
+            if tenant_id:
+                try:
+                    from src.services.shopify_service import shopify_service
+                    client = await shopify_service.get_client_for_tenant(tenant_id)
+                    order_resp = await client.get_order(order_id)
+                    if order_resp.get("success") and order_resp.get("order"):
+                        raw_order = order_resp["order"]
+                        fulfillments = raw_order.get("fulfillments") or []
+                        latest_fulfillment = fulfillments[-1] if fulfillments else {}
+                        order_snapshot = {
+                            "items": [
+                                {
+                                    "title": item.get("title"),
+                                    "variant_title": item.get("variant_title"),
+                                    "quantity": item.get("quantity"),
+                                    "sku": item.get("sku"),
+                                }
+                                for item in raw_order.get("line_items", [])
+                            ],
+                            "fulfillment_status": raw_order.get("fulfillment_status"),
+                            "shipping_address": raw_order.get("shipping_address"),
+                            "tracking_company": latest_fulfillment.get("tracking_company"),
+                            "tracking_number": latest_fulfillment.get("tracking_number"),
+                            "tracking_url": latest_fulfillment.get("tracking_url"),
+                        }
+                except Exception as e:
+                    logger.warning(f"[ReturnActions] Reship order enrichment failed for order {order_id} (continuing without it): {e}")
+
             ai_reasoning = f"Customer reports delivery issue for order #{order_id} — package not received."
             staged = await self._create_action(
                 tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
                 action_type="reship", order_id=order_id, email=email or "",
                 customer_name=customer_info.get("name"), query=query,
-                ai_reasoning=ai_reasoning, eligibility={},
+                ai_reasoning=ai_reasoning, eligibility={}, reship_order_snapshot=order_snapshot,
             )
             result["staged"] = staged
             result["action_context"] = (
@@ -684,7 +729,8 @@ class ReturnActionsIntegration:
         never claims completion that hasn't actually happened. Reused by
         both the refund/return/cancel path and the exchange path."""
         noun = "exchange" if existing.get("action_type") == "exchange" else (
-            "return" if intent_type == "return" else "refund" if intent_type == "refund" else "cancellation"
+            "return" if intent_type == "return" else "refund" if intent_type == "refund"
+            else "reship" if intent_type == "reship" else "cancellation"
         )
         status = existing.get("status")
         if status == "pending":
@@ -1231,6 +1277,7 @@ class ReturnActionsIntegration:
         original_item: Optional[dict] = None,
         price_difference: Optional[float] = None,
         policy_evidence: Optional[str] = None,
+        reship_order_snapshot: Optional[dict] = None,
     ) -> dict:
         """Create action in `actions` table (new system) when tenant_id is available,
         otherwise fall back to legacy `pending_actions` via stage_pending_action."""
@@ -1263,6 +1310,8 @@ class ReturnActionsIntegration:
                     extracted["price_difference"] = price_difference
                 if policy_evidence:
                     extracted["policy_evidence"] = policy_evidence
+                if reship_order_snapshot:
+                    extracted["order_snapshot"] = reship_order_snapshot
                 return await actions_service.create_action(
                     tenant_id=tenant_id,
                     brand_id=brand_id,

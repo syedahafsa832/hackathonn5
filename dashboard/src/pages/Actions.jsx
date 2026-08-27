@@ -82,6 +82,18 @@ function ActionCard({ action, onApprove, onReject }) {
   // "full refund" (unchanged existing behavior). Only shown for refunds.
   const [amountOverride, setAmountOverride] = useState('');
 
+  // Reship escalations enrich extracted_data with a live Shopify snapshot
+  // (order_snapshot — see return_actions_integration.py's reship staging)
+  // so the reviewer sees what's actually being requested, not just a bare
+  // order number. Absent for older/manually-entered actions — every field
+  // below is rendered only "where available", never invented.
+  const orderSnapshot = action.extracted_data?.order_snapshot;
+  const shippingAddr = orderSnapshot?.shipping_address;
+  const shippingAddrLine = shippingAddr
+    ? [shippingAddr.address1, shippingAddr.address2, shippingAddr.city, shippingAddr.province, shippingAddr.zip, shippingAddr.country]
+        .filter(Boolean).join(', ')
+    : null;
+
   const meta = ACTION_LABELS[action.action_type] || { label: action.action_type, color: '#0E7490', isDestructive: false };
   const execMsg = action.execution_result
     ? (EXECUTION_MESSAGES[action.action_type]?.(action.execution_result) || JSON.stringify(action.execution_result))
@@ -169,6 +181,35 @@ function ActionCard({ action, onApprove, onReject }) {
                 <span style={{ flexShrink: 0, fontSize: '10.5px', fontWeight: '600', color: '#0E7490', background: '#ECFEFF', border: '1px solid #A5F3FC', borderRadius: '999px', padding: '2px 9px' }}>
                   Policy check required
                 </span>
+              )}
+            </div>
+          </div>
+        )}
+
+        {orderSnapshot && (
+          <div>
+            <div style={{ fontSize: '10.5px', fontWeight: '600', color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '3px' }}>
+              Order details
+            </div>
+            <div style={{ padding: '8px 12px', background: '#F8FAFC', borderRadius: '4px', fontSize: '12.5px', color: '#475569', lineHeight: '1.6' }}>
+              {orderSnapshot.items?.length > 0 && (
+                <div>
+                  {orderSnapshot.items.map((it, i) => (
+                    <div key={i}>{it.quantity}× {it.title}{it.variant_title ? ` (${it.variant_title})` : ''}</div>
+                  ))}
+                </div>
+              )}
+              {orderSnapshot.fulfillment_status && (
+                <div><strong>Fulfillment:</strong> {orderSnapshot.fulfillment_status}</div>
+              )}
+              {orderSnapshot.tracking_number && (
+                <div>
+                  <strong>Tracking:</strong> {orderSnapshot.tracking_company ? `${orderSnapshot.tracking_company} ` : ''}{orderSnapshot.tracking_number}
+                  {orderSnapshot.tracking_url && <a href={orderSnapshot.tracking_url} target="_blank" rel="noopener noreferrer" style={{ marginLeft: '6px', color: '#0E7490' }}>Track →</a>}
+                </div>
+              )}
+              {shippingAddrLine && (
+                <div><strong>Shipping to:</strong> {shippingAddrLine}</div>
               )}
             </div>
           </div>
@@ -297,6 +338,7 @@ export default function Actions() {
   // on the row) plus a human-readable error_message, so no backend change
   // was needed to have something to show here.
   const failedActions = history.filter(a => a.status === 'failed');
+  const completedActions = history.filter(a => a.status === 'executed');
   const { data: stats } = useStats();
   const { mutateAsync: approveAction } = useApproveAction();
   const { mutateAsync: rejectAction } = useRejectAction();
@@ -306,6 +348,7 @@ export default function Actions() {
   const [bulkEscalWorking, setBulkEscalWorking] = useState(false);
   const [showRejected, setShowRejected] = useState(false);
   const [showFailed, setShowFailed] = useState(true);
+  const [showCompleted, setShowCompleted] = useState(false);
   const [retryingId, setRetryingId] = useState(null);
   const [pageError, setPageError] = useState('');
 
@@ -597,6 +640,57 @@ export default function Actions() {
                         {retryingId === action.id ? 'Retrying…' : 'Retry'}
                       </button>
                       <span style={{ fontSize: '12px', color: '#94A3B8' }}>Retries the same action against Shopify.</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Completed Actions — status='executed'. execution_result.manual_action_required
+          (reship/some address changes) means Shopify wasn't actually touched
+          automatically - a team member still has to finish it by hand, so
+          that's called out here rather than implying full automation. */}
+      {loadingHistory ? null : completedActions.length > 0 && (
+        <section>
+          <div className="header-row" style={{ marginBottom: '10px' }}>
+            <button
+              onClick={() => setShowCompleted(s => !s)}
+              style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: '14px', fontWeight: '600', color: '#0F172A' }}
+            >
+              <span style={{ display: 'inline-block', transition: 'transform 0.15s', transform: showCompleted ? 'rotate(90deg)' : 'none' }}>▸</span>
+              Completed ({completedActions.length})
+            </button>
+          </div>
+          {showCompleted && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              {completedActions.map(action => {
+                const meta = ACTION_LABELS[action.action_type] || { label: action.action_type, color: '#0E7490' };
+                const manualStepRemains = !!action.execution_result?.manual_action_required;
+                const msg = EXECUTION_MESSAGES[action.action_type]?.(action.execution_result) || 'Completed.';
+                return (
+                  <div key={action.id} style={{ background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <span style={{ fontSize: '14px', fontWeight: '600', color: meta.color }}>{meta.label}</span>
+                        {(action.order_id || action.order_number) && (
+                          <span style={{ fontSize: '12px', background: '#F8FAFC', color: '#475569', padding: '2px 8px', borderRadius: '4px' }}>
+                            Order #{action.order_id || action.order_number}
+                          </span>
+                        )}
+                        <span style={{ fontSize: '11px', background: manualStepRemains ? '#FEF9C3' : '#ECFDF5', color: manualStepRemains ? '#854D0E' : '#10B981', padding: '2px 8px', borderRadius: '10px', fontWeight: '600' }}>
+                          {manualStepRemains ? 'Approved — manual step remaining' : 'Completed'}
+                        </span>
+                      </div>
+                      <span style={{ fontSize: '11px', color: '#94A3B8', fontFamily: 'DM Mono, monospace' }}>{formatDate(action.executed_at || action.updated_at)}</span>
+                    </div>
+                    <div style={{ fontSize: '13px', color: '#64748B' }}>
+                      <strong style={{ fontSize: '14px', fontWeight: '500', color: '#0F172A' }}>{action.customer_name || action.customer_email}</strong>
+                    </div>
+                    <div style={{ fontSize: '13px', color: manualStepRemains ? '#854D0E' : '#166534', background: manualStepRemains ? '#FEFCE8' : '#F0FDF4', border: `1px solid ${manualStepRemains ? '#FDE68A' : '#BBF7D0'}`, borderRadius: '4px', padding: '8px 10px' }}>
+                      {decodeHtml(msg)}
                     </div>
                   </div>
                 );

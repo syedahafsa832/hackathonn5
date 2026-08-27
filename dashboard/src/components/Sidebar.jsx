@@ -21,7 +21,7 @@ const PRIMARY_NAV = [
 ];
 
 const SECONDARY_NAV = [
-  { path: '/actions', label: 'Needs you', icon: ShieldAlert, escalationsBadge: true },
+  { path: '/actions', label: 'Escalations', icon: ShieldAlert, escalationsBadge: true },
   { path: '/quarantine', label: 'Safety', icon: ShieldQuestion, quarantineBadge: true },
   { path: '/review', label: "Review Luna's Work", icon: ClipboardCheck },
   { path: '/customer-voice', label: 'Customer Voice', icon: Star },
