@@ -54,6 +54,7 @@ export default function Layout({ children }) {
         flexDirection: 'column',
         overflow: 'hidden',
         minHeight: 0,
+        minWidth: 0,
       }}>
         <header style={{
           height: 'var(--topbar-height)',
@@ -117,7 +118,7 @@ export default function Layout({ children }) {
           </div>
         </header>
 
-        <main style={{ flex: 1, overflow: 'auto', minHeight: 0, background: 'var(--bg-secondary)' }}>
+        <main style={{ flex: 1, overflow: 'auto', minHeight: 0, minWidth: 0, background: 'var(--bg-secondary)' }}>
           {children}
         </main>
       </div>
