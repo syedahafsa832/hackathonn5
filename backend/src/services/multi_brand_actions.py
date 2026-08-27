@@ -546,7 +546,7 @@ class MultiBrandActionsManager:
             # Build branded email
             brand_name = brand.get("name", "Support")
             sender_name = brand.get("sender_name", brand_name)
-            signature = brand.get("email_signature", f"— The {brand_name} Team")
+            signature = brand.get("email_signature", f"- The {brand_name} Team")
 
             if action_type == ActionType.REFUND.value:
                 subject = f"Your Refund Has Been Processed - Order #{order_id}"
@@ -616,7 +616,7 @@ If you have any questions, just reply to this email.
             customer_name = action.get("customer_name", "Valued Customer")
             order_id = action.get("order_id", "N/A")
             brand_name = brand.get("name", "Support")
-            signature = brand.get("email_signature", f"— The {brand_name} Team")
+            signature = brand.get("email_signature", f"- The {brand_name} Team")
 
             subject = f"Update on Your Request - Order #{order_id}"
             body = f"""Hi {customer_name},

@@ -107,7 +107,10 @@ def _run(query: str, *, order_status=None, inventory=None, recommendations=None,
 def test_activity_state_appears_immediately_for_every_query():
     _, events = _run("what are your store hours?")
     assert events, "on_progress was never called - customer would see a dead loading state"
-    assert events[0] == ("thinking", "Analyzing request…")
+    # 'received' always fires first (the query has genuinely reached the
+    # agent by this point), immediately followed by 'thinking'.
+    assert events[0] == ("received", "New customer message received")
+    assert events[1] == ("thinking", "Analyzing request…")
 
 
 # ── 2. The stage shown matches what actually ran ──────────────────────────
@@ -249,12 +252,64 @@ def test_policy_question_without_knowledge_base_content_does_not_fabricate_polic
     assert "preparing" in stages
 
 
+def test_kb_check_stage_only_appears_when_a_store_id_is_provided():
+    """kb_check must reflect the real get_brand_context() call, which only
+    ever runs when store_id is set (see process_customer_query)."""
+    _, events = _run("what are your store hours?")
+    stages = [s for s, _ in events]
+    assert "kb_check" in stages  # _run always passes store_id="brand-1"
+    assert stages.index("kb_check") < stages.index("thinking") + 5  # sanity: near the start
+    assert stages.index("received") < stages.index("kb_check")
+
+
+def test_style_check_stage_only_appears_when_a_brand_row_was_actually_found():
+    """style_check must reflect the real reply-style/examples resolution,
+    which only runs inside the `if _b:` branch once a brand row is found —
+    never fabricated when no brand exists for store_id."""
+    # _run's default supabase_select mock returns [] for every table -
+    # no brand row is ever found, so style_check must not fire.
+    _, events = _run("what are your store hours?")
+    stages = [s for s, _ in events]
+    assert "style_check" not in stages
+
+
+def test_style_check_stage_appears_when_a_brand_row_is_found():
+    brand_row = {"id": "brand-1", "name": "Test Brand", "agent_name": "Luna", "reply_style_mode": "preset", "reply_style_preset": "warm_friendly"}
+    events = []
+
+    async def on_progress(stage, label):
+        events.append((stage, label))
+
+    with patch("src.services.ai_provider_manager.AIProviderManager.has_providers", new_callable=PropertyMock, return_value=True), \
+         patch("src.agent.customer_success_agent.ai_provider_manager.create_chat_completion",
+               new=AsyncMock(return_value=(_fake_ai_response("Here you go!"), "test_provider", "test_model", _FAKE_USAGE))), \
+         patch("src.agent.customer_success_agent.v3_tools.get_order_status", new=AsyncMock(return_value={"success": False})), \
+         patch("src.agent.customer_success_agent.v3_tools.get_orders_by_email", new=AsyncMock(return_value={"success": False})), \
+         patch("src.services.intent_detector.intent_detector.detect", new=AsyncMock(return_value=NO_ACTION)), \
+         patch("src.agent.customer_success_agent.brand_knowledge_service.get_brand_context", new=AsyncMock(return_value="")), \
+         patch("src.lib.supabase_client.supabase_select", return_value=[brand_row]), \
+         patch("src.services.reply_style_service.supabase_select", return_value=[]):
+        run(customer_success_agent.process_customer_query(
+            query="what are your store hours?",
+            customer_info={"name": "Jane", "email": "jane@example.com", "channel": "chat"},
+            tenant_id="tenant-1",
+            store_id="brand-1",
+            ticket_id="ticket-1",
+            on_progress=on_progress,
+        ))
+
+    stages = [s for s, _ in events]
+    assert "style_check" in stages
+
+
 def test_final_generation_stage_always_precedes_the_model_call():
     _, events = _run("hi there!")
     stages = [s for s, _ in events]
     assert "preparing" in stages
-    # 'preparing' is the last status before the reply is generated
-    assert stages[-1] == "preparing"
+    # 'preparing' is the last status before the model call; 'draft_ready'
+    # fires once right after, when the reply is genuinely finished.
+    assert stages[stages.index("preparing") + 1] == "draft_ready"
+    assert stages[-1] == "draft_ready"
 
 
 # ── 3. No internal details ever leak into a label ─────────────────────────

@@ -273,6 +273,28 @@ _FALSE_SUCCESS_RE = re.compile(
     re.IGNORECASE,
 )
 
+# GLOBAL no-em-dash rule: no AI-generated customer-facing reply may contain
+# an em dash, in any channel (email/chat/widget/draft). Applied once, right
+# after the model's reply_body is extracted from the JSON response — before
+# this module's own greeting/signature text is appended (that text uses a
+# plain hyphen, never an em dash - see the "- {agent_name}" sign-offs below),
+# so this single call point covers the entire final reply regardless of
+# channel. Never touches the customer's own message or past conversation
+# history - only this function's own generated output.
+_EM_DASH = "—"
+
+
+def _strip_em_dash(text: str) -> str:
+    if not text or _EM_DASH not in text:
+        return text
+    # A spaced em dash is almost always a parenthetical aside in conversational
+    # text ("all good here — just hanging out") - a comma reads naturally there.
+    text = re.sub(r"\s+" + _EM_DASH + r"\s+", ", ", text)
+    # Any remaining em dash (unspaced, e.g. word—word, or spaced on only one
+    # side) - a plain hyphen is the closest like-for-like substitute.
+    text = text.replace(_EM_DASH, "-")
+    return text
+
 
 def _enforce_no_unconfirmed_action_success(structured: Dict[str, Any]) -> Dict[str, Any]:
     """If the model's reply claims a refund/cancellation/address-change already
@@ -554,6 +576,7 @@ class CustomerSuccessAgent:
             # that persists `query` verbatim (actions.original_message,
             # shown to merchants on the Escalations page).
             _is_chat = customer_info.get("channel") == "chat"
+            await _emit("received", "New customer message received")
             await _emit("thinking", "Analyzing request…")
 
             # 1. RAG Retrieval - brand_knowledge_service.get_brand_context() is scoped
@@ -563,6 +586,8 @@ class CustomerSuccessAgent:
             # errors, is silently swallowed, and falls through to an UNSCOPED
             # cross-tenant search every single time. Do not switch back to rag_engine
             # here without first fixing that RPC/table mismatch.
+            if store_id:
+                await _emit("kb_check", "Checking knowledge base…")
             rag_context = await brand_knowledge_service.get_brand_context(store_id, query) if store_id else ""
             logger.info(f"[Agent] RAG context retrieved: {len(rag_context)} chars")
 
@@ -628,6 +653,7 @@ class CustomerSuccessAgent:
                         _email_signature = _b[0].get("email_signature") or None
                         try:
                             from src.services.reply_style_service import get_active_style, get_uploaded_example_snippets
+                            await _emit("style_check", "Checking reply style…")
                             _active_style = get_active_style(_b[0])
                             # Uploaded Examples are independent seed data (see reply_style_service.py) —
                             # they must reach the live prompt on their own, not only via the learned-
@@ -1331,7 +1357,8 @@ class CustomerSuccessAgent:
             # back to the neutral idiom "there" ("Hey there,") - never a
             # placeholder treated as a real name - when none is known.
             name = (_known_customer_name(customer_info.get("name")) or "there").split()[0]
-            reply = structured.get("reply_body", "")
+            reply = _strip_em_dash(structured.get("reply_body", ""))
+            structured["reply_body"] = reply
 
             # Post-process: ensure each sentence is on its own line for readability
             # Split on sentence endings and add newlines
@@ -1360,12 +1387,13 @@ class CustomerSuccessAgent:
                     structured["reply_body"] = f"Hey {name},\n\n{reply}"
 
             # Merchant-set signature wins verbatim; otherwise fall back to the
-            # generated "— {agent_name}\n{brand_name}" sign-off.
+            # generated "- {agent_name}\n{brand_name}" sign-off (plain hyphen,
+            # never an em dash - see the GLOBAL no-em-dash rule above).
             if _email_signature:
                 if _email_signature not in structured["reply_body"]:
                     structured["reply_body"] += f"\n\n{_email_signature}"
             elif _agent_name not in structured["reply_body"]:
-                structured["reply_body"] += f"\n\n— {_agent_name}\n{_brand_name}"
+                structured["reply_body"] += f"\n\n- {_agent_name}\n{_brand_name}"
 
             # Attach order_data for widget card display
             _os = tool_results.get("order_status", {})
@@ -1415,6 +1443,7 @@ class CustomerSuccessAgent:
             structured["ai_reply_generated"] = True
             if _needs_identity_verification:
                 structured["needs_identity_verification"] = True
+            await _emit("draft_ready", "Draft ready for your team to review")
             return structured
 
         except Exception as e:
@@ -1534,7 +1563,7 @@ class CustomerSuccessAgent:
 
     def _get_fallback_response(self, error: str, brand_name: str = "", agent_name: str = "Luna", email_signature: str = None) -> Dict[str, Any]:
         logger.error(f"Using fallback response due to error: {error}")
-        sign_off = email_signature or (f"— {agent_name}\n{brand_name}" if brand_name else f"— {agent_name}")
+        sign_off = email_signature or (f"- {agent_name}\n{brand_name}" if brand_name else f"- {agent_name}")
         return {
             "intent": "general_inquiry",
             "sentiment": "neutral",
@@ -1552,7 +1581,7 @@ class CustomerSuccessAgent:
         escalation card reads as a known, temporary quota problem, not a generic
         "system error". provider_outage=True lets callers (Test Luna) detect this
         specific case without string-matching escalation_reason."""
-        sign_off = email_signature or (f"— {agent_name}\n{brand_name}" if brand_name else f"— {agent_name}")
+        sign_off = email_signature or (f"- {agent_name}\n{brand_name}" if brand_name else f"- {agent_name}")
         return {
             "intent": "general_inquiry",
             "sentiment": "neutral",

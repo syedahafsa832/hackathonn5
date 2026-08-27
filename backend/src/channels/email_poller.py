@@ -252,7 +252,9 @@ class EmailPoller:
                 # third-party integration that echoes our own reply back to us without
                 # preserving the original sender address or bumping the Re: count.
                 agent_name = brand.get("agent_name") or "Luna"
-                signature_marker = f"— {agent_name}"
+                # Plain hyphen, not an em dash - matches the sign-off format
+                # customer_success_agent.py now generates (GLOBAL no-em-dash rule).
+                signature_marker = f"- {agent_name}"
                 if signature_marker in (email.get("body") or ""):
                     logger.info(f"[Poller] Skipping email containing our own reply signature ('{signature_marker}') — loop prevention")
                     continue

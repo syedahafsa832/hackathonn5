@@ -75,7 +75,7 @@ class BrandManager:
                 "shopify_api_version": SHOPIFY_API_VERSION,
                 "support_email": support_email,
                 "sender_name": sender_name or name,
-                "email_signature": email_signature or f"— The {name} Team",
+                "email_signature": email_signature or f"- The {name} Team",
                 "logo_url": logo_url,
                 "primary_color": primary_color,
                 "return_policy_days": return_policy_days,

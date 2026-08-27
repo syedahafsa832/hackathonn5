@@ -258,8 +258,10 @@ async def _generate_reply(
         )
 
         reply_body = result.get("reply_body", "Hey! Let me look into that for you.")
-        # Keep sign-off line if present
-        sign_off_marker = f"— {agent_name}"
+        # Keep sign-off line if present. Plain hyphen, not an em dash - matches
+        # the sign-off format customer_success_agent.py generates (GLOBAL
+        # no-em-dash rule).
+        sign_off_marker = f"- {agent_name}"
         if sign_off_marker in reply_body:
             sign_idx = reply_body.find(sign_off_marker)
             reply_clean = reply_body[:sign_idx].strip()
