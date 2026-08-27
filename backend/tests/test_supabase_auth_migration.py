@@ -13,7 +13,7 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 
 import pytest
 
@@ -364,17 +364,23 @@ def test_password_reset_request_pads_a_fast_response():
     than an unregistered one, which without padding would leak account
     existence through response TIME even though the response BODY is
     already identical either way. Overrides the autouse fixture above to
-    actually exercise the padding for this one test."""
+    actually exercise the padding for this one test.
+
+    Asserts on the asyncio.sleep call itself rather than measuring real
+    wall-clock elapsed time — asyncio.sleep(N) can return a few ms before
+    N under real scheduling (observed ~0.046s for a 0.05s target), which
+    made a wall-clock `elapsed >= target` assertion genuinely flaky
+    without the code itself being wrong."""
     with patch("src.services.auth_service._PASSWORD_RESET_MIN_RESPONSE_SECONDS", 0.05), \
          patch("src.services.auth_service.supabase_gotrue.generate_recovery_link", return_value=None), \
-         patch("src.services.auth_service.system_email_service.send_password_reset_email") as mock_send:
+         patch("src.services.auth_service.system_email_service.send_password_reset_email") as mock_send, \
+         patch("src.services.auth_service.asyncio.sleep", new=AsyncMock()) as mock_sleep:
         auth_service = AuthService()
-        start = time.monotonic()
         _run(auth_service.request_password_reset("reset-timing-pad@example.com"))
-        elapsed = time.monotonic() - start
 
     mock_send.assert_not_called()  # unregistered-email path — nothing to actually send
-    assert elapsed >= 0.05  # but the response was still padded up to the floor
+    mock_sleep.assert_called_once()  # but the response was still padded up to the floor
+    assert 0 < mock_sleep.call_args[0][0] <= 0.05
 
 
 def test_password_reset_request_normalizes_email_case_and_whitespace():
