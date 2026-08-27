@@ -1,6 +1,5 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from slowapi.errors import RateLimitExceeded
 from src.lib.rate_limiter import limiter
@@ -81,25 +80,17 @@ async def widget_js():
     })
 
 # 3. Global Middleware
-# Security audit finding B6: allow_origins="*" combined with
-# allow_credentials=True is a spec-invalid, overly permissive combination.
-# allow_origins stays "*" deliberately - the embeddable chat widget
-# (v2_chat_widget.py) is called from arbitrary, unknown-in-advance merchant
-# storefront domains (every Shopify store that installs it), so a fixed
-# origin allowlist would break that core feature. allow_credentials is set
-# to False instead: this app authenticates exclusively via an explicit
-# `Authorization: Bearer <token>` header (confirmed no `set_cookie` calls
-# anywhere in the codebase), which browsers always send regardless of this
-# flag - it exists purely to control cookie/HTTP-auth credential inclusion,
-# which this app never uses. Turning it off removes the actual invalid
-# combination without restricting the widget's legitimate cross-origin use.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS: the dashboard/admin API (everything except the embeddable chat
+# widget's own routes) is restricted to the real production frontend
+# origin - never a wildcard - via src/api/middleware/cors.py. The widget
+# (v2_chat_widget.py, WIDGET_PATH_PREFIX) stays open to any origin since
+# it's called from arbitrary, unknown-in-advance merchant Shopify
+# storefronts; allow_credentials is False everywhere (this app
+# authenticates exclusively via an explicit `Authorization: Bearer <token>`
+# header, confirmed no `set_cookie` calls anywhere in the codebase, so
+# CORS credential mode is irrelevant either way).
+from src.api.middleware.cors import add_cors_middleware
+add_cors_middleware(app)
 
 # 4. Safe Imports — wrapped so a failing import doesn't kill the health check
 message_processor = None
