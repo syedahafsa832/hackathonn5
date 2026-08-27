@@ -78,7 +78,7 @@ def test_manual_upload_stores_chunk_with_correct_brand_id():
     with patch("src.services.brand_knowledge_service.supabase_select", side_effect=_select_brands), \
          patch("src.services.brand_knowledge_service.supabase_insert", side_effect=fake_insert), \
          patch("src.services.brand_knowledge_service.supabase_update"), \
-         patch.object(svc, "_get_embedding", return_value=[0.1, 0.2, 0.3]):
+         patch.object(svc, "_get_embedding", new=AsyncMock(return_value=[0.1, 0.2, 0.3])):
         result = run(svc.upload_text(brand_id=BRAND_A, name="Return Policy", content="Returns accepted within 30 days of purchase for any reason."))
 
     assert result["success"] is True
@@ -101,7 +101,7 @@ def test_shopify_import_upload_also_tags_brand_id():
     with patch("src.services.brand_knowledge_service.supabase_select", side_effect=_select_brands), \
          patch("src.services.brand_knowledge_service.supabase_insert", side_effect=fake_insert), \
          patch("src.services.brand_knowledge_service.supabase_update"), \
-         patch.object(svc, "_get_embedding", return_value=[0.1, 0.2, 0.3]):
+         patch.object(svc, "_get_embedding", new=AsyncMock(return_value=[0.1, 0.2, 0.3])):
         result = run(svc.upload_text(brand_id=BRAND_A, name="Shipping Policy", content="We ship worldwide within 5-7 business days of order confirmation.", source_type="shopify_sync"))
 
     assert result["success"] is True
@@ -120,7 +120,7 @@ def test_uploaded_content_retrievable_for_the_correct_brand():
         return []
 
     with patch("src.services.brand_knowledge_service.supabase_rpc", side_effect=fake_rpc), \
-         patch.object(svc, "_get_embedding", return_value=[0.1, 0.2, 0.3]):
+         patch.object(svc, "_get_embedding", new=AsyncMock(return_value=[0.1, 0.2, 0.3])):
         context = run(svc.get_brand_context(brand_id=BRAND_A, query="what is your return policy?"))
 
     assert "Returns accepted within 30 days" in context
@@ -138,7 +138,7 @@ def test_content_not_retrievable_for_a_different_brand():
         return []
 
     with patch("src.services.brand_knowledge_service.supabase_rpc", side_effect=fake_rpc), \
-         patch.object(svc, "_get_embedding", return_value=[0.1, 0.2, 0.3]):
+         patch.object(svc, "_get_embedding", new=AsyncMock(return_value=[0.1, 0.2, 0.3])):
         context = run(svc.get_brand_context(brand_id=BRAND_B, query="what is your return policy?"))
 
     assert context == ""

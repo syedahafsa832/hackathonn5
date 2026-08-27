@@ -25,7 +25,7 @@ a real pass instead of treating any non-erroring HTTP response as a pass.
 """
 import os
 import sys
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("SUPABASE_URL", "http://localhost")
@@ -102,7 +102,7 @@ def test_product_context_surfaces_despite_privacy_policy_crowding():
         return _mixed_corpus_rpc(params.get("p_brand_id"), products, params["match_count"])
 
     with patch("src.services.brand_knowledge_service.supabase_rpc", side_effect=fake_rpc), \
-         patch.object(svc, "_get_embedding", return_value=[0.1, 0.2, 0.3]):
+         patch.object(svc, "_get_embedding", new=AsyncMock(return_value=[0.1, 0.2, 0.3])):
         context = run(svc.get_brand_context(brand_id=BRAND_A, query="What products do you sell?", top_k=5))
 
     assert "Black Wrap Maxi Dress" in context
@@ -117,7 +117,7 @@ def test_privacy_policy_never_appears_in_retrieved_context():
         return _mixed_corpus_rpc(params.get("p_brand_id"), products, params["match_count"])
 
     with patch("src.services.brand_knowledge_service.supabase_rpc", side_effect=fake_rpc), \
-         patch.object(svc, "_get_embedding", return_value=[0.1, 0.2, 0.3]):
+         patch.object(svc, "_get_embedding", new=AsyncMock(return_value=[0.1, 0.2, 0.3])):
         context = run(svc.get_brand_context(brand_id=BRAND_A, query="What products do you sell?", top_k=5))
 
     assert "Privacy policy" not in context
@@ -133,7 +133,7 @@ def test_genuinely_useful_policy_is_not_filtered_out():
         return _mixed_corpus_rpc(params.get("p_brand_id"), [], params["match_count"])
 
     with patch("src.services.brand_knowledge_service.supabase_rpc", side_effect=fake_rpc), \
-         patch.object(svc, "_get_embedding", return_value=[0.1, 0.2, 0.3]):
+         patch.object(svc, "_get_embedding", new=AsyncMock(return_value=[0.1, 0.2, 0.3])):
         context = run(svc.get_brand_context(brand_id=BRAND_A, query="What is your return policy?", top_k=5))
 
     assert "Returns accepted within 30 days" in context
@@ -149,7 +149,7 @@ def test_another_brands_products_never_retrieved():
         return _mixed_corpus_rpc(params.get("p_brand_id"), products, params["match_count"])
 
     with patch("src.services.brand_knowledge_service.supabase_rpc", side_effect=fake_rpc), \
-         patch.object(svc, "_get_embedding", return_value=[0.1, 0.2, 0.3]):
+         patch.object(svc, "_get_embedding", new=AsyncMock(return_value=[0.1, 0.2, 0.3])):
         context = run(svc.get_brand_context(brand_id=BRAND_B, query="What products do you sell?", top_k=5))
 
     assert "Brand A Exclusive Dress" not in context

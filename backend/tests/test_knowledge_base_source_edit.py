@@ -171,7 +171,7 @@ def test_update_source_content_replaces_chunks_and_marks_merchant_edited():
          patch("src.services.brand_knowledge_service.supabase_update") as mock_update, \
          patch("src.services.brand_knowledge_service.supabase_insert", side_effect=fake_insert), \
          patch("src.services.brand_knowledge_service.supabase_delete", side_effect=fake_delete), \
-         patch.object(brand_knowledge_service, "_get_embedding", return_value=[0.1] * 8):
+         patch.object(brand_knowledge_service, "_get_embedding", new=AsyncMock(return_value=[0.1] * 8)):
         import asyncio
         result = asyncio.run(brand_knowledge_service.update_source_content(
             brand_id=BRAND_ID, source_id=SOURCE_ID, content="We ship worldwide within 5 business days.",

@@ -1,5 +1,4 @@
 import os
-import asyncio
 import logging
 import time
 from typing import List, Dict, Any, Optional
@@ -8,9 +7,8 @@ from typing import List, Dict, Any, Optional
 if not os.getenv("OPENAI_API_KEY"):
     os.environ["OPENAI_API_KEY"] = os.getenv("MISTRAL_API_KEY", "")
 
-from openai import OpenAI
 from src.lib.supabase_client import supabase_rpc, supabase_select
-from src.services.mistral_limiter import call_with_limit
+from src.services.ai_provider_manager import ai_provider_manager
 
 logger = logging.getLogger(__name__)
 
@@ -25,16 +23,8 @@ class RAGEngine:
     """
 
     def __init__(self):
-        api_key = os.getenv("MISTRAL_API_KEY") or os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            logger.warning("No MISTRAL_API_KEY or OPENAI_API_KEY found, RAG will have limited functionality")
-            self.ai_client = None
-        else:
-            self.ai_client = OpenAI(
-                api_key=api_key,
-                base_url=os.getenv("MISTRAL_API_BASE_URL", "https://api.mistral.ai/v1")
-            )
-        self.embedding_model = os.getenv("EMBEDDING_MODEL", "mistral-embed")
+        if not ai_provider_manager.mistral_providers:
+            logger.warning("No Mistral keys configured, RAG will have limited functionality")
         self.top_k = 3
 
     async def get_tenant_context(self, query: str, tenant_id: str, top_k: int = 3) -> str:
@@ -50,10 +40,6 @@ class RAGEngine:
             Formatted context string from tenant's knowledge base
         """
         try:
-            if not self.ai_client:
-                logger.warning("AI client not initialized, returning empty context")
-                return ""
-
             if not self._tenant_has_kb_docs(tenant_id):
                 logger.info(f"[RAG] Tenant {tenant_id} has no knowledge base documents — skipping embedding call")
                 return ""
@@ -135,18 +121,9 @@ class RAGEngine:
         return has_docs
 
     async def _get_embedding(self, text: str) -> Optional[List[float]]:
-        """Mistral Embedding call."""
-        if not self.ai_client:
-            logger.warning("AI client not initialized, returning empty embedding")
-            return None
-        try:
-            response = await call_with_limit(lambda: self.ai_client.embeddings.create(
-                input=[text],
-                model=self.embedding_model
-            ))
-            return response.data[0].embedding
-        except Exception as e:
-            logger.error(f"Embedding error: {e}")
-            return None
+        """Generate embedding for text. Rotates across every configured
+        Mistral key with a bounded per-attempt timeout — see
+        ai_provider_manager.create_embedding for the shared policy."""
+        return await ai_provider_manager.create_embedding(text=text)
 
 rag_engine = RAGEngine()

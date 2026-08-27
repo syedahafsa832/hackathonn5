@@ -4,15 +4,12 @@ Brand Knowledge Base Service
 Per-brand RAG knowledge base management.
 """
 
-import os
-import asyncio
 import logging
 import uuid
 import re
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 
-from openai import OpenAI
 from src.lib.supabase_client import (
     supabase_select,
     supabase_insert,
@@ -20,6 +17,7 @@ from src.lib.supabase_client import (
     supabase_delete,
     supabase_rpc
 )
+from src.services.ai_provider_manager import ai_provider_manager
 
 logger = logging.getLogger(__name__)
 
@@ -56,17 +54,9 @@ class BrandKnowledgeService:
     """
 
     def __init__(self):
-        api_key = os.getenv("MISTRAL_API_KEY") or os.getenv("OPENAI_API_KEY")
-        if api_key:
-            self.ai_client = OpenAI(
-                api_key=api_key,
-                base_url=os.getenv("MISTRAL_API_BASE_URL", "https://api.mistral.ai/v1")
-            )
-        else:
+        if not ai_provider_manager.mistral_providers:
             logger.warning("No API key found for embeddings")
-            self.ai_client = None
 
-        self.embedding_model = os.getenv("EMBEDDING_MODEL", "mistral-embed")
         self.chunk_size = 1000  # Characters per chunk
         self.chunk_overlap = 200  # Overlap between chunks
 
@@ -122,21 +112,13 @@ class BrandKnowledgeService:
 
         return chunks
 
-    def _get_embedding(self, text: str) -> Optional[List[float]]:
-        """Generate embedding for text using Mistral."""
-        if not self.ai_client:
-            logger.error("AI client not initialized")
-            return None
-
-        try:
-            response = self.ai_client.embeddings.create(
-                input=[text],
-                model=self.embedding_model
-            )
-            return response.data[0].embedding
-        except Exception as e:
-            logger.error(f"Embedding error: {e}")
-            return None
+    async def _get_embedding(self, text: str) -> Optional[List[float]]:
+        """Generate embedding for text. Rotates across every configured
+        Mistral key with a bounded per-attempt timeout — see
+        ai_provider_manager.create_embedding for the shared policy. Returns
+        None (never raises) if every key fails, so callers degrade to no
+        context instead of blocking or crashing."""
+        return await ai_provider_manager.create_embedding(text=text)
 
     async def upload_text(
         self,
@@ -200,13 +182,10 @@ class BrandKnowledgeService:
             total_tokens = 0
 
             for chunk in chunks:
-                # Off the event loop: this is a blocking network call, and
-                # upload_text() runs inside background import jobs (see
-                # shopify_import_service.run_shopify_import) - without this,
-                # a large import ties up the single event loop for its whole
-                # duration, so unrelated requests (like onboarding's own
-                # import-status poll) stall until it finishes.
-                embedding = await asyncio.to_thread(self._get_embedding, chunk["content"])
+                # _get_embedding is itself non-blocking (each key attempt
+                # runs off the event loop via ai_provider_manager's
+                # call_with_limit) - no extra to_thread needed here.
+                embedding = await self._get_embedding(chunk["content"])
                 if not embedding:
                     logger.warning(f"[KB] Failed to embed chunk {chunk['chunk_index']}")
                     continue
@@ -295,7 +274,7 @@ class BrandKnowledgeService:
             successful_chunks = 0
             total_tokens = 0
             for chunk in chunks:
-                embedding = await asyncio.to_thread(self._get_embedding, chunk["content"])
+                embedding = await self._get_embedding(chunk["content"])
                 if not embedding:
                     logger.warning(f"[KB] Failed to embed chunk {chunk['chunk_index']} while updating {source_id}")
                     continue
@@ -422,12 +401,10 @@ class BrandKnowledgeService:
             Formatted context string
         """
         try:
-            if not self.ai_client:
-                logger.warning("AI client not initialized")
-                return ""
-
-            # Generate query embedding
-            embedding = self._get_embedding(query)
+            # Generate query embedding. create_embedding() already returns
+            # None (never raises) when no Mistral key is configured or every
+            # one fails, so there's no separate pre-check needed here.
+            embedding = await self._get_embedding(query)
             if not embedding:
                 return ""
 
@@ -476,10 +453,7 @@ class BrandKnowledgeService:
         Used for displaying search results in UI.
         """
         try:
-            if not self.ai_client:
-                return []
-
-            embedding = self._get_embedding(query)
+            embedding = await self._get_embedding(query)
             if not embedding:
                 return []
 

@@ -27,6 +27,20 @@ DEFAULT_MODEL = os.getenv("MISTRAL_MODEL", "mistral-large-latest")
 DEFAULT_BASE_URL = os.getenv("MISTRAL_API_BASE_URL", "https://api.mistral.ai/v1")
 MAX_BACKOFF_SECONDS = 4
 
+# Embeddings: same Mistral account family as chat, so every configured
+# Mistral key produces the same mistral-embed model / 1024-dim vector the
+# rag_chunks schema is built for (see backend/v3_rag_schema.sql,
+# migrations/005 and 006 - all vector(1024)). Groq is chat-only and has no
+# embeddings endpoint, so it's deliberately excluded from rotation below.
+DEFAULT_EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "mistral-embed")
+# Bounded and retry-free: our own key rotation IS the retry strategy, so a
+# slow/rate-limited key should fail fast and hand off to the next one
+# rather than sit on the SDK's default (600s timeout, 2 retries) — that
+# default is what let a single exhausted key stall Test Luna/customer
+# requests past the frontend's 35s timeout before the graceful
+# provider_outage fallback ever got a chance to run.
+EMBEDDING_TIMEOUT_SECONDS = 8.0
+
 
 @dataclass
 class _Provider:
@@ -119,6 +133,43 @@ class AIProviderManager:
     @property
     def has_providers(self) -> bool:
         return bool(self._providers)
+
+    @property
+    def mistral_providers(self) -> List[_Provider]:
+        """Subset of configured providers safe to use for embeddings — every
+        Mistral key (primary + fallback_N), excluding Groq entries, which
+        share no embeddings-compatible model with the vector(1024) schema."""
+        return [p for p in self._providers if not p.label.startswith("groq")]
+
+    async def create_embedding(self, *, text: str) -> Optional[List[float]]:
+        """
+        Tries each configured Mistral key in order, reusing the same
+        clients/keys create_chat_completion uses. Never raises — returns
+        None if every key fails, so RAG callers degrade to no context
+        instead of blocking or crashing. Never logs raw exception text
+        (which can echo back key fragments on auth errors) — only the
+        classified reason from _describe().
+        """
+        providers = self.mistral_providers
+        if not providers:
+            logger.warning("[AI_PROVIDER] No Mistral keys configured — embeddings unavailable")
+            return None
+
+        for provider in providers:
+            # max_retries=0: our own loop is the retry strategy — an
+            # SDK-internal retry on the same exhausted key would just double
+            # the wait for no benefit.
+            client = self._client_for(provider).with_options(max_retries=0)
+            try:
+                response = await call_with_limit(lambda c=client: c.embeddings.create(
+                    input=[text], model=DEFAULT_EMBEDDING_MODEL, timeout=EMBEDDING_TIMEOUT_SECONDS,
+                ))
+                return response.data[0].embedding
+            except Exception as e:
+                logger.warning(f"[AI_PROVIDER] embedding attempt failed provider={provider.label} reason={_describe(e)}")
+
+        logger.error(f"[AI_PROVIDER] all {len(providers)} embedding provider(s) exhausted")
+        return None
 
     async def create_chat_completion(
         self,
