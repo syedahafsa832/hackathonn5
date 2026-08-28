@@ -1321,8 +1321,16 @@ class CustomerSuccessAgent:
             # whether an action actually exists.
             action_context = ""
             action_taken = None
-            from src.services.intent_detector import intent_detector as _intent_detector
-            _intent_result = await _intent_detector.detect(query)
+            from src.services.intent_detector import intent_detector as _intent_detector, NO_ACTION as _NO_ACTION
+            # A detected catalog question ("what products do you sell?") can
+            # never plausibly be a return/refund/cancel/exchange/address-change
+            # request - skip the classification call entirely rather than pay
+            # for (and wait on) an LLM call whose answer is already known, same
+            # reasoning already applied to the RAG skip above. This is on the
+            # critical path of every request, so on a currently-degraded
+            # Mistral key this alone can cost up to this client's full timeout
+            # before falling back to keyword matching.
+            _intent_result = _NO_ACTION if _is_catalog_query else await _intent_detector.detect(query)
             if _intent_result.has_action and not _intent_result.order_id and ticket_id:
                 # Conversation-history rule: an order number the customer
                 # already gave in an EARLIER message of this same ticket

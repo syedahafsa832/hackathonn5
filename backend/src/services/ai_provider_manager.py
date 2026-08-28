@@ -137,8 +137,16 @@ class AIProviderManager:
                 # which pushed a Test Luna catalog question past the
                 # frontend's 35s timeout even though a later provider in the
                 # chain would likely have succeeded fast.
+                # timeout=8.0 (was 15.0): matches the same bound already used
+                # for intent_detector/embeddings/email_guardian. With up to 5
+                # configured providers and the frontend's 35s request budget
+                # (dashboard/src/api/client.js), 3 dead-slow keys at 15s each
+                # plus backoff alone (~52s) structurally could never finish in
+                # time even with a fast final fallback - confirmed live via a
+                # provider-degradation alert showing 3 consecutive 15s Mistral
+                # timeouts before Groq recovered the request at 71s total.
                 max_retries=0,
-                timeout=15.0,
+                timeout=8.0,
             )
         return self._clients[provider.label]
 

@@ -106,6 +106,11 @@ BRAND_ROW = {
     "shopify_domain": None, "shopify_access_token": None,
 }
 
+CATALOG_BRAND_ROW = {
+    "id": "brand-1", "name": "Test Brand", "shopify_connected": True,
+    "shopify_domain": "shop.myshopify.com", "shopify_access_token": "encrypted-token",
+}
+
 
 def _fake_ai_response(reply_body: str):
     msg = MagicMock()
@@ -141,6 +146,62 @@ def test_unexpected_rag_exception_does_not_crash_the_agent_reply():
 
     assert result.get("reply_body")
     assert result.get("provider_outage") is not True
+
+
+# ── Catalog questions skip intent_detector too - not just RAG ──────────────
+
+def test_catalog_question_never_calls_intent_detector():
+    """A catalog question can never plausibly be a return/refund/cancel/
+    exchange/address-change request - same reasoning already applied to the
+    RAG skip. Confirmed live: intent_detector.detect() sits on the critical
+    path of every request and, on a degraded Mistral key, can itself burn
+    up to its full timeout before falling back to keyword matching."""
+    captured = {}
+
+    async def _capture_completion(*, messages, **kwargs):
+        captured["messages"] = messages
+        return _fake_ai_response("We currently sell the Essential Hoodie."), \
+            "test_provider", "test_model", {"prompt_tokens": None, "completion_tokens": None, "total_tokens": None, "latency_ms": 100, "attempts": 1}
+
+    async def _fail_if_called(*args, **kwargs):
+        raise AssertionError("intent_detector.detect() must not be called for a catalog question")
+
+    with patch("src.services.ai_provider_manager.AIProviderManager.has_providers", new_callable=PropertyMock, return_value=True), \
+         patch("src.agent.customer_success_agent.ai_provider_manager.create_chat_completion", new=AsyncMock(side_effect=_capture_completion)), \
+         patch("src.agent.customer_success_agent.brand_knowledge_service.get_brand_context", new=AsyncMock(side_effect=AssertionError("RAG must not be called"))), \
+         patch("src.lib.supabase_client.supabase_select", return_value=[CATALOG_BRAND_ROW]), \
+         patch("src.services.shopify_service.decrypt_token", return_value="real-token"), \
+         patch("src.services.shopify_service.ShopifyClient.list_active_products", new=AsyncMock(return_value=[{"title": "Essential Hoodie"}])), \
+         patch("src.services.intent_detector.intent_detector.detect", new=AsyncMock(side_effect=_fail_if_called)):
+        result = run(customer_success_agent.process_customer_query(
+            query="What products do you sell?",
+            customer_info={"name": "Jane", "email": "jane@example.com", "channel": "chat"},
+            tenant_id="tenant-1",
+            store_id="brand-1",
+            ticket_id="ticket-1",
+        ))
+
+    assert result.get("reply_body")
+
+
+# ── Chat-completion client timeout must not structurally exceed the ────────
+#    frontend's request budget across a full provider failover chain
+
+def test_chat_completion_client_timeout_fits_the_frontend_budget():
+    """dashboard/src/api/client.js's axios timeout is 35s. With up to 5
+    configured providers, a 15s-per-attempt timeout (the old value) made 3
+    consecutive dead keys alone (~45s+ before backoff) structurally unable
+    to finish in time even with a fast final fallback - confirmed live via
+    a provider-degradation alert. 8.0s matches the bound already used for
+    intent_detector/embeddings/email_guardian."""
+    from src.services.ai_provider_manager import AIProviderManager
+    mgr = AIProviderManager()
+    if not mgr.has_providers:
+        import pytest
+        pytest.skip("no providers configured in this environment")
+    provider = mgr._providers[0]
+    client = mgr._client_for(provider)
+    assert client.timeout == 8.0
 
 
 # ── IntentDetector's own client must not double up on SDK-internal retries ─
