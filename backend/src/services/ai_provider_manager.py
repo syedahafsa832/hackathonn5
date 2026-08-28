@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional
 from openai import OpenAI
 
 from .mistral_limiter import call_with_limit
-from .admin_alert_service import notify_provider_degradation
+from .admin_alert_service import notify_provider_exhausted, notify_provider_recovered
 
 logger = logging.getLogger(__name__)
 
@@ -241,21 +241,11 @@ class AIProviderManager:
                     reason = _describe(e2)
                     attempts.append({"label": provider.label, "reason": reason})
                     logger.warning(f"[AI_PROVIDER] {provider.label} failed reason={reason}")
-                    notify_provider_degradation(
-                        provider_label=provider.label, model=provider.model, reason=reason,
-                        attempt_number=i + 1, total_providers=len(self._providers),
-                        elapsed_seconds=time.monotonic() - t_start,
-                    )
                     response = None
             except Exception as e:
                 reason = _describe(e)
                 attempts.append({"label": provider.label, "reason": reason})
                 logger.warning(f"[AI_PROVIDER] {provider.label} failed reason={reason} after {time.monotonic() - t_start:.2f}s")
-                notify_provider_degradation(
-                    provider_label=provider.label, model=provider.model, reason=reason,
-                    attempt_number=i + 1, total_providers=len(self._providers),
-                    elapsed_seconds=time.monotonic() - t_start,
-                )
                 response = None
 
             if response is not None:
@@ -275,6 +265,14 @@ class AIProviderManager:
                     "provider": provider.label,
                     "model": provider.model,
                 }
+                # A no-op unless a prior notify_provider_exhausted() incident
+                # for this service is still active - a request that succeeds
+                # on the first try (the overwhelming common case) never
+                # triggers an email here. Fires even when i==0 (no earlier
+                # attempts failed THIS request) so a genuinely recovered
+                # outage - the very next request after it clears - still
+                # closes out the incident promptly.
+                notify_provider_recovered(service="chat_completion")
                 return response, provider.label, provider.model, usage
 
             is_last = i == len(self._providers) - 1
@@ -283,10 +281,17 @@ class AIProviderManager:
                 logger.info(f"[AI_PROVIDER] switching to next provider in {backoff}s")
                 await asyncio.sleep(backoff)
 
+        elapsed_total = time.monotonic() - call_start
         logger.error(
             f"[AI_PROVIDER] all {len(self._providers)} provider(s) exhausted "
-            f"total_time={time.monotonic() - call_start:.2f}s"
+            f"total_time={elapsed_total:.2f}s"
         )
+        # Every configured provider failed and this request could not be
+        # completed at all - the genuine incident (see PART 3/5 of the
+        # alert-spam fix). Individual attempt failures above are logged only
+        # and never alert on their own; a request that recovers via fallback
+        # returns above and never reaches this line.
+        notify_provider_exhausted(attempts=attempts, model=self._providers[0].model, elapsed_seconds=elapsed_total, service="chat_completion")
         raise AllProvidersFailedError(attempts)
 
 

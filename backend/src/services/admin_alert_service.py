@@ -1,9 +1,9 @@
 """
 Admin Alert Service
 ====================
-Two lightweight, zero-token/zero-LLM admin email notifications, built on top
-of the existing Resend-based system_email_service.py - no second email
-delivery system, no new infrastructure:
+Lightweight, zero-token/zero-LLM admin email notifications, built on top of
+the existing Resend-based system_email_service.py - no second email delivery
+system, no new infrastructure:
 
 1. notify_critical_error() - called from LoggingMiddleware (the app's one
    central request-handling wrapper) on a genuinely unexpected backend
@@ -12,12 +12,24 @@ delivery system, no new infrastructure:
    window - same in-memory-cache convention already used elsewhere in this
    codebase (see brand_knowledge_service._kb_doc_cache) rather than adding
    Redis/Celery/a monitoring platform for this.
-2. notify_upgrade_request() - called from upgrade_requests.py right after a
+2. notify_provider_exhausted() / notify_provider_recovered() - an incident
+   pair for a shared AI provider service (e.g. chat completion): exhausted
+   fires once when EVERY configured provider fails a request outright
+   (never for a request that recovers via fallback - that's normal
+   operation, not an incident); recovered fires at most once, only if there
+   was a genuinely active exhausted incident to close out. See PART "Stop
+   Email Alert Spam" - this replaced a per-failed-attempt alert that fired
+   inside the provider-rotation retry loop itself, which is what produced a
+   burst of ~20 emails for what was really one ongoing incident: every
+   configured provider failing on every request minted its own
+   provider+reason signature, and a request that ultimately succeeded via
+   fallback still alerted on every provider it passed through on the way.
+3. notify_upgrade_request() - called from upgrade_requests.py right after a
    manual-activation upgrade request row is persisted.
 
-Both are best-effort and MUST NEVER raise: a failed admin notification must
-never turn a successful request into a failed one, or replace/mask the real
-error response a customer would otherwise see.
+All of these are best-effort and MUST NEVER raise: a failed admin
+notification must never turn a successful request into a failed one, or
+replace/mask the real error response a customer would otherwise see.
 """
 import os
 import re
@@ -64,6 +76,15 @@ def redact_text(text: Optional[str]) -> str:
 # this codebase's other lightweight caches. No new infrastructure.
 _ALERT_WINDOW_SECONDS = 300  # 5 minutes
 _alert_state: Dict[str, Dict[str, float]] = {}
+
+# Whether an incident signature is CURRENTLY active (as of the most recent
+# occurrence/success observed for it) - separate from _alert_state, which
+# only tracks when an email was last actually sent. Lets notify_*_recovered()
+# tell "this closes out a real incident" apart from "nothing was wrong",
+# so a service that simply always succeeds never gets a spurious recovery
+# email, and rapid failure/success flapping only ever sends the one initial
+# alert (suppressed by the cooldown below) and the one recovery email.
+_incident_active: Dict[str, bool] = {}
 
 
 def _should_send(signature: str) -> Optional[int]:
@@ -136,38 +157,56 @@ def notify_critical_error(
         logger.error("[AdminAlert] Failed to send critical-error admin notification", exc_info=True)
 
 
-def notify_provider_degradation(
+def notify_provider_exhausted(
     *,
-    provider_label: str,
+    attempts: list,
     model: str,
-    reason: str,
-    attempt_number: int,
-    total_providers: int,
     elapsed_seconds: float,
+    service: str = "chat_completion",
 ) -> None:
-    """Best-effort admin email when a configured AI provider key fails
-    mid-request (timeout, rate limit, quota, 5xx) - even if a later
-    fallback key recovers the request and it ultimately returns 200.
-    notify_critical_error() only fires on an unhandled exception or a 5xx
-    response, so a request that fails over through several dead/slow keys
-    before finally succeeding never trips it - even though each of those
-    keys timing out is real degraded service, and chained across enough
-    of them can single-handedly blow the frontend's request budget before
-    the eventually-successful response ever arrives. Never raises."""
+    """Best-effort admin email for a genuine incident: EVERY configured AI
+    provider failed and the request could not be completed at all - the
+    "persistent provider failure" / "persistent quota problem" case. Never
+    called for a request that ultimately succeeds via fallback (see PART 3
+    of the alert-spam fix: retries/fallback recovery are normal operation,
+    not an incident, and must never independently alert).
+
+    Deduplicated by `service` alone, NOT by the specific provider/reason
+    breakdown of this occurrence - the exact reason a given attempt failed
+    (rate_limited vs timeout vs quota_exceeded vs a 5xx) can vary between
+    otherwise-identical occurrences of the same underlying outage, and
+    keying on it would fragment one real incident into many distinct
+    "signatures" that each get their own alert (this is exactly what
+    produced a burst of ~20 emails from a single ongoing incident before
+    this fix). The full attempt breakdown is still included in the email
+    body for diagnosis - only the dedup key is coarse. Never raises."""
     try:
-        signature = f"provider_degradation:{provider_label}:{reason}"
+        signature = f"provider_exhausted:{service}"
         suppressed = _should_send(signature)
         if suppressed is None:
+            # Still genuinely failing, but this occurrence's email is
+            # suppressed by the cooldown - deliberately does NOT touch
+            # _incident_active here. Only an occurrence that actually sends
+            # an email marks the incident "active" for recovery purposes, so
+            # a later notify_provider_recovered() only fires to close out an
+            # incident the admin was actually told about - otherwise rapid
+            # failure/recovery/failure/recovery flapping within one cooldown
+            # window could still produce a paired recovery email for a
+            # failure alert that never went out. See PART 10 ("do not spam
+            # failure/recovery/failure/recovery for rapid flapping").
             return
+        _incident_active[signature] = True
 
+        attempt_lines = "; ".join(f"{a['label']}={a['reason']}" for a in attempts) or "no providers configured"
         lines = [
-            f"Provider: {provider_label}",
+            f"Service: {service}",
             f"Model: {model}",
-            f"Failure reason: {reason}",
-            f"Attempt: {attempt_number} of {total_providers} configured provider(s)",
-            f"Elapsed before failure: {elapsed_seconds:.1f}s",
+            f"All {len(attempts)} configured provider(s) failed: {attempt_lines}",
+            f"Elapsed before giving up: {elapsed_seconds:.1f}s",
             f"Timestamp: {datetime.now(timezone.utc).isoformat()}",
             f"Environment: {ENVIRONMENT}",
+            "Impact: requests to this service cannot currently be completed automatically.",
+            "Human intervention: check provider account status (quota/billing/key validity).",
         ]
         if suppressed:
             lines.append(
@@ -177,11 +216,38 @@ def notify_provider_degradation(
 
         send_admin_notification(
             ADMIN_ALERT_EMAIL,
-            f"⚠️ tResolv WARNING — AI provider '{provider_label}' failed ({reason})",
+            f"\U0001F6A8 tResolv ALERT — {service} providers exhausted, requests failing",
             "\n".join(lines),
         )
     except Exception:
-        logger.error("[AdminAlert] Failed to send provider-degradation admin notification", exc_info=True)
+        logger.error("[AdminAlert] Failed to send provider-exhausted admin notification", exc_info=True)
+
+
+def notify_provider_recovered(*, service: str = "chat_completion") -> None:
+    """Best-effort admin email sent at most once, and only to close out a
+    genuinely active notify_provider_exhausted() incident for this service -
+    a service that simply always succeeds never triggers this. Immediately
+    clears the active flag so rapid failure/success flapping produces
+    exactly one recovery email, not one per success. Never raises."""
+    try:
+        signature = f"provider_exhausted:{service}"
+        was_active = _incident_active.get(signature, False)
+        _incident_active[signature] = False
+        if not was_active:
+            return
+
+        send_admin_notification(
+            ADMIN_ALERT_EMAIL,
+            f"✅ tResolv RECOVERED — {service} providers are working again",
+            (
+                f"Service: {service}\n"
+                f"Timestamp: {datetime.now(timezone.utc).isoformat()}\n"
+                f"Environment: {ENVIRONMENT}\n"
+                "A request to this service just succeeded after a prior failure incident."
+            ),
+        )
+    except Exception:
+        logger.error("[AdminAlert] Failed to send provider-recovered admin notification", exc_info=True)
 
 
 def notify_upgrade_request(
