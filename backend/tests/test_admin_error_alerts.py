@@ -208,3 +208,71 @@ def test_admin_alert_failure_does_not_break_the_original_error_response():
     # The customer still gets the normal error response - the notification
     # failure was swallowed, not surfaced.
     assert resp.status_code == 500
+
+
+# ── 5. Provider degradation: a fallback key failing must alert even when ───
+#      the request eventually recovers and returns 200 (notify_critical_error
+#      never fires for that, since the response is never 5xx/unhandled).
+
+def test_notify_provider_degradation_sends_an_admin_email():
+    with patch("src.services.admin_alert_service.send_admin_notification") as mock_send:
+        admin_alert_service.notify_provider_degradation(
+            provider_label="primary", model="mistral-large-latest", reason="timeout",
+            attempt_number=1, total_providers=4, elapsed_seconds=15.07,
+        )
+
+    mock_send.assert_called_once()
+    to_email, subject, body = mock_send.call_args[0]
+    assert to_email == admin_alert_service.ADMIN_ALERT_EMAIL
+    assert "primary" in subject
+    assert "timeout" in subject
+    assert "1 of 4" in body
+
+
+def test_provider_degradation_repeated_same_reason_is_deduplicated():
+    with patch("src.services.admin_alert_service.send_admin_notification") as mock_send:
+        for _ in range(3):
+            admin_alert_service.notify_provider_degradation(
+                provider_label="fallback_1", model="mistral-large-latest", reason="timeout",
+                attempt_number=2, total_providers=4, elapsed_seconds=15.0,
+            )
+
+    mock_send.assert_called_once()
+
+
+def test_a_recovered_request_via_fallback_still_alerts_on_the_failed_providers():
+    """The exact live scenario this closes: primary/fallback_1/fallback_2
+    all time out, groq_fallback_1 finally succeeds and the endpoint returns
+    200 - notify_critical_error never fires for that (no 5xx, no unhandled
+    exception), so without this, three real provider timeouts would go
+    completely unnoticed."""
+    import asyncio
+    import os
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    os.environ.setdefault("MISTRAL_API_KEY_PRIMARY", "k1")
+    from src.services.ai_provider_manager import AIProviderManager
+
+    mgr = AIProviderManager()
+    if len(mgr._providers) < 1:
+        import pytest
+        pytest.skip("no providers configured in this environment")
+
+    call_count = {"n": 0}
+
+    async def _fake_call(fn):
+        call_count["n"] += 1
+        if call_count["n"] < len(mgr._providers):
+            raise TimeoutError("Request timed out.")
+        response = type("R", (), {"choices": [type("C", (), {"message": type("M", (), {"content": "ok"})()})()], "usage": None})()
+        return response
+
+    with patch("src.services.ai_provider_manager.call_with_limit", side_effect=_fake_call), \
+         patch("src.services.admin_alert_service.send_admin_notification") as mock_send:
+        result = asyncio.get_event_loop().run_until_complete(
+            mgr.create_chat_completion(messages=[{"role": "user", "content": "hi"}])
+        )
+
+    assert result[0] is not None  # ultimately succeeded
+    if len(mgr._providers) > 1:
+        assert mock_send.called  # but the earlier failing provider(s) still alerted

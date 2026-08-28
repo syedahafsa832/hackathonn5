@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional
 from openai import OpenAI
 
 from .mistral_limiter import call_with_limit
+from .admin_alert_service import notify_provider_degradation
 
 logger = logging.getLogger(__name__)
 
@@ -229,12 +230,24 @@ class AIProviderManager:
                     kwargs.pop("response_format", None)
                     response = await call_with_limit(lambda kw=kwargs, c=client: c.chat.completions.create(**kw))
                 except Exception as e2:
-                    attempts.append({"label": provider.label, "reason": _describe(e2)})
-                    logger.warning(f"[AI_PROVIDER] {provider.label} failed reason={_describe(e2)}")
+                    reason = _describe(e2)
+                    attempts.append({"label": provider.label, "reason": reason})
+                    logger.warning(f"[AI_PROVIDER] {provider.label} failed reason={reason}")
+                    notify_provider_degradation(
+                        provider_label=provider.label, model=provider.model, reason=reason,
+                        attempt_number=i + 1, total_providers=len(self._providers),
+                        elapsed_seconds=time.monotonic() - t_start,
+                    )
                     response = None
             except Exception as e:
-                attempts.append({"label": provider.label, "reason": _describe(e)})
-                logger.warning(f"[AI_PROVIDER] {provider.label} failed reason={_describe(e)} after {time.monotonic() - t_start:.2f}s")
+                reason = _describe(e)
+                attempts.append({"label": provider.label, "reason": reason})
+                logger.warning(f"[AI_PROVIDER] {provider.label} failed reason={reason} after {time.monotonic() - t_start:.2f}s")
+                notify_provider_degradation(
+                    provider_label=provider.label, model=provider.model, reason=reason,
+                    attempt_number=i + 1, total_providers=len(self._providers),
+                    elapsed_seconds=time.monotonic() - t_start,
+                )
                 response = None
 
             if response is not None:

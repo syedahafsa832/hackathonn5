@@ -136,6 +136,54 @@ def notify_critical_error(
         logger.error("[AdminAlert] Failed to send critical-error admin notification", exc_info=True)
 
 
+def notify_provider_degradation(
+    *,
+    provider_label: str,
+    model: str,
+    reason: str,
+    attempt_number: int,
+    total_providers: int,
+    elapsed_seconds: float,
+) -> None:
+    """Best-effort admin email when a configured AI provider key fails
+    mid-request (timeout, rate limit, quota, 5xx) - even if a later
+    fallback key recovers the request and it ultimately returns 200.
+    notify_critical_error() only fires on an unhandled exception or a 5xx
+    response, so a request that fails over through several dead/slow keys
+    before finally succeeding never trips it - even though each of those
+    keys timing out is real degraded service, and chained across enough
+    of them can single-handedly blow the frontend's request budget before
+    the eventually-successful response ever arrives. Never raises."""
+    try:
+        signature = f"provider_degradation:{provider_label}:{reason}"
+        suppressed = _should_send(signature)
+        if suppressed is None:
+            return
+
+        lines = [
+            f"Provider: {provider_label}",
+            f"Model: {model}",
+            f"Failure reason: {reason}",
+            f"Attempt: {attempt_number} of {total_providers} configured provider(s)",
+            f"Elapsed before failure: {elapsed_seconds:.1f}s",
+            f"Timestamp: {datetime.now(timezone.utc).isoformat()}",
+            f"Environment: {ENVIRONMENT}",
+        ]
+        if suppressed:
+            lines.append(
+                f"Occurrences suppressed since last alert: {suppressed} "
+                f"(within the last {_ALERT_WINDOW_SECONDS // 60} min)"
+            )
+
+        send_admin_notification(
+            ADMIN_ALERT_EMAIL,
+            f"⚠️ tResolv WARNING — AI provider '{provider_label}' failed ({reason})",
+            "\n".join(lines),
+        )
+    except Exception:
+        logger.error("[AdminAlert] Failed to send provider-degradation admin notification", exc_info=True)
+
+
 def notify_upgrade_request(
     *,
     name: str,
