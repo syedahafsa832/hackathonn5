@@ -212,15 +212,31 @@ class ReturnActionsIntegration:
             if structured_address:
                 is_valid, missing = self._validate_address(structured_address)
                 if not is_valid:
-                    missing_str = ", ".join(missing)
+                    # Ask ONLY for the fields _validate_address actually
+                    # flagged as missing - never the whole bundle. The
+                    # customer already gave us whatever IS present in
+                    # structured_address (street/city/etc. successfully
+                    # parsed); re-asking for those too reads as if we never
+                    # looked at their message. Echo back what we have so
+                    # they can see it was received, not just repeat it back
+                    # blind.
+                    missing_str = " and ".join(missing) if len(missing) <= 2 else ", ".join(missing[:-1]) + f", and {missing[-1]}"
+                    have_parts = [
+                        v for k, v in (
+                            ("address1", structured_address.get("address1")),
+                            ("city", structured_address.get("city")),
+                            ("province", structured_address.get("province")),
+                            ("zip", structured_address.get("zip")),
+                        ) if v
+                    ]
+                    have_str = ", ".join(have_parts)
                     result["action_context"] = (
                         f"ADDRESS INCOMPLETE — DO NOT CONFIRM. "
-                        f"The customer's address is missing: {missing_str}. "
-                        f"Tell the customer politely: 'I'd be happy to update your delivery address! "
-                        f"Could you please reply with your full name, complete street address "
-                        f"(house/flat number and street name), city, and country? "
-                        f"I'll get it updated right away once I have those details.' "
-                        f"Do NOT say you've queued anything."
+                        f"The customer's address is missing ONLY: {missing_str}. "
+                        f"Already provided and captured: {have_str or '(nothing else parsed)'} - do NOT ask for these again. "
+                        f"Tell the customer politely, referencing what they already gave you: "
+                        f"'Got it - {have_str}. I just need the {missing_str} to finish updating your address.' "
+                        f"Ask ONLY for {missing_str}, never the full address bundle. Do NOT say you've queued anything."
                     )
                     return result
             elif new_address_text:

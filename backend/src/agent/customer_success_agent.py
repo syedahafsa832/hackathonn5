@@ -1187,8 +1187,14 @@ class CustomerSuccessAgent:
                             "Do NOT reveal any details about this order (status, items, cancellation, refund, tracking). "
                             "Do NOT say 'the email on file' or imply the customer did anything wrong - a different contact "
                             "email is completely normal (lost access, ordered for someone else, used another address). "
-                            "Tell them plainly you found the order but the email they're writing from doesn't match the one "
-                            "used to place it, and ask them to confirm the email used when ordering so you can help.\n"
+                            "This comparison already used the email this conversation is verified as coming from - if the "
+                            "customer already stated an email in their message (e.g. 'the email I used was X'), that has "
+                            "ALREADY been checked and doesn't match, so do NOT ask them to confirm/repeat/resend any email. "
+                            "Instead, state plainly that you found the order but the identity doesn't match, and that this "
+                            "needs to go to the team for verification before any change can be made - e.g. 'I found order "
+                            f"#{mentioned_num}, but the email you're contacting us from doesn't match the one on that order. "
+                            "I need our team to verify ownership before I can make any changes.' Do NOT ask a clarifying "
+                            "question expecting a new answer here - this is a statement, followed by escalation.\n"
                         )
                         _needs_identity_verification = True
                     elif order.get("error"):
@@ -1317,6 +1323,26 @@ class CustomerSuccessAgent:
             action_taken = None
             from src.services.intent_detector import intent_detector as _intent_detector
             _intent_result = await _intent_detector.detect(query)
+            if _intent_result.has_action and not _intent_result.order_id and ticket_id:
+                # Conversation-history rule: an order number the customer
+                # already gave in an EARLIER message of this same ticket
+                # must not be re-asked for just because their current
+                # message (e.g. "the new address should be X") doesn't
+                # repeat it. detect() only sees this one message - reuse the
+                # same ticket.detected_order_id field STAGE 1.6/1.8 in
+                # message_processor.py already tracks and preserves across
+                # turns for exactly this reason, instead of asking again.
+                # Deterministic lookup, not an LLM guess - never invents an
+                # order number that was never actually given.
+                try:
+                    from src.lib.supabase_client import supabase_select as _sel3
+                    _t_rows2 = _sel3("tickets", {"id": f"eq.{ticket_id}"})
+                    _prior_order_id = _t_rows2[0].get("detected_order_id") if _t_rows2 else None
+                    if _prior_order_id:
+                        _intent_result.order_id = str(_prior_order_id)
+                        logger.info(f"[ReturnActions] Reused order #{_prior_order_id} from conversation history for {_intent_result.action_type}")
+                except Exception as _oe:
+                    logger.warning(f"[Agent] Could not backfill order_id from conversation history (continuing without it): {_oe}")
             if _intent_result.has_action:
                 logger.info(f"[ReturnActions] Intent detected: {_intent_result.action_type} (order={_intent_result.order_id}, source={_intent_result.source})")
                 action_result = await return_actions.handle_return_intent(
