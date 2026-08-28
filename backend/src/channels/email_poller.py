@@ -225,7 +225,33 @@ class EmailPoller:
             processed_count = 0
             failure_count = 0
 
+            # Each email is handled independently (concurrently) so one slow
+            # AI/provider/Gmail-send pipeline can't delay another email's own
+            # "create ticket immediately" stage in message_processor.py.
+            # Grouped by Gmail thread first: two messages in the SAME thread
+            # must still run strictly in order within that thread, or both
+            # could concurrently see "no ticket yet" and create duplicate
+            # tickets (message_processor.py's STAGE 1.5 relies on sequential
+            # processing per thread). Messages with no thread_id can never
+            # collide, so each gets its own single-email group.
+            groups: Dict[str, List[dict]] = {}
             for email in emails:
+                key = email.get("thread_id") or f"__no_thread_{email.get('id')}"
+                groups.setdefault(key, []).append(email)
+
+            async def _handle_one(email):
+                try:
+                    await _handle_one_inner(email)
+                except Exception:
+                    # Defensive: an unexpected exception anywhere in this
+                    # email's own filtering/processing (not just
+                    # process_message, which already has its own try/except
+                    # below) must never affect any other concurrently
+                    # running email or abort the rest of the batch.
+                    logger.exception(f"[Poller] Unexpected error handling message {email.get('id')} for brand {brand_id}")
+
+            async def _handle_one_inner(email):
+                nonlocal processed_count, failure_count
                 sender = email["sender_email"].lower()
                 thread_id = email.get("thread_id")
                 gmail_msg_id = email.get("id")
@@ -237,14 +263,14 @@ class EmailPoller:
                 # inbox → brand B replies → lands in brand A's inbox → ...).
                 if sender in all_brand_emails:
                     logger.info(f"[Poller] Skipping brand-owned address email from {sender} — cross-brand loop prevention")
-                    continue
+                    return
 
                 # Skip deep reply chains (Re: Re: Re: ≥ 3) — second line of loop defence
                 subject = email.get("subject", "")
                 re_count = subject.lower().count("re:")
                 if re_count >= 3:
                     logger.info(f"[Poller] Skipping deep reply chain (Re: count={re_count}): {subject[:60]}")
-                    continue
+                    return
 
                 # Skip emails containing our own reply signature — third, independent
                 # line of loop defence. Catches cases the sender-address and Re:-count
@@ -257,7 +283,7 @@ class EmailPoller:
                 signature_marker = f"- {agent_name}"
                 if signature_marker in (email.get("body") or ""):
                     logger.info(f"[Poller] Skipping email containing our own reply signature ('{signature_marker}') — loop prevention")
-                    continue
+                    return
 
                 # Skip if this exact Gmail message was already stored (survives restarts)
                 if gmail_msg_id:
@@ -267,7 +293,7 @@ class EmailPoller:
                         )
                         if already_seen:
                             logger.debug(f"[Poller] Skipping already-processed message {gmail_msg_id}")
-                            continue
+                            return
                     except Exception:
                         pass  # column may not exist yet — safe to continue
 
@@ -285,7 +311,7 @@ class EmailPoller:
                         )
                         if discarded:
                             logger.debug(f"[Poller] Skipping discarded message {gmail_msg_id}")
-                            continue
+                            return
                     except Exception:
                         pass
 
@@ -300,7 +326,7 @@ class EmailPoller:
                         f"[email_filter] rejected gmail_message_id={gmail_msg_id} sender={sender} "
                         f"reason={filter_result.reason} (brand: {brand['name']})"
                     )
-                    continue
+                    return
 
                 # ── Guardian evaluation (Layers 4–5: AI intent + confidence gate) ──
                 guardian_result = await asyncio.to_thread(
@@ -315,7 +341,7 @@ class EmailPoller:
                         f"[email_filter] {guardian_result.decision} gmail_message_id={gmail_msg_id} sender={sender} "
                         f"reason={guardian_result.reason} classification={guardian_result.classification}"
                     )
-                    continue
+                    return
 
                 logger.info(
                     f"[email_filter] accepted gmail_message_id={gmail_msg_id} sender={sender} "
@@ -342,7 +368,7 @@ class EmailPoller:
                             logger.info(
                                 f"[Poller] Loop-risk thread {thread_id} — suppressing further processing"
                             )
-                            continue
+                            return
                     except Exception as te:
                         logger.warning(f"[Poller] Thread risk lookup failed (continuing): {te}")
 
@@ -383,6 +409,14 @@ class EmailPoller:
                     except Exception:
                         failure_count += 1
                         logger.exception(f"[Poller] Processor exception for brand {brand_id} message {gmail_msg_id}")
+
+            async def _handle_group(group_emails):
+                for email in group_emails:
+                    await _handle_one(email)
+
+            # Groups (independent Gmail threads) run concurrently; each
+            # group's own messages still run in strict order internally.
+            await asyncio.gather(*[_handle_group(g) for g in groups.values()])
 
             logger.info(f"[POLL] Brand {brand_id} summary: fetched={len(emails)} processed={processed_count} failures={failure_count}")
 
