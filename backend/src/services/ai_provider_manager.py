@@ -125,7 +125,18 @@ class AIProviderManager:
             self._clients[provider.label] = OpenAI(
                 api_key=provider.api_key,
                 base_url=provider.base_url,
-                max_retries=1,
+                # max_retries=0: same rationale as EMBEDDING_TIMEOUT_SECONDS
+                # above - our own provider-rotation loop in
+                # create_chat_completion() IS the retry strategy. This
+                # client previously left the SDK's own max_retries=1, so a
+                # single slow/rate-limited key could burn 2x15s (attempt +
+                # SDK-internal retry, plus its own backoff) before our loop
+                # even reached the next configured provider - confirmed live
+                # via "Retrying request to /chat/completions" in logs,
+                # which pushed a Test Luna catalog question past the
+                # frontend's 35s timeout even though a later provider in the
+                # chain would likely have succeeded fast.
+                max_retries=0,
                 timeout=15.0,
             )
         return self._clients[provider.label]

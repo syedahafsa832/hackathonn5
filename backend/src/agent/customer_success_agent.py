@@ -594,18 +594,6 @@ class CustomerSuccessAgent:
             # the Activity timeline (see test_no_duplicate_activity_events.py).
             await _emit("thinking", "Analyzing request…")
 
-            # 1. RAG Retrieval - brand_knowledge_service.get_brand_context() is scoped
-            # correctly by brand_id via match_brand_rag_chunks. rag_engine.get_relevant_context's
-            # tenant-scoped path calls match_tenant_rag_chunks, which references a
-            # tenant_id column migration 006 dropped from rag_chunks - that RPC always
-            # errors, is silently swallowed, and falls through to an UNSCOPED
-            # cross-tenant search every single time. Do not switch back to rag_engine
-            # here without first fixing that RPC/table mismatch.
-            if store_id:
-                await _emit("kb_check", "Checking knowledge base…")
-            rag_context = await brand_knowledge_service.get_brand_context(store_id, query) if store_id else ""
-            logger.info(f"[Agent] RAG context retrieved: {len(rag_context)} chars")
-
             # 2. Sizing Engine - Get actual recommendation if we have measurements
             sizing_context = ""
             if any(k in query.lower() for k in ["size", "fit", "small", "medium", "large", "xl"]):
@@ -694,6 +682,50 @@ class CustomerSuccessAgent:
                 except Exception as _se:
                     logger.warning(f"[Agent] Brand lookup failed (non-blocking): {_se}")
 
+            # Generic catalog question ("what products do you sell?", "what
+            # do you have available?") - detected here, before RAG, so a
+            # purely structured question never pays for (or depends on) an
+            # embedding call at all. Reuses live Shopify data
+            # (v3_tools.list_catalog -> ShopifyClient.list_active_products,
+            # the same call find_products_by_title already uses) instead of
+            # RAG. A question naming an actual product won't match this
+            # narrow phrasing, so specific-product routing further below is
+            # unaffected.
+            _catalog_kw = [
+                "what products do you sell", "what do you sell", "what products are available",
+                "what products do you have", "what do you have available", "what do you carry",
+                "what items do you sell", "what's in your store", "what is in your store",
+                "show me your products", "list your products", "what products do you offer",
+            ]
+            _is_catalog_query = any(kw in query.lower() for kw in _catalog_kw)
+            if _is_catalog_query:
+                await _emit("product_lookup", "Checking the catalog…")
+                tool_results["catalog"] = await v3_tools.list_catalog(
+                    shop_domain=_brand_shopify_domain,
+                    access_token=_brand_shopify_token,
+                )
+                if tool_results["catalog"].get("success"):
+                    await _emit("product_found", "Shopify catalog found")
+
+            # 1. RAG Retrieval - brand_knowledge_service.get_brand_context() is scoped
+            # correctly by brand_id via match_brand_rag_chunks. rag_engine.get_relevant_context's
+            # tenant-scoped path calls match_tenant_rag_chunks, which references a
+            # tenant_id column migration 006 dropped from rag_chunks - that RPC always
+            # errors, is silently swallowed, and falls through to an UNSCOPED
+            # cross-tenant search every single time. Do not switch back to rag_engine
+            # here without first fixing that RPC/table mismatch.
+            # Skipped entirely for a detected catalog question above - Shopify
+            # is already the authoritative, structured answer for it, so an
+            # embedding call would only add latency/failure surface for no
+            # benefit (see AI_PROVIDER retry/timeout notes in
+            # ai_provider_manager.py - RAG's embedding call is bounded/fast,
+            # but every extra round trip narrows the frontend's 35s budget).
+            _needs_rag = bool(store_id) and not _is_catalog_query
+            if _needs_rag:
+                await _emit("kb_check", "Checking knowledge base…")
+            rag_context = await brand_knowledge_service.get_brand_context(store_id, query) if _needs_rag else ""
+            logger.info(f"[Agent] RAG context retrieved: {len(rag_context)} chars")
+
             # Order number / email extraction must only ever look at the
             # customer's own new top-level text, never a quoted earlier
             # message in the same email thread ("On ... wrote:" / "> " quote
@@ -775,30 +807,6 @@ class CustomerSuccessAgent:
                                 await _emit("order_found", "Shopify order found")
                     except Exception as _pve:
                         logger.warning(f"[Agent] Pending identity-verification lookup failed (non-blocking): {_pve}")
-
-            # Generic catalog question ("what products do you sell?", "what
-            # do you have available?") - checked before every specific-
-            # product gate below since there's no product name to extract;
-            # a question naming an actual product won't match this narrow
-            # phrasing. Reuses live Shopify data (v3_tools.list_catalog ->
-            # ShopifyClient.list_active_products, the same call
-            # find_products_by_title already uses) instead of routing a
-            # purely structured question through RAG/embeddings, which
-            # can't answer it reliably and doesn't need to.
-            _catalog_kw = [
-                "what products do you sell", "what do you sell", "what products are available",
-                "what products do you have", "what do you have available", "what do you carry",
-                "what items do you sell", "what's in your store", "what is in your store",
-                "show me your products", "list your products", "what products do you offer",
-            ]
-            if any(kw in query_lower for kw in _catalog_kw):
-                await _emit("product_lookup", "Checking the catalog…")
-                tool_results["catalog"] = await v3_tools.list_catalog(
-                    shop_domain=_brand_shopify_domain,
-                    access_token=_brand_shopify_token,
-                )
-                if tool_results["catalog"].get("success"):
-                    await _emit("product_found", "Shopify catalog found")
 
             # Recommendation intent is checked first so a message like "Do you
             # have anything like the Galactic Space Boots?" is recognized as
