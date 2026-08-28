@@ -42,8 +42,15 @@ def _approved_reply_texts(brand_id: str, limit: int = MAX_REPLIES_FOR_PROFILE_GE
     incidental side effect of today's UI never offering Reject after an
     approval — a rejected reply must never count toward Learned Style
     regardless of how that state was reached."""
+    # tickets' real brand FK is store_id, not brand_id - brand_id is only a
+    # secondary alias present on some rows (see tickets.py's get_ticket
+    # comment; confirmed live: every ticket for a real brand had
+    # brand_id=None, store_id=<brand id>). Review Luna's Work already reads
+    # this table via store_id (supabase_service.get_tickets(store_id=...)) -
+    # this was the one place still filtering on brand_id, which matched
+    # zero rows regardless of how many were actually approved.
     tickets = supabase_select("tickets", {
-        "brand_id": f"eq.{brand_id}",
+        "store_id": f"eq.{brand_id}",
         "or": "(human_approved.is.true,human_response.not.is.null)",
         "human_rejected": "not.is.true",
         "order": "updated_at.desc",
@@ -51,7 +58,13 @@ def _approved_reply_texts(brand_id: str, limit: int = MAX_REPLIES_FOR_PROFILE_GE
     })
     texts = []
     for t in tickets or []:
-        text = (t.get("human_response") or t.get("ai_reply") or "").strip()
+        # Same 3-field fallback tickets.py already uses for "the Luna reply
+        # that was reviewed" (review_ai_reply's ai_text, list_review_queue's
+        # luna_reply) - a ticket's AI reply can live in ai_reply, ai_draft,
+        # or ai_response depending on which pipeline wrote it. Only checking
+        # ai_reply silently dropped every approved ticket whose reply was
+        # actually stored in ai_draft, undercounting real approvals.
+        text = (t.get("human_response") or t.get("ai_reply") or t.get("ai_draft") or t.get("ai_response") or "").strip()
         if text:
             texts.append(text)
     return texts
@@ -75,7 +88,7 @@ def count_approved_replies_since(brand_id: str, since_iso: Optional[str]) -> int
     approve-ai and manual send-reply paths, so it's a reliable 'became
     approved' marker regardless of which path was used)."""
     params = {
-        "brand_id": f"eq.{brand_id}",
+        "store_id": f"eq.{brand_id}",
         "or": "(human_approved.is.true,human_response.not.is.null)",
         "select": "id",
     }

@@ -1,10 +1,15 @@
 """
-Reply Style / learning isolation audit (no bug found - regression guard only).
+Reply Style / learning isolation audit.
 
-_approved_reply_texts/_uploaded_example_texts (reply_style_service.py) both
-filter tickets/reply_style_examples by brand_id="eq.{brand_id}", and
-generate_learned_profile(brand_id) only ever reads that one brand's rows
-via get_brand_reply_style(brand_id). This proves Brand A's profile
+_uploaded_example_texts (reply_style_service.py) filters reply_style_examples
+by brand_id="eq.{brand_id}" (that table's real FK). _approved_reply_texts
+filters tickets by store_id="eq.{brand_id}" - tickets' real brand FK is
+store_id, not brand_id (brand_id is only a secondary alias present on some
+rows; confirmed live every ticket had brand_id=None). It was previously
+filtered by brand_id, which matched zero rows for any real brand - the
+"Learning shows 0 approved replies despite Review Luna's Work having many"
+bug. generate_learned_profile(brand_id) only ever reads that one brand's
+rows via get_brand_reply_style(brand_id). This proves Brand A's profile
 generation never consumes Brand B's approved replies or uploaded examples,
 even when both brands' rows exist in the same (mocked) table.
 """
@@ -48,7 +53,7 @@ def test_brand_a_learned_profile_never_consumes_brand_b_examples_or_replies():
     both_brands_data = {
         "brands": [{"id": "brand-A", "reply_style_use_uploaded_only": False, "reply_style_profile": None}],
         "tickets": [
-            {"human_approved": True, "ai_reply": "BRAND A REAL REPLY", "brand_id": "brand-A", "updated_at": "2026-01-01"},
+            {"human_approved": True, "ai_reply": "BRAND A REAL REPLY", "store_id": "brand-A", "updated_at": "2026-01-01"},
         ],
         "reply_style_examples": [
             {"id": "ex-a", "content": "BRAND A EXAMPLE"},
@@ -65,7 +70,7 @@ def test_brand_a_learned_profile_never_consumes_brand_b_examples_or_replies():
         if table == "brands":
             return both_brands_data["brands"] if params.get("id") == "eq.brand-A" else []
         if table == "tickets":
-            return both_brands_data["tickets"] if params.get("brand_id") == "eq.brand-A" else []
+            return both_brands_data["tickets"] if params.get("store_id") == "eq.brand-A" else []
         if table == "reply_style_examples":
             return both_brands_data["reply_style_examples"] if params.get("brand_id") == "eq.brand-A" else []
         return []
@@ -98,7 +103,9 @@ def test_brand_a_learned_profile_never_consumes_brand_b_examples_or_replies():
     assert "BRAND A EXAMPLE" in prompt_text
 
 
-def test_approved_reply_texts_query_is_scoped_by_brand_id():
+def test_approved_reply_texts_query_is_scoped_by_store_id():
+    """tickets' real brand FK - see module docstring for why this isn't
+    brand_id."""
     captured = {}
 
     def fake_select(table, params=None):
@@ -108,7 +115,7 @@ def test_approved_reply_texts_query_is_scoped_by_brand_id():
     with patch("src.services.reply_style_service.supabase_select", side_effect=fake_select):
         svc._approved_reply_texts("brand-A")
 
-    assert captured["params"]["brand_id"] == "eq.brand-A"
+    assert captured["params"]["store_id"] == "eq.brand-A"
 
 
 def test_uploaded_example_texts_query_is_scoped_by_brand_id():

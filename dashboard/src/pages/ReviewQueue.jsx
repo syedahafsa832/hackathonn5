@@ -60,47 +60,63 @@ function ReviewItem({ item, onOpen }) {
     });
   };
 
+  const labelStyle = { fontSize: '10.5px', fontWeight: '700', color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '5px' };
+  const bubbleStyle = { fontSize: '13px', color: '#334155', lineHeight: 1.55, borderRadius: '8px', padding: '10px 12px', wordBreak: 'break-word', overflowWrap: 'anywhere' };
+
   return (
-    <div style={{ border: '1px solid #E4E4E7', borderRadius: '8px', background: 'white', padding: '16px 18px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px', marginBottom: '10px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-          <span style={{ fontSize: '10.5px', fontWeight: '600', color: badge.color, background: badge.bg, border: `1px solid ${badge.border}`, borderRadius: '999px', padding: '2px 8px' }}>
+    <div style={{ border: '1px solid #E4E4E7', borderRadius: '10px', background: 'white', padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+      {/* Header: status + meta on their own row, kept clear of the action-chip row below so it never wraps into a jumble */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '9px', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '11px', fontWeight: '700', color: badge.color, background: badge.bg, border: `1px solid ${badge.border}`, borderRadius: '999px', padding: '3px 10px' }}>
             {badge.label}
           </span>
-          <span style={{ fontSize: '11px', color: '#94A3B8', textTransform: 'capitalize' }}>{item.channel}</span>
-          <span style={{ fontSize: '11px', color: '#94A3B8' }}>{formatDate(item.created_at)}</span>
-          {item.order_id && <span style={{ fontSize: '11px', color: '#94A3B8' }}>Order #{item.order_id}</span>}
-          {item.actions?.map((a, i) => (
-            <span key={i} style={{ fontSize: '10px', fontWeight: '600', color: '#475569', background: '#F1F5F9', border: '1px solid #E4E4E7', borderRadius: '999px', padding: '1px 7px' }}>
-              {a.action_type} · {a.status}
-            </span>
-          ))}
+          <span style={{ fontSize: '12px', color: '#64748B' }}>
+            <span style={{ textTransform: 'capitalize' }}>{item.channel}</span>
+            {' · '}{formatDate(item.created_at)}
+            {item.order_id && <> · Order #{item.order_id}</>}
+          </span>
         </div>
         <button
           onClick={() => navigate(`/tickets/${item.ticket_id}`)}
-          style={{ fontSize: '11.5px', fontWeight: '600', color: '#0E7490', background: 'none', border: 'none', padding: 0, cursor: 'pointer', flexShrink: 0 }}
+          style={{ fontSize: '12px', fontWeight: '600', color: '#0E7490', background: 'none', border: 'none', padding: 0, cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap' }}
         >
           Open conversation →
         </button>
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
-        <div style={{ fontSize: '12.5px', color: '#334155', lineHeight: 1.5 }}>
-          <span style={{ color: '#94A3B8', fontWeight: '600' }}>Customer: </span>{excerpt(item.customer_message)}
+      {item.actions?.length > 0 && (
+        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+          {item.actions.map((a, i) => (
+            <span key={i} style={{ fontSize: '10.5px', fontWeight: '600', color: '#475569', background: '#F1F5F9', border: '1px solid #E4E4E7', borderRadius: '999px', padding: '2px 9px' }}>
+              {a.action_type} · {a.status}
+            </span>
+          ))}
         </div>
-        <div style={{ fontSize: '12.5px', color: '#334155', lineHeight: 1.5, background: '#F8FAFC', borderRadius: '6px', padding: '8px 10px' }}>
-          <span style={{ color: '#94A3B8', fontWeight: '600' }}>Luna: </span>{excerpt(item.luna_reply)}
+      )}
+
+      {/* Customer / Luna content, clearly labeled and boxed instead of run-on inline text - long emails/URLs in the customer message now wrap inside the box instead of overflowing the card */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        <div>
+          <div style={labelStyle}>Customer</div>
+          <div style={{ ...bubbleStyle, background: '#F8FAFC', border: '1px solid #F1F5F9' }}>{excerpt(item.customer_message)}</div>
+        </div>
+        <div>
+          <div style={{ ...labelStyle, color: '#0E7490' }}>Luna's reply</div>
+          <div style={{ ...bubbleStyle, background: '#ECFEFF', border: '1px solid #A5F3FC' }}>{excerpt(item.luna_reply)}</div>
         </div>
       </div>
 
       {item.review_status === 'rejected' && item.human_outcome?.rejection_reason && (
-        <div style={{ fontSize: '11.5px', color: '#B91C1C', marginBottom: '10px' }}>
+        <div style={{ fontSize: '12px', fontWeight: '600', color: '#B91C1C', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: '6px', padding: '8px 10px' }}>
           Rejected: {item.human_outcome.rejection_reason}
         </div>
       )}
 
-      {error && <div style={{ fontSize: '11.5px', color: '#B91C1C', marginBottom: '8px' }}>{error}</div>}
+      {error && <div style={{ fontSize: '12px', fontWeight: '600', color: '#B91C1C', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: '6px', padding: '8px 10px' }}>{error}</div>}
 
+      {/* Actions footer, visually separated from the content above so buttons never feel glued to the reply text */}
+      <div style={{ borderTop: '1px solid #F1F5F9', paddingTop: '14px' }}>
       {editing ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           <textarea
@@ -158,26 +174,27 @@ function ReviewItem({ item, onOpen }) {
           <button
             disabled={busy}
             onClick={() => decide('approve')}
-            style={{ padding: '7px 14px', borderRadius: '6px', border: '1px solid #059669', background: 'white', color: '#059669', fontSize: '12.5px', fontWeight: '600', cursor: 'pointer' }}
+            style={{ padding: '8px 16px', borderRadius: '6px', border: '1px solid #059669', background: 'white', color: '#059669', fontSize: '13px', fontWeight: '600', cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.6 : 1 }}
           >
             Approve
           </button>
           <button
             disabled={busy}
             onClick={() => { setDraftText(item.luna_reply || ''); setEditing(true); }}
-            style={{ padding: '7px 14px', borderRadius: '6px', border: '1px solid #06B6D4', background: 'white', color: '#0E7490', fontSize: '12.5px', fontWeight: '600', cursor: 'pointer' }}
+            style={{ padding: '8px 16px', borderRadius: '6px', border: '1px solid #06B6D4', background: 'white', color: '#0E7490', fontSize: '13px', fontWeight: '600', cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.6 : 1 }}
           >
             Edit & Approve
           </button>
           <button
             disabled={busy}
             onClick={() => { setReason(''); setRejecting(true); }}
-            style={{ padding: '7px 14px', borderRadius: '6px', border: '1px solid #E4E4E7', background: 'white', color: '#B91C1C', fontSize: '12.5px', fontWeight: '600', cursor: 'pointer' }}
+            style={{ padding: '8px 16px', borderRadius: '6px', border: '1px solid #E4E4E7', background: 'white', color: '#B91C1C', fontSize: '13px', fontWeight: '600', cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.6 : 1 }}
           >
             Reject
           </button>
         </div>
       )}
+      </div>
     </div>
   );
 }
@@ -188,7 +205,7 @@ export default function ReviewQueue() {
   const items = data?.items || [];
 
   return (
-    <div style={{ padding: '28px 32px', display: 'flex', flexDirection: 'column', gap: '18px', maxWidth: '860px' }}>
+    <div style={{ padding: '28px 32px', display: 'flex', flexDirection: 'column', gap: '20px', maxWidth: '920px' }}>
       <div>
         <h1 style={{ margin: '0 0 4px', fontSize: '20px', fontWeight: '700', color: '#0F172A' }}>Review Luna's Work</h1>
         <p style={{ margin: 0, fontSize: '13px', color: '#94A3B8' }}>
@@ -196,13 +213,13 @@ export default function ReviewQueue() {
         </p>
       </div>
 
-      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
         {TABS.map(t => (
           <button
             key={t.key}
             onClick={() => setTab(t.key)}
             style={{
-              padding: '6px 14px', borderRadius: '999px', fontSize: '12.5px', fontWeight: '600', cursor: 'pointer',
+              padding: '7px 16px', borderRadius: '999px', fontSize: '13px', fontWeight: '600', cursor: 'pointer',
               border: tab === t.key ? '1px solid #06B6D4' : '1px solid #E4E4E7',
               background: tab === t.key ? '#ECFEFF' : 'white',
               color: tab === t.key ? '#0E7490' : '#475569',
@@ -222,7 +239,7 @@ export default function ReviewQueue() {
           Nothing here yet.
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
           {items.map(item => <ReviewItem key={item.ticket_id} item={item} />)}
         </div>
       )}
