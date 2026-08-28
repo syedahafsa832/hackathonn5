@@ -33,6 +33,7 @@ from src.services.intent_detector import IntentResult  # noqa: E402
 from src.agent.customer_success_agent import customer_success_agent  # noqa: E402
 from src.services import brand_knowledge_service as kb_module  # noqa: E402
 from src.services.tools import v3_tools  # noqa: E402
+from src.services.intent_detector import IntentDetector  # noqa: E402
 
 
 def run(coro):
@@ -139,6 +140,21 @@ def test_unexpected_rag_exception_does_not_crash_the_agent_reply():
 
     assert result.get("reply_body")
     assert result.get("provider_outage") is not True
+
+
+# ── IntentDetector's own client must not double up on SDK-internal retries ─
+
+def test_intent_detector_client_does_not_use_sdk_internal_retries(monkeypatch):
+    """The exact live symptom this task re-traced: "Retrying request to
+    /chat/completions" pushing a request past the frontend's 35s timeout,
+    now sourced to intent_detector.py's own single-key client (no rotation
+    of its own, unlike ai_provider_manager) - same fix already proven for
+    the chat/embedding clients."""
+    monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+    detector = IntentDetector()
+    client = detector._get_client()
+    assert client is not None
+    assert client.max_retries == 0
 
 
 # ── Prompt-level safety: empty KB block must not license a negative claim ──

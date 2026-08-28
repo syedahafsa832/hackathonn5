@@ -220,7 +220,18 @@ class IntentDetector:
             self._client = OpenAI(
                 api_key=api_key,
                 base_url=os.getenv("MISTRAL_API_BASE_URL", "https://api.mistral.ai/v1"),
-                max_retries=1,
+                # max_retries=0: same rationale as ai_provider_manager.py's
+                # chat/embedding clients - this detector has no key rotation
+                # of its own (single MISTRAL_API_KEY/OPENAI_API_KEY), so an
+                # SDK-internal retry on a rate-limited/slow key just doubles
+                # this call's wait (up to 2x8s) for the same key, on every
+                # single customer query (detect() runs unconditionally in
+                # process_customer_query) - directly observed live as
+                # "Retrying request to /chat/completions" pushing a request
+                # past the frontend's 35s timeout even after the chat/
+                # embedding clients were already fixed to max_retries=0.
+                # _keyword_fallback() below already covers the failure path.
+                max_retries=0,
                 timeout=8.0,
             )
         return self._client
