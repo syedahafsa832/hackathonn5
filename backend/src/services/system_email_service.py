@@ -24,6 +24,7 @@ exposed to the frontend, and never included in any exception message
 that gets logged.
 """
 import os
+import html
 import logging
 import requests
 
@@ -138,6 +139,21 @@ def send_password_reset_email(to_email: str, reset_url: str) -> bool:
         "you can safely ignore this email — your password won't be changed."
     )
     return _send(to_email, subject, html, text)
+
+
+def send_admin_notification(to_email: str, subject: str, text_body: str) -> bool:
+    """Plain internal admin notification (critical-error alerts, manual
+    upgrade-request pings) - no branded shell/CTA button like the tenant-
+    facing templates above, just the given text rendered simply. Reuses the
+    same Resend-backed _send() every other system email goes through, so
+    there is only ever one delivery path."""
+    html_body = (
+        "<div style=\"font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,monospace,sans-serif;"
+        "font-size:13px;color:#0F172A;white-space:pre-wrap;line-height:1.5;\">"
+        f"{html.escape(text_body)}"
+        "</div>"
+    )
+    return _send(to_email, subject, html_body, text_body)
 
 
 def send_generic_auth_email(to_email: str, subject: str, action_label: str, action_url: str) -> bool:

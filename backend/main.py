@@ -92,6 +92,13 @@ async def widget_js():
 from src.api.middleware.cors import add_cors_middleware
 add_cors_middleware(app)
 
+# Central request wrapper: also the one place that sees every unhandled
+# exception / 5xx response, so it's where the critical-error admin alert
+# (src/services/admin_alert_service.py) is wired in. Was defined but never
+# registered before this change.
+from src.api.middleware.logging import setup_logging_middleware
+setup_logging_middleware(app)
+
 # 4. Safe Imports — wrapped so a failing import doesn't kill the health check
 message_processor = None
 EmailPoller = None

@@ -14,8 +14,9 @@ from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
 
 from src.api.middleware.tenant_auth import get_current_tenant, TenantContext
-from src.lib.supabase_client import supabase_insert
+from src.lib.supabase_client import supabase_insert, supabase_select
 from src.services.plan_service import PLAN_LIMITS, FOUNDING_PAID_CAP, get_founding_slots_remaining
+from src.services.admin_alert_service import notify_upgrade_request
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Upgrade Requests"])
@@ -70,7 +71,33 @@ async def submit_upgrade_request(
             "transaction_reference": body.transaction_reference,
             "status": "pending",
         })
-        return {"success": True, "request": result}
     except Exception as e:
         logger.error(f"[UpgradeRequests] submit failed for tenant {tenant.tenant_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to submit upgrade request")
+
+    # Admin notification is best-effort only - a failure here must never
+    # turn this already-successful request into a failed one (see
+    # admin_alert_service.notify_upgrade_request, which never raises).
+    current_plan = None
+    account_status = None
+    try:
+        tenant_rows = supabase_select("tenants", {"id": f"eq.{tenant.tenant_id}"})
+        if tenant_rows:
+            current_plan = tenant_rows[0].get("plan")
+            account_status = "active" if tenant_rows[0].get("is_active") else "inactive"
+    except Exception as e:
+        logger.warning(f"[UpgradeRequests] could not resolve current plan for notification: {e}")
+
+    notify_upgrade_request(
+        name=body.name,
+        email=body.email,
+        tenant_id=tenant.tenant_id,
+        requested_plan=body.plan,
+        brand=body.brand,
+        current_plan=current_plan,
+        request_id=(result or {}).get("id"),
+        transaction_reference=body.transaction_reference,
+        account_status=account_status,
+    )
+
+    return {"success": True, "request": result}
