@@ -33,6 +33,20 @@ export default function QuarantineQueue() {
   const [error, setError] = useState(null);
   const [acting, setActing] = useState({});
   const [actionError, setActionError] = useState('');
+  // Set only after the real API call has already succeeded - never before,
+  // never speculative. The item stays on screen showing this confirmation
+  // for a moment purely so the merchant can read it before it leaves the
+  // list; that display window is not a fake loading state (the operation
+  // is already done by the time this is set).
+  const [succeeded, setSucceeded] = useState({}); // { [id]: 'promoted' | 'discarded' }
+  const SUCCESS_DISPLAY_MS = 1400;
+
+  const removeAfterSuccess = (id) => {
+    setTimeout(() => {
+      setItems((prev) => prev.filter((it) => it.id !== id));
+      setSucceeded((s) => { const n = { ...s }; delete n[id]; return n; });
+    }, SUCCESS_DISPLAY_MS);
+  };
 
   useEffect(() => {
     document.title = "Quarantine: tResolv";
@@ -67,8 +81,9 @@ export default function QuarantineQueue() {
     setActionError('');
     try {
       await client.post(`/api/v1/quarantine/${id}/promote`);
-      setItems((prev) => prev.filter((it) => it.id !== id));
+      setSucceeded((s) => ({ ...s, [id]: 'promoted' }));
       setPending((p) => Math.max(0, p - 1));
+      removeAfterSuccess(id);
     } catch (e) {
       setActionError(e.response?.data?.detail || 'Failed to promote email');
     } finally {
@@ -82,8 +97,9 @@ export default function QuarantineQueue() {
     setActionError('');
     try {
       await client.post(`/api/v1/quarantine/${id}/discard`);
-      setItems((prev) => prev.filter((it) => it.id !== id));
+      setSucceeded((s) => ({ ...s, [id]: 'discarded' }));
       setPending((p) => Math.max(0, p - 1));
+      removeAfterSuccess(id);
     } catch (e) {
       setActionError(e.response?.data?.detail || 'Failed to discard email');
     } finally {
@@ -138,6 +154,7 @@ export default function QuarantineQueue() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           {items.map((item) => {
             const busy = acting[item.id];
+            const done = succeeded[item.id]; // set only after the API call already succeeded
             return (
               <div
                 key={item.id}
@@ -189,42 +206,52 @@ export default function QuarantineQueue() {
                   </div>
                 )}
 
-                <div style={{ display: 'flex', gap: '8px', marginTop: '2px' }}>
-                  <button
-                    disabled={!!busy}
-                    onClick={() => promote(item.id)}
-                    style={{
-                      padding: '7px 16px',
-                      borderRadius: '4px',
-                      border: '1px solid transparent',
-                      background: '#06B6D4',
-                      color: 'white',
-                      fontSize: '13px',
-                      fontWeight: '600',
-                      cursor: busy ? 'not-allowed' : 'pointer',
-                      opacity: busy ? 0.6 : 1,
-                    }}
-                  >
-                    {busy === 'promoting' ? 'Promoting…' : '✓ Promote to Ticket'}
-                  </button>
-                  <button
-                    disabled={!!busy}
-                    onClick={() => discard(item.id)}
-                    style={{
-                      padding: '7px 16px',
-                      borderRadius: '4px',
-                      background: 'white',
-                      color: '#EF4444',
-                      border: '1px solid #FECACA',
-                      fontSize: '13px',
-                      fontWeight: '600',
-                      cursor: busy ? 'not-allowed' : 'pointer',
-                      opacity: busy ? 0.6 : 1,
-                    }}
-                  >
-                    {busy === 'discarding' ? 'Discarding…' : '✕ Discard'}
-                  </button>
-                </div>
+                {done ? (
+                  <div style={{
+                    fontSize: '13px', fontWeight: '600', color: '#059669',
+                    background: '#ECFDF5', border: '1px solid #A7F3D0',
+                    borderRadius: '6px', padding: '8px 12px', marginTop: '2px',
+                  }}>
+                    {done === 'promoted' ? '✓ Promoted to Conversations' : '✓ Discarded'}
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', gap: '8px', marginTop: '2px' }}>
+                    <button
+                      disabled={!!busy}
+                      onClick={() => promote(item.id)}
+                      style={{
+                        padding: '7px 16px',
+                        borderRadius: '4px',
+                        border: '1px solid transparent',
+                        background: '#06B6D4',
+                        color: 'white',
+                        fontSize: '13px',
+                        fontWeight: '600',
+                        cursor: busy ? 'not-allowed' : 'pointer',
+                        opacity: busy ? 0.6 : 1,
+                      }}
+                    >
+                      {busy === 'promoting' ? 'Promoting…' : '✓ Promote to Ticket'}
+                    </button>
+                    <button
+                      disabled={!!busy}
+                      onClick={() => discard(item.id)}
+                      style={{
+                        padding: '7px 16px',
+                        borderRadius: '4px',
+                        background: 'white',
+                        color: '#EF4444',
+                        border: '1px solid #FECACA',
+                        fontSize: '13px',
+                        fontWeight: '600',
+                        cursor: busy ? 'not-allowed' : 'pointer',
+                        opacity: busy ? 0.6 : 1,
+                      }}
+                    >
+                      {busy === 'discarding' ? 'Discarding…' : '✕ Discard'}
+                    </button>
+                  </div>
+                )}
               </div>
             );
           })}
