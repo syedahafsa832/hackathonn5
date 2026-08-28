@@ -776,6 +776,30 @@ class CustomerSuccessAgent:
                     except Exception as _pve:
                         logger.warning(f"[Agent] Pending identity-verification lookup failed (non-blocking): {_pve}")
 
+            # Generic catalog question ("what products do you sell?", "what
+            # do you have available?") - checked before every specific-
+            # product gate below since there's no product name to extract;
+            # a question naming an actual product won't match this narrow
+            # phrasing. Reuses live Shopify data (v3_tools.list_catalog ->
+            # ShopifyClient.list_active_products, the same call
+            # find_products_by_title already uses) instead of routing a
+            # purely structured question through RAG/embeddings, which
+            # can't answer it reliably and doesn't need to.
+            _catalog_kw = [
+                "what products do you sell", "what do you sell", "what products are available",
+                "what products do you have", "what do you have available", "what do you carry",
+                "what items do you sell", "what's in your store", "what is in your store",
+                "show me your products", "list your products", "what products do you offer",
+            ]
+            if any(kw in query_lower for kw in _catalog_kw):
+                await _emit("product_lookup", "Checking the catalog…")
+                tool_results["catalog"] = await v3_tools.list_catalog(
+                    shop_domain=_brand_shopify_domain,
+                    access_token=_brand_shopify_token,
+                )
+                if tool_results["catalog"].get("success"):
+                    await _emit("product_found", "Shopify catalog found")
+
             # Recommendation intent is checked first so a message like "Do you
             # have anything like the Galactic Space Boots?" is recognized as
             # a recommendation question, not ALSO fired through the plain
@@ -1165,6 +1189,21 @@ class CustomerSuccessAgent:
                             tool_context += f"Customer's orders: {', '.join(order_list)}\n"
                     elif orders.get("error"):
                         tool_context += "ORDER LOOKUP BY EMAIL FAILED: Do not invent or guess order details. Ask the customer for their order number, or let them know a team member will follow up.\n"
+
+                if "catalog" in tool_results:
+                    cat = tool_results["catalog"]
+                    if cat.get("success"):
+                        titles = cat.get("titles") or []
+                        shown = ", ".join(titles[:20])
+                        more_note = f" (+{len(titles) - 20} more)" if len(titles) > 20 else ""
+                        tool_context += (
+                            f"LIVE SHOPIFY CATALOG ({cat.get('count')} active products): {shown}{more_note}\n"
+                            "This is the real, current product list from Shopify. Answer directly from it - "
+                            "do NOT say you don't have access to the product list. Do NOT invent, omit, or "
+                            "describe any product not listed here.\n"
+                        )
+                    else:
+                        tool_context += f"CATALOG LOOKUP: {cat.get('message', 'Could not load the product catalog')}. Do NOT invent a product list — use this message as-is or offer to have a team member help.\n"
 
                 if "inventory" in tool_results:
                     inv = tool_results["inventory"]

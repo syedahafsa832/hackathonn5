@@ -395,6 +395,26 @@ class V3Tools:
             logger.error(f"Tool error [get_inventory_status]: {e}")
             return {"success": False, "message": "I couldn't verify live inventory right now — let me get a team member to confirm."}
 
+    async def list_catalog(self, shop_domain: str = None, access_token: str = None, limit: int = 25) -> Dict[str, Any]:
+        """Deterministic answer for "what products do you sell?"-style
+        questions: real Shopify product titles, no RAG/embedding involved.
+        Reuses ShopifyClient.list_active_products() (already used by
+        find_products_by_title/get_product_recommendations) — no new
+        Shopify call, no product data duplicated anywhere."""
+        if not shop_domain or not access_token:
+            return {"success": False, "message": "I can't reach the store's product catalog right now — let me get a team member to confirm."}
+        try:
+            from src.services.shopify_service import ShopifyClient
+            client = ShopifyClient(shop_domain, access_token)
+            products = await client.list_active_products(limit=limit)
+            if not products:
+                return {"success": False, "message": "I couldn't find any active products in the store right now — let me get a team member to confirm."}
+            titles = [p.get("title") for p in products if p.get("title")]
+            return {"success": True, "titles": titles, "count": len(titles)}
+        except Exception as e:
+            logger.error(f"Tool error [list_catalog]: {e}")
+            return {"success": False, "message": "I couldn't reach the store's product catalog right now — let me get a team member to confirm."}
+
     async def get_product_recommendations(
         self,
         anchor_product_name: str,
