@@ -383,6 +383,55 @@ class BrandKnowledgeService:
             logger.error(f"[KB] Delete error: {e}")
             return {"success": False, "error": str(e)}
 
+    @staticmethod
+    def _format_context(results: List[Dict[str, Any]]) -> str:
+        context_parts = []
+        for res in results:
+            source = res.get("source_name", "Knowledge Base")
+            content = res.get("content", "")
+            similarity = res.get("similarity", 0)
+            logger.debug(f"[KB] Match: {source} (similarity: {similarity:.2f})")
+            context_parts.append(f"[{source}]:\n{content}")
+        return "\n\n---\n\n".join(context_parts)
+
+    async def _fts_search(self, brand_id: str, query: str, top_k: int) -> Optional[List[Dict[str, Any]]]:
+        """Postgres full-text search over rag_chunks.content (match_brand_rag_chunks_fts,
+        migrations/057) - the fallback retrieval path used only when semantic
+        (embedding) search is unavailable: embedding generation failed, or the
+        vector RPC itself errored. This is NOT a second knowledge base - same
+        rag_chunks rows, same brand scoping, same _is_low_value_policy_chunk
+        filtering as the vector path, just a different way of finding relevant
+        rows when an embedding can't be generated.
+
+        Returns None (not []) on an actual failure, so the caller can tell
+        "search ran and matched nothing" apart from "the search itself
+        couldn't run" - same distinction already made for the vector path.
+        """
+        try:
+            raw_results = supabase_rpc("match_brand_rag_chunks_fts", {
+                "p_brand_id": brand_id,
+                "query_text": query,
+                "match_count": max(top_k * 10, 100),
+            })
+        except Exception as e:
+            logger.error(f"[KB] match_brand_rag_chunks_fts RPC failed for brand {brand_id}: {e}")
+            return None
+        if raw_results is None:
+            return None
+        return [r for r in raw_results if not _is_low_value_policy_chunk(r)][:top_k]
+
+    async def _fts_fallback(self, brand_id: str, query: str, top_k: int):
+        """Formats _fts_search()'s result into the same (context, status)
+        shape get_brand_context_with_status returns for the vector path."""
+        results = await self._fts_search(brand_id, query, top_k)
+        if results is None:
+            return "", "unavailable"
+        if not results:
+            logger.info(f"[KB] Full-text fallback found no matching context for brand {brand_id}")
+            return "", "no_match"
+        logger.info(f"[KB] Full-text fallback matched {len(results)} chunk(s) for brand {brand_id}")
+        return self._format_context(results), "ok"
+
     async def get_brand_context_with_status(
         self,
         brand_id: str,
@@ -398,10 +447,20 @@ class BrandKnowledgeService:
         customer the store has no return policy when retrieval simply
         failed.
 
+        Semantic (vector/embedding) search is the primary path - it ranks by
+        actual meaning, not just shared keywords. Whenever the embedding
+        provider is unavailable (rate-limited, timed out, exhausted quota) or
+        the vector RPC itself errors, this transparently falls back to
+        Postgres full-text search (_fts_fallback) over the same rag_chunks
+        table, so ordinary merchant KB/policy questions keep working without
+        ever depending on the embedding provider. A vector search that runs
+        successfully and finds nothing is a genuine no-match and does NOT
+        fall back - embeddings worked, they just found no relevant content.
+
         Returns (context: str, status: str) where status is one of:
-          "ok"          - relevant chunks found, context is non-empty
+          "ok"          - relevant chunks found (semantic or full-text), context is non-empty
           "no_match"    - retrieval ran fine, nothing relevant was found
-          "unavailable" - the embedding call or the RPC itself failed
+          "unavailable" - neither the embedding+vector path nor the full-text fallback could run
         """
         try:
             # Generate query embedding. create_embedding() already returns
@@ -409,8 +468,8 @@ class BrandKnowledgeService:
             # one fails, so there's no separate pre-check needed here.
             embedding = await self._get_embedding(query)
             if not embedding:
-                logger.warning(f"[KB] Embedding unavailable for brand {brand_id} - retrieval unavailable, not no-match")
-                return "", "unavailable"
+                logger.warning(f"[KB] Embedding unavailable for brand {brand_id} - falling back to Postgres full-text search")
+                return await self._fts_fallback(brand_id, query, top_k)
 
             # Search brand's knowledge base using RPC function. Over-fetch a
             # wider candidate pool than top_k, then drop low-value policy
@@ -426,8 +485,8 @@ class BrandKnowledgeService:
                     "match_count": max(top_k * 10, 100)
                 })
             except Exception as e:
-                logger.error(f"[KB] match_brand_rag_chunks RPC failed for brand {brand_id}: {e}")
-                return "", "unavailable"
+                logger.error(f"[KB] match_brand_rag_chunks RPC failed for brand {brand_id}: {e} - falling back to Postgres full-text search")
+                return await self._fts_fallback(brand_id, query, top_k)
 
             results = [r for r in (raw_results or []) if not _is_low_value_policy_chunk(r)][:top_k]
 
@@ -435,16 +494,7 @@ class BrandKnowledgeService:
                 logger.info(f"[KB] No matching context for brand {brand_id}")
                 return "", "no_match"
 
-            # Format context
-            context_parts = []
-            for res in results:
-                source = res.get("source_name", "Knowledge Base")
-                content = res.get("content", "")
-                similarity = res.get("similarity", 0)
-                logger.debug(f"[KB] Match: {source} (similarity: {similarity:.2f})")
-                context_parts.append(f"[{source}]:\n{content}")
-
-            return "\n\n---\n\n".join(context_parts), "ok"
+            return self._format_context(results), "ok"
 
         except Exception as e:
             logger.error(f"[KB] Context retrieval error: {e}")
