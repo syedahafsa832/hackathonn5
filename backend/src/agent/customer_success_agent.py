@@ -82,6 +82,89 @@ def _reply_already_has_greeting(reply: str) -> bool:
     return bool(_GREETING_OPENER_RE.match(reply or ""))
 
 
+# A candidate store name the customer typed, e.g. "hasha clothing store
+# order #1002" -> "hasha clothing". Deliberately generic (no hardcoded
+# brand name) - matches "<Name> store" / "<Name> shop" / "<Name> clothing
+# store" phrasing regardless of what name is used. Captures a wide window
+# (up to 6 preceding words) because ordinary phrasing before "store" can be
+# long ("is the QA Test Tee available in your store") - _detect_store_name_
+# mismatch below trims that down to just the trailing name-like words.
+_STORE_NAME_MENTION_RE = re.compile(
+    r"\b([a-z0-9&'\-]+(?:\s+[a-z0-9&'\-]+){0,5})\s+(?:clothing\s+store|store|shop)\b",
+    re.IGNORECASE,
+)
+_STORE_NAME_STOPWORDS = {"the", "clothing", "store", "shop", "inc", "llc", "co"}
+# Ordinary English function words (articles, pronouns, prepositions,
+# auxiliary/modal verbs, common fillers) - a closed, standard linguistic
+# class, not a business-specific keyword list. A candidate store name must
+# not be built ENTIRELY from these, and any leading run of them (e.g. "do
+# you have this in your ...", "is the QA Test Tee available in your ...")
+# is trimmed off before deciding whether what's left looks like a real name -
+# this is what keeps "in your store"/"available in your store" from being
+# misread as the customer naming a store called "your", while still
+# extracting "hasha" cleanly out of "tell me about hasha clothing store".
+_ENGLISH_FUNCTION_WORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "am", "be", "been", "being",
+    "do", "does", "did", "have", "has", "had", "can", "could", "will", "would",
+    "shall", "should", "may", "might", "must",
+    "i", "you", "your", "yours", "we", "our", "ours", "he", "she", "it", "its",
+    "they", "them", "their", "this", "that", "these", "those",
+    "in", "on", "at", "for", "to", "of", "with", "from", "by", "about",
+    "and", "or", "but", "not", "no", "yes", "please", "me", "my", "us",
+    "available", "here", "there", "any", "some", "tell", "what", "how",
+}
+
+
+def _normalize_store_name(name: str) -> str:
+    name = re.sub(r"[^a-z0-9 ]", " ", (name or "").lower())
+    words = [w for w in name.split() if w not in _STORE_NAME_STOPWORDS]
+    return " ".join(words)
+
+
+def _detect_store_name_mismatch(query: str, real_brand_name: Optional[str]) -> Optional[str]:
+    """Deterministic, no LLM call. Returns the store name the customer
+    used (verbatim from their message) if it names a store that isn't this
+    connected brand, or None if no store name was mentioned or it matches.
+
+    This ONLY changes wording (a brief correction the model is asked to
+    open with) - it never influences which brand/tenant/Shopify credentials
+    are used elsewhere in this function. A wrong guess here (false
+    positive or negative) only affects whether a one-line correction gets
+    added to the prompt, never any security-relevant behavior."""
+    if not real_brand_name:
+        return None
+    m = _STORE_NAME_MENTION_RE.search(query)
+    if not m:
+        return None
+    words = m.group(1).strip().split()
+    # "your store"/"our store"/"this store"/"the store" are how customers
+    # overwhelmingly refer to THIS store generically, never a way of naming
+    # a different one - if a possessive/demonstrative/article sits directly
+    # against "store"/"shop", there's no real name mention here at all,
+    # regardless of whatever unrelated words (a product name, "in stock at")
+    # happen to appear earlier in the same sentence.
+    if words and words[-1].lower() in {"your", "our", "my", "its", "their", "this", "that", "the", "a", "an"}:
+        return None
+    # Trim a leading run of ordinary function words - the actual name (if
+    # any) is whatever's left immediately before "store"/"shop".
+    while words and words[0].lower() in _ENGLISH_FUNCTION_WORDS:
+        words.pop(0)
+    if not words or all(w.lower() in _ENGLISH_FUNCTION_WORDS for w in words):
+        return None
+    mentioned = " ".join(words)
+    norm_mentioned = _normalize_store_name(mentioned)
+    if not norm_mentioned:
+        return None
+    norm_real = _normalize_store_name(real_brand_name)
+    # Match if either name contains the other (handles "Syedahafsa1983" vs
+    # "Syedahafsa1983's Clothing Store", or the customer using a shortened
+    # form of the real name) - only a genuinely different name counts as a
+    # mismatch worth correcting.
+    if norm_mentioned in norm_real or norm_real in norm_mentioned:
+        return None
+    return mentioned
+
+
 # Kept as a plain (non-f) string, assigned to a local variable before use in
 # _construct_v3_prompt's f-string, never inlined directly into an f-string
 # {..} expression - Python's f-string grammar (pre-3.12) rejects ANY
@@ -682,6 +765,11 @@ class CustomerSuccessAgent:
                 except Exception as _se:
                     logger.warning(f"[Agent] Brand lookup failed (non-blocking): {_se}")
 
+            # Only meaningful once we actually resolved a real brand name -
+            # "our store" is just the unresolved-brand placeholder above, not
+            # a real name to compare the customer's phrasing against.
+            _store_name_mismatch = _detect_store_name_mismatch(query, _brand_name) if _brand_name != "our store" else None
+
             # Generic catalog question ("what products do you sell?", "what
             # do you have available?") - detected here, before RAG, so a
             # purely structured question never pays for (or depends on) an
@@ -707,33 +795,13 @@ class CustomerSuccessAgent:
                 if tool_results["catalog"].get("success"):
                     await _emit("product_found", "Shopify catalog found")
 
-            # 1. RAG Retrieval - brand_knowledge_service.get_brand_context() is scoped
-            # correctly by brand_id via match_brand_rag_chunks. rag_engine.get_relevant_context's
-            # tenant-scoped path calls match_tenant_rag_chunks, which references a
-            # tenant_id column migration 006 dropped from rag_chunks - that RPC always
-            # errors, is silently swallowed, and falls through to an UNSCOPED
-            # cross-tenant search every single time. Do not switch back to rag_engine
-            # here without first fixing that RPC/table mismatch.
-            # Skipped entirely for a detected catalog question above - Shopify
-            # is already the authoritative, structured answer for it, so an
-            # embedding call would only add latency/failure surface for no
-            # benefit (see AI_PROVIDER retry/timeout notes in
-            # ai_provider_manager.py - RAG's embedding call is bounded/fast,
-            # but every extra round trip narrows the frontend's 35s budget).
-            _needs_rag = bool(store_id) and not _is_catalog_query
-            if _needs_rag:
-                await _emit("kb_check", "Checking knowledge base…")
-            # Isolation: a 429/timeout/exception anywhere in retrieval must
-            # never take down the whole reply - get_brand_context() already
-            # swallows internally and returns "" on any failure, but this
-            # call site catches defensively too so a future change there
-            # can't reopen an unhandled-exception path through the agent.
-            try:
-                rag_context = await brand_knowledge_service.get_brand_context(store_id, query) if _needs_rag else ""
-            except Exception as _rag_err:
-                logger.error(f"[Agent] RAG retrieval raised unexpectedly (isolated, continuing without it): {_rag_err}")
-                rag_context = ""
-            logger.info(f"[Agent] RAG context retrieved: {len(rag_context)} chars")
+            # RAG retrieval is deferred until after every Shopify/order/
+            # inventory/action tool has had a chance to run (see "1. RAG
+            # Retrieval" further below, right before response generation) -
+            # none of those tools need rag_context, so running RAG first was
+            # only ever paying for (and depending on) an embedding call that
+            # a purely structured question never needed at all. tool_results
+            # populated below is what that later step uses to decide.
 
             # Order number / email extraction must only ever look at the
             # customer's own new top-level text, never a quoted earlier
@@ -903,7 +971,7 @@ class CustomerSuccessAgent:
             # much is the Winter Parka?" reach the live tool the same as
             # "hoodie" always did. A miss here just means no live lookup runs
             # (falls back to normal RAG/LLM handling) — never a guess.
-            if not _is_recommendation_query and not _is_discovery_query and not _is_variant_followup_query and any(kw in query_lower for kw in ["in stock", "available", "inventory", "do you have", "how much", "price", "cost", "tell me about", "describe"]):
+            if not _is_recommendation_query and not _is_discovery_query and not _is_variant_followup_query and any(kw in query_lower for kw in ["in stock", "available", "inventory", "do you have", "how much", "price", "cost", "tell me about", "describe", "sizes", "size does", "colors", "colours", "what sizes", "what colors", "what colours"]):
                 product = None
                 for pattern in (
                     # Trigger-word variants first — non-greedy up to the FIRST
@@ -926,6 +994,12 @@ class CustomerSuccessAgent:
                     # it might be stale) instead of a live lookup.
                     r"tell me (?:more )?about\s+(?:the |a |an )?(.+?)\s*\??$",
                     r"describe\s+(?:the |a |an )?(.+?)\s*\??$",
+                    # Variant questions ("what sizes does the QA Test Tee
+                    # come in?", "what colors does it come in?") - a named
+                    # product's own variant options, not a followup on one
+                    # already discussed (that's _variant_followup_kw above).
+                    r"what (?:sizes|colors|colours) (?:does|do)\s+(?:the |a |an )?(.+?)\s+come(?:s)? in\b",
+                    r"(?:sizes|colors|colours) (?:does|do)\s+(?:the |a |an )?(.+?)\s+come(?:s)? in\b",
                 ):
                     m = re.search(pattern, query_lower)
                     if m:
@@ -1117,6 +1191,24 @@ class CustomerSuccessAgent:
 
             # 4. Build tool context for the AI (explicit Shopify data — AI must use this verbatim)
             tool_context = ""
+            if _store_name_mismatch:
+                # Wording-only: the customer named the wrong store, which has
+                # zero bearing on order/identity security below - the actual
+                # Shopify lookup already ran (or will run) against THIS
+                # connected brand's credentials regardless of what name the
+                # customer used. This must never be conflated with identity
+                # verification (a completely separate concern, driven by
+                # order/email ownership, not by what the customer called the
+                # store).
+                tool_context += (
+                    f"BRAND NAME CORRECTION: The customer referred to this store as \"{_store_name_mismatch}\", "
+                    f"but this store is actually \"{_brand_name}\". Open your reply with one brief, friendly "
+                    f"correction (e.g. \"Sorry, we're {_brand_name}, not {_store_name_mismatch}.\"), then continue "
+                    "normally with the rest of your answer. This is a harmless mix-up, not a security concern - "
+                    "do NOT treat it as identity verification failing, do NOT ask the customer to re-confirm "
+                    "anything because of it, and do NOT mention it again on a later turn unless they name the "
+                    "wrong store again.\n"
+                )
             # Set when this reply asks the customer to confirm their order's
             # email - persisted onto the outbound message (see STAGE 10 in
             # message_processor.py) so the customer's next message can be
@@ -1369,6 +1461,40 @@ class CustomerSuccessAgent:
                 action_taken = action_result.get("staged")
             else:
                 logger.info(f"[ReturnActions] No action intent (source={_intent_result.source})")
+
+            # 1. RAG Retrieval - brand_knowledge_service.get_brand_context() is scoped
+            # correctly by brand_id via match_brand_rag_chunks. rag_engine.get_relevant_context's
+            # tenant-scoped path calls match_tenant_rag_chunks, which references a
+            # tenant_id column migration 006 dropped from rag_chunks - that RPC always
+            # errors, is silently swallowed, and falls through to an UNSCOPED
+            # cross-tenant search every single time. Do not switch back to rag_engine
+            # here without first fixing that RPC/table mismatch.
+            # Runs only when nothing else already answered this question:
+            # skipped for a detected catalog question (Shopify is already the
+            # authoritative structured answer), and skipped whenever any
+            # Shopify/order/inventory/recommendation tool above already
+            # produced a result (tool_results non-empty) - product, price,
+            # inventory, variant, order-status, and order-action questions
+            # never depend on an embedding call at all. Deterministic action
+            # decisions (cancel/refund/exchange eligibility) have their own,
+            # separate policy-evidence lookup in return_actions_integration.py
+            # via actions_manager.get_custom_policy_text() - completely
+            # independent of this rag_context, so skipping it here never
+            # weakens those decisions.
+            _needs_rag = bool(store_id) and not _is_catalog_query and not tool_results
+            if _needs_rag:
+                await _emit("kb_check", "Checking knowledge base…")
+            # Isolation: a 429/timeout/exception anywhere in retrieval must
+            # never take down the whole reply - get_brand_context() already
+            # swallows internally and returns "" on any failure, but this
+            # call site catches defensively too so a future change there
+            # can't reopen an unhandled-exception path through the agent.
+            try:
+                rag_context = await brand_knowledge_service.get_brand_context(store_id, query) if _needs_rag else ""
+            except Exception as _rag_err:
+                logger.error(f"[Agent] RAG retrieval raised unexpectedly (isolated, continuing without it): {_rag_err}")
+                rag_context = ""
+            logger.info(f"[Agent] RAG context retrieved: {len(rag_context)} chars")
 
             # 5. Response Generation
             # Only announce a policy check when no live Shopify tool ran and we
