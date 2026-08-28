@@ -143,6 +143,32 @@ async def promote_quarantine(
 
     now_iso = datetime.now(timezone.utc).isoformat()
 
+    # Idempotency guard: normal email polling already checks tickets for an
+    # existing gmail_message_id before ever calling process_message()
+    # (email_poller.py's "already_seen" check) - promotion never did, so a
+    # message that reached a ticket through BOTH the normal poller and
+    # Quarantine could be processed twice. Brand-scoped (store_id, matching
+    # what message_processor.py's STAGE 1.8 actually writes) - the same
+    # isolation every other lookup in this file already applies.
+    gmail_message_id = q.get("gmail_message_id")
+    if gmail_message_id:
+        existing_tickets = supabase_select("tickets", {
+            "gmail_message_id": f"eq.{gmail_message_id}",
+            "store_id": f"eq.{brand_id}",
+        })
+        if existing_tickets:
+            existing_ticket_id = existing_tickets[0]["id"]
+            supabase_update(
+                "email_quarantine",
+                {"id": f"eq.{quarantine_id}", "status": "eq.pending"},
+                {"status": "promoted", "actioned_by": tenant.email, "actioned_at": now_iso},
+            )
+            logger.info(
+                f"[Quarantine] {quarantine_id} already has ticket {existing_ticket_id} "
+                f"(gmail_message_id={gmail_message_id}) - marked promoted without reprocessing"
+            )
+            return {"success": True, "ticket_id": existing_ticket_id, "already_existed": True}
+
     # Atomically claim the record (conditioned on it still being "pending") before
     # doing any work. This closes the race where two concurrent promote calls
     # (double-click, retry) could both pass the check above and each create a
@@ -163,6 +189,12 @@ async def promote_quarantine(
         "content":          q.get("body_preview", ""),
         "gmail_thread_id":  q.get("thread_id"),
         "gmail_message_id": q.get("gmail_message_id"),
+        # Gmail's own internalDate isn't stored on quarantine rows, so the
+        # quarantine record's own created_at (when the email was first seen
+        # and quarantined) is the best available proxy for when the customer
+        # actually sent it - far more accurate than "now" for an email that
+        # may have sat in quarantine for a while before a human promoted it.
+        "received_at":      q.get("created_at"),
         "email_category":   "support",
         "sender_type":      "human",
         "auto_reply_enabled": True,

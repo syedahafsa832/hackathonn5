@@ -93,6 +93,13 @@ class UnifiedMessageProcessor:
             email_category = message.get('email_category', 'unknown')
             sender_type = message.get('sender_type', 'unknown')
             auto_reply_enabled = message.get('auto_reply_enabled', True)
+            # Preferred hierarchy: Gmail's own received timestamp (when the
+            # caller could read it - see brand_gmail_service.py), then any
+            # other trusted timestamp the caller already attached to this
+            # inbound message, then current time only as a last resort. Used
+            # for last_customer_message_at and this message's own
+            # messages[].received_at - never for anything AI-related.
+            received_at = message.get('received_at') or datetime.now(timezone.utc).isoformat()
 
             logger.info(f"[PROCESSOR] ========== NEW MESSAGE ==========")
             logger.info(f"[PROCESSOR] Channel: {channel}")
@@ -139,9 +146,15 @@ class UnifiedMessageProcessor:
                         current_msgs = existing_ticket.get("messages") or []
                         current_msgs.append({
                             "from": customer_email, "body": content,
-                            "received_at": datetime.now(timezone.utc).isoformat(), "direction": "inbound",
+                            "received_at": received_at, "direction": "inbound",
                         })
-                        updates = {"messages": current_msgs, "updated_at": datetime.now(timezone.utc).isoformat()}
+                        updates = {
+                            "messages": current_msgs,
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                            # Genuine inbound customer message - the only kind
+                            # of write allowed to move this field forward.
+                            "last_customer_message_at": received_at,
+                        }
                         if existing_ticket.get("status") in ("closed", "resolved"):
                             updates["status"] = "open"
                         supabase_update("tickets", {"id": f"eq.{early_ticket_id}"}, updates)
@@ -174,11 +187,15 @@ class UnifiedMessageProcessor:
                         "subject": subject,
                         "message": content,
                         "messages": [{"from": customer_email, "body": content,
-                                      "received_at": datetime.now(timezone.utc).isoformat(), "direction": "inbound"}],
+                                      "received_at": received_at, "direction": "inbound"}],
                         "channel": channel,
                         "status": "processing",
                         "gmail_thread_id": gmail_thread_id,
                         "gmail_message_id": gmail_message_id,
+                        # Genuine inbound customer message - the only kind of
+                        # write allowed to set/move this field. Never touched
+                        # by STAGE 9's AI-results update below.
+                        "last_customer_message_at": received_at,
                         "detected_order_id": detected_order_id,
                         "customer_sentiment": customer_sentiment,
                         "tags": ticket_tags,

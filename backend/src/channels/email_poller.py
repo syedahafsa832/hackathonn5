@@ -386,6 +386,10 @@ class EmailPoller:
                     "brand_name":         brand.get("name", ""),
                     "gmail_thread_id":    thread_id,
                     "gmail_message_id":   gmail_msg_id,
+                    # Gmail's own internalDate, if brand_gmail_service could read
+                    # it - the real "when did this arrive" timestamp, used for
+                    # ticket.last_customer_message_at instead of processing time.
+                    "received_at":        email.get("gmail_received_at"),
                     # Classification fields from filter service
                     "email_category":     filter_result.email_category,
                     "sender_type":        filter_result.sender_type,

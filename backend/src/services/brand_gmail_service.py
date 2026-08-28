@@ -327,6 +327,21 @@ class BrandGmailService:
                 if not body:
                     body = full.get("snippet", "")
 
+                # Gmail's own internalDate (ms since epoch, UTC) is already
+                # present in this same messages().get() response - no extra
+                # API call. Preserved so the ticket's last_customer_message_at
+                # can reflect when Gmail actually received the email, not just
+                # when this backend happened to poll and process it.
+                gmail_received_at = None
+                internal_date_ms = full.get("internalDate")
+                if internal_date_ms:
+                    try:
+                        gmail_received_at = datetime.fromtimestamp(
+                            int(internal_date_ms) / 1000, tz=timezone.utc
+                        ).isoformat()
+                    except (ValueError, TypeError):
+                        gmail_received_at = None
+
                 # Mark as read immediately
                 svc.users().messages().batchModify(
                     userId="me",
@@ -345,6 +360,7 @@ class BrandGmailService:
                     # Fields used by email_filter_service
                     "label_ids":    full.get("labelIds", []),
                     "headers":      {h["name"].lower(): h["value"] for h in headers},
+                    "gmail_received_at": gmail_received_at,
                 })
             except Exception as e:
                 logger.exception(f"[BrandGmail] Error reading message {msg['id']}")

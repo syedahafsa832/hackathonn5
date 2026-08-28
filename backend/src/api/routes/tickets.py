@@ -168,8 +168,10 @@ async def list_tickets(
                 for bid in brand_ids:
                     t = await supabase_service.get_tickets(store_id=bid, status=status)
                     all_tickets.extend(t)
-                # Sort by activity so active threads float to the top
-                all_tickets.sort(key=lambda x: x.get("updated_at") or x.get("last_message_at") or x.get("created_at") or "", reverse=True)
+                # Sort by genuine customer activity (see migration 056), not
+                # any write to the row - falls back to updated_at only for
+                # legacy rows where the new column is null.
+                all_tickets.sort(key=lambda x: x.get("last_customer_message_at") or x.get("updated_at") or x.get("created_at") or "", reverse=True)
                 tickets = all_tickets
             else:
                 # Brand not linked to tenant yet — return empty rather than leaking all tickets

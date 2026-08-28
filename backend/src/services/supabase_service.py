@@ -150,10 +150,12 @@ class SupabaseService:
     async def get_tickets(self, store_id: Optional[str] = None, status: Optional[str] = None) -> List[Dict[str, Any]]:
         """Fetch tickets. If store_id is None or dummy UUID, return all tickets."""
         dummy = "00000000-0000-0000-0000-000000000000"
-        # Order by activity time so replied-to tickets float to the top.
-        # Current production does not expose a separate last_message_at column yet,
-        # so updated_at is the canonical fallback.
-        params = {"order": "updated_at.desc"}
+        # Order by genuine customer activity, not any write to the row -
+        # updated_at changes on AI processing, draft edits, and any other
+        # ticket update (see migration 056), which used to resurface old
+        # conversations with no new customer message involved. Falls back to
+        # updated_at only for legacy rows where the new column is null.
+        params = {"order": "last_customer_message_at.desc.nullslast,updated_at.desc"}
         if store_id and store_id != dummy:
             params["store_id"] = f"eq.{store_id}"
         if status:

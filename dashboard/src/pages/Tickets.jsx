@@ -11,6 +11,14 @@ function formatDate(iso) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+// last_customer_message_at (see migration 056) reflects when the customer
+// actually last wrote in - updated_at changes on any internal write (AI
+// draft, status change, etc.) and is only a fallback for legacy rows where
+// the new column hasn't been backfilled/set yet.
+function lastCustomerActivity(c) {
+  return c.last_customer_message_at || c.updated_at;
+}
+
 export default function Tickets() {
   const navigate = useNavigate();
   const { brand } = useBrand();
@@ -59,11 +67,14 @@ export default function Tickets() {
       result = result.filter(t => (t.tags || []).includes(tagFilter));
     }
 
-    // Newest-first by updated_at, same as the Dashboard's Recent Conversations
-    // widget — this used to sort by sentiment first (angry/frustrated ahead of
+    // Newest-first by genuine customer activity (last_customer_message_at,
+    // see migration 056), not updated_at — this used to sort by updated_at,
+    // which changes on AI processing/draft edits/status changes and had
+    // nothing to do with when the customer last actually wrote in. Before
+    // that it sorted by sentiment first (angry/frustrated ahead of
     // everything else), which is why two tickets updated seconds apart could
     // appear far apart in the list depending on sentiment.
-    result.sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0));
+    result.sort((a, b) => new Date(lastCustomerActivity(b) || 0) - new Date(lastCustomerActivity(a) || 0));
 
     return result;
   })();
@@ -204,7 +215,7 @@ export default function Tickets() {
             <div key={c.id} className="mobile-card" onClick={() => handleOpenConversation(c.id)}>
               <div className="mobile-card-row">
                 <span style={{ fontFamily: 'DM Mono, monospace', fontSize: '12px', color: '#64748B' }}>#{String(c.id).slice(0, 8)}</span>
-                <span style={{ color: '#64748B' }}>{formatDate(c.updated_at)}</span>
+                <span style={{ color: '#64748B' }}>{formatDate(lastCustomerActivity(c))}</span>
               </div>
               <div style={{ fontWeight: c.unread_count > 0 ? '600' : '500', color: '#0F172A' }}>
                 {c.customer_email || c.sender_id || '-'}
@@ -233,7 +244,7 @@ export default function Tickets() {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: '#F8FAFC', position: 'sticky', top: 0 }}>
-                {['ID', 'Channel', 'Sender', 'Last Message', 'Status', 'Sentiment', 'Tags', 'Updated'].map(h => (
+                {['ID', 'Channel', 'Sender', 'Last Message', 'Status', 'Sentiment', 'Tags', 'Customer Activity'].map(h => (
                   <th key={h} style={{ padding: '10px 16px', textAlign: 'left', fontSize: '11px', fontWeight: '600', color: '#64748B', whiteSpace: 'nowrap', borderBottom: '1px solid #E4E4E7', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                     {h}
                   </th>
@@ -306,7 +317,7 @@ export default function Tickets() {
                       </div>
                     </td>
                     <td style={{ padding: '0 16px', color: '#64748B', fontSize: '12px', fontFamily: 'DM Mono, monospace', whiteSpace: 'nowrap' }}>
-                      {formatDate(c.updated_at)}
+                      {formatDate(lastCustomerActivity(c))}
                     </td>
                   </tr>
                 );

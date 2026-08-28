@@ -143,6 +143,107 @@ async def test_run_promotion_creates_ticket_on_success():
     mock_update.assert_not_called()  # success path never touches email_quarantine again
 
 
+# ── 3. Promote is idempotent against a ticket that already exists ─────────
+# Normal email polling already checks tickets.gmail_message_id before ever
+# calling process_message() (email_poller.py's "already_seen" check) -
+# promote() never did, so a message that reached a ticket through BOTH the
+# normal poller and Quarantine could be processed twice.
+
+def test_promote_does_not_reprocess_when_a_ticket_already_exists():
+    app = _app()
+    client = TestClient(app)
+    mock_run = AsyncMock()
+
+    def fake_select(table, params=None):
+        if table == "brands":
+            return [{"id": BRAND_ID, "tenant_id": TENANT_ID, "is_active": True, "gmail_connected": True}]
+        if table == "email_quarantine":
+            return [_quarantine_row(gmail_message_id="msg-dup")]
+        if table == "tickets":
+            if params.get("gmail_message_id") == f"eq.msg-dup" and params.get("store_id") == f"eq.{BRAND_ID}":
+                return [{"id": "existing-ticket-1"}]
+            return []
+        return []
+
+    with patch("src.api.routes.v2_quarantine.supabase_select", side_effect=fake_select), \
+         patch("src.api.routes.v2_quarantine.supabase_update", return_value=[{"id": QID}]) as mock_update, \
+         patch("src.api.routes.v2_quarantine._run_promotion", new=mock_run):
+        resp = client.post(f"/api/v1/quarantine/{QID}/promote")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["ticket_id"] == "existing-ticket-1"
+    assert body.get("already_existed") is True
+    mock_run.assert_not_awaited()  # never reprocessed, never a second ticket
+    # The quarantine record is still marked promoted (not left stuck pending).
+    promote_call = next(c for c in mock_update.call_args_list if c.args[2].get("status") == "promoted")
+    assert promote_call is not None
+
+
+def test_promote_still_creates_exactly_one_ticket_when_none_exists():
+    app = _app()
+    client = TestClient(app)
+    mock_run = AsyncMock()
+
+    def fake_select(table, params=None):
+        if table == "brands":
+            return [{"id": BRAND_ID, "tenant_id": TENANT_ID, "is_active": True, "gmail_connected": True}]
+        if table == "email_quarantine":
+            return [_quarantine_row(gmail_message_id="msg-new")]
+        if table == "tickets":
+            return []  # no existing ticket for this gmail_message_id
+        return []
+
+    with patch("src.api.routes.v2_quarantine.supabase_select", side_effect=fake_select), \
+         patch("src.api.routes.v2_quarantine.supabase_update", return_value=[{"id": QID}]), \
+         patch("src.api.routes.v2_quarantine._run_promotion", new=mock_run):
+        resp = client.post(f"/api/v1/quarantine/{QID}/promote")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"success": True, "message": "Email promoted to ticket"}
+    mock_run.assert_awaited_once()  # the existing promotion flow proceeds unchanged
+
+
+def test_dedup_check_is_brand_scoped_cross_tenant_ticket_does_not_block_promotion():
+    """A ticket with the same gmail_message_id but belonging to a DIFFERENT
+    brand/store_id must never satisfy the dedup check - Gmail message IDs
+    are only unique within one mailbox, and this must not weaken tenant
+    isolation by treating another brand's ticket as this one's own. Proven
+    two ways: (1) a ticket exists but under a different store_id - the fake
+    "database" enforces that filter exactly like real PostgREST would, so it
+    correctly returns nothing and promotion proceeds; (2) the actual query
+    the endpoint issued is asserted to have been scoped to THIS brand_id."""
+    app = _app()
+    client = TestClient(app)
+    mock_run = AsyncMock()
+    captured_ticket_queries = []
+
+    def fake_select(table, params=None):
+        if table == "brands":
+            return [{"id": BRAND_ID, "tenant_id": TENANT_ID, "is_active": True, "gmail_connected": True}]
+        if table == "email_quarantine":
+            return [_quarantine_row(gmail_message_id="msg-shared-id")]
+        if table == "tickets":
+            captured_ticket_queries.append(params)
+            # A real, existing ticket for the same gmail_message_id, but
+            # under ANOTHER brand's store_id - a genuine PostgREST query
+            # scoped to THIS brand_id would never match it.
+            other_brand_ticket = {"id": "other-brands-ticket", "gmail_message_id": "msg-shared-id", "store_id": "brand-OTHER"}
+            return [other_brand_ticket] if other_brand_ticket["store_id"] == params.get("store_id", "").replace("eq.", "") else []
+        return []
+
+    with patch("src.api.routes.v2_quarantine.supabase_select", side_effect=fake_select), \
+         patch("src.api.routes.v2_quarantine.supabase_update", return_value=[{"id": QID}]), \
+         patch("src.api.routes.v2_quarantine._run_promotion", new=mock_run):
+        resp = client.post(f"/api/v1/quarantine/{QID}/promote")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"success": True, "message": "Email promoted to ticket"}
+    mock_run.assert_awaited_once()  # proceeded normally - cross-brand match ignored
+    assert captured_ticket_queries == [{"gmail_message_id": "eq.msg-shared-id", "store_id": f"eq.{BRAND_ID}"}]
+
+
 # ── 2. A discarded item is never re-surfaced by the poller ─────────────────
 
 async def _run_poll(brand, emails, quarantine_rows):
