@@ -40,6 +40,11 @@ class ActionStatus(str, Enum):
     EXECUTED = "executed"
     REJECTED = "rejected"
     FAILED = "failed"
+    # Approved, but the underlying step is manual (reship only, today) and
+    # nothing was actually done in Shopify — waits here until the merchant
+    # explicitly confirms via complete_manual_action(). Never set by
+    # anything except approve_action()'s RESHIP branch.
+    AWAITING_MANUAL_STEP = "awaiting_manual_step"
 
 
 class ActionDetector:
@@ -195,7 +200,7 @@ class ActionsService:
                         "tenant_id": f"eq.{tenant_id}",
                         "order_id": f"eq.{order_id}",
                         "action_type": f"eq.{action_type}",
-                        "status": "in.(pending,approved,executed)",
+                        "status": "in.(pending,approved,executed,awaiting_manual_step)",
                         "order": "created_at.desc",
                         "limit": "1",
                     })
@@ -271,7 +276,7 @@ class ActionsService:
                     "tenant_id": f"eq.{tenant_id}",
                     "action_type": f"eq.{detection['action_type']}",
                     "order_id": f"eq.{order_id}",
-                    "status": f"in.(executed,approved)",
+                    "status": f"in.(executed,approved,{ActionStatus.AWAITING_MANUAL_STEP.value})",
                 })
                 if executed:
                     logger.info(
@@ -359,7 +364,7 @@ class ActionsService:
         try:
             actions = supabase_select("actions", {
                 "tenant_id": f"eq.{tenant_id}",
-                "status": f"in.(executed,rejected,failed)",
+                "status": f"in.(executed,rejected,failed,{ActionStatus.AWAITING_MANUAL_STEP.value})",
                 "order": "updated_at.desc",
                 "limit": str(limit)
             })
@@ -621,13 +626,26 @@ class ActionsService:
                     "error_code": e.error_code
                 }
 
-            # Success - update action status
-            supabase_update("actions", {"id": f"eq.{action_id}"}, {
-                "status": ActionStatus.EXECUTED.value,
-                "execution_result": execution_result,
-                "executed_at": datetime.now(timezone.utc).isoformat(),
-                "updated_at": datetime.now(timezone.utc).isoformat()
-            })
+            # Success - update action status. Reship's manual_action_required
+            # is a real Shopify no-op (the RESHIP branch above never calls
+            # Shopify) - marking it EXECUTED here would claim work that
+            # hasn't happened. It waits in AWAITING_MANUAL_STEP until the
+            # merchant explicitly confirms via complete_manual_action().
+            # Scoped to RESHIP only - Change Address's own manual_action_
+            # required case is unaffected, matching its existing behavior.
+            if action_type == ActionType.RESHIP.value:
+                supabase_update("actions", {"id": f"eq.{action_id}"}, {
+                    "status": ActionStatus.AWAITING_MANUAL_STEP.value,
+                    "execution_result": execution_result,
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                })
+            else:
+                supabase_update("actions", {"id": f"eq.{action_id}"}, {
+                    "status": ActionStatus.EXECUTED.value,
+                    "execution_result": execution_result,
+                    "executed_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat()
+                })
 
             # Log success
             await self._log_event(tenant_id, action_id, "executed", approved_by, execution_result)
@@ -667,6 +685,68 @@ class ActionsService:
                 self._record_financial_audit(action, idempotency_key, ip_address, approved_by,
                                               status="failed", error_detail=str(e))
             return {"success": False, "error": safe_message}
+
+    async def complete_manual_action(
+        self,
+        tenant_id: str,
+        action_id: str,
+        completed_by: str,
+    ) -> Dict[str, Any]:
+        """Merchant-confirmed completion for an action sitting in
+        AWAITING_MANUAL_STEP (reship, today) after they've done the manual
+        Shopify work by hand. Never calls Shopify and never creates
+        anything - purely a status transition. Tenant-scoped via
+        get_action() (same isolation every other action lookup uses), so
+        another tenant's action_id simply isn't found. Idempotent: calling
+        this again on an already-completed action returns success unchanged
+        rather than erroring, and a genuine concurrent double-click is
+        closed the same way approve_action() closes its own race - an
+        atomic conditional update, only one of which can win."""
+        action = await self.get_action(tenant_id, action_id)
+        if not action:
+            return {"success": False, "error": "Action not found"}
+
+        if action["status"] == ActionStatus.EXECUTED.value:
+            return {"success": True, "status": ActionStatus.EXECUTED.value, "already_completed": True}
+
+        if action["status"] != ActionStatus.AWAITING_MANUAL_STEP.value:
+            return {"success": False, "error": f"Action is {action['status']}, not awaiting a manual step"}
+
+        # Preserve the original execution_result (the "please create a
+        # replacement shipment" instruction + order info) instead of
+        # overwriting it - just layer the completion facts on top.
+        # manual_action_required is cleared here (not before): it's what the
+        # dashboard's Completed section already reads to decide between its
+        # "Completed" and "Approved — manual step remaining" badges, so this
+        # is what makes a freshly-completed reship render as truly Completed
+        # instead of still looking like it needs manual work.
+        merged_result = {
+            **(action.get("execution_result") or {}),
+            "manual_action_required": False,
+            "manually_completed_by": completed_by,
+            "manually_completed_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        claimed = supabase_update(
+            "actions",
+            {"id": f"eq.{action_id}", "status": f"eq.{ActionStatus.AWAITING_MANUAL_STEP.value}"},
+            {
+                "status": ActionStatus.EXECUTED.value,
+                "execution_result": merged_result,
+                "executed_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        if not claimed:
+            # Lost a race to a concurrent completion request - already done.
+            return {"success": True, "status": ActionStatus.EXECUTED.value, "already_completed": True}
+
+        await self._log_event(tenant_id, action_id, "manually_completed", completed_by, {
+            "action_type": action.get("action_type"),
+            "order_id": action.get("order_id"),
+        })
+
+        return {"success": True, "status": ActionStatus.EXECUTED.value}
 
     async def _post_execution_notify(
         self,

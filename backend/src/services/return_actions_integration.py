@@ -786,7 +786,7 @@ class ReturnActionsIntegration:
                 "tenant_id": f"eq.{tenant_id}",
                 "order_id": f"eq.{order_id}",
                 "action_type": f"eq.{action_type}",
-                "status": "in.(pending,approved,executed)",
+                "status": "in.(pending,approved,executed,awaiting_manual_step)",
                 "order": "created_at.desc",
                 "limit": "1",
             })

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import Badge from '../components/Badge';
 import StatCard from '../components/StatCard';
 import Alert from '../components/Alert';
-import { useEscalations, useStats, useActions, useApproveAction, useRejectAction } from '../hooks/useApi';
+import { useEscalations, useStats, useActions, useApproveAction, useRejectAction, useCompleteManualAction } from '../hooks/useApi';
 import api from '../api/services';
 
 function formatDate(iso) {
@@ -55,14 +55,17 @@ const EXECUTION_MESSAGES = {
   change_address: (r) => r?.manual_action_required
     ? `Queued. Update address manually in Shopify admin.${r?.new_address_text ? ' New address: ' + r.new_address_text : ''}`
     : `✓ Address updated in Shopify.${formatExecutedAddress(r?.new_address) ? ' Now: ' + formatExecutedAddress(r.new_address) : ''}`,
-  reship: () => `Queued. Please create a replacement shipment in Shopify admin.`,
+  // Only reached once status='executed', which for reship only happens via
+  // the merchant's explicit "Mark Reship Complete" confirmation (see
+  // AWAITING_MANUAL_STEP / complete-manual) — never a claim of automation.
+  reship: () => `✓ Reship Completed`,
   restore_order: (r) => `Order ${r?.order_name ?? ''} has been restored and is active again. Customer has been notified.`,
   REFUND: (r) => `$${r?.amount ?? ''} refunded via Shopify. Customer will receive Shopify's confirmation email.`,
   CANCEL: (r) => `Order ${r?.order_name ?? ''} cancelled.`,
   ADDRESS_CHANGE: (r) => r?.manual_action_required
     ? `Queued. Update address manually in Shopify admin.${r?.new_address_text ? ' New address: ' + r.new_address_text : ''}`
     : `✓ Address updated in Shopify.${formatExecutedAddress(r?.new_address) ? ' Now: ' + formatExecutedAddress(r.new_address) : ''}`,
-  RESHIP: () => `Queued. Please create a replacement shipment in Shopify admin.`,
+  RESHIP: () => `✓ Reship Completed`,
   RESTORE_ORDER: (r) => `Order ${r?.order_name ?? ''} has been restored and is active again. Customer has been notified.`,
 };
 
@@ -388,9 +391,15 @@ export default function Actions() {
   // was needed to have something to show here.
   const failedActions = history.filter(a => a.status === 'failed');
   const completedActions = history.filter(a => a.status === 'executed');
+  // Approved, but a human still has to do the actual Shopify work by hand
+  // (reship, today) - deliberately never shown under Completed until the
+  // merchant explicitly confirms it (see completeManualAction below).
+  const awaitingManualActions = history.filter(a => a.status === 'awaiting_manual_step');
   const { data: stats } = useStats();
   const { mutateAsync: approveAction } = useApproveAction();
   const { mutateAsync: rejectAction } = useRejectAction();
+  const { mutateAsync: completeManualAction } = useCompleteManualAction();
+  const [completingId, setCompletingId] = useState(null);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [bulkWorking, setBulkWorking] = useState(false);
   const [selectedEscalationIds, setSelectedEscalationIds] = useState(new Set());
@@ -429,6 +438,20 @@ export default function Actions() {
       setPageError(err?.response?.data?.detail || 'Retry failed. See the error below for details.');
     } finally {
       setRetryingId(null);
+    }
+  };
+
+  // Merchant is explicitly confirming they did the manual Shopify work by
+  // hand (see complete-manual endpoint) - never inferred, never automatic.
+  const handleCompleteManual = async (id) => {
+    setCompletingId(id);
+    setPageError('');
+    try {
+      await completeManualAction(id);
+    } catch (err) {
+      setPageError(err?.response?.data?.detail || 'Could not mark this complete. Please try again.');
+    } finally {
+      setCompletingId(null);
     }
   };
 
@@ -695,6 +718,52 @@ export default function Actions() {
               })}
             </div>
           )}
+        </section>
+      )}
+
+      {/* Awaiting Manual Action — status='awaiting_manual_step' (reship,
+          today). Approved, but nothing was actually done in Shopify - never
+          shown as Completed until the merchant explicitly confirms it. */}
+      {loadingHistory ? null : awaitingManualActions.length > 0 && (
+        <section>
+          <div className="header-row" style={{ marginBottom: '10px' }}>
+            <span style={{ fontSize: '14px', fontWeight: '600', color: '#0F172A' }}>
+              Awaiting Manual Action ({awaitingManualActions.length})
+            </span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {awaitingManualActions.map(action => {
+              const meta = ACTION_LABELS[action.action_type] || { label: action.action_type, color: '#0E7490' };
+              const orderRef = action.order_id || action.order_number;
+              return (
+                <div key={action.id} style={{ background: 'white', border: '1px solid #FDE68A', borderRadius: '8px', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <span style={{ fontSize: '14px', fontWeight: '600', color: meta.color }}>{meta.label}</span>
+                    {orderRef && (
+                      <span style={{ fontSize: '12px', background: '#F8FAFC', color: '#475569', padding: '2px 8px', borderRadius: '4px' }}>
+                        Order #{orderRef}
+                      </span>
+                    )}
+                    <span style={{ fontSize: '11px', background: '#FEF9C3', color: '#854D0E', padding: '2px 8px', borderRadius: '10px', fontWeight: '600' }}>
+                      Approved — manual Shopify step required
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '13px', color: '#475569' }}>
+                    Create the replacement shipment manually in Shopify.
+                  </div>
+                  <div>
+                    <button
+                      onClick={() => handleCompleteManual(action.id)}
+                      disabled={completingId === action.id}
+                      style={{ padding: '6px 14px', fontSize: '12px', fontWeight: '600', borderRadius: '4px', border: 'none', background: '#0EA5B7', color: 'white', cursor: completingId === action.id ? 'not-allowed' : 'pointer', opacity: completingId === action.id ? 0.6 : 1 }}
+                    >
+                      {completingId === action.id ? 'Marking complete…' : 'Mark Reship Complete'}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </section>
       )}
 

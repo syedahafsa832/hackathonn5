@@ -149,6 +149,13 @@ const api = {
     return res.data;
   },
 
+  // Merchant confirms they finished a manual step (reship, today) by hand
+  // in Shopify. Never calls Shopify itself - see actions_service.complete_manual_action.
+  completeManualAction: async (id) => {
+    const res = await client.post(`/api/v1/actions/${id}/complete-manual`, {});
+    return res.data;
+  },
+
   bulkRejectActions: async ({ action_ids, clear_all } = {}) => {
     const res = await client.post('/api/v2/actions/bulk-reject', { action_ids, clear_all });
     return res.data;

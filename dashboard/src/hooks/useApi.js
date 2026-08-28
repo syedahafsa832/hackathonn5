@@ -345,6 +345,20 @@ export function useApproveAction() {
 }
 
 /**
+ * Mutation to confirm the manual step of an approved action is done
+ * (reship, today) - e.g. "I created the replacement shipment in Shopify."
+ */
+export function useCompleteManualAction() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id) => api.completeManualAction(id),
+    onSettled: () => {
+      queryClient.invalidateQueries(['actions']);
+    },
+  });
+}
+
+/**
  * Mutation to reject an action
  */
 export function useRejectAction() {

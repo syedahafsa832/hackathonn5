@@ -275,6 +275,31 @@ async def reject_action(
     return result
 
 
+@router.post("/{action_id}/complete-manual")
+async def complete_manual_action(
+    action_id: str,
+    tenant: TenantContext = Depends(get_current_tenant)
+):
+    """
+    Merchant confirms they finished the manual step of an action approved
+    with manual_action_required (reship, today) - e.g. "I created the
+    replacement shipment in Shopify." Never calls Shopify itself; purely
+    marks the action Completed. Tenant-scoped and idempotent - see
+    actions_service.complete_manual_action for the exact semantics.
+    """
+    result = await actions_service.complete_manual_action(
+        tenant_id=tenant.tenant_id,
+        action_id=action_id,
+        completed_by=tenant.email,
+    )
+
+    if not result.get("success"):
+        status_code = 404 if result.get("error") == "Action not found" else 400
+        raise HTTPException(status_code=status_code, detail=result.get("error"))
+
+    return result
+
+
 # ==================== Action Creation (Internal Use) ====================
 
 @router.post("/create")
