@@ -58,11 +58,16 @@ async def test_list_catalog_without_shopify_connected_gives_a_useful_message_not
 
 @pytest.mark.asyncio
 async def test_list_catalog_empty_store_does_not_hallucinate_products():
+    """A store with zero active products is a valid, successfully-fetched
+    empty result, not a Shopify failure - conflating the two would make a
+    real Shopify outage indistinguishable from an honest "nothing for sale
+    right now" answer. Either way, titles must never be invented."""
     with patch("src.services.shopify_service.ShopifyClient.list_active_products", new=AsyncMock(return_value=[])):
         result = await v3_tools.list_catalog(shop_domain="shop.myshopify.com", access_token="tok")
 
-    assert result["success"] is False
-    assert "titles" not in result
+    assert result["success"] is True
+    assert result["titles"] == []
+    assert result["count"] == 0
 
 
 @pytest.mark.asyncio

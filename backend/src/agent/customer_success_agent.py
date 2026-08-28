@@ -723,7 +723,16 @@ class CustomerSuccessAgent:
             _needs_rag = bool(store_id) and not _is_catalog_query
             if _needs_rag:
                 await _emit("kb_check", "Checking knowledge base…")
-            rag_context = await brand_knowledge_service.get_brand_context(store_id, query) if _needs_rag else ""
+            # Isolation: a 429/timeout/exception anywhere in retrieval must
+            # never take down the whole reply - get_brand_context() already
+            # swallows internally and returns "" on any failure, but this
+            # call site catches defensively too so a future change there
+            # can't reopen an unhandled-exception path through the agent.
+            try:
+                rag_context = await brand_knowledge_service.get_brand_context(store_id, query) if _needs_rag else ""
+            except Exception as _rag_err:
+                logger.error(f"[Agent] RAG retrieval raised unexpectedly (isolated, continuing without it): {_rag_err}")
+                rag_context = ""
             logger.info(f"[Agent] RAG context retrieved: {len(rag_context)} chars")
 
             # Order number / email extraction must only ever look at the
@@ -1579,7 +1588,12 @@ class CustomerSuccessAgent:
 
         KNOWLEDGE BASE (authoritative ONLY for claims explicitly present in the text below —
         do NOT invent material, fit, texture, quality, popularity, durability, price,
-        availability, or marketing claims that aren't written here):
+        availability, or marketing claims that aren't written here. If this section is empty,
+        that does NOT mean the store has no such policy — it may just mean we couldn't
+        confirm it right now. NEVER tell a customer the store "doesn't have" a return,
+        refund, shipping, or other policy just because this section is empty. Instead say
+        you don't have that specific detail confirmed and you'll get them a confirmed
+        answer / have the team follow up):
         {rag_context}
 
         SIZING:

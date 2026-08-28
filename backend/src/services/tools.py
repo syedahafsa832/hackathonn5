@@ -407,8 +407,12 @@ class V3Tools:
             from src.services.shopify_service import ShopifyClient
             client = ShopifyClient(shop_domain, access_token)
             products = await client.list_active_products(limit=limit)
-            if not products:
-                return {"success": False, "message": "I couldn't find any active products in the store right now — let me get a team member to confirm."}
+            # list_active_products() only ever raises on a real Shopify/network
+            # failure (caught below) - reaching this line means the call itself
+            # succeeded, so an empty list here is a genuine "zero active
+            # products" answer, not a failure. Reporting it as success=False
+            # would make a legitimately empty catalog indistinguishable from a
+            # broken Shopify connection.
             titles = [p.get("title") for p in products if p.get("title")]
             return {"success": True, "titles": titles, "count": len(titles)}
         except Exception as e:

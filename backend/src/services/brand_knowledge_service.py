@@ -383,6 +383,73 @@ class BrandKnowledgeService:
             logger.error(f"[KB] Delete error: {e}")
             return {"success": False, "error": str(e)}
 
+    async def get_brand_context_with_status(
+        self,
+        brand_id: str,
+        query: str,
+        top_k: int = 5
+    ):
+        """
+        Same retrieval as get_brand_context(), but also reports *why* the
+        context came back empty - a caller that only sees "" cannot tell
+        "we checked and there's genuinely no relevant policy" apart from
+        "we couldn't check at all" (a failed embedding call or a
+        rate-limited/timed-out RPC), and collapsing those risks telling a
+        customer the store has no return policy when retrieval simply
+        failed.
+
+        Returns (context: str, status: str) where status is one of:
+          "ok"          - relevant chunks found, context is non-empty
+          "no_match"    - retrieval ran fine, nothing relevant was found
+          "unavailable" - the embedding call or the RPC itself failed
+        """
+        try:
+            # Generate query embedding. create_embedding() already returns
+            # None (never raises) when no Mistral key is configured or every
+            # one fails, so there's no separate pre-check needed here.
+            embedding = await self._get_embedding(query)
+            if not embedding:
+                logger.warning(f"[KB] Embedding unavailable for brand {brand_id} - retrieval unavailable, not no-match")
+                return "", "unavailable"
+
+            # Search brand's knowledge base using RPC function. Over-fetch a
+            # wider candidate pool than top_k, then drop low-value policy
+            # chunks (see _is_low_value_policy_chunk) before truncating to
+            # top_k - filtering only the requested top_k itself would just
+            # shrink the result set on a store whose Privacy Policy already
+            # fills every slot, not surface the relevant chunks underneath it.
+            try:
+                raw_results = supabase_rpc("match_brand_rag_chunks", {
+                    "p_brand_id": brand_id,
+                    "query_embedding": embedding,
+                    "match_threshold": 0.5,
+                    "match_count": max(top_k * 10, 100)
+                })
+            except Exception as e:
+                logger.error(f"[KB] match_brand_rag_chunks RPC failed for brand {brand_id}: {e}")
+                return "", "unavailable"
+
+            results = [r for r in (raw_results or []) if not _is_low_value_policy_chunk(r)][:top_k]
+
+            if not results:
+                logger.info(f"[KB] No matching context for brand {brand_id}")
+                return "", "no_match"
+
+            # Format context
+            context_parts = []
+            for res in results:
+                source = res.get("source_name", "Knowledge Base")
+                content = res.get("content", "")
+                similarity = res.get("similarity", 0)
+                logger.debug(f"[KB] Match: {source} (similarity: {similarity:.2f})")
+                context_parts.append(f"[{source}]:\n{content}")
+
+            return "\n\n---\n\n".join(context_parts), "ok"
+
+        except Exception as e:
+            logger.error(f"[KB] Context retrieval error: {e}")
+            return "", "unavailable"
+
     async def get_brand_context(
         self,
         brand_id: str,
@@ -398,48 +465,15 @@ class BrandKnowledgeService:
             top_k: Number of results
 
         Returns:
-            Formatted context string
+            Formatted context string. Backward-compatible wrapper around
+            get_brand_context_with_status() - collapses "no_match" and
+            "unavailable" into "" like before. Callers that need to react
+            differently to a genuine retrieval failure (e.g. avoid telling a
+            customer "we don't offer that" when we simply couldn't check)
+            should call get_brand_context_with_status() directly instead.
         """
-        try:
-            # Generate query embedding. create_embedding() already returns
-            # None (never raises) when no Mistral key is configured or every
-            # one fails, so there's no separate pre-check needed here.
-            embedding = await self._get_embedding(query)
-            if not embedding:
-                return ""
-
-            # Search brand's knowledge base using RPC function. Over-fetch a
-            # wider candidate pool than top_k, then drop low-value policy
-            # chunks (see _is_low_value_policy_chunk) before truncating to
-            # top_k - filtering only the requested top_k itself would just
-            # shrink the result set on a store whose Privacy Policy already
-            # fills every slot, not surface the relevant chunks underneath it.
-            raw_results = supabase_rpc("match_brand_rag_chunks", {
-                "p_brand_id": brand_id,
-                "query_embedding": embedding,
-                "match_threshold": 0.5,
-                "match_count": max(top_k * 10, 100)
-            })
-            results = [r for r in (raw_results or []) if not _is_low_value_policy_chunk(r)][:top_k]
-
-            if not results:
-                logger.info(f"[KB] No matching context for brand {brand_id}")
-                return ""
-
-            # Format context
-            context_parts = []
-            for res in results:
-                source = res.get("source_name", "Knowledge Base")
-                content = res.get("content", "")
-                similarity = res.get("similarity", 0)
-                logger.debug(f"[KB] Match: {source} (similarity: {similarity:.2f})")
-                context_parts.append(f"[{source}]:\n{content}")
-
-            return "\n\n---\n\n".join(context_parts)
-
-        except Exception as e:
-            logger.error(f"[KB] Context retrieval error: {e}")
-            return ""
+        context, _status = await self.get_brand_context_with_status(brand_id, query, top_k)
+        return context
 
     async def search_knowledge(
         self,

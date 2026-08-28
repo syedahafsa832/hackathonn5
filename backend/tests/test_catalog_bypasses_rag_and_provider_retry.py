@@ -121,9 +121,16 @@ def test_catalog_question_produces_a_successful_non_escalated_reply():
 # ── 4. Empty Shopify catalog does not crash, does not hallucinate ─────────
 
 def test_empty_catalog_does_not_crash_the_agent():
+    """A successful Shopify call that legitimately returns zero active
+    products is a valid empty answer, not a failure - tools.list_catalog()
+    only takes the failure path on a real exception/missing credentials
+    (see its own docstring). It must render as a live "0 active products"
+    catalog line, not the CATALOG LOOKUP failure message, and the customer
+    must still get a reply either way."""
     result, captured, _ = _run_catalog_query([])
     system_content = next(m["content"] for m in captured["messages"] if m["role"] == "system")
-    assert "CATALOG LOOKUP" in system_content
+    assert "LIVE SHOPIFY CATALOG (0 active products)" in system_content
+    assert "CATALOG LOOKUP" not in system_content
     assert result.get("reply_body")  # still produces a reply, never crashes
 
 
