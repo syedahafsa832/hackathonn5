@@ -113,6 +113,19 @@ class EmailGuardianService:
             self._client = OpenAI(
                 api_key=api_key,
                 base_url=os.getenv("MISTRAL_API_BASE_URL", "https://api.mistral.ai/v1"),
+                # max_retries=0 + a bounded timeout: same fix already applied to
+                # ai_provider_manager.py and intent_detector.py this session. This
+                # client had neither set, so it fell back to the SDK's defaults
+                # (max_retries=2, up to a 600s timeout) - with Mistral's primary
+                # key responding slowly, 1 attempt + 2 SDK-internal retries
+                # compounded into the exact ~117-118s classifier latency observed
+                # live, once per incoming email, before a reply is even generated.
+                # No provider rotation of its own here (single key), so the
+                # existing except-block fallback (classification="unknown",
+                # relevant=False -> quarantine) is the fail-fast safety net,
+                # same as intent_detector's _keyword_fallback().
+                max_retries=0,
+                timeout=8.0,
             )
         return self._client
 

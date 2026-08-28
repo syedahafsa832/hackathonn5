@@ -34,6 +34,7 @@ from src.agent.customer_success_agent import customer_success_agent  # noqa: E40
 from src.services import brand_knowledge_service as kb_module  # noqa: E402
 from src.services.tools import v3_tools  # noqa: E402
 from src.services.intent_detector import IntentDetector  # noqa: E402
+from src.services.email_guardian_service import EmailGuardianService  # noqa: E402
 
 
 def run(coro):
@@ -155,6 +156,21 @@ def test_intent_detector_client_does_not_use_sdk_internal_retries(monkeypatch):
     client = detector._get_client()
     assert client is not None
     assert client.max_retries == 0
+
+
+def test_email_guardian_client_does_not_use_sdk_internal_retries(monkeypatch):
+    """Live-observed root cause of the ~117-118s email-classification delay:
+    this client had neither max_retries nor timeout set at all, so it fell
+    back to the SDK's defaults (max_retries=2, up to a 600s timeout) - 1
+    attempt + 2 SDK-internal retries against a slow-responding key compounded
+    into exactly that latency, once per incoming email, before a reply is
+    even generated."""
+    monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+    service = EmailGuardianService()
+    client = service._get_client()
+    assert client is not None
+    assert client.max_retries == 0
+    assert client.timeout == 8.0
 
 
 # ── Prompt-level safety: empty KB block must not license a negative claim ──
