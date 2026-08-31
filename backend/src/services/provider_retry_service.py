@@ -128,6 +128,68 @@ def reclaim_stale_processing() -> int:
     return reclaimed
 
 
+def find_and_recover_stale_tickets(limit: int = 20) -> int:
+    """Ticket-level counterpart to reclaim_stale_processing() above, which
+    only recovers a retry ROW whose worker died - it can't help a ticket
+    that never made it into ai_response_retries at all. That's exactly what
+    happened in the incident this exists for: a process crash (or SIGKILL/
+    OOM/deploy-interrupt) killed the pipeline between the "preparing" event
+    and customer_success_agent.py ever raising a classifiable
+    AllProvidersFailedError, so no retry was ever queued and the ticket
+    just sat at status='processing' with nothing watching it - confirmed
+    live, an 18-minute-old ticket with zero ai_response_retries rows.
+
+    Finds tickets stuck at status='processing' past STALE_PROCESSING_MINUTES
+    and moves each into the existing recovery path: flip status to
+    'ai_retry_pending' (same status a clean provider-outage already uses -
+    the dashboard's "AI temporarily unavailable" card and the composer's
+    writing-indicator, which is gated on status=='processing', both already
+    handle this correctly with zero new UI), log a real recovery event, and
+    enqueue_retry(). No new retry mechanism: this feeds the exact same
+    ai_response_retries queue / ProviderRetryWorker / retry_pending_response
+    pipeline a normal provider-outage recovery already uses.
+
+    Idempotent and safe under concurrent workers by construction, not by
+    any new locking: the ticket update is itself a conditional
+    UPDATE ... WHERE status='processing' (a second worker racing on the
+    same ticket simply matches 0 rows and moves on), and even if two
+    workers both won that race somehow, enqueue_retry's INSERT hits the
+    same unique partial index (ticket_id) WHERE status IN (pending,
+    processing) every other enqueue already relies on - a second insert
+    for the same ticket 409s and is treated as "already recovering", not
+    an error. Returns the number of tickets newly moved into recovery."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=STALE_PROCESSING_MINUTES)).isoformat()
+    stale = supabase_select("tickets", {
+        "status": "eq.processing",
+        "updated_at": f"lt.{cutoff}",
+        "limit": str(limit),
+    })
+    recovered = 0
+    for ticket in stale or []:
+        ticket_id = ticket.get("id")
+        brand_id = ticket.get("brand_id") or ticket.get("store_id")
+        claimed = supabase_update(
+            "tickets",
+            {"id": f"eq.{ticket_id}", "status": "eq.processing"},
+            {"status": "ai_retry_pending",
+             "escalation_reason": "AI processing was interrupted — retrying automatically"},
+        )
+        if not claimed:
+            continue  # lost the race to another worker (or it just completed normally)
+        _log_retry_event(ticket_id, brand_id, "recovery",
+                          "AI processing interrupted — retrying automatically", status="failed")
+        queued = enqueue_retry(
+            ticket_id, brand_id, attempts=[],
+            last_error="ticket found stuck in processing past the timeout — worker likely crashed or was killed mid-generation",
+        )
+        recovered += 1
+        logger.warning(
+            f"[ProviderRetry] Recovered stale processing ticket={ticket_id} "
+            f"(retry {'queued' if queued else 'already existed'})"
+        )
+    return recovered
+
+
 def claim_due_retries(limit: int = 20) -> List[Dict[str, Any]]:
     """Atomically claims up to `limit` due rows (next_retry_at <= now,
     status='pending') by flipping status to 'processing' one row at a time
@@ -168,6 +230,22 @@ def mark_cancelled(row_id: str, reason: str) -> None:
     })
 
 
+def _log_retry_event(ticket_id: Optional[str], brand_id: Optional[str], stage: str, label: str, status: str = "done") -> None:
+    """Minimal standalone insert matching message_processor.py's own
+    _log_ticket_event - not imported from there to avoid a cross-module
+    dependency on a private helper; the row shape is identical so the
+    existing Activity timeline renders it the same way. Best-effort:
+    must never break the caller."""
+    if not ticket_id:
+        return
+    try:
+        supabase_insert("ticket_events", {
+            "ticket_id": ticket_id, "brand_id": brand_id, "stage": stage, "label": label, "status": status,
+        })
+    except Exception as e:
+        logger.debug(f"[ProviderRetry] ticket_events insert failed (non-blocking): {e}")
+
+
 def reschedule_or_exhaust(row: Dict[str, Any], error: str) -> str:
     """Called when a claimed retry attempt itself fails (still no provider
     available). Returns 'rescheduled' or 'exhausted'."""
@@ -179,6 +257,23 @@ def reschedule_or_exhaust(row: Dict[str, Any], error: str) -> str:
             "status": "exhausted", "retry_count": retry_count, "last_error": (error or "")[:500],
             "updated_at": now.isoformat(),
         })
+        # The retry row alone reaching a terminal state used to leave the
+        # ticket itself untouched - still sitting at whatever status put it
+        # into the retry queue (e.g. "ai_retry_pending"), forever, with no
+        # visible signal a human needs to step in. Retries exhausting is
+        # exactly the "automatic recovery genuinely failed" case that must
+        # become a real, visible escalation rather than staying silent.
+        ticket_id = row.get("ticket_id")
+        if ticket_id:
+            try:
+                supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {
+                    "status": "escalated",
+                    "escalation_reason": "AI processing failed after automatic retries. Human review required.",
+                })
+                _log_retry_event(ticket_id, row.get("brand_id"), "escalated",
+                                  "AI processing failed after automatic retries. Human review required.", status="failed")
+            except Exception as update_err:
+                logger.error(f"[ProviderRetry] Could not escalate ticket={ticket_id} after exhausting retries: {update_err}")
         logger.warning(f"[ProviderRetry] Exhausted retries for ticket={row.get('ticket_id')} after {retry_count} attempts")
         return "exhausted"
 

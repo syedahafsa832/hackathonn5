@@ -146,11 +146,13 @@ def test_reschedule_increments_count_and_extends_delay():
 
 def test_exhausts_after_max_retries_never_retries_indefinitely():
     row = {"id": "row-1", "ticket_id": "t-1", "retry_count": 5, "max_retries": 6, "outage_tier": "fast_fail"}
-    with patch("src.services.provider_retry_service.supabase_update") as mock_update:
+    with patch("src.services.provider_retry_service.supabase_update", return_value={"id": "row-1"}) as mock_update, \
+         patch("src.services.provider_retry_service.supabase_insert", return_value={}):
         outcome = prs.reschedule_or_exhaust(row, "invalid api key")
     assert outcome == "exhausted"
-    data = mock_update.call_args.args[2]
-    assert data["status"] == "exhausted"
+    retry_updates = [c for c in mock_update.call_args_list if c.args[0] == "ai_response_retries"]
+    assert len(retry_updates) == 1
+    assert retry_updates[0].args[2]["status"] == "exhausted"
 
 
 # ── 3. already_responded — reuses existing idempotency fields ─────────────

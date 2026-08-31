@@ -50,6 +50,12 @@ class ProviderRetryWorker:
         # status='pending'. Reclaiming first means the very next cycle after
         # an orphan appears can pick it back up.
         provider_retry_service.reclaim_stale_processing()
+        # Watchdog: a ticket whose pipeline died before ever raising a
+        # classifiable provider error (a crash, SIGKILL/OOM, or a deploy
+        # that interrupted it) never got a retry row queued at all - this
+        # is the ticket-level counterpart to the reclaim above, which only
+        # covers a retry row that already existed.
+        provider_retry_service.find_and_recover_stale_tickets()
         due = provider_retry_service.claim_due_retries()
         if not due:
             return
