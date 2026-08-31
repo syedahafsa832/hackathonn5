@@ -80,6 +80,11 @@ class UnifiedMessageProcessor:
         UNIFIED PIPELINE: Works for BOTH email and webform channels.
         """
         t_start = time.monotonic()
+        # Initialized here (not just inside the try block) so the except
+        # block below can always reference them, even if the crash happens
+        # before STAGE 1.5/1.8 ever assigns a real ticket id.
+        early_ticket_id = None
+        store_id = None
         try:
             # ========== STAGE 1: EXTRACT & VALIDATE ==========
             channel = message.get('channel', 'web_form')
@@ -700,7 +705,27 @@ class UnifiedMessageProcessor:
         except Exception as e:
             logger.error(f"[PROCESSOR] ERROR: {str(e)}", exc_info=True)
             logger.info(f"[TIMING] Total pipeline (errored): {time.monotonic() - t_start:.2f}s")
-            return {"ticket_id": None, "status": "error", "error": str(e)}
+            # The ticket (if one was already created at STAGE 1.8) was left at
+            # status="processing" with nothing else to update it — every other
+            # exit path (STAGE 9's routing update, the provider-outage branch,
+            # manual-mode) moves status off "processing" before returning, but
+            # an unhandled exception anywhere in between skipped straight here
+            # without doing that. Left uncorrected, the ticket stays stuck
+            # "processing" forever: no further ticket_events, dashboard polling
+            # has nothing new to show, and (as of the composer "Luna is
+            # writing..." indicator) the merchant sees an indefinite loader for
+            # a request that has already silently died. Escalate it for real
+            # instead of leaving it invisible.
+            if early_ticket_id:
+                try:
+                    supabase_update("tickets", {"id": f"eq.{early_ticket_id}"}, {
+                        "status": "escalated",
+                        "escalation_reason": f"System error while generating a response: {str(e)[:300]}",
+                    })
+                    _log_ticket_event(early_ticket_id, store_id, "escalated", "Escalated after an unexpected processing error", status="failed")
+                except Exception as update_err:
+                    logger.error(f"[PROCESSOR] Could not mark ticket {early_ticket_id} escalated after crash: {update_err}")
+            return {"ticket_id": early_ticket_id, "status": "error", "error": str(e)}
 
     async def retry_pending_response(self, retry_row: Dict[str, Any]) -> Dict[str, Any]:
         """Resume AI processing for a ticket that hit a provider outage (see

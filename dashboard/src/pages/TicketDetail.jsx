@@ -575,6 +575,37 @@ export default function TicketDetail() {
   // Derived from the same ticket fetch above — no separate request, so there's
   // no window where the ticket has loaded but messages haven't (or vice versa).
   const messages = normalizeTicketMessages(ticket);
+  // "Luna is writing..." composer state — driven entirely by the real,
+  // backend-written ticket_events row (customer_success_agent.py's
+  // `await _emit("preparing", "Preparing your answer…")`, fired right
+  // before the actual LLM call), polled every 5s by useTicket's own
+  // refetchInterval. Never a setTimeout/fake animation: the moment the
+  // NEXT real event lands (draft_ready, sent, escalated, provider_outage,
+  // needs_review...) the last event's stage changes and this goes false on
+  // its own, whether generation succeeded or failed — nothing here can
+  // spin forever independent of backend state.
+  const ticketEvents = ticket?.events || [];
+  const lastEvent = ticketEvents[ticketEvents.length - 1];
+  const genuinelyWriting = ticket?.status === 'processing' && lastEvent?.stage === 'preparing' && lastEvent?.status !== 'failed';
+  // Safety net only, never the trigger: if the backend pipeline crashes
+  // between emitting "preparing" and its own final status update (a real
+  // gap — process_message()'s outermost exception handler returns an error
+  // without touching the ticket's DB status), polling would otherwise show
+  // "processing" + a "preparing" event forever with nothing left to signal
+  // completion. This bounds that specific stuck-backend case to 90s of real
+  // elapsed time (not a countdown driving the animation) before falling
+  // back to the normal composer — the animation itself is still driven
+  // exclusively by genuinelyWriting above.
+  const [writingTimedOut, setWritingTimedOut] = useState(false);
+  useEffect(() => {
+    if (!genuinelyWriting) {
+      setWritingTimedOut(false);
+      return;
+    }
+    const timer = setTimeout(() => setWritingTimedOut(true), 90000);
+    return () => clearTimeout(timer);
+  }, [genuinelyWriting, lastEvent?.id]);
+  const isLunaWriting = genuinelyWriting && !writingTimedOut;
 
   const { mutate: sendMessage, isLoading: sending } = useSendMessage();
   const { mutate: takeover } = useTakeover();
@@ -781,41 +812,56 @@ export default function TicketDetail() {
           </div>
 
           {/* Compose */}
-          <div style={{ padding: '16px 20px', borderTop: '1px solid var(--border)', display: 'flex', gap: '10px', alignItems: 'flex-end' }}>
-            <textarea
-              value={reply}
-              onChange={e => setReply(e.target.value)}
-              placeholder={isHumanHandled ? "Write a response..." : "AI is handling this. Click 'Take Over' to reply manually."}
-              rows={3}
-              disabled={!isHumanHandled}
-              style={{
-                flex: 1,
-                padding: '10px 12px',
-                border: '1px solid var(--border-strong)',
-                borderRadius: '4px',
-                fontSize: '14px',
-                background: isHumanHandled ? 'var(--bg-primary)' : 'var(--bg-tertiary)',
-                resize: 'vertical',
-                lineHeight: '1.5',
-              }}
-            />
-            <button
-              onClick={handleSend}
-              disabled={sending || !reply.trim() || !isHumanHandled}
-              style={{
-                padding: '10px 18px',
-                borderRadius: '4px',
-                background: reply.trim() && !sending ? 'var(--accent)' : 'var(--bg-tertiary)',
-                color: reply.trim() && !sending ? 'white' : 'var(--text-muted)',
-                fontWeight: '500',
-                fontSize: '13px',
-                cursor: reply.trim() && !sending ? 'pointer' : 'not-allowed',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {sending ? 'Sending...' : 'Send'}
-            </button>
-          </div>
+          {isLunaWriting ? (
+            <div style={{
+              padding: '16px 20px', borderTop: '1px solid var(--border)',
+              display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap',
+              background: 'var(--bg-secondary)', fontSize: '14px', fontWeight: '500', color: 'var(--text-secondary)',
+            }}>
+              <span>✨ Luna is writing…</span>
+              <span style={{ display: 'inline-flex', gap: '3px', color: 'var(--accent)' }}>
+                <span className="typing-dot" />
+                <span className="typing-dot" />
+                <span className="typing-dot" />
+              </span>
+            </div>
+          ) : (
+            <div style={{ padding: '16px 20px', borderTop: '1px solid var(--border)', display: 'flex', gap: '10px', alignItems: 'flex-end' }}>
+              <textarea
+                value={reply}
+                onChange={e => setReply(e.target.value)}
+                placeholder={isHumanHandled ? "Write a response..." : "AI is handling this. Click 'Take Over' to reply manually."}
+                rows={3}
+                disabled={!isHumanHandled}
+                style={{
+                  flex: 1,
+                  padding: '10px 12px',
+                  border: '1px solid var(--border-strong)',
+                  borderRadius: '4px',
+                  fontSize: '14px',
+                  background: isHumanHandled ? 'var(--bg-primary)' : 'var(--bg-tertiary)',
+                  resize: 'vertical',
+                  lineHeight: '1.5',
+                }}
+              />
+              <button
+                onClick={handleSend}
+                disabled={sending || !reply.trim() || !isHumanHandled}
+                style={{
+                  padding: '10px 18px',
+                  borderRadius: '4px',
+                  background: reply.trim() && !sending ? 'var(--accent)' : 'var(--bg-tertiary)',
+                  color: reply.trim() && !sending ? 'white' : 'var(--text-muted)',
+                  fontWeight: '500',
+                  fontSize: '13px',
+                  cursor: reply.trim() && !sending ? 'pointer' : 'not-allowed',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {sending ? 'Sending...' : 'Send'}
+              </button>
+            </div>
+          )}
           <Alert
             variant={sendStatus.includes('fail') || sendStatus.includes('No Gmail') ? 'error' : 'success'}
             style={{ margin: '0 20px 16px', fontSize: '12px' }}
