@@ -272,17 +272,28 @@ class EmailPoller:
                     logger.info(f"[Poller] Skipping deep reply chain (Re: count={re_count}): {subject[:60]}")
                     return
 
-                # Skip emails containing our own reply signature — third, independent
-                # line of loop defence. Catches cases the sender-address and Re:-count
-                # guards above both miss: an auto-forwarder, ticketing tool, or
-                # third-party integration that echoes our own reply back to us without
-                # preserving the original sender address or bumping the Re: count.
-                agent_name = brand.get("agent_name") or "Luna"
-                # Plain hyphen, not an em dash - matches the sign-off format
-                # customer_success_agent.py now generates (GLOBAL no-em-dash rule).
-                signature_marker = f"- {agent_name}"
-                if signature_marker in (email.get("body") or ""):
-                    logger.info(f"[Poller] Skipping email containing our own reply signature ('{signature_marker}') — loop prevention")
+                # Skip genuinely outbound messages that land back in this inbox
+                # (an auto-forwarder, ticketing tool, or third-party integration
+                # that echoes our own reply back without preserving the original
+                # sender address or bumping the Re: count) — third, independent
+                # line of loop defence, using Gmail's own SENT label rather than
+                # scanning the body for our signature text.
+                #
+                # The previous version searched the ENTIRE body (including
+                # quoted history Gmail appends below every reply) for "- Luna",
+                # so any customer reply to a thread Luna had already answered
+                # was silently dropped — confirmed live via
+                # "[Poller] Skipping email containing our own reply signature"
+                # firing on a genuine new customer message that merely quoted
+                # Luna's prior reply underneath it. Signature text is never a
+                # reliable identity signal (a customer can just as easily paste
+                # or forward our own wording); Gmail's SENT label is authoritative
+                # metadata this account's own API already returns per message
+                # (see brand_gmail_service.py's label_ids field, already relied
+                # on by email_filter_service.py for category filtering) and is
+                # set if and only if this Gmail account actually sent the message.
+                if "SENT" in (email.get("label_ids") or []):
+                    logger.info(f"[Poller] Skipping message with Gmail SENT label (our own outbound mail) — loop prevention")
                     return
 
                 # Skip if this exact Gmail message was already stored (survives restarts)
