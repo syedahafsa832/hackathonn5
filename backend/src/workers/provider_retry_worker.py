@@ -44,6 +44,12 @@ class ProviderRetryWorker:
         self.running = False
 
     async def run_cycle(self):
+        # A row a previous worker instance claimed but never finished (killed
+        # mid-flight by a deploy/crash/restart) is otherwise invisible to
+        # claim_due_retries forever, since that only ever looks at
+        # status='pending'. Reclaiming first means the very next cycle after
+        # an orphan appears can pick it back up.
+        provider_retry_service.reclaim_stale_processing()
         due = provider_retry_service.claim_due_retries()
         if not due:
             return

@@ -87,6 +87,47 @@ def enqueue_retry(ticket_id: str, brand_id: Optional[str], attempts: List[Dict[s
         return None
 
 
+# A real retry_pending_response() call involves at most a handful of
+# LLM/Shopify/RAG round-trips — seconds, not minutes. A row still sitting
+# at status='processing' after this long is almost certainly orphaned: the
+# worker instance that claimed it died mid-flight (a deploy, crash, or
+# restart) before ever calling mark_succeeded/mark_cancelled/
+# reschedule_or_exhaust. Confirmed live: a Render deploy rolled the
+# container over 4 seconds after a worker claimed a job, permanently
+# stranding it at 'processing' with no reclaim path - claim_due_retries()
+# below only ever looked at status='pending', so an orphaned row was
+# invisible to every future poll and needed manual DB intervention.
+STALE_PROCESSING_MINUTES = 5
+
+
+def reclaim_stale_processing() -> int:
+    """Puts back to 'pending' (next_retry_at=now) any row still 'processing'
+    more than STALE_PROCESSING_MINUTES after it was claimed (claim_due_retries
+    sets updated_at at claim time). Returns the number reclaimed. Uses the
+    same conditional-UPDATE-WHERE-status pattern as claim_due_retries, so a
+    row a still-alive worker finishes between the select and the update here
+    simply won't match and is safely skipped."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=STALE_PROCESSING_MINUTES)).isoformat()
+    stale = supabase_select("ai_response_retries", {
+        "status": "eq.processing",
+        "updated_at": f"lt.{cutoff}",
+    })
+    now_iso = datetime.now(timezone.utc).isoformat()
+    reclaimed = 0
+    for row in stale or []:
+        result = supabase_update(
+            "ai_response_retries",
+            {"id": f"eq.{row['id']}", "status": "eq.processing"},
+            {"status": "pending", "next_retry_at": now_iso,
+             "last_error": "reclaimed — worker died mid-processing (deploy/crash/restart)"},
+        )
+        if result:
+            reclaimed += 1
+    if reclaimed:
+        logger.warning(f"[ProviderRetry] Reclaimed {reclaimed} stale 'processing' row(s) back to pending")
+    return reclaimed
+
+
 def claim_due_retries(limit: int = 20) -> List[Dict[str, Any]]:
     """Atomically claims up to `limit` due rows (next_retry_at <= now,
     status='pending') by flipping status to 'processing' one row at a time

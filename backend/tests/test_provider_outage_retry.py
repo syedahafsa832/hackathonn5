@@ -102,6 +102,38 @@ def test_claim_due_retries_skips_a_row_lost_to_a_concurrent_claim():
     assert mock_update.call_count == 2
 
 
+def test_reclaim_stale_processing_puts_orphaned_rows_back_to_pending():
+    """Regression for a real live incident: a Render deploy rolled the
+    container over 4 seconds after a worker claimed a job, permanently
+    stranding it at status='processing' — claim_due_retries only ever
+    looks at status='pending', so nothing would have picked it up again
+    without this."""
+    stale_row = {"id": "row-1", "status": "processing", "updated_at": "2020-01-01T00:00:00+00:00"}
+    with patch("src.services.provider_retry_service.supabase_select", return_value=[stale_row]) as mock_select, \
+         patch("src.services.provider_retry_service.supabase_update", return_value={"id": "row-1"}) as mock_update:
+        reclaimed = prs.reclaim_stale_processing()
+
+    assert reclaimed == 1
+    assert mock_select.call_args.args[1]["status"] == "eq.processing"
+    match, data = mock_update.call_args.args[1], mock_update.call_args.args[2]
+    assert match == {"id": "eq.row-1", "status": "eq.processing"}
+    assert data["status"] == "pending"
+
+
+def test_reclaim_stale_processing_skips_a_row_finished_between_select_and_update():
+    """A worker that's actually still alive and finishes the job in the
+    gap between the select and the conditional update must not be
+    overridden — the WHERE status='processing' guard matches 0 rows and
+    is silently skipped, same pattern as claim_due_retries' own race
+    guard."""
+    stale_row = {"id": "row-1", "status": "processing", "updated_at": "2020-01-01T00:00:00+00:00"}
+    with patch("src.services.provider_retry_service.supabase_select", return_value=[stale_row]), \
+         patch("src.services.provider_retry_service.supabase_update", return_value={}):
+        reclaimed = prs.reclaim_stale_processing()
+
+    assert reclaimed == 0
+
+
 def test_reschedule_increments_count_and_extends_delay():
     row = {"id": "row-1", "ticket_id": "t-1", "retry_count": 1, "max_retries": 6, "outage_tier": "retryable"}
     with patch("src.services.provider_retry_service.supabase_update") as mock_update:

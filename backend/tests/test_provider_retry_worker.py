@@ -1,8 +1,9 @@
 """
 ProviderRetryWorker.run_cycle — the polling loop (same shape as
-retention_worker.py) that drives automatic recovery: claim due rows,
-resume each via message_processor.retry_pending_response(), and only
-reschedule/exhaust the ones still reporting a provider outage.
+retention_worker.py) that drives automatic recovery: reclaim any orphaned
+'processing' rows, claim due rows, resume each via
+message_processor.retry_pending_response(), and only reschedule/exhaust
+the ones still reporting a provider outage.
 """
 import os
 import sys
@@ -18,9 +19,19 @@ from src.workers.provider_retry_worker import ProviderRetryWorker  # noqa: E402
 
 
 @pytest.mark.asyncio
+async def test_run_cycle_reclaims_stale_rows_before_claiming():
+    processor = MagicMock(retry_pending_response=AsyncMock())
+    with patch("src.workers.provider_retry_worker.provider_retry_service.reclaim_stale_processing") as mock_reclaim, \
+         patch("src.workers.provider_retry_worker.provider_retry_service.claim_due_retries", return_value=[]):
+        await ProviderRetryWorker(processor).run_cycle()
+    mock_reclaim.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_run_cycle_does_nothing_when_no_rows_are_due():
     processor = MagicMock(retry_pending_response=AsyncMock())
-    with patch("src.workers.provider_retry_worker.provider_retry_service.claim_due_retries", return_value=[]):
+    with patch("src.workers.provider_retry_worker.provider_retry_service.reclaim_stale_processing"), \
+         patch("src.workers.provider_retry_worker.provider_retry_service.claim_due_retries", return_value=[]):
         await ProviderRetryWorker(processor).run_cycle()
     processor.retry_pending_response.assert_not_awaited()
 
@@ -31,7 +42,8 @@ async def test_run_cycle_reschedules_only_still_failing_rows():
     outcomes = [{"outcome": "sent"}, {"outcome": "retryable_failure", "error": "still rate limited"}]
     processor = MagicMock(retry_pending_response=AsyncMock(side_effect=outcomes))
 
-    with patch("src.workers.provider_retry_worker.provider_retry_service.claim_due_retries", return_value=rows), \
+    with patch("src.workers.provider_retry_worker.provider_retry_service.reclaim_stale_processing"), \
+         patch("src.workers.provider_retry_worker.provider_retry_service.claim_due_retries", return_value=rows), \
          patch("src.workers.provider_retry_worker.provider_retry_service.reschedule_or_exhaust") as mock_reschedule:
         await ProviderRetryWorker(processor).run_cycle()
 
@@ -48,7 +60,8 @@ async def test_run_cycle_reschedules_on_unexpected_exception_instead_of_crashing
     rows = [{"id": "row-1", "ticket_id": "t-1"}]
     processor = MagicMock(retry_pending_response=AsyncMock(side_effect=RuntimeError("boom")))
 
-    with patch("src.workers.provider_retry_worker.provider_retry_service.claim_due_retries", return_value=rows), \
+    with patch("src.workers.provider_retry_worker.provider_retry_service.reclaim_stale_processing"), \
+         patch("src.workers.provider_retry_worker.provider_retry_service.claim_due_retries", return_value=rows), \
          patch("src.workers.provider_retry_worker.provider_retry_service.reschedule_or_exhaust") as mock_reschedule:
         await ProviderRetryWorker(processor).run_cycle()  # must not raise
 
