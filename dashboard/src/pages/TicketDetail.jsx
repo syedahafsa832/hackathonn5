@@ -919,6 +919,19 @@ export default function TicketDetail() {
           );
         })()}
 
+        {/* Provider outage — temporary, not a customer escalation. Luna
+            retries this automatically once a configured AI provider
+            recovers (see backend provider_retry_worker.py); no merchant
+            action is required unless they'd rather reply manually now. */}
+        {ticket.status === 'ai_retry_pending' && (
+          <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--info, #3B82F6)', borderRadius: '6px', padding: '16px 20px' }}>
+            <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '8px' }}>⏳ AI temporarily unavailable</div>
+            <div style={{ fontSize: '13px', color: 'var(--text-primary)' }}>
+              Luna will automatically retry when an available AI provider returns. No action is required right now — you can still reply manually below if you'd rather not wait.
+            </div>
+          </div>
+        )}
+
         {/* AI Draft Approval */}
         {(ticket.ai_draft || ticket.ai_response) && ticket.status !== 'resolved' && (
           <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '6px', padding: '16px 20px' }}>

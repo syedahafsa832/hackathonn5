@@ -102,18 +102,22 @@ setup_logging_middleware(app)
 # 4. Safe Imports — wrapped so a failing import doesn't kill the health check
 message_processor = None
 EmailPoller = None
+ProviderRetryWorker = None
 whatsapp_handler = None
 
 try:
     logger.info("Importing src.lib.supabase_client...")
     from src.lib.supabase_client import supabase
-    
+
     logger.info("Importing src.workers.message_processor...")
     from src.workers.message_processor import message_processor
-    
+
     logger.info("Importing src.channels.email_poller...")
     from src.channels.email_poller import EmailPoller
-    
+
+    logger.info("Importing src.workers.provider_retry_worker...")
+    from src.workers.provider_retry_worker import ProviderRetryWorker
+
     logger.info("Importing src.services.whatsapp_handler...")
     from src.services.whatsapp_handler import WhatsAppHandler
     
@@ -677,9 +681,9 @@ async def simple_message_submit(request: Request):
 # 7. Startup Event
 @app.on_event("startup")
 async def startup_event():
-    """API startup — start UnifiedMessageProcessor and EmailPoller in background."""
+    """API startup — start UnifiedMessageProcessor, EmailPoller, and ProviderRetryWorker in background."""
     # Ensure we only start once per process
-    global _poller_task, _processor_started
+    global _poller_task, _processor_started, _retry_worker_task
     if not getattr(app.state, "started_background", False):
         # Start MessageProcessor (it has its own internal loop if needed)
         if message_processor is None:
@@ -693,6 +697,15 @@ async def startup_event():
             logger.info("EmailPoller background task started.")
         else:
             logger.error("EmailPoller or MessageProcessor missing; cannot start poller.")
+        # Start ProviderRetryWorker — resumes AI processing on tickets that
+        # hit a provider outage, once a configured provider recovers (see
+        # src/services/provider_retry_service.py).
+        if ProviderRetryWorker is not None and message_processor is not None:
+            retry_worker = ProviderRetryWorker(processor=message_processor)
+            _retry_worker_task = asyncio.create_task(retry_worker.start())
+            logger.info("ProviderRetryWorker background task started.")
+        else:
+            logger.error("ProviderRetryWorker or MessageProcessor missing; cannot start retry worker.")
         app.state.started_background = True
     logger.info("API startup complete.")
 

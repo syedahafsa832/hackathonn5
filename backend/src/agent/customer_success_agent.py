@@ -1528,6 +1528,7 @@ class CustomerSuccessAgent:
                 return self._get_provider_failure_response(
                     brand_name=_brand_name, agent_name=_agent_name, email_signature=_email_signature,
                     send_customer_fallback=_provider_outage_fallback_enabled,
+                    provider_attempts=api_error.attempts,
                 )
 
             raw_content = response.choices[0].message.content
@@ -1835,7 +1836,7 @@ class CustomerSuccessAgent:
 
     def _get_provider_failure_response(
         self, brand_name: str = "", agent_name: str = "Luna", email_signature: str = None,
-        send_customer_fallback: bool = False,
+        send_customer_fallback: bool = False, provider_attempts: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
         """Every configured AI provider (all Mistral keys, all Groq fallback keys)
         failed for this request — distinct from _get_fallback_response so the
@@ -1866,6 +1867,12 @@ class CustomerSuccessAgent:
             "confidence_score": 40,
             "escalate": True,
             "provider_outage": True,
+            # Per-provider {"label", "reason"} entries from AllProvidersFailedError —
+            # lets a caller (message_processor.py's provider-outage retry queue)
+            # classify rate-limit/quota/timeout as retryable vs. an unclassified
+            # reason (e.g. a bad key/model) as fast-fail, without re-deriving
+            # that from raw exception text itself.
+            "provider_attempts": provider_attempts or [],
             "escalation_reason": PROVIDER_OUTAGE_REASON,
             "reply_body": reply_body,
             "ai_reply_generated": False,

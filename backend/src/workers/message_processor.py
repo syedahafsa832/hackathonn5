@@ -422,6 +422,35 @@ class UnifiedMessageProcessor:
                 ticket_id=early_ticket_id, on_progress=_on_progress,
             )
             logger.info(f"[TIMING] AI generation (RAG+LLM): {time.monotonic() - t_ai_start:.2f}s")
+
+            # Every configured AI provider failed for this request (see
+            # customer_success_agent._get_provider_failure_response). This is
+            # temporary provider unavailability, not a customer escalation —
+            # persist the work as a bounded, resumable retry instead of
+            # permanently marking the ticket "escalated" (see
+            # provider_retry_service.py / provider_retry_worker.py for the
+            # recovery mechanism). Only applies once the ticket already
+            # exists (STAGE 1.8) — on the rare path where it doesn't yet,
+            # falls through to the normal escalation below rather than
+            # silently dropping the message with nothing to retry against.
+            if ai_result.get("provider_outage") and early_ticket_id:
+                from src.services import provider_retry_service
+                attempts = ai_result.get("provider_attempts") or []
+                supabase_update("tickets", {"id": f"eq.{early_ticket_id}"}, {
+                    "status": "ai_retry_pending",
+                    "escalation_reason": ai_result.get("escalation_reason"),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                })
+                queued = provider_retry_service.enqueue_retry(
+                    early_ticket_id, store_id, attempts, ai_result.get("escalation_reason") or "",
+                )
+                _log_ticket_event(
+                    early_ticket_id, store_id, "provider_outage",
+                    "AI provider temporarily unavailable — retry scheduled" if queued
+                    else "AI provider temporarily unavailable — retry already scheduled",
+                )
+                logger.info(f"[PROCESSOR] Provider outage — ticket {early_ticket_id} queued for automatic retry")
+                return {"ticket_id": early_ticket_id, "status": "ai_retry_pending"}
             # ai_reply_generated is only set on the real model-generated path —
             # every fallback path (provider outage, empty response, JSON parse
             # error) returns the same canned "having trouble" reply_body
@@ -672,6 +701,186 @@ class UnifiedMessageProcessor:
             logger.error(f"[PROCESSOR] ERROR: {str(e)}", exc_info=True)
             logger.info(f"[TIMING] Total pipeline (errored): {time.monotonic() - t_start:.2f}s")
             return {"ticket_id": None, "status": "error", "error": str(e)}
+
+    async def retry_pending_response(self, retry_row: Dict[str, Any]) -> Dict[str, Any]:
+        """Resume AI processing for a ticket that hit a provider outage (see
+        provider_retry_service.py, called from provider_retry_worker.py once
+        a job's next_retry_at is due). Re-fetches the ticket and its current
+        latest customer message fresh — never reuses anything from the
+        original failed attempt — and re-runs the same routing/decision/send
+        path STAGE 5-10 of process_message() above uses, skipping only
+        ticket creation (the ticket already exists) and channel filtering
+        (already passed the first time; the failure was provider-side, not
+        about this customer's message).
+
+        Returns {"outcome": "sent" | "cancelled" | "retryable_failure" |
+        "no_action", ...}. "retryable_failure" means the provider is still
+        unavailable — provider_retry_worker.py reschedules or exhausts the
+        row for that case; every other outcome already marks retry_row
+        succeeded/cancelled here."""
+        from src.services import provider_retry_service, plan_service
+
+        ticket_id = retry_row["ticket_id"]
+        ticket_rows = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
+        if not ticket_rows:
+            provider_retry_service.mark_cancelled(retry_row["id"], "ticket_no_longer_exists")
+            return {"outcome": "cancelled", "reason": "ticket_no_longer_exists"}
+        ticket = ticket_rows[0]
+
+        # ── Stop conditions, revalidated fresh before any AI work at all ──
+        if provider_retry_service.already_responded(ticket):
+            provider_retry_service.mark_cancelled(retry_row["id"], "already_responded")
+            return {"outcome": "cancelled", "reason": "already_responded"}
+        if await supabase_service.check_conversation_override(ticket_id):
+            provider_retry_service.mark_cancelled(retry_row["id"], "human_takeover")
+            return {"outcome": "cancelled", "reason": "human_takeover"}
+
+        store_id = ticket.get("brand_id") or ticket.get("store_id")
+        customer_email = ticket.get("customer_email")
+        customer_name = ticket.get("customer_name")
+        subject = ticket.get("subject") or "Support Request"
+        channel = ticket.get("channel") or "email"
+
+        # Re-derive the message to answer from the ticket's CURRENT state —
+        # its latest inbound message, whatever the customer most recently
+        # sent, even if that's newer than the message that originally hit
+        # the outage (multi-turn safety: e.g. customer sent "hello?" after
+        # the failed attempt but before this retry runs).
+        messages = ticket.get("messages") or []
+        inbound = [m for m in messages if m.get("direction") == "inbound"]
+        content = inbound[-1]["body"] if inbound else ticket.get("message", "")
+
+        settings = await supabase_service.get_system_settings(store_id)
+        ai_mode = settings.get("ai_mode", "active")
+        confidence_threshold = settings.get("confidence_threshold", 0.65)
+        auto_reply_enabled = settings.get("auto_reply_enabled", True)
+
+        if ai_mode == "manual":
+            supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {"status": "requires_human"})
+            _log_ticket_event(ticket_id, store_id, "requires_human", "Routed to your team (AI is in manual mode)")
+            provider_retry_service.mark_cancelled(retry_row["id"], "ai_mode_manual")
+            return {"outcome": "cancelled", "reason": "ai_mode_manual"}
+
+        tenant_id = None
+        if store_id:
+            brand_rows = supabase_select("brands", {"id": f"eq.{store_id}"})
+            if brand_rows:
+                tenant_id = brand_rows[0].get("tenant_id")
+
+        if tenant_id:
+            ai_limit_check = plan_service.check_limit(tenant_id, "ai_replies")
+            if not ai_limit_check["allowed"]:
+                supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {"status": "requires_human"})
+                _log_ticket_event(ticket_id, store_id, "requires_human", "AI reply limit reached for your plan")
+                provider_retry_service.mark_cancelled(retry_row["id"], "ai_reply_limit_reached")
+                return {"outcome": "cancelled", "reason": "ai_reply_limit_reached"}
+
+        customer = await supabase_service.get_or_create_customer(email=customer_email, store_id=store_id, name=customer_name)
+        history = await self._build_customer_history(customer_email, store_id, ticket_id, messages)
+        if history:
+            customer["history"] = history
+
+        async def _on_progress(stage: str, label: str) -> None:
+            _log_ticket_event(ticket_id, store_id, stage, label)
+
+        attempt_n = (retry_row.get("retry_count") or 0) + 1
+        _log_ticket_event(ticket_id, store_id, "provider_retry", f"Retrying AI response (attempt {attempt_n})")
+
+        ai_result = await customer_success_agent.generate_channel_appropriate_response(
+            query=content, customer_info=customer, channel=channel, tenant_id=tenant_id,
+            store_id=store_id, ticket_id=ticket_id, on_progress=_on_progress,
+        )
+
+        if ai_result.get("provider_outage"):
+            # Still no provider available — provider_retry_worker.py reschedules/exhausts this row.
+            return {"outcome": "retryable_failure", "error": ai_result.get("escalation_reason", "")}
+
+        if ai_result.get("reply_body") and ai_result.get("ai_reply_generated") and tenant_id:
+            plan_service.record_ai_reply_event(
+                tenant_id, brand_id=store_id,
+                channel="gmail" if channel == "email" else channel,
+                ticket_id=ticket_id, customer_identifier=customer_email,
+                model_used=ai_result.get("model_used"),
+            )
+
+        confidence = ai_result.get("confidence_score", 0) / 100.0
+        intent = ai_result.get("intent", "unknown")
+        risk_level = ai_result.get("risk_level", "medium")
+        reply_body = ai_result.get("reply_body", "")
+
+        await brand_message_processor._log_conversation(
+            brand_id=store_id, ticket_id=ticket_id, user_message=content, ai_response=reply_body,
+            model=ai_result.get("model_used") or "unknown", usage=ai_result.get("ai_usage"),
+        )
+
+        is_overridden = await self._check_thread_override(customer_email, subject, store_id) if channel == "email" else False
+
+        routing = self._decide_ticket_routing(
+            ai_mode=ai_mode, is_overridden=is_overridden, confidence=confidence,
+            confidence_threshold=confidence_threshold, ai_flagged_escalate=ai_result.get("escalate", False),
+            risk_level=risk_level, reply_body=reply_body,
+        )
+        should_auto_reply = routing["should_auto_reply"]
+
+        update_fields = {
+            "intent": intent, "sentiment": ai_result.get("sentiment"), "risk_level": risk_level,
+            "confidence_score": ai_result.get("confidence_score"), "escalate": ai_result.get("escalate", False),
+            "escalation_reason": ai_result.get("escalation_reason"),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if routing["status"] is not None:
+            update_fields["status"] = routing["status"]
+            if routing["status"] == "auto_resolved":
+                update_fields["resolved_at"] = datetime.now(timezone.utc).isoformat()
+        if routing.get("ai_reply") is not None:
+            update_fields["ai_reply"] = routing["ai_reply"]
+        if routing.get("ai_draft") is not None:
+            update_fields["ai_draft"] = routing["ai_draft"]
+        supabase_update("tickets", {"id": f"eq.{ticket_id}"}, update_fields)
+
+        # One more idempotency check right before sending — a human could
+        # have replied in the seconds it took to regenerate above.
+        fresh_rows = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
+        fresh = fresh_rows[0] if fresh_rows else {}
+        if provider_retry_service.already_responded(fresh):
+            provider_retry_service.mark_succeeded(retry_row["id"])
+            return {"outcome": "cancelled", "reason": "already_responded_during_retry"}
+
+        email_actually_sent = False
+        if should_auto_reply and reply_body and auto_reply_enabled and channel == "email":
+            await self._send_email_with_logging(customer_email, subject, ai_result, ticket_id, store_id=store_id)
+            email_actually_sent = True
+            _log_ticket_event(ticket_id, store_id, "sent", "Email sent")
+        elif routing["status"] in ("escalated", "requires_human"):
+            _log_ticket_event(ticket_id, store_id, "escalated", update_fields.get("escalation_reason") or "Escalated for human review")
+        elif routing["status"] in ("ai_suggested", "auto_resolved_review"):
+            _log_ticket_event(ticket_id, store_id, "needs_review", "Draft ready for your team to review")
+
+        if reply_body:
+            try:
+                current_msgs = list(fresh.get("messages") or [])
+                current_count = fresh.get("auto_reply_count") or 0
+                now_iso = datetime.now(timezone.utc).isoformat()
+                msg_direction = "outbound" if email_actually_sent else "draft"
+                current_msgs.append({
+                    "from": "AI Agent", "body": reply_body, "sent_at": now_iso,
+                    "direction": msg_direction, "role": "assistant",
+                    **({"needs_email_verification": True} if ai_result.get("needs_identity_verification") else {}),
+                })
+                msg_update = {"messages": current_msgs, "updated_at": now_iso}
+                if email_actually_sent:
+                    settings_rows = (supabase_select("system_settings", {"store_id": f"eq.{store_id}"})
+                                      or supabase_select("system_settings", {"store_id": "eq.00000000-0000-0000-0000-000000000000"}))
+                    max_replies = settings_rows[0].get("max_auto_replies", 2) if settings_rows else 2
+                    new_count = current_count + 1
+                    msg_update["auto_reply_count"] = new_count
+                    msg_update["loop_risk"] = new_count >= max_replies
+                supabase_update("tickets", {"id": f"eq.{ticket_id}"}, msg_update)
+            except Exception as e:
+                logger.warning(f"[ProviderRetry] messages append failed (non-blocking): {e}")
+
+        provider_retry_service.mark_succeeded(retry_row["id"])
+        return {"outcome": "sent" if email_actually_sent else "no_action", "status": routing["status"]}
 
     def _decide_ticket_routing(
         self, ai_mode: str, is_overridden: bool, confidence: float,
