@@ -34,7 +34,22 @@ _retry = Retry(
     allowed_methods=["GET", "POST", "PATCH", "DELETE"],
     raise_on_status=False,
 )
-_adapter = HTTPAdapter(max_retries=_retry, pool_connections=4, pool_maxsize=10)
+# pool_maxsize was 10 - far below what this app's actual concurrency needs.
+# email_poller.py deliberately processes every fetched email "independently
+# (concurrently)" (see its own docstring), and a single poll cycle can carry
+# 19+ messages for one brand alone, each making several sequential calls
+# through this one shared, module-level session (dedup checks, filter/
+# guardian evaluation, ticket create/update, ticket_events inserts...) -
+# on top of multiple brands polling concurrently, the FastAPI server's own
+# concurrent request handling, and the background workers (retention,
+# provider-retry) that also share this session. Confirmed live via
+# "Connection pool is full, discarding connection" warnings during a normal
+# poll cycle - urllib3 falls back to opening a fresh, unpooled connection
+# per excess request rather than reusing one, which is slow at best and,
+# under sustained load, a real source of connection failures that several
+# call sites in this codebase catch with a bare `except Exception: pass`
+# and silently continue past.
+_adapter = HTTPAdapter(max_retries=_retry, pool_connections=4, pool_maxsize=50)
 _session = requests.Session()
 _session.mount("https://", _adapter)
 _session.mount("http://", _adapter)
