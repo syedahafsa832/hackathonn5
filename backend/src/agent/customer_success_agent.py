@@ -531,6 +531,40 @@ def _enforce_no_ungrounded_recommendation(structured: Dict[str, Any], recommenda
     return structured
 
 
+def _enforce_no_escalation_for_safe_identity_verification_response(
+    structured: Dict[str, Any], needs_identity_verification: bool,
+) -> Dict[str, Any]:
+    """A Shopify ownership-mismatch response (order found, but the
+    conversation's verified email doesn't match the order) is a complete,
+    safe, self-contained reply — Luna correctly withheld protected order
+    details and told the customer what's needed next. The tool_context
+    instruction for this case tells the model it's "a statement, followed
+    by escalation" so it states this plainly instead of looping the
+    customer through a clarifying question — but the model reliably also
+    sets escalate=True from that wording, which downstream routing
+    (message_processor.py's _decide_ticket_routing) then reads as "a human
+    must act", producing a ticket that shows "Escalated: Needs Your
+    Attention" even though the reply was already generated AND already
+    sent — confirmed live: a customer received Luna's response while the
+    merchant dashboard simultaneously showed the AI had failed.
+
+    Nothing here is actually waiting on the merchant — the ball is in the
+    CUSTOMER's court to verify their identity, not the merchant's to
+    review a pending action. Only overrides when a real reply exists
+    (never manufactures a "handled" state for a failed generation) and
+    risk_level isn't independently "high" for some other reason (never
+    weakens a genuine escalation signal)."""
+    if (
+        needs_identity_verification
+        and structured.get("reply_body")
+        and structured.get("risk_level") != "high"
+    ):
+        structured["escalate"] = False
+        if structured.get("status") == "escalated":
+            structured["status"] = "auto_resolved"
+    return structured
+
+
 # Reused by both the recommendation-anchor and variant-followup resolvers
 # below — the same "does this look like a real product name, not a
 # pronoun" filter the current-message anchor extraction already applies.
@@ -1595,6 +1629,15 @@ class CustomerSuccessAgent:
             # product or invented pairing when the live lookup didn't
             # actually produce a confident, grounded candidate.
             structured = _enforce_no_ungrounded_recommendation(structured, tool_results.get("recommendations"))
+
+            # 5e. Safety backstop: a safe identity-verification response
+            # (order found, email doesn't match, protected details withheld)
+            # is a complete, self-contained reply — not a request for
+            # merchant action. See the function's own docstring for the
+            # exact contradiction this closes.
+            structured = _enforce_no_escalation_for_safe_identity_verification_response(
+                structured, _needs_identity_verification
+            )
 
             # 6. Signature Enforcement - Make it natural, not robotic. Falls
             # back to the neutral idiom "there" ("Hey there,") - never a
