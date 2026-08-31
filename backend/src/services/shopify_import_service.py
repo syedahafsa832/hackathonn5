@@ -17,6 +17,7 @@ import asyncio
 import logging
 import re
 import requests
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from src.lib.supabase_client import supabase_select, supabase_delete
@@ -91,6 +92,46 @@ def _strip_html(html: str) -> str:
     text = re.sub(r"<[^>]+>", " ", html or "")
     text = re.sub(r"\s+", " ", text).strip()
     return text
+
+
+_SHOP_NAME_TAG_RE = re.compile(r"\{\{\s*shop_name\s*\}\}")
+_LAST_UPDATED_TAG_RE = re.compile(r"\{\{\s*last_updated\s*\}\}")
+
+
+def _format_policy_date(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).strftime("%B %d, %Y")
+    except Exception:
+        return None
+
+
+def _render_known_liquid_tags(body: str, shop_name: Optional[str], last_updated: Optional[str]) -> str:
+    """Shopify's built-in policy templates (Settings > Policies > "Create
+    from template", left uncustomized) are Liquid source, not finished
+    prose - policies.json returns it exactly as stored, complete with
+    {{ shop_name }} / {{ last_updated }} merge tags meant to be rendered by
+    Shopify's own theme engine at storefront display time, plus (further
+    into the body, not touched here) {% if %} region-specific legal
+    conditionals only Shopify's real merchant-settings context can evaluate.
+
+    Nothing here is missing or truncated - verified end-to-end against the
+    stored rag_chunks for an actual imported privacy policy: every
+    character Shopify returned is present, in order, from this literal
+    opening through the document's natural end. It just reads as broken
+    because these two tags were never substituted, right at the top of the
+    document where a merchant looks first. Only the two tags we have a
+    real, non-fabricated value for are replaced; anything else Shopify's
+    template might use is left as-is rather than guessed at.
+    """
+    if not body:
+        return body
+    if shop_name:
+        body = _SHOP_NAME_TAG_RE.sub(shop_name, body)
+    if last_updated:
+        body = _LAST_UPDATED_TAG_RE.sub(last_updated, body)
+    return body
 
 
 def _is_scope_error(message: str) -> bool:
@@ -257,11 +298,20 @@ async def _import_policies(client: ShopifyClient, brand_id: str) -> Dict[str, An
         logger.warning(f"[ShopifyImport] policies.json fetch failed for brand {brand_id}: {e}")
         return results
 
+    shop_name = None
+    try:
+        shop_resp = await asyncio.to_thread(client._request, "GET", "shop.json")
+        shop_name = ((shop_resp.get("data") or {}).get("shop") or {}).get("name")
+    except Exception:
+        pass  # merge-tag substitution is best-effort — raw {{ shop_name }} stays if unavailable
+
     policies = (resp.get("data") or {}).get("policies", [])
     imported = 0
     for policy in policies:
         title = (policy.get("title") or "Store Policy").strip()
+        last_updated = _format_policy_date(policy.get("updated_at"))
         body = _strip_html(policy.get("body", ""))
+        body = _render_known_liquid_tags(body, shop_name, last_updated)
         if not body:
             continue
         r = await brand_knowledge_service.upload_text(

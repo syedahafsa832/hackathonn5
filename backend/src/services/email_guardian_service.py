@@ -7,18 +7,18 @@ Layer 5: Confidence gate — low-confidence customer_support emails are quaranti
 Fires AFTER email_filter_service (Layers 1–3). Only called for emails with decision="allowed".
 Fail-open: any exception in evaluate() returns GUARDIAN_ALLOW so a real customer is never lost.
 """
+import asyncio
 import json
 import logging
-import os
 import re
 import time
 from dataclasses import dataclass
 from typing import Optional
 
 from bs4 import BeautifulSoup, Comment
-from openai import OpenAI
 
 from src.lib.supabase_client import supabase_insert, supabase_select
+from src.services.ai_provider_manager import ai_provider_manager, AllProvidersFailedError
 
 logger = logging.getLogger(__name__)
 
@@ -101,34 +101,6 @@ GUARDIAN_ALLOW = GuardianResult(
 
 class EmailGuardianService:
 
-    def __init__(self):
-        self._client: Optional[OpenAI] = None
-
-    def _get_client(self) -> Optional[OpenAI]:
-        if self._client is None:
-            api_key = os.getenv("MISTRAL_API_KEY") or os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                logger.warning("[Guardian] No MISTRAL_API_KEY — classifier unavailable")
-                return None
-            self._client = OpenAI(
-                api_key=api_key,
-                base_url=os.getenv("MISTRAL_API_BASE_URL", "https://api.mistral.ai/v1"),
-                # max_retries=0 + a bounded timeout: same fix already applied to
-                # ai_provider_manager.py and intent_detector.py this session. This
-                # client had neither set, so it fell back to the SDK's defaults
-                # (max_retries=2, up to a 600s timeout) - with Mistral's primary
-                # key responding slowly, 1 attempt + 2 SDK-internal retries
-                # compounded into the exact ~117-118s classifier latency observed
-                # live, once per incoming email, before a reply is even generated.
-                # No provider rotation of its own here (single key), so the
-                # existing except-block fallback (classification="unknown",
-                # relevant=False -> quarantine) is the fail-fast safety net,
-                # same as intent_detector's _keyword_fallback().
-                max_retries=0,
-                timeout=8.0,
-            )
-        return self._client
-
     # ── T003: Settings loader ────────────────────────────────────────────────
 
     def _load_settings(self, brand_id: str) -> dict:
@@ -153,10 +125,28 @@ class EmailGuardianService:
 
     # ── T005: AI classifier ──────────────────────────────────────────────────
 
-    def _classify_email(self, subject: str, body: str, brand_name: str = "our store") -> tuple[str, float, bool]:
-        """Call Mistral to classify email intent. Returns (classification, confidence, relevant_to_brand)."""
-        client = self._get_client()
-        if not client:
+    async def _classify_email(self, subject: str, body: str, brand_name: str = "our store") -> tuple[str, float, bool]:
+        """Classify email intent via the shared ai_provider_manager (Mistral
+        primary + fallback keys, then Groq — the same failover chain every
+        other AI call in this app goes through). Returns
+        (classification, confidence, relevant_to_brand).
+
+        This used to build its own single-key OpenAI client with zero
+        failover. That meant a single broken key/model (e.g. a subscription
+        tier that doesn't include the configured model — confirmed live via
+        a 403 "model not available in your subscription tier" on every
+        single call) made EVERY email hit the except-block fallback below —
+        (unknown, 0.0, False) — which unconditionally quarantines. Legitimate
+        order-status, cancellation, address-change, and refund requests were
+        all being quarantined for this exact reason, 100% of the time,
+        because the classifier itself could never succeed, not because any
+        of those messages were actually ambiguous. Routing through
+        ai_provider_manager (already used by the main agent and
+        intent_detector) means a single dead key/model no longer takes the
+        classifier down — it fails over to the next configured provider
+        first, same as everywhere else.
+        """
+        if not ai_provider_manager.has_providers:
             # No classifier available — genuinely uncertain. Per explicit product
             # requirement: uncertain means quarantine, not auto-allow. relevant=False
             # + confidence=0.0 routes this to the quarantine branch in evaluate().
@@ -167,26 +157,17 @@ class EmailGuardianService:
             subject=(subject or "")[:500],
             body=(body or "")[:2000],
         )
-        model = os.getenv("MISTRAL_MODEL", "mistral-large-latest")
         call_start = time.monotonic()
 
         try:
-            # Attempt with JSON mode first; fall back without it for older models
-            try:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.0,
-                    max_tokens=80,
-                    response_format={"type": "json_object"},
-                )
-            except Exception:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.0,
-                    max_tokens=80,
-                )
+            # ai_provider_manager already retries once per-provider without
+            # response_format if a provider rejects it, then fails over to
+            # the next configured provider — no need to duplicate that here.
+            response, provider_label, model, usage = await ai_provider_manager.create_chat_completion(
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                response_format={"type": "json_object"},
+            )
 
             raw = response.choices[0].message.content or ""
             data = json.loads(raw)
@@ -200,25 +181,20 @@ class EmailGuardianService:
             # key never turns into a silent false-positive block.
             relevant = bool(data.get("relevant", True))
 
-            # Usage logged (not returned - _classify_email's (classification,
-            # confidence, relevant) tuple already has real callers unpacking
-            # exactly 3 values; widening it isn't worth the churn for an
-            # internal spam/quarantine gate that never reaches ai_conversations
-            # anyway). Same "never fabricate 0" rule as the other two call
-            # sites - raw_usage may be None if the provider omitted it.
-            raw_usage = getattr(response, "usage", None)
-            total_tokens = getattr(raw_usage, "total_tokens", None) if raw_usage else None
             latency_ms = round((time.monotonic() - call_start) * 1000)
             logger.info(
                 f"[Guardian] Classifier → {classification} ({confidence:.2f}) relevant={relevant} "
-                f"tokens={total_tokens} latency_ms={latency_ms}"
+                f"provider={provider_label} model={model} tokens={usage.get('total_tokens')} latency_ms={latency_ms}"
             )
             return (classification, confidence, relevant)
 
+        except AllProvidersFailedError as e:
+            logger.warning(f"[Guardian] All AI providers failed: {e}")
+            # Every configured key/model failed — genuinely uncertain, so
+            # quarantine rather than auto-allow. See has_providers branch above.
+            return ("unknown", 0.0, False)
         except Exception as e:
-            logger.warning(f"[Guardian] Classifier error: {e}")
-            # Classifier call failed (rate limit, timeout, bad response) — uncertain,
-            # so quarantine rather than auto-allow. See _get_client() branch above.
+            logger.warning(f"[Guardian] Classifier response parse error: {e}")
             return ("unknown", 0.0, False)
 
     # ── T006: Quarantine record creation ─────────────────────────────────────
@@ -272,13 +248,13 @@ class EmailGuardianService:
 
     # ── T007: Main evaluate entry-point ──────────────────────────────────────
 
-    def evaluate(self, email: dict, brand_id: str, brand_name: str = "our store") -> GuardianResult:
+    async def evaluate(self, email: dict, brand_id: str, brand_name: str = "our store") -> GuardianResult:
         """
         Run Layers 4–5 on an email that passed Layers 1–3.
         Returns GUARDIAN_ALLOW on any unhandled exception (fail-open).
         """
         try:
-            settings = self._load_settings(brand_id)
+            settings = await asyncio.to_thread(self._load_settings, brand_id)
             support_only_mode   = settings["support_only_mode"]
             confidence_threshold = settings["confidence_threshold"]
             auto_reply_enabled  = settings["auto_reply_enabled"]
@@ -287,7 +263,7 @@ class EmailGuardianService:
             body    = email.get("body") or email.get("content", "")
             sender  = email.get("sender_email", "")
 
-            classification, confidence, relevant = self._classify_email(subject, body, brand_name)
+            classification, confidence, relevant = await self._classify_email(subject, body, brand_name)
 
             # Relevance gate: the email may look like customer support in shape
             # (formal tone, "support" in the sender, a registration/transactional
@@ -306,7 +282,7 @@ class EmailGuardianService:
                         quarantine_id=None,
                         auto_reply_enabled=auto_reply_enabled,
                     )
-                qid = self._create_quarantine_record(brand_id, email, classification, confidence)
+                qid = await asyncio.to_thread(self._create_quarantine_record, brand_id, email, classification, confidence)
                 logger.info(f"[email_filter] quarantined sender={sender} reason=unrelated_to_brand_low_confidence classification={classification}")
                 return GuardianResult(
                     decision="quarantined",
@@ -333,7 +309,7 @@ class EmailGuardianService:
 
             # Layer 5: confidence gate — quarantine low-confidence support emails
             if classification == "customer_support" and confidence < confidence_threshold:
-                qid = self._create_quarantine_record(brand_id, email, classification, confidence)
+                qid = await asyncio.to_thread(self._create_quarantine_record, brand_id, email, classification, confidence)
                 logger.info(f"[email_filter] quarantined sender={sender} reason=low_confidence classification={classification}")
                 return GuardianResult(
                     decision="quarantined",

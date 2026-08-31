@@ -745,7 +745,11 @@ function KnowledgeBaseTab() {
     }
   };
 
-  const hasFailedShopifySource = sources.some(s => s.source_type === 'shopify_sync' && s.status === 'failed');
+  // Was 'failed'-only, so a merchant whose import completed successfully but
+  // with stale/wrong content (e.g. an unrendered Shopify policy template)
+  // had no way to pull a fresh import once the importer itself improved —
+  // completed is a valid reason to retry too, not just failed.
+  const hasShopifySource = sources.some(s => s.source_type === 'shopify_sync');
 
   const handleRetrySync = async () => {
     if (!brandId) return;
@@ -823,7 +827,7 @@ function KnowledgeBaseTab() {
       <div>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
           <div style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)' }}>Knowledge Sources</div>
-          {hasFailedShopifySource && (
+          {hasShopifySource && (
             <button
               onClick={handleRetrySync}
               disabled={retrying}

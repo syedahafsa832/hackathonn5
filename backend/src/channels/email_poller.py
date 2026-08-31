@@ -329,8 +329,12 @@ class EmailPoller:
                     return
 
                 # ── Guardian evaluation (Layers 4–5: AI intent + confidence gate) ──
-                guardian_result = await asyncio.to_thread(
-                    email_guardian_service.evaluate, email, brand_id, brand_name=brand.get("name")
+                # evaluate() is async now — it awaits ai_provider_manager directly,
+                # which owns a loop-bound semaphore (mistral_limiter.py) and can't
+                # be driven from a separate thread's event loop the way
+                # asyncio.to_thread + evaluate()'s own internals used to run.
+                guardian_result = await email_guardian_service.evaluate(
+                    email, brand_id, brand_name=brand.get("name")
                 )
                 await asyncio.to_thread(
                     email_guardian_service.log_guardian_decision, brand_id, sender, thread_id, guardian_result
