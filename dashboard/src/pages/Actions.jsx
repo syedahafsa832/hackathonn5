@@ -129,6 +129,12 @@ function ActionCard({ action, onApprove, onReject }) {
     ? `Action failed: ${action.error_message}. Marked for manual review.`
     : null;
   const isRefund = action.action_type === 'refund' || action.action_type === 'REFUND';
+  // The `actions` table has no top-level order_total/amount column - the
+  // real dollar figure only ever lives inside extracted_data.order_total
+  // (see return_actions_integration.py's _create_action). Reading
+  // action.order_total/action.amount directly always fell through to
+  // undefined, showing "$0.00" for the full-refund amount below.
+  const orderTotal = action.extracted_data?.order_total || 0;
 
   const handleApprove = async () => {
     setApproveError('');
@@ -183,7 +189,7 @@ function ActionCard({ action, onApprove, onReject }) {
       <div style={{ fontSize: '13px', color: '#64748B', display: 'flex', flexDirection: 'column', gap: '10px' }}>
         <div>
           <strong style={{ fontSize: '14px', fontWeight: '500', color: '#0F172A' }}>{action.customer_name || action.customer_email}</strong>
-          {action.order_total && ` · $${action.order_total}`}
+          {orderTotal > 0 && ` · $${orderTotal.toFixed(2)}`}
         </div>
 
         {action.original_message && (
@@ -322,11 +328,11 @@ function ActionCard({ action, onApprove, onReject }) {
             {isRefund && (
               <div style={{ marginBottom: '8px' }}>
                 <label style={{ display: 'block', fontSize: '12px', color: '#64748B', marginBottom: '4px' }}>
-                  Partial refund amount (optional, leave blank for the full ${(action.amount || 0).toFixed(2)})
+                  Partial refund amount (optional, leave blank for the full ${orderTotal.toFixed(2)})
                 </label>
                 <input
                   type="number" min="0.01" step="0.01"
-                  placeholder={`Full refund: $${(action.amount || 0).toFixed(2)}`}
+                  placeholder={`Full refund: $${orderTotal.toFixed(2)}`}
                   value={amountOverride}
                   onChange={e => setAmountOverride(e.target.value)}
                   disabled={approving}

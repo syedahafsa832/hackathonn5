@@ -19,6 +19,15 @@ function ConfidencePill({ score }) {
 }
 
 export default function ActionCard({ action, onApproved, onRejected, compact }) {
+  // The `actions` table has no top-level amount/order_total column - the
+  // real dollar figure only ever lives inside extracted_data.order_total
+  // (see return_actions_integration.py's _create_action and
+  // migrations/003_saas_multi_tenant.sql's own "amount, new_address, etc."
+  // comment on that JSONB column). `action.amount` never existed on this
+  // schema, so reading it always fell back to $0.00 here - a real order
+  // total (e.g. a $25 refund) displayed as "$0.00" before a merchant
+  // approved it.
+  const orderTotal = action.extracted_data?.order_total || 0;
   const [rejecting, setRejecting] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [loading, setLoading] = useState(false);
@@ -48,7 +57,7 @@ export default function ActionCard({ action, onApproved, onRejected, compact }) 
           success: true,
           message: data.message || 'Action executed successfully',
           shopify_refund_id: data.execution_result?.refund_id || data.execution_result?.id,
-          amount: body?.amount ?? action.amount,
+          amount: body?.amount ?? orderTotal,
         });
         onApproved?.(action.id);
       } else {
@@ -76,7 +85,7 @@ export default function ActionCard({ action, onApproved, onRejected, compact }) 
   };
 
   const actionLabel = action.action_type === 'refund'
-    ? `Issue $${(action.amount || 0).toFixed(2)} refund`
+    ? `Issue $${orderTotal.toFixed(2)} refund`
     : action.action_type === 'cancel_order'
     ? 'Cancel order'
     : action.action_type === 'exchange'
@@ -84,7 +93,7 @@ export default function ActionCard({ action, onApproved, onRejected, compact }) 
     : action.action_type === 'change_address'
     ? 'Change delivery address'
     : action.action_type === 'discount'
-    ? `Apply $${(action.amount || 0).toFixed(2)} discount`
+    ? `Apply $${orderTotal.toFixed(2)} discount`
     : action.action_type || 'Action';
 
   const orderRef = action.order_number || action.order_id ? `for order #${action.order_number || action.order_id}` : '';
@@ -159,11 +168,11 @@ export default function ActionCard({ action, onApproved, onRejected, compact }) 
       {!result && !rejecting && action.action_type === 'refund' && (
         <div style={{ marginBottom: '10px' }}>
           <label style={{ display: 'block', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
-            Partial refund amount (optional, leave blank for the full ${(action.amount || 0).toFixed(2)})
+            Partial refund amount (optional, leave blank for the full ${orderTotal.toFixed(2)})
           </label>
           <input
             type="number" min="0.01" step="0.01"
-            placeholder={`Full refund: $${(action.amount || 0).toFixed(2)}`}
+            placeholder={`Full refund: $${orderTotal.toFixed(2)}`}
             value={amountOverride}
             onChange={e => { setAmountOverride(e.target.value); setAmountError(''); }}
             disabled={loading}

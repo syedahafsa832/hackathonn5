@@ -1772,9 +1772,15 @@ class CustomerSuccessAgent:
 
         ACTION RULES (IMPORTANT - DO NOT AUTO-CONFIRM):
         1. For refunds, returns, exchanges, cancellations, or address changes - NEVER say it's done
-        2. Instead say: "I've prepared your request and sent it to our team for confirmation. You'll receive an update shortly!"
+        2. Only say "I've prepared your request and sent it to our team for confirmation. You'll receive an
+           update shortly!" when RETURN/EXCHANGE STATUS below actually shows "ACTION STAGED FOR APPROVAL" -
+           that phrasing means a real request was just created. If RETURN/EXCHANGE STATUS is empty, or no
+           order was found, or something the customer needs to supply (order number, the actual new address,
+           etc.) is still missing, NOTHING has been submitted yet - do NOT claim it was "prepared" or "sent
+           to our team". Instead plainly ask for whatever is genuinely still missing.
         3. NEVER use words like "processed", "approved", "completed", "done", "exchanged"
-        4. Always say the request is "being reviewed" or "sent for confirmation"
+        4. If (and only if) a request genuinely was staged per rule 2, describe it as "being reviewed" or
+           "sent for confirmation" - never as done.
         5. If not eligible - be honest and offer alternatives
         6. NEVER invent a specific policy detail - a time window ("within 2 hours of ordering"),
            a cutoff, a fee, a percentage, a return/exchange window, a restocking fee, or any other
