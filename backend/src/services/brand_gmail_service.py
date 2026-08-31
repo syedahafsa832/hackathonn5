@@ -304,6 +304,14 @@ class BrandGmailService:
         ).execute()
         messages = res.get("messages", [])
         logger.info(f"[BrandGmail] {len(messages)} message(s) in {brand.get('name')} inbox")
+        # Temporary diagnostic: only the count was logged before, which can't
+        # distinguish "Gmail's search never returned this message" from "it
+        # was returned and something downstream dropped it silently" - see
+        # the live investigation into a same-thread reply never reaching
+        # this brand's ticket despite being visible (and not spam) in Gmail
+        # itself. Query is logged too since Gmail's `after:` date boundary
+        # is evaluated in this account's OWN timezone setting, not UTC/ours.
+        logger.info(f"[BrandGmail] query={q!r} message_ids={[m.get('id') for m in messages]}")
 
         emails = []
         for msg in messages[:max_results]:
