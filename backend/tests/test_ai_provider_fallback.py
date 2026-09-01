@@ -137,10 +137,13 @@ def test_load_providers_appends_groq_last_with_its_own_base_url():
     assert groq.model == "llama-3.1-8b-instant"
 
 
-def test_load_providers_inserts_openrouter_between_mistral_and_groq():
-    """Recommended fallback chain: Mistral primary -> OpenRouter (two free
-    models on one key) -> Groq. Confirms the exact requested order and that
-    both OpenRouter tiers share the one configured key."""
+def test_load_providers_interleaves_openrouter_around_mistral_primary():
+    """Recommended fallback chain: OpenRouter's first free model -> Mistral
+    primary -> OpenRouter's second free model -> any extra Mistral keys ->
+    Groq. Spreads load across OpenRouter and Mistral up front rather than
+    exhausting every Mistral key before OpenRouter is ever tried. Confirms
+    the exact requested order and that both OpenRouter tiers share the one
+    configured key."""
     env = {
         "MISTRAL_API_KEY": "mistral-primary-key",
         "OPENROUTER_API_KEY": "sk-or-test-key",
@@ -151,14 +154,36 @@ def test_load_providers_inserts_openrouter_between_mistral_and_groq():
         providers = mgr._load_providers()
 
     labels = [p.label for p in providers]
-    assert labels == ["primary", "openrouter_fallback_1", "openrouter_fallback_2", "groq_fallback_1"]
-    or1, or2 = providers[1], providers[2]
+    assert labels == ["openrouter_fallback_1", "primary", "openrouter_fallback_2", "groq_fallback_1"]
+    or1, or2 = providers[0], providers[2]
     assert or1.api_key == "sk-or-test-key"
     assert or2.api_key == "sk-or-test-key"
     assert or1.base_url == "https://openrouter.ai/api/v1"
     assert or2.base_url == "https://openrouter.ai/api/v1"
     assert or1.model == "mistralai/mistral-nemo:free"
     assert or2.model == "meta-llama/llama-3.3-70b-instruct:free"
+    assert providers[1].model == "mistral-small-latest"
+
+
+def test_load_providers_puts_extra_mistral_keys_after_both_openrouter_tiers():
+    """Extra Mistral fallback keys (MISTRAL_API_KEY_FALLBACK_N) come after
+    BOTH OpenRouter tiers, not between primary and OpenRouter — matches the
+    same "spread load first" ordering as the two-provider case above."""
+    env = {
+        "MISTRAL_API_KEY": "mistral-primary-key",
+        "MISTRAL_API_KEY_FALLBACK_1": "mistral-fallback-key",
+        "OPENROUTER_API_KEY": "sk-or-test-key",
+        "GROQ_API_KEY": "gsk_test_key",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        mgr = AIProviderManager.__new__(AIProviderManager)
+        providers = mgr._load_providers()
+
+    labels = [p.label for p in providers]
+    assert labels == [
+        "openrouter_fallback_1", "primary", "openrouter_fallback_2",
+        "fallback_1", "groq_fallback_1",
+    ]
 
 
 def test_load_providers_omits_openrouter_when_unset():
@@ -180,7 +205,7 @@ def test_openrouter_model_fallbacks_are_individually_overridable():
         mgr = AIProviderManager.__new__(AIProviderManager)
         providers = mgr._load_providers()
 
-    or1, or2 = providers[1], providers[2]
+    or1, or2 = providers[0], providers[2]
     assert or1.model == "custom/model-a:free"
     # Only fallback_1 was overridden - fallback_2 keeps its own default.
     assert or2.model == "meta-llama/llama-3.3-70b-instruct:free"
@@ -229,15 +254,20 @@ def test_client_for_uses_each_providers_own_base_url():
 
 
 @pytest.mark.asyncio
-async def test_full_chain_falls_back_mistral_to_openrouter_to_groq():
-    """End-to-end proof of the recommended chain: Mistral primary fails,
-    both OpenRouter tiers fail, Groq finally succeeds - one response, every
-    intermediate provider tried exactly once, in order."""
-    mgr = _manager_with("primary")
-    mgr._providers.append(_Provider("openrouter_fallback_1", "sk-or-test", "mistralai/mistral-nemo:free", base_url="https://openrouter.ai/api/v1"))
-    mgr._providers.append(_Provider("openrouter_fallback_2", "sk-or-test", "meta-llama/llama-3.3-70b-instruct:free", base_url="https://openrouter.ai/api/v1"))
-    mgr._providers.append(_Provider("groq_fallback_1", "gsk_test", "llama-3.1-8b-instant", base_url="https://api.groq.com/openai/v1"))
-    for label in ("primary", "openrouter_fallback_1", "openrouter_fallback_2"):
+async def test_full_chain_falls_back_openrouter_mistral_openrouter_to_groq():
+    """End-to-end proof of the recommended (interleaved) chain: OpenRouter's
+    first free model fails, Mistral primary fails, OpenRouter's second free
+    model fails, Groq finally succeeds - one response, every intermediate
+    provider tried exactly once, in the actual production order."""
+    mgr = AIProviderManager.__new__(AIProviderManager)
+    mgr._providers = [
+        _Provider("openrouter_fallback_1", "sk-or-test", "mistralai/mistral-nemo:free", base_url="https://openrouter.ai/api/v1"),
+        _Provider("primary", "key-primary", "mistral-small-latest"),
+        _Provider("openrouter_fallback_2", "sk-or-test", "meta-llama/llama-3.3-70b-instruct:free", base_url="https://openrouter.ai/api/v1"),
+        _Provider("groq_fallback_1", "gsk_test", "llama-3.1-8b-instant", base_url="https://api.groq.com/openai/v1"),
+    ]
+    mgr._clients = {}
+    for label in ("openrouter_fallback_1", "primary", "openrouter_fallback_2"):
         client = MagicMock()
         client.chat.completions.create.side_effect = Rate429("429 rate limit")
         mgr._clients[label] = client
@@ -252,7 +282,7 @@ async def test_full_chain_falls_back_mistral_to_openrouter_to_groq():
     assert model == "llama-3.1-8b-instant"
     assert response.choices[0].message.content == "groq reply"
     assert usage["attempts"] == 4
-    for prior_label in ("primary", "openrouter_fallback_1", "openrouter_fallback_2"):
+    for prior_label in ("openrouter_fallback_1", "primary", "openrouter_fallback_2"):
         mgr._clients[prior_label].chat.completions.create.assert_called_once()
 
 

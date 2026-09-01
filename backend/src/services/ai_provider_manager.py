@@ -6,10 +6,11 @@ providers and keys. A single rate-limited/expired key was escalating tickets
 ("System error: Rate limited") that a second key or provider could have
 handled — this exists to try the next configured option before giving up.
 
-Default chain: Mistral primary (mistral-small-latest) -> OpenRouter free-tier
-fallbacks (mistral-nemo, then llama-3.3-70b) -> Groq (llama-3.1-8b-instant),
-each tier configured/overridden independently via env vars — see
-_load_providers() below.
+Default chain: OpenRouter (mistral-nemo, free tier) -> Mistral primary
+(mistral-small-latest) -> OpenRouter (llama-3.3-70b, free tier) -> any extra
+Mistral fallback keys -> Groq (llama-3.1-8b-instant), each tier
+configured/overridden independently via env vars — see _load_providers()
+below.
 
 Do not construct a per-call OpenAI(api_key=...) client elsewhere for ticket
 reply generation — go through get_provider_manager() so every caller gets the
@@ -109,23 +110,29 @@ class AIProviderManager:
             or os.getenv("MISTRAL_API_KEY")
             or os.getenv("OPENAI_API_KEY")
         )
+        openrouter_key = os.getenv("OPENROUTER_API_KEY")
+
+        def _openrouter_provider(i: int) -> _Provider:
+            model = os.getenv(f"OPENROUTER_MODEL_FALLBACK_{i}", OPENROUTER_MODEL_FALLBACK_DEFAULTS[i])
+            return _Provider(f"openrouter_fallback_{i}", openrouter_key, model, base_url=OPENROUTER_DEFAULT_BASE_URL)
+
+        # Interleaved order: OpenRouter's first free model, then Mistral
+        # primary, then OpenRouter's second free model, then any extra
+        # Mistral keys — spreads load across the two providers up front
+        # instead of exhausting every Mistral key before OpenRouter is ever
+        # tried (each OpenRouter tier shares OPENROUTER_API_KEY; see
+        # OPENROUTER_MODEL_FALLBACK_DEFAULTS above for why that's fine —
+        # OpenRouter rate-limits per key+model, not per key).
+        if openrouter_key:
+            providers.append(_openrouter_provider(1))
         if primary_key:
             providers.append(_Provider("primary", primary_key, os.getenv("MISTRAL_MODEL_PRIMARY", DEFAULT_MODEL)))
+        if openrouter_key:
+            providers.append(_openrouter_provider(2))
         for i in (1, 2, 3):
             key = os.getenv(f"MISTRAL_API_KEY_FALLBACK_{i}")
             if key:
                 providers.append(_Provider(f"fallback_{i}", key, os.getenv(f"MISTRAL_MODEL_FALLBACK_{i}", DEFAULT_MODEL)))
-
-        # OpenRouter: tried after every Mistral key above has failed, before
-        # Groq — two free models on one key (see OPENROUTER_MODEL_FALLBACK_DEFAULTS
-        # above for why this doesn't need a key per tier like Mistral/Groq do).
-        openrouter_key = os.getenv("OPENROUTER_API_KEY")
-        if openrouter_key:
-            for i in (1, 2):
-                model = os.getenv(f"OPENROUTER_MODEL_FALLBACK_{i}", OPENROUTER_MODEL_FALLBACK_DEFAULTS[i])
-                providers.append(_Provider(
-                    f"openrouter_fallback_{i}", openrouter_key, model, base_url=OPENROUTER_DEFAULT_BASE_URL,
-                ))
 
         # Last-resort fallback on a different provider entirely (Groq), tried only
         # after every Mistral/OpenRouter key above has failed — keeps ticket replies
