@@ -1049,6 +1049,11 @@ async def execute_refund(
                 reason="Customer refund request",
                 restock=True,
                 notify_customer=False,
+                # Same key the local financial_audit replay cache above is
+                # keyed on when the caller supplies one - ties the two
+                # idempotency layers together instead of only protecting
+                # against a retry our own DB happened to record.
+                idempotency_key=idempotency_key,
             )
         except Exception as shopify_err:
             supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {"status": ticket.get("status")})

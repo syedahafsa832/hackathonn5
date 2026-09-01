@@ -101,3 +101,53 @@ def test_approve_still_executes_when_claim_succeeds():
 
     assert resp.status_code == 200
     assert resp.json()["success"] is True
+
+
+def test_approve_passes_action_id_as_idempotency_key_to_process_refund():
+    """The sequential fail-then-retry gap this same file's other tests don't
+    cover: the atomic claim above only stops two CONCURRENT approvals, not a
+    genuinely sequential retry (approve -> Shopify call fails/times out ->
+    action marked "failed" -> merchant clicks /retry, which resets status
+    back to "pending" -> approve again). process_refund() itself now needs
+    a stable idempotency_key to detect that case (see
+    test_refund_idempotency.py) - this just confirms approve_action() is
+    the one supplying it, using the action's own id."""
+    def fake_select(table, params=None):
+        if table == "actions":
+            return [{"id": "action-1", "brand_id": OWN_BRAND, "status": "pending", "action_type": "refund", "order_id": "1001"}]
+        if table == "brands":
+            return [{"id": OWN_BRAND, "shopify_connected": True, "shopify_domain": "x.myshopify.com", "shopify_access_token": "enc"}]
+        return []
+
+    with patch("src.api.routes.v2_actions.supabase_select", side_effect=fake_select), \
+         patch("src.api.routes.v2_actions.supabase_update", return_value={"id": "action-1", "status": "approved"}), \
+         patch("src.api.routes.v2_actions.supabase_insert", return_value={}), \
+         patch("src.services.shopify_service.decrypt_token", return_value="tok"), \
+         patch("src.services.shopify_service.ShopifyClient.process_refund", return_value={"success": True, "message": "ok"}) as mock_refund, \
+         patch("src.services.actions_service.actions_service._post_execution_notify", return_value=None):
+        resp = client.post("/api/v2/actions/action-1/approve")
+
+    assert resp.status_code == 200
+    mock_refund.assert_called_once()
+    assert mock_refund.call_args.kwargs.get("idempotency_key") == "action-1"
+
+
+def test_retry_resets_a_failed_action_to_pending_for_re_approval():
+    """Confirms the exact mechanism that makes the sequential retry gap
+    real: /retry resets status back to "pending", after which /approve can
+    be called again - so process_refund() being called with the SAME
+    idempotency_key both times (previous test) is what actually closes the
+    loop, not just this reset alone."""
+    def fake_select(table, params=None):
+        if table == "actions":
+            return [{"id": "action-1", "brand_id": OWN_BRAND, "status": "failed", "action_type": "refund"}]
+        return []
+
+    with patch("src.api.routes.v2_actions.supabase_select", side_effect=fake_select), \
+         patch("src.api.routes.v2_actions.supabase_update", return_value={"id": "action-1", "status": "pending"}) as mock_update, \
+         patch("src.api.routes.v2_actions.supabase_insert", return_value={}):
+        resp = client.post("/api/v2/actions/action-1/retry")
+
+    assert resp.status_code == 200
+    match_arg, data_arg = mock_update.call_args[0][1], mock_update.call_args[0][2]
+    assert data_arg.get("status") == "pending"

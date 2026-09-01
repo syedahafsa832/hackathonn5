@@ -460,6 +460,14 @@ async def approve_action(
                     reason=action.get("reason", "Customer request"),
                     restock=action.get("extracted_data", {}).get("restock", True),
                     notify_customer=False,
+                    # action_id is a stable identity across a fail->retry
+                    # cycle (see /retry below, which resets a failed action
+                    # back to "pending" for re-approval) - if the FIRST
+                    # attempt's Shopify call actually succeeded but we never
+                    # learned that (lost response, crash before persisting),
+                    # this lets process_refund() find and replay that result
+                    # instead of firing a second, genuinely duplicate refund.
+                    idempotency_key=action_id,
                 )
             elif action["action_type"] == "cancel_order":
                 execution_result = await client.cancel_order(

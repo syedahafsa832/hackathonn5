@@ -158,7 +158,7 @@ def _approved_action(amount_in_extracted_data=20.0):
 def _run_approve(action, override_amount=None):
     captured = {}
 
-    async def fake_refund(order_id, amount=None, reason=None):
+    async def fake_refund(order_id, amount=None, reason=None, **kwargs):
         captured["amount"] = amount
         return {"success": True, "refund_id": 999, "amount": amount, "message": "Refunded"}
 
@@ -213,7 +213,7 @@ def _run_approve_capturing_updates(action, override_amount=None):
         update_calls.append((table, match, data))
         return {"id": "a1"}
 
-    async def fake_refund(order_id, amount=None, reason=None):
+    async def fake_refund(order_id, amount=None, reason=None, **kwargs):
         return {"success": True, "refund_id": 999, "amount": amount, "message": "Refunded"}
 
     fake_client = type("FakeClient", (), {"process_refund": staticmethod(fake_refund)})()
@@ -278,7 +278,7 @@ def test_edit_tracking_write_failure_never_breaks_approval():
             raise Exception('column "was_edited" does not exist')
         return {"id": "a1"}
 
-    async def fake_refund(order_id, amount=None, reason=None):
+    async def fake_refund(order_id, amount=None, reason=None, **kwargs):
         return {"success": True, "refund_id": 999, "amount": amount, "message": "Refunded"}
 
     fake_client = type("FakeClient", (), {"process_refund": staticmethod(fake_refund)})()
@@ -335,7 +335,7 @@ def test_v2_actions_approve_amount_precedence_request_over_extracted_over_legacy
 
     captured = {}
 
-    async def fake_process_refund(self, order_id, amount=None, reason=None, restock=True, notify_customer=False):
+    async def fake_process_refund(self, order_id, amount=None, reason=None, restock=True, notify_customer=False, **kwargs):
         captured["amount"] = amount
         return {"success": True, "refund_id": 999, "message": "ok"}
 

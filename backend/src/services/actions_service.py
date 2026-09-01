@@ -502,7 +502,12 @@ class ActionsService:
                     execution_result = await shopify_client.process_refund(
                         order_id=order_id,
                         amount=refund_amount,
-                        reason=f"Customer request - Action {action_id[:8]}"
+                        reason=f"Customer request - Action {action_id[:8]}",
+                        # Same value already used for the local financial_audit
+                        # replay cache above (may be None for a caller that
+                        # didn't supply one - process_refund() no-ops the
+                        # Shopify-side check in that case, unchanged behavior).
+                        idempotency_key=idempotency_key,
                     )
 
                 elif action_type == ActionType.CANCEL_ORDER.value:

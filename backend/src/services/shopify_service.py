@@ -567,7 +567,8 @@ class ShopifyClient:
         amount: float = None,
         reason: str = None,
         restock: bool = False,
-        notify_customer: bool = True
+        notify_customer: bool = True,
+        idempotency_key: str = None,
     ) -> Dict[str, Any]:
         """
         Process a refund for an order.
@@ -576,6 +577,20 @@ class ShopifyClient:
             order_id: Order ID or number
             amount: Refund amount (None = full refund)
             reason: Reason for refund
+            idempotency_key: A stable identifier for the caller's own action
+                (e.g. the `actions.id` row this refund is executing). When
+                given, tagged into the refund's `note` field, and checked
+                against Shopify's OWN existing refunds for this order before
+                creating a new one — the authoritative backstop against a
+                double refund when our own local bookkeeping never learns
+                the first attempt actually succeeded (the HTTP response is
+                lost, the worker crashes/times out after Shopify already
+                processed the refund but before we record anything). A
+                caller retrying a `failed` action (see v2_actions.py's
+                /retry endpoint, which resets status back to "pending" so it
+                can be re-approved) hits this check on the very next
+                process_refund() call, before any new Shopify mutation is
+                attempted.
             restock: NOT CURRENTLY FUNCTIONAL — accepted but has no effect.
                 The refund payload built below (see "no refund_line_items"
                 comment) is a pure financial refund via `transactions`, never
@@ -630,6 +645,47 @@ class ShopifyClient:
                 ShopifyErrorCode.INVALID_REQUEST
             )
 
+        # Idempotency backstop: if a prior attempt for this EXACT caller
+        # action already created a refund on Shopify's side (our own record
+        # of that attempt never made it back — timeout, crash, lost
+        # response), find it and replay its result instead of creating a
+        # second, genuinely duplicate refund. Checked against Shopify itself,
+        # not just our local DB, since that's the one source of truth that
+        # can't have silently failed to record the first attempt.
+        note_tag = f"[tResolv-ref:{idempotency_key}]" if idempotency_key else None
+        if note_tag:
+            try:
+                existing_refunds = self._request("GET", f"orders/{shopify_order_id}/refunds.json")
+                for existing in existing_refunds.get("data", {}).get("refunds", []):
+                    if note_tag in (existing.get("note") or ""):
+                        existing_txns = existing.get("transactions", [])
+                        failed = [t for t in existing_txns if t.get("status") not in (None, "success")]
+                        if existing_txns and not failed:
+                            logger.info(f"[Shopify] Refund already exists for idempotency_key={idempotency_key} on order {shopify_order_id} — replaying, not re-issuing")
+                            return {
+                                "success": True,
+                                "refund_id": existing.get("id"),
+                                "amount": amount,
+                                "order_id": order_id,
+                                "order_name": order.get("name"),
+                                "message": f"Successfully refunded ${amount:.2f}",
+                                "already_processed": True,
+                            }
+                        # A prior tagged refund exists but never confirmed a
+                        # successful transaction — fall through and let this
+                        # attempt create a fresh one rather than replaying a
+                        # failure indefinitely.
+            except Exception as lookup_err:
+                # Fail toward safety, not toward silently re-issuing: if we
+                # can't confirm whether a prior refund exists, do NOT proceed
+                # to create a new one blind — surface this so a human checks
+                # Shopify directly rather than risking a double refund.
+                raise ShopifyError(
+                    "Could not verify whether this refund was already processed — "
+                    "please check Shopify admin before retrying.",
+                    ShopifyErrorCode.UNKNOWN_ERROR,
+                ) from lookup_err
+
         # Fetch the sale/capture transaction to use as parent_id
         parent_transaction_id = None
         try:
@@ -645,9 +701,12 @@ class ShopifyClient:
             logger.warning(f"[Shopify] Could not fetch transactions for refund parent_id: {txn_err}")
 
         # Build refund payload — no refund_line_items to avoid location requirement
+        note = reason or "Refund processed via AI Support System"
+        if note_tag:
+            note = f"{note} {note_tag}"
         refund_data = {
             "refund": {
-                "note": reason or "Refund processed via AI Support System",
+                "note": note,
                 "notify": notify_customer,
                 "shipping": {"full_refund": True},
             }
