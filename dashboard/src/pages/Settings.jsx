@@ -2329,6 +2329,10 @@ function IntegrationsTab() {
 
         {loading ? (
           <div className="skeleton" style={{ height: '36px', borderRadius: '4px', width: '200px' }} />
+        ) : status?.platform_managed ? (
+          <span style={{ fontSize: '13px', padding: '5px 12px', background: 'var(--success-light)', color: 'var(--success)', borderRadius: '4px', fontWeight: '600' }}>
+            ✓ Live tracking is already on — no setup needed
+          </span>
         ) : status?.connected ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
             <span style={{ fontSize: '13px', padding: '5px 12px', background: 'var(--success-light)', color: 'var(--success)', borderRadius: '4px', fontWeight: '600' }}>

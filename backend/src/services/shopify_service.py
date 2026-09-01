@@ -1288,11 +1288,55 @@ async def fetch_shopify_order(brand: dict, order_identifier: str) -> Optional[Di
         order = result["order"]
 
         tracking_number = tracking_url = carrier = None
+        shipments = []
         if order.get("fulfillments"):
             f = order["fulfillments"][0]
             tracking_number = f.get("tracking_number")
             tracking_url = f.get("tracking_url")
             carrier = f.get("tracking_company")
+
+            # Merchant-facing WISMO evidence: the same live Aftership lookup
+            # Luna uses (tracking_service.py), reused here for the ticket's
+            # Order Context panel - one entry per real fulfillment, not just
+            # the first, since an order can ship in multiple packages.
+            # Live-fetched on each view (same 30s cache as the order lookup
+            # above) rather than persisted, so this never goes stale and
+            # needs no new storage - consistent with how tracking_number/
+            # carrier already worked before this change.
+            from src.services.tracking_service import resolve_aftership_api_key
+            aftership_key = resolve_aftership_api_key(brand)
+            for fulfillment in order["fulfillments"]:
+                tn = fulfillment.get("tracking_number")
+                tc = fulfillment.get("tracking_company") or ""
+                shipment = {
+                    "tracking_number": tn,
+                    "tracking_url": fulfillment.get("tracking_url"),
+                    "carrier": tc,
+                    "normalized_status": None,
+                    "status_description": None,
+                    "latest_event": None,
+                    "latest_event_location": None,
+                    "latest_event_timestamp": None,
+                    "estimated_delivery": None,
+                }
+                if tn and aftership_key:
+                    try:
+                        from src.services.tracking_service import (
+                            get_tracking_status, shopify_carrier_to_aftership_slug,
+                        )
+                        slug = shopify_carrier_to_aftership_slug(tc)
+                        if slug:
+                            info = await get_tracking_status(tn, slug, aftership_key)
+                            if info:
+                                shipment["normalized_status"] = info.get("normalized_status")
+                                shipment["status_description"] = info.get("status_description")
+                                shipment["latest_event"] = info.get("latest_event")
+                                shipment["latest_event_location"] = info.get("latest_event_location")
+                                shipment["latest_event_timestamp"] = info.get("latest_event_timestamp")
+                                shipment["estimated_delivery"] = info.get("expected_delivery")
+                    except Exception as track_err:
+                        logger.warning(f"[fetch_shopify_order] Live tracking lookup failed for {tn} (non-blocking): {track_err}")
+                shipments.append(shipment)
 
         customer = order.get("customer") or {}
         first = customer.get("first_name", "")
@@ -1324,6 +1368,12 @@ async def fetch_shopify_order(brand: dict, order_identifier: str) -> Optional[Di
             "tracking_number": tracking_number,
             "tracking_url": tracking_url,
             "carrier": carrier,
+            # Full per-fulfillment list (with live tracking evidence where
+            # available) - always present, length == number of real Shopify
+            # fulfillments. Only non-null fields reflect real data; never
+            # fabricated. tracking_number/tracking_url/carrier above stay as
+            # the pre-existing first-shipment mirror for backward compat.
+            "shipments": shipments,
             "transactions": [
                 {
                     "id": str(t.get("id")),

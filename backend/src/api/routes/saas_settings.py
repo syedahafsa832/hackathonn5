@@ -643,19 +643,28 @@ class AftershipKeyRequest(BaseModel):
 
 @router.get("/aftership")
 async def get_aftership_status(tenant: TenantContext = Depends(get_current_tenant)):
-    """Return whether Aftership is configured for this brand."""
+    """Return whether Aftership is configured for this brand.
+
+    Platform-level AFTERSHIP_API_KEY (one shared credential for every
+    brand - see tracking_service.py) now covers this automatically; a
+    merchant's own key (this endpoint's POST/DELETE below) is only an
+    optional override, never required. `platform_managed` tells the
+    settings UI live tracking is already on so it doesn't ask the merchant
+    to paste a key that would just be redundant."""
     try:
+        from src.services.tracking_service import PLATFORM_AFTERSHIP_API_KEY
         brand = await _get_tenant_brand_async(tenant.tenant_id)
-        if not brand:
-            return {"connected": False}
-        key = brand.get("aftership_api_key") or ""
+        brand_key = (brand.get("aftership_api_key") or "") if brand else ""
+        if PLATFORM_AFTERSHIP_API_KEY:
+            return {"connected": True, "platform_managed": True, "key_preview": ""}
         return {
-            "connected": bool(key),
-            "key_preview": f"...{key[-4:]}" if len(key) > 4 else ("set" if key else ""),
+            "connected": bool(brand_key),
+            "platform_managed": False,
+            "key_preview": f"...{brand_key[-4:]}" if len(brand_key) > 4 else ("set" if brand_key else ""),
         }
     except Exception as e:
         logger.error(f"Aftership status error: {e}")
-        return {"connected": False}
+        return {"connected": False, "platform_managed": False}
 
 
 @router.post("/aftership")

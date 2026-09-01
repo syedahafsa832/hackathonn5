@@ -2,7 +2,16 @@
 Aftership Tracking Service
 ==========================
 Fetches live tracking status for a shipment using the Aftership v4 API.
-Called from the agent's order-status tool when a brand has aftership_api_key set.
+
+Platform-level credential (H1 fix): ONE AFTERSHIP_API_KEY, set once for the
+whole tResolv deployment, drives tracking for every connected brand - a
+merchant never configures anything. The older per-brand `brands.
+aftership_api_key` column (and its /settings/aftership UI) still exists and
+still works as a fallback/override when no platform key is set, since
+removing a live DB column/endpoint isn't "safe" territory - but it's no
+longer required, and the platform key always wins when both are present.
+See resolve_aftership_api_key() below - every caller goes through it now
+instead of reading brand.aftership_api_key directly.
 
 Production-hardening pass (post Phase 4): a short-TTL in-process cache avoids
 re-hitting Aftership for rapid customer follow-ups, one bounded retry recovers
@@ -12,6 +21,7 @@ since this service runs under a single gunicorn worker (see Dockerfile), so a
 plain dict/counter is fully effective without adding Redis or any new infra.
 """
 import logging
+import os
 import time
 from collections import Counter
 from typing import Optional
@@ -24,6 +34,21 @@ logger = logging.getLogger(__name__)
 
 AFTERSHIP_BASE = "https://api.aftership.com/v4"
 TIMEOUT = 5.0  # hard cap — never blocks Luna's reply
+
+# ── Platform-level credential ───────────────────────────────────────────────
+PLATFORM_AFTERSHIP_API_KEY = os.getenv("AFTERSHIP_API_KEY")
+
+
+def resolve_aftership_api_key(brand: Optional[dict]) -> Optional[str]:
+    """The single key used across every brand. Platform key (one shared
+    tResolv-wide credential, no merchant setup required) always wins when
+    configured; a brand's own legacy aftership_api_key is used only if no
+    platform key exists, so nothing already relying on it breaks. Never
+    reads customer input - `brand` is always the brand row already resolved
+    via tenant/brand_id, never anything derived from a message."""
+    if PLATFORM_AFTERSHIP_API_KEY:
+        return PLATFORM_AFTERSHIP_API_KEY
+    return (brand or {}).get("aftership_api_key") or None
 
 # ── Short-TTL response cache ──────────────────────────────────────────────────
 # Only successful lookups are cached — failures are handled separately by the
@@ -50,6 +75,74 @@ stats: Counter = Counter()
 
 class _RetryableTrackingError(Exception):
     """Raised for transient Aftership failures (5xx) so tenacity can retry once."""
+
+
+# ── Deterministic status normalization ─────────────────────────────────────
+# WISMO requirement: carrier/provider wording must never be classified by the
+# LLM - only this fixed mapping decides the normalized state. Message-text
+# overrides run first because Aftership's own `tag` enum has no distinct
+# value for some real states callers need (e.g. "arrived at a distribution
+# center" is still tag=InTransit; only the checkpoint's free-text message
+# distinguishes it).
+NORMALIZED_STATUSES = frozenset({
+    "LABEL_CREATED", "IN_TRANSIT", "AT_DISTRIBUTION_CENTER", "OUT_FOR_DELIVERY",
+    "DELIVERED", "DELAYED", "EXCEPTION", "AVAILABLE_FOR_PICKUP", "RETURNED", "UNKNOWN",
+})
+
+_TAG_TO_NORMALIZED = {
+    "pending":            "LABEL_CREATED",
+    "inforeceived":       "LABEL_CREATED",
+    "intransit":          "IN_TRANSIT",
+    "outfordelivery":     "OUT_FOR_DELIVERY",
+    "attemptfail":        "EXCEPTION",
+    "delivered":           "DELIVERED",
+    "exception":          "EXCEPTION",
+    "expired":            "EXCEPTION",
+    "availableforpickup": "AVAILABLE_FOR_PICKUP",
+}
+
+
+def normalize_status(tag: Optional[str], message: Optional[str] = None) -> str:
+    """Deterministic mapping from Aftership's raw tag + latest checkpoint
+    message to the fixed WISMO status enum (NORMALIZED_STATUSES). Never
+    calls the LLM - pure string matching, same contract for every caller."""
+    msg = (message or "").strip().lower()
+    if "distribution center" in msg or "sorting facility" in msg or "sorting center" in msg:
+        return "AT_DISTRIBUTION_CENTER"
+    if "out for delivery" in msg:
+        return "OUT_FOR_DELIVERY"
+    if "delay" in msg:
+        return "DELAYED"
+    if "returned to sender" in msg or "return to sender" in msg:
+        return "RETURNED"
+    return _TAG_TO_NORMALIZED.get((tag or "").strip().lower(), "UNKNOWN")
+
+
+# ── Failure-reason classification ───────────────────────────────────────────
+# get_tracking_status() keeps returning None on any failure (its existing,
+# widely-relied-on contract - see test_aftership_tracking.py) so this is
+# purely additive: the caller can read WHY the most recent call returned
+# None without get_tracking_status()'s own signature changing at all. Single
+# gunicorn worker (see Dockerfile) makes plain module state safe here, same
+# as the existing cache/cooldown state above.
+NO_TRACKING_NUMBER = "NO_TRACKING_NUMBER"
+CARRIER_UNKNOWN = "CARRIER_UNKNOWN"
+TRACKING_NOT_FOUND = "TRACKING_NOT_FOUND"
+TRACKING_PROVIDER_TIMEOUT = "TRACKING_PROVIDER_TIMEOUT"
+TRACKING_PROVIDER_RATE_LIMIT = "TRACKING_PROVIDER_RATE_LIMIT"
+TRACKING_PROVIDER_ERROR = "TRACKING_PROVIDER_ERROR"
+TRACKING_PROVIDER_UNAVAILABLE = "TRACKING_PROVIDER_UNAVAILABLE"  # cooldown engaged
+TRACKING_DATA_AVAILABLE = "TRACKING_DATA_AVAILABLE"
+
+_last_failure_reason: Optional[str] = None
+
+
+def get_last_failure_reason() -> Optional[str]:
+    """Classification of the most recent get_tracking_status() outcome - a
+    provider outage (TRACKING_PROVIDER_*) must never be reported to a
+    customer as a shipment delay. Call immediately after get_tracking_status()
+    returns None to find out why."""
+    return _last_failure_reason
 
 
 def get_tracking_stats() -> dict:
@@ -143,19 +236,23 @@ async def get_tracking_status(
 ) -> Optional[dict]:
     """
     Returns a plain tracking info dict, or None if unavailable / timed out.
-    Never raises — all errors are caught and logged.
+    Never raises — all errors are caught and logged. See
+    get_last_failure_reason() for why a None was returned.
     """
+    global _last_failure_reason
     cache_key = (carrier_slug, tracking_number)
     now = time.monotonic()
 
     cached = _cache.get(cache_key)
     if cached and cached[0] > now:
         stats["cache_hit"] += 1
+        _last_failure_reason = None
         logger.info(f"[Tracking] Cache hit for {carrier_slug}/{tracking_number}")
         return cached[1]
 
     if now < _cooldown_until:
         stats["skipped_cooldown"] += 1
+        _last_failure_reason = TRACKING_PROVIDER_UNAVAILABLE
         logger.warning(
             f"[Tracking] Skipping Aftership call for {carrier_slug}/{tracking_number} — "
             f"in failure cooldown ({int(_cooldown_until - now)}s remaining)"
@@ -176,11 +273,19 @@ async def get_tracking_status(
         if res.status_code == 404:
             stats["not_found"] += 1
             _record_success()  # a clean 404 answer means Aftership itself is healthy
+            _last_failure_reason = TRACKING_NOT_FOUND
             logger.info(f"[Tracking] {carrier_slug}/{tracking_number} not found in Aftership (404, {elapsed_ms}ms)")
+            return None
+        if res.status_code == 429:
+            stats["http_error"] += 1
+            _record_failure()
+            _last_failure_reason = TRACKING_PROVIDER_RATE_LIMIT
+            logger.warning(f"[Tracking] Aftership rate-limited us for {carrier_slug}/{tracking_number} ({elapsed_ms}ms)")
             return None
         if res.status_code != 200:
             stats["http_error"] += 1
             _record_failure()
+            _last_failure_reason = TRACKING_PROVIDER_ERROR
             logger.warning(f"[Tracking] Aftership returned {res.status_code} for {carrier_slug}/{tracking_number} ({elapsed_ms}ms)")
             return None
 
@@ -199,18 +304,36 @@ async def get_tracking_status(
 
         logger.info(f"[Tracking] Aftership responded for {carrier_slug}/{tracking_number}: status={tracking.get('tag')} ({elapsed_ms}ms)")
 
+        latest_message = latest.get("message")
+        normalized = normalize_status(tracking.get("tag"), latest_message)
         result = {
-            "status":            tracking.get("tag"),             # InTransit, Delivered, etc.
+            "status":            tracking.get("tag"),             # InTransit, Delivered, etc. (raw carrier_status)
             "status_text":       tracking.get("subtag_message") or tracking.get("tag") or "Unknown",
             "latest_location":   latest.get("location") or latest.get("city") or latest.get("country_name"),
-            "latest_message":    latest.get("message"),
+            "latest_message":    latest_message,
             "latest_time":       latest.get("checkpoint_time"),
             "expected_delivery": tracking.get("expected_delivery"),
             "carrier_slug":      tracking.get("slug"),
             "recent_checkpoints": recent_checkpoints,
+            # Structured, deterministic fields (WISMO requirement) - additive,
+            # existing keys above are untouched for backward compatibility.
+            "carrier_status":         tracking.get("tag"),
+            "normalized_status":      normalized,
+            "status_description":     latest_message or tracking.get("subtag_message") or tracking.get("tag"),
+            "latest_event":           latest_message,
+            "latest_event_location":  latest.get("location") or latest.get("city") or latest.get("country_name"),
+            "latest_event_timestamp": latest.get("checkpoint_time"),
+            "events":                 recent_checkpoints,
+            "is_delivered":           normalized == "DELIVERED",
+            "is_out_for_delivery":    normalized == "OUT_FOR_DELIVERY",
+            "is_delayed":             normalized == "DELAYED",
+            "is_exception":           normalized == "EXCEPTION",
+            "provider":               "aftership",
+            "last_updated_at":        datetime.now(timezone.utc).isoformat(),
         }
         stats["success"] += 1
         _record_success()
+        _last_failure_reason = None
         now2 = time.monotonic()
         _prune_cache(now2)
         _cache[cache_key] = (now2 + _CACHE_TTL_SECONDS, result)
@@ -219,18 +342,21 @@ async def get_tracking_status(
         elapsed_ms = int((time.monotonic() - started) * 1000)
         stats["timeout"] += 1
         _record_failure()
+        _last_failure_reason = TRACKING_PROVIDER_TIMEOUT
         logger.warning(f"[Tracking] Aftership timed out for {carrier_slug}/{tracking_number} ({elapsed_ms}ms)")
         return None
     except _RetryableTrackingError as e:
         elapsed_ms = int((time.monotonic() - started) * 1000)
         stats["http_error"] += 1
         _record_failure()
+        _last_failure_reason = TRACKING_PROVIDER_ERROR
         logger.warning(f"[Tracking] Aftership failed after retry for {carrier_slug}/{tracking_number} ({elapsed_ms}ms): {e}")
         return None
     except Exception as e:
         elapsed_ms = int((time.monotonic() - started) * 1000)
         stats["exception"] += 1
         _record_failure()
+        _last_failure_reason = TRACKING_PROVIDER_ERROR
         logger.warning(f"[Tracking] Aftership error for {carrier_slug}/{tracking_number} ({elapsed_ms}ms): {e}")
         return None
 
@@ -242,11 +368,33 @@ def build_tracking_context(
     tracking_number: Optional[str],
     tracking_url: Optional[str],
     tracking_company: Optional[str],
+    failure_reason: Optional[str] = None,
 ) -> str:
     """
     Returns the tracking block to inject into the order context string.
     Priority: live Aftership data → fallback URL → nothing yet.
+
+    failure_reason (optional, additive): when set to one of the
+    TRACKING_PROVIDER_* constants above, the response makes clear this is a
+    PROVIDER outage, not a shipment delay - a provider outage must never be
+    reported to the customer as "your package is delayed".
     """
+    _provider_failure_reasons = {
+        TRACKING_PROVIDER_TIMEOUT, TRACKING_PROVIDER_RATE_LIMIT,
+        TRACKING_PROVIDER_ERROR, TRACKING_PROVIDER_UNAVAILABLE,
+    }
+    if not tracking_info and tracking_number and failure_reason in _provider_failure_reasons:
+        return (
+            "\nTRACKING: Carrier tracking service is temporarily unavailable "
+            "(NOT a shipment delay - our tracking provider itself isn't responding).\n"
+            f"  Tracking number: {tracking_number} via {tracking_company or 'courier'}\n"
+            + (f"  Tracking link: {tracking_url}\n" if tracking_url else "")
+            + "Tell the customer: 'I found the tracking information for your order, but the "
+            "carrier's tracking service isn't returning an update right now."
+            + (" You can also check the tracking link directly.'" if tracking_url else "'")
+            + "\nDo NOT say the shipment is delayed - the provider check itself failed, the shipment status is simply unknown right now.\n"
+        )
+
     if tracking_info:
         status_text = tracking_info.get("status_text") or tracking_info.get("status") or "In transit"
         location    = tracking_info.get("latest_location") or "unknown location"
@@ -317,6 +465,58 @@ def build_tracking_context(
         "Tell the customer: 'Tracking information isn't available yet. "
         "It usually appears within 24 hours of shipping.'\n"
     )
+
+
+def build_shipment_context(shipments: list) -> str:
+    """Multi-fulfillment WISMO context: an order can ship in more than one
+    package, each with its own carrier/tracking/status - never assume one
+    order equals one shipment. `shipments` is a list of dicts, one per
+    Shopify fulfillment:
+      {tracking_number, tracking_url, tracking_company, tracking_info, failure_reason}
+    (tracking_info/failure_reason as returned by get_tracking_status() /
+    get_last_failure_reason() for that shipment - either may be None).
+
+    0 shipments -> same "no tracking yet" message as build_tracking_context.
+    1 shipment  -> delegates to build_tracking_context for byte-identical
+                   output to the pre-existing single-shipment behavior.
+    2+ shipments -> a short per-shipment summary, so Luna can accurately say
+                   e.g. "shipped in two packages - one delivered, one still
+                   in transit" instead of only ever describing the first.
+    """
+    if not shipments:
+        return build_tracking_context(None, None, None, None)
+    if len(shipments) == 1:
+        s = shipments[0]
+        return build_tracking_context(
+            s.get("tracking_info"), s.get("tracking_number"), s.get("tracking_url"),
+            s.get("tracking_company"), s.get("failure_reason"),
+        )
+
+    lines = [f"\nTRACKING: This order shipped in {len(shipments)} separate packages.\n"]
+    for i, s in enumerate(shipments, 1):
+        info = s.get("tracking_info")
+        carrier = s.get("tracking_company") or "courier"
+        tn = s.get("tracking_number")
+        if info:
+            normalized = info.get("normalized_status", "UNKNOWN")
+            desc = info.get("status_description") or info.get("status_text") or normalized
+            expected = info.get("expected_delivery")
+            expected_str = f", expected {_fmt_date(expected)}" if expected else ""
+            lines.append(f"  Package {i} ({carrier}, tracking {tn}): {normalized} — {desc}{expected_str}\n")
+        elif s.get("failure_reason"):
+            lines.append(f"  Package {i} ({carrier}, tracking {tn}): carrier tracking temporarily unavailable\n")
+        elif tn:
+            lines.append(f"  Package {i} ({carrier}, tracking {tn}): status not yet available\n")
+        else:
+            lines.append(f"  Package {i}: no tracking number yet\n")
+
+    lines.append(
+        "\nSummarize all packages accurately and briefly (e.g. \"your order shipped in two "
+        "packages — one has been delivered, the other is still in transit\"). Do NOT describe "
+        "only one package as if it were the whole order. Do NOT invent a status for any package "
+        "not listed above. Do NOT share raw tracking URLs.\n"
+    )
+    return "".join(lines)
 
 
 def _fmt_time(iso: Optional[str]) -> Optional[str]:

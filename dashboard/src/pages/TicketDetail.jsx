@@ -246,7 +246,32 @@ function OrderPanel({ ticketId, ticket }) {
           )}
           <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
             <div>Total: {order.currency} {order.total_price}</div>
-            {order.tracking_number && (
+            {/* Live WISMO evidence — the same Aftership lookup Luna used to
+                answer, re-fetched fresh on each view (see fetch_shopify_order
+                in shopify_service.py). Falls back to the plain tracking-number
+                line when `shipments` isn't present (older cached response
+                shape) or when no fulfillment exists yet. Only ever renders
+                fields that are actually present — never fabricates a status,
+                event, or ETA. */}
+            {order.shipments?.length > 0 ? (
+              order.shipments.map((s, i) => (
+                <div key={i} style={{ marginTop: i === 0 ? '4px' : '10px', paddingTop: i === 0 ? 0 : '8px', borderTop: i === 0 ? 'none' : '1px solid var(--border)' }}>
+                  {order.shipments.length > 1 && (
+                    <div style={{ fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '2px' }}>Shipment {i + 1}</div>
+                  )}
+                  {s.carrier && <div>Carrier: {s.carrier}</div>}
+                  {s.tracking_number && (
+                    <div>
+                      Tracking: {s.tracking_number}
+                      {s.tracking_url && <a href={s.tracking_url} target="_blank" rel="noopener noreferrer" style={{ marginLeft: '6px', color: 'var(--accent)', fontSize: '11px' }}>View tracking →</a>}
+                    </div>
+                  )}
+                  {s.normalized_status && <div>Status: {s.normalized_status.replace(/_/g, ' ')}</div>}
+                  {s.latest_event && <div>Latest update: {s.latest_event}{s.latest_event_location ? ` (${s.latest_event_location})` : ''}</div>}
+                  {s.estimated_delivery && <div>Expected: {formatDate(s.estimated_delivery)}</div>}
+                </div>
+              ))
+            ) : order.tracking_number && (
               <div style={{ marginTop: '2px' }}>
                 Tracking: {order.carrier ? `${order.carrier} ` : ''}{order.tracking_number}
                 {order.tracking_url && <a href={order.tracking_url} target="_blank" rel="noopener noreferrer" style={{ marginLeft: '6px', color: 'var(--accent)', fontSize: '11px' }}>Track →</a>}

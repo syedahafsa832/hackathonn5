@@ -794,7 +794,8 @@ class CustomerSuccessAgent:
                             _brand_shopify_domain = _b[0].get("shopify_domain")
                             _raw = _b[0].get("shopify_access_token") or ""
                             _brand_shopify_token = _dec(_raw) if _raw else None
-                        _brand_aftership_key = _b[0].get("aftership_api_key") or None
+                        from src.services.tracking_service import resolve_aftership_api_key
+                        _brand_aftership_key = resolve_aftership_api_key(_b[0])
                         logger.info(f"[Agent] Brand found: name={_brand_name}, domain={_brand_shopify_domain}, aftership={'set' if _brand_aftership_key else 'not set'}")
                 except Exception as _se:
                     logger.warning(f"[Agent] Brand lookup failed (non-blocking): {_se}")
@@ -1200,28 +1201,73 @@ class CustomerSuccessAgent:
                         access_token=_brand_shopify_token,
                     )
 
-            # 3b. Aftership live tracking — runs only when order was found and has a tracking number
+            # 3b. Aftership live tracking — one lookup per real Shopify
+            # fulfillment (an order can ship in multiple packages, each with
+            # its own tracking number/carrier/status — never assume one
+            # order equals one shipment). Falls back to the single
+            # tracking_number/company fields when the fulfillments array is
+            # empty, for any caller/legacy shape that never populated it.
             if "order_status" in tool_results and tool_results["order_status"].get("success"):
                 _order = tool_results["order_status"]
-                _tn = _order.get("tracking_number")
-                _tc = _order.get("tracking_company") or ""
-                if _tn and _brand_aftership_key:
-                    try:
-                        from src.services.tracking_service import (
-                            get_tracking_status,
-                            shopify_carrier_to_aftership_slug,
-                            build_tracking_context,
-                        )
+                _order_fulfillments = _order.get("fulfillments") or []
+                if not _order_fulfillments and _order.get("tracking_number"):
+                    _order_fulfillments = [{
+                        "tracking_number": _order.get("tracking_number"),
+                        "tracking_url": _order.get("tracking_url"),
+                        "tracking_company": _order.get("tracking_company"),
+                    }]
+                _shipments_with_numbers = [f for f in _order_fulfillments if f.get("tracking_number")]
+                if _shipments_with_numbers and _brand_aftership_key:
+                    from src.services.tracking_service import (
+                        get_tracking_status,
+                        get_last_failure_reason,
+                        shopify_carrier_to_aftership_slug,
+                    )
+                    await _emit("shipping_lookup", "Checking shipping status…")
+                    _shipments = []
+                    _any_live_data = False
+                    _any_provider_failure = False
+                    for _f in _shipments_with_numbers:
+                        _tn = _f.get("tracking_number")
+                        _tc = _f.get("tracking_company") or ""
                         _slug = shopify_carrier_to_aftership_slug(_tc)
+                        _shipment_entry = {
+                            "tracking_number": _tn,
+                            "tracking_url": _f.get("tracking_url"),
+                            "tracking_company": _tc,
+                            "tracking_info": None,
+                            "failure_reason": None,
+                        }
                         if _slug:
-                            await _emit("shipping_lookup", "Checking shipping status…")
-                            _tracking_info = await get_tracking_status(_tn, _slug, _brand_aftership_key)
-                            tool_results["tracking_info"] = _tracking_info
-                            logger.info(f"[Agent] Aftership tracking fetched: status={(_tracking_info or {}).get('status')}")
+                            try:
+                                _info = await get_tracking_status(_tn, _slug, _brand_aftership_key)
+                                _shipment_entry["tracking_info"] = _info
+                                if _info:
+                                    _any_live_data = True
+                                else:
+                                    _reason = get_last_failure_reason()
+                                    _shipment_entry["failure_reason"] = _reason
+                                    if _reason and _reason != "TRACKING_NOT_FOUND":
+                                        _any_provider_failure = True
+                                logger.info(f"[Agent] Aftership tracking fetched for {_tn}: status={(_info or {}).get('status')}")
+                            except Exception as _te:
+                                logger.warning(f"[Agent] Aftership call failed for {_tn} (non-blocking): {_te}")
+                                _shipment_entry["failure_reason"] = "TRACKING_PROVIDER_ERROR"
+                                _any_provider_failure = True
                         else:
-                            logger.info(f"[Agent] Carrier '{_tc}' not in Aftership map — skipping live tracking")
-                    except Exception as _te:
-                        logger.warning(f"[Agent] Aftership call failed (non-blocking): {_te}")
+                            logger.info(f"[Agent] Carrier '{_tc}' not in Aftership map for {_tn} — skipping live tracking")
+                        _shipments.append(_shipment_entry)
+
+                    tool_results["shipments"] = _shipments
+                    # Backward-compatible single mirror — first shipment's result.
+                    tool_results["tracking_info"] = _shipments[0]["tracking_info"] if _shipments else None
+                    # Only ever emit a success event when a lookup genuinely
+                    # returned live data — never on a provider failure, so
+                    # this stays truthful, not a fake "success" animation.
+                    if _any_live_data:
+                        await _emit("tracking_retrieved", "Tracking information retrieved")
+                    elif _any_provider_failure:
+                        await _emit("tracking_unavailable", "Carrier tracking temporarily unavailable")
 
             # 4. Build tool context for the AI (explicit Shopify data — AI must use this verbatim)
             tool_context = ""
@@ -1253,15 +1299,23 @@ class CustomerSuccessAgent:
                 if "order_status" in tool_results:
                     order = tool_results["order_status"]
                     if order.get("success"):
-                        # Build Aftership tracking block (or URL fallback)
+                        # Build Aftership tracking block (or URL fallback) —
+                        # build_shipment_context handles both the single- and
+                        # multi-fulfillment case; falls back to the
+                        # single-shipment fields when no per-fulfillment
+                        # lookups ran at all (e.g. no aftership key configured).
                         try:
-                            from src.services.tracking_service import build_tracking_context
-                            _tracking_ctx = build_tracking_context(
-                                tracking_info=tool_results.get("tracking_info"),
-                                tracking_number=order.get("tracking_number"),
-                                tracking_url=order.get("tracking_url"),
-                                tracking_company=order.get("tracking_company"),
-                            )
+                            from src.services.tracking_service import build_shipment_context, build_tracking_context
+                            _shipments_for_ctx = tool_results.get("shipments")
+                            if _shipments_for_ctx is not None:
+                                _tracking_ctx = build_shipment_context(_shipments_for_ctx)
+                            else:
+                                _tracking_ctx = build_tracking_context(
+                                    tracking_info=tool_results.get("tracking_info"),
+                                    tracking_number=order.get("tracking_number"),
+                                    tracking_url=order.get("tracking_url"),
+                                    tracking_company=order.get("tracking_company"),
+                                )
                         except Exception as _tce:
                             logger.warning(f"[Agent] Tracking context build failed (non-blocking): {_tce}")
                             _tracking_ctx = ""
