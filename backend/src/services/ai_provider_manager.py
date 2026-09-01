@@ -39,9 +39,16 @@ MAX_BACKOFF_SECONDS = 4
 # ONE key (OPENROUTER_API_KEY) across two different (both free) models,
 # since OpenRouter's rate limiting is per-key-per-model, not per-key —
 # no second key is needed to get a second independently-triable slot.
+# OpenRouter's free catalog churns (models get renamed/repriced/retired) —
+# confirmed live against https://openrouter.ai/api/v1/models on 2026-09-01
+# after mistralai/mistral-nemo:free and meta-llama/llama-3.3-70b-instruct:free
+# both silently stopped existing (renamed to paid, non-":free" IDs), which
+# made every OpenRouter attempt fail instantly with "model not found". If
+# this tier goes quiet again, check that URL for the current live :free list
+# before assuming a code/key problem.
 OPENROUTER_MODEL_FALLBACK_DEFAULTS = {
-    1: "mistralai/mistral-nemo:free",
-    2: "meta-llama/llama-3.3-70b-instruct:free",
+    1: "z-ai/glm-5.2:free",
+    2: "google/gemma-4-31b-it:free",
 }
 OPENROUTER_DEFAULT_BASE_URL = os.getenv("OPENROUTER_API_BASE_URL", "https://openrouter.ai/api/v1")
 

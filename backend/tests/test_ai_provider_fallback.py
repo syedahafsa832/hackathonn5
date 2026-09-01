@@ -160,8 +160,8 @@ def test_load_providers_interleaves_openrouter_around_mistral_primary():
     assert or2.api_key == "sk-or-test-key"
     assert or1.base_url == "https://openrouter.ai/api/v1"
     assert or2.base_url == "https://openrouter.ai/api/v1"
-    assert or1.model == "mistralai/mistral-nemo:free"
-    assert or2.model == "meta-llama/llama-3.3-70b-instruct:free"
+    assert or1.model == "z-ai/glm-5.2:free"
+    assert or2.model == "google/gemma-4-31b-it:free"
     assert providers[1].model == "mistral-small-latest"
 
 
@@ -208,7 +208,7 @@ def test_openrouter_model_fallbacks_are_individually_overridable():
     or1, or2 = providers[0], providers[2]
     assert or1.model == "custom/model-a:free"
     # Only fallback_1 was overridden - fallback_2 keeps its own default.
-    assert or2.model == "meta-llama/llama-3.3-70b-instruct:free"
+    assert or2.model == "google/gemma-4-31b-it:free"
 
 
 def test_load_providers_omits_groq_when_unset():
