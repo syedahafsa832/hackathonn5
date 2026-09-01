@@ -148,6 +148,22 @@ def _pop_incident_active(signature: str) -> bool:
     return was_active
 
 
+def _reset_cooldown(signature: str) -> None:
+    """Clears the send-cooldown timer (but not incident_active, which
+    _pop_incident_active above already owns) once a recovery has genuinely
+    fired. Without this, the 5-minute cooldown from the ORIGINAL outage's
+    alert would still be running when a genuinely NEW, independent outage
+    starts shortly after recovery - _should_send would see a recent
+    last_sent and silently suppress the new incident's alert, even though
+    it has nothing to do with the one that already closed. Recovery is the
+    one moment we know for certain the prior incident is over, so it's the
+    right place to let the next one start its own cooldown from zero."""
+    state = _load_alert_state(signature)
+    state["last_sent"] = None
+    state["suppressed"] = 0
+    _save_alert_state(signature, state)
+
+
 def notify_critical_error(
     *,
     error_type: str,
@@ -246,11 +262,16 @@ def notify_provider_exhausted(
         lines = [
             f"Service: {service}",
             f"Model: {model}",
-            f"All {len(attempts)} configured provider(s) failed: {attempt_lines}",
+            f"Affected provider stack: {attempt_lines}",
+            f"All {len(attempts)} configured provider(s) failed.",
             f"Elapsed before giving up: {elapsed_seconds:.1f}s",
             f"Timestamp: {datetime.now(timezone.utc).isoformat()}",
             f"Environment: {ENVIRONMENT}",
             "Impact: requests to this service cannot currently be completed automatically.",
+            # Reflects the real durable queue (ai_response_retries /
+            # provider_retry_worker.py) - affected customer messages are
+            # never dropped, and no one needs to manually replay them.
+            "Automatic retry: ON — affected messages are queued and will resume automatically once a provider recovers (bounded backoff, no manual replay needed).",
             "Human intervention: check provider account status (quota/billing/key validity).",
         ]
         if suppressed:
@@ -286,6 +307,12 @@ def notify_provider_recovered(*, service: str = "chat_completion") -> None:
         was_active = _pop_incident_active(signature)
         if not was_active:
             return
+        # This incident is genuinely over - let the next one (if any) start
+        # its own cooldown from zero rather than inheriting whatever's left
+        # of this one's, which could otherwise silently swallow a real,
+        # independent outage's alert if it starts soon after (see
+        # _reset_cooldown's own docstring).
+        _reset_cooldown(signature)
 
         send_admin_notification(
             ADMIN_ALERT_EMAIL,

@@ -8,6 +8,12 @@ const STATUS_MAP = {
   auto_resolved: { label: 'Auto-resolved', color: '#10B981', bg: '#ECFDF5' },
   resolved: { label: 'Resolved', color: '#64748B', bg: '#F8FAFC' },
   escalated: { label: 'Escalated', color: '#F59E0B', bg: '#FFFBEB' },
+  // Provider outage — Luna retries automatically once a provider recovers
+  // (see TicketDetail.jsx's matching banner). Previously fell through to
+  // Badge's generic fallback, which rendered the raw status string
+  // "ai_retry_pending" verbatim in the ticket list — a merchant had no
+  // clean way to see which conversations were actually affected.
+  ai_retry_pending: { label: '⏳ Retrying…', color: '#3B82F6', bg: '#EFF6FF' },
   
   // Legacy / Other
   ai_suggested: { label: 'Draft ready', color: '#06B6D4', bg: '#ECFEFF' },

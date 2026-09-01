@@ -283,19 +283,35 @@ def test_recovery_with_no_prior_incident_sends_nothing():
     mock_send.assert_not_called()
 
 
-def test_rapid_flapping_does_not_spam():
-    """failure -> recovery -> failure -> recovery, all within the cooldown
-    window, must not produce failure/recovery/failure/recovery spam - the
-    second failure recurrence is suppressed by the cooldown."""
+def test_rapid_flapping_with_a_genuine_recovery_between_alerts_each_failure():
+    """failure -> recovery -> failure -> recovery: each failure here is
+    separated by a GENUINE recovery, so this is two distinct incidents back
+    to back, not one incident flapping within a single cooldown window -
+    both failures and both recoveries must alert (see
+    test_outage_volume_test_3, which requires exactly this shape). Recovery
+    resets the cooldown specifically so a real second incident is never
+    mistaken for a repeat of the first (see admin_alert_service.py's
+    _reset_cooldown)."""
     with patch("src.services.admin_alert_service.send_admin_notification") as mock_send:
         admin_alert_service.notify_provider_exhausted(attempts=ATTEMPTS, model="m", elapsed_seconds=1.0, service="chat_completion")
         admin_alert_service.notify_provider_recovered(service="chat_completion")
         admin_alert_service.notify_provider_exhausted(attempts=ATTEMPTS, model="m", elapsed_seconds=1.0, service="chat_completion")
         admin_alert_service.notify_provider_recovered(service="chat_completion")
 
-    # 1st exhausted (alert) + 1st recovery (alert) + 2nd exhausted (suppressed,
-    # inside cooldown) + 2nd recovery (no-op, no active incident to close) = 2
-    assert mock_send.call_count == 2
+    assert mock_send.call_count == 4  # exhausted, recovered, exhausted, recovered
+
+
+def test_repeated_exhaustion_with_no_recovery_between_is_still_suppressed():
+    """The actual "flapping" case the cooldown still guards against: repeated
+    exhaustion attempts with NO recovery in between (still the same,
+    never-closed incident) must still collapse to one alert - only a
+    genuine recovery resets the cooldown, not the mere passage of time
+    within the window."""
+    with patch("src.services.admin_alert_service.send_admin_notification") as mock_send:
+        for _ in range(5):
+            admin_alert_service.notify_provider_exhausted(attempts=ATTEMPTS, model="m", elapsed_seconds=1.0, service="chat_completion")
+
+    mock_send.assert_called_once()
 
 
 # ── 13 & 14. All-providers-fail is a real incident; repeats stay bounded ───
@@ -371,6 +387,99 @@ def test_onboarding_style_retry_then_success_sends_zero_alerts():
          patch("src.services.ai_provider_manager.asyncio.sleep", new=AsyncMock(return_value=None)), \
          patch("src.services.admin_alert_service.send_admin_notification") as mock_send:
         result = run(mgr.create_chat_completion(messages=[{"role": "user", "content": "What products do you sell?"}]))
+
+    assert result[0] is not None
+    mock_send.assert_not_called()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# OUTAGE EMAIL VOLUME TEST — required by "tResolv — AI Outage Recovery +
+# Real Refund Execution Audit/Fix". Named Test 1-4 to match that task's own
+# enumeration directly.
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_outage_volume_test_1_ten_failing_requests_send_one_outage_email():
+    """10 requests fail during one continuous outage -> 1 admin outage
+    notification, not 10."""
+    with patch("src.services.admin_alert_service.send_admin_notification") as mock_send:
+        for _ in range(10):
+            admin_alert_service.notify_provider_exhausted(
+                attempts=ATTEMPTS, model="mistral-small-latest", elapsed_seconds=8.0, service="chat_completion",
+            )
+
+    mock_send.assert_called_once()
+    _, subject, _ = mock_send.call_args[0]
+    assert "exhausted" in subject.lower()
+
+
+def test_outage_volume_test_2_ten_successful_requests_send_one_recovery_email():
+    """10 requests succeed after recovery -> 1 recovery notification, not
+    10 - notify_provider_recovered() is called on every successful request
+    (see ai_provider_manager.create_chat_completion), so this is the exact
+    shape production traffic produces once providers come back."""
+    with patch("src.services.admin_alert_service.send_admin_notification") as mock_send:
+        admin_alert_service.notify_provider_exhausted(
+            attempts=ATTEMPTS, model="mistral-small-latest", elapsed_seconds=8.0, service="chat_completion",
+        )
+        for _ in range(10):
+            admin_alert_service.notify_provider_recovered(service="chat_completion")
+
+    assert mock_send.call_count == 2  # 1 outage + 1 recovery, not 1 + 10
+
+
+def test_outage_volume_test_3_outage_recovery_new_outage_sends_two_outage_and_one_recovery_email():
+    """Outage -> recovery -> new (independent) outage -> 2 outage
+    notifications + 1 recovery notification.
+
+    This is the case the cooldown-reset fix in notify_provider_recovered()
+    exists for: without resetting the cooldown timer on genuine recovery,
+    the second, truly independent outage's alert would be silently
+    swallowed by the first outage's still-running 5-minute cooldown, even
+    though the incident it belongs to already closed."""
+    with patch("src.services.admin_alert_service.send_admin_notification") as mock_send:
+        admin_alert_service.notify_provider_exhausted(
+            attempts=ATTEMPTS, model="mistral-small-latest", elapsed_seconds=8.0, service="chat_completion",
+        )
+        admin_alert_service.notify_provider_recovered(service="chat_completion")
+        # A second, independent outage starts shortly after recovery -
+        # still well within what would have been the first alert's 5-minute
+        # cooldown window if that window hadn't been reset by recovery.
+        admin_alert_service.notify_provider_exhausted(
+            attempts=ATTEMPTS, model="mistral-small-latest", elapsed_seconds=8.0, service="chat_completion",
+        )
+        admin_alert_service.notify_provider_recovered(service="chat_completion")
+
+    assert mock_send.call_count == 4  # exhausted, recovered, exhausted, recovered
+    subjects = [call.args[1] for call in mock_send.call_args_list]
+    outage_subjects = [s for s in subjects if "exhausted" in s.lower()]
+    recovery_subjects = [s for s in subjects if "recovered" in s.lower()]
+    assert len(outage_subjects) == 2
+    assert len(recovery_subjects) == 2
+
+
+def test_outage_volume_test_4_single_customer_specific_failure_sends_no_outage_email():
+    """A single, isolated provider failure that recovers via fallback (the
+    "one malformed request" / "one timeout" / "one customer-specific
+    failure" case) must never trigger a global provider-outage email -
+    notify_provider_exhausted() is only ever called when EVERY configured
+    provider fails a given request outright (see
+    ai_provider_manager.create_chat_completion), never for a single
+    provider hiccup recovered by the next one in the chain."""
+    mgr = _manager_with("primary", "fallback_1", "fallback_2")
+    call_count = {"n": 0}
+
+    async def _fake_call(fn):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # One provider fails for this one request - not a stack-wide
+            # outage, and the very next provider in the chain succeeds.
+            raise TimeoutError("Request timed out.")
+        return type("R", (), {"choices": [type("C", (), {"message": type("M", (), {"content": "ok"})()})()], "usage": None})()
+
+    with patch("src.services.ai_provider_manager.call_with_limit", side_effect=_fake_call), \
+         patch("src.services.ai_provider_manager.asyncio.sleep", new=AsyncMock(return_value=None)), \
+         patch("src.services.admin_alert_service.send_admin_notification") as mock_send:
+        result = run(mgr.create_chat_completion(messages=[{"role": "user", "content": "hi"}]))
 
     assert result[0] is not None
     mock_send.assert_not_called()
