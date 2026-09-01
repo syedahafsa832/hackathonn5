@@ -143,6 +143,14 @@ def test_mistral_providers_property_excludes_groq_labels():
     assert [p.label for p in mgr.mistral_providers] == ["primary", "fallback_1"]
 
 
+def test_mistral_providers_property_excludes_openrouter_labels():
+    """OpenRouter's free-tier chat models have no embeddings endpoint
+    compatible with the vector(1024) schema - same reasoning as Groq's
+    exclusion above."""
+    mgr = _manager_with("primary", "openrouter_fallback_1", "openrouter_fallback_2", "groq_fallback_1")
+    assert [p.label for p in mgr.mistral_providers] == ["primary"]
+
+
 # ── 2. All keys failing degrades to None, never raises ───────────────────────
 
 def test_all_mistral_keys_failing_returns_none_not_raise():

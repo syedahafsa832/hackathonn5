@@ -1,10 +1,15 @@
 """
 AI Provider Manager
 ====================
-Single choke point for Mistral chat-completion calls with automatic failover
-across multiple API keys. A single rate-limited/expired key was escalating
-tickets ("System error: Rate limited") that a second key could have handled —
-this exists to try the next configured key before giving up.
+Single choke point for chat-completion calls with automatic failover across
+providers and keys. A single rate-limited/expired key was escalating tickets
+("System error: Rate limited") that a second key or provider could have
+handled — this exists to try the next configured option before giving up.
+
+Default chain: Mistral primary (mistral-small-latest) -> OpenRouter free-tier
+fallbacks (mistral-nemo, then llama-3.3-70b) -> Groq (llama-3.1-8b-instant),
+each tier configured/overridden independently via env vars — see
+_load_providers() below.
 
 Do not construct a per-call OpenAI(api_key=...) client elsewhere for ticket
 reply generation — go through get_provider_manager() so every caller gets the
@@ -24,9 +29,20 @@ from .admin_alert_service import notify_provider_exhausted, notify_provider_reco
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = os.getenv("MISTRAL_MODEL", "mistral-large-latest")
+DEFAULT_MODEL = os.getenv("MISTRAL_MODEL", "mistral-small-latest")
 DEFAULT_BASE_URL = os.getenv("MISTRAL_API_BASE_URL", "https://api.mistral.ai/v1")
 MAX_BACKOFF_SECONDS = 4
+
+# OpenRouter free-tier models, used as a distinct exhaustion tier between
+# Mistral and Groq: unlike the Mistral/Groq schemes above, these two share
+# ONE key (OPENROUTER_API_KEY) across two different (both free) models,
+# since OpenRouter's rate limiting is per-key-per-model, not per-key —
+# no second key is needed to get a second independently-triable slot.
+OPENROUTER_MODEL_FALLBACK_DEFAULTS = {
+    1: "mistralai/mistral-nemo:free",
+    2: "meta-llama/llama-3.3-70b-instruct:free",
+}
+OPENROUTER_DEFAULT_BASE_URL = os.getenv("OPENROUTER_API_BASE_URL", "https://openrouter.ai/api/v1")
 
 # Embeddings: same Mistral account family as chat, so every configured
 # Mistral key produces the same mistral-embed model / 1024-dim vector the
@@ -100,12 +116,23 @@ class AIProviderManager:
             if key:
                 providers.append(_Provider(f"fallback_{i}", key, os.getenv(f"MISTRAL_MODEL_FALLBACK_{i}", DEFAULT_MODEL)))
 
+        # OpenRouter: tried after every Mistral key above has failed, before
+        # Groq — two free models on one key (see OPENROUTER_MODEL_FALLBACK_DEFAULTS
+        # above for why this doesn't need a key per tier like Mistral/Groq do).
+        openrouter_key = os.getenv("OPENROUTER_API_KEY")
+        if openrouter_key:
+            for i in (1, 2):
+                model = os.getenv(f"OPENROUTER_MODEL_FALLBACK_{i}", OPENROUTER_MODEL_FALLBACK_DEFAULTS[i])
+                providers.append(_Provider(
+                    f"openrouter_fallback_{i}", openrouter_key, model, base_url=OPENROUTER_DEFAULT_BASE_URL,
+                ))
+
         # Last-resort fallback on a different provider entirely (Groq), tried only
-        # after every Mistral key above has failed — keeps ticket replies flowing
-        # if Mistral's account-wide rate limit or quota is hit, not just one key.
+        # after every Mistral/OpenRouter key above has failed — keeps ticket replies
+        # flowing if every prior key hits its account-wide rate limit or quota.
         # Mirrors the Mistral primary+fallback_N scheme: GROQ_API_KEY is the first
         # Groq key, GROQ_API_KEY_FALLBACK_{i} are additional ones tried after it.
-        groq_default_model = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+        groq_default_model = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
         groq_default_base_url = os.getenv("GROQ_API_BASE_URL", "https://api.groq.com/openai/v1")
         groq_key = os.getenv("GROQ_API_KEY")
         if groq_key:
@@ -157,9 +184,10 @@ class AIProviderManager:
     @property
     def mistral_providers(self) -> List[_Provider]:
         """Subset of configured providers safe to use for embeddings — every
-        Mistral key (primary + fallback_N), excluding Groq entries, which
-        share no embeddings-compatible model with the vector(1024) schema."""
-        return [p for p in self._providers if not p.label.startswith("groq")]
+        Mistral key (primary + fallback_N), excluding Groq and OpenRouter
+        entries, neither of which shares an embeddings-compatible model with
+        the vector(1024) schema."""
+        return [p for p in self._providers if not p.label.startswith("groq") and not p.label.startswith("openrouter")]
 
     async def create_embedding(self, *, text: str) -> Optional[List[float]]:
         """

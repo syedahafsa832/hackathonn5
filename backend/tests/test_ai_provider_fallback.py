@@ -134,7 +134,56 @@ def test_load_providers_appends_groq_last_with_its_own_base_url():
     groq = providers[-1]
     assert groq.api_key == "gsk_test_key"
     assert groq.base_url == "https://api.groq.com/openai/v1"
-    assert groq.model == "openai/gpt-oss-20b"
+    assert groq.model == "llama-3.1-8b-instant"
+
+
+def test_load_providers_inserts_openrouter_between_mistral_and_groq():
+    """Recommended fallback chain: Mistral primary -> OpenRouter (two free
+    models on one key) -> Groq. Confirms the exact requested order and that
+    both OpenRouter tiers share the one configured key."""
+    env = {
+        "MISTRAL_API_KEY": "mistral-primary-key",
+        "OPENROUTER_API_KEY": "sk-or-test-key",
+        "GROQ_API_KEY": "gsk_test_key",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        mgr = AIProviderManager.__new__(AIProviderManager)
+        providers = mgr._load_providers()
+
+    labels = [p.label for p in providers]
+    assert labels == ["primary", "openrouter_fallback_1", "openrouter_fallback_2", "groq_fallback_1"]
+    or1, or2 = providers[1], providers[2]
+    assert or1.api_key == "sk-or-test-key"
+    assert or2.api_key == "sk-or-test-key"
+    assert or1.base_url == "https://openrouter.ai/api/v1"
+    assert or2.base_url == "https://openrouter.ai/api/v1"
+    assert or1.model == "mistralai/mistral-nemo:free"
+    assert or2.model == "meta-llama/llama-3.3-70b-instruct:free"
+
+
+def test_load_providers_omits_openrouter_when_unset():
+    env = {"MISTRAL_API_KEY": "mistral-primary-key", "GROQ_API_KEY": "gsk_test_key"}
+    with patch.dict(os.environ, env, clear=True):
+        mgr = AIProviderManager.__new__(AIProviderManager)
+        providers = mgr._load_providers()
+
+    assert [p.label for p in providers] == ["primary", "groq_fallback_1"]
+
+
+def test_openrouter_model_fallbacks_are_individually_overridable():
+    env = {
+        "MISTRAL_API_KEY": "mistral-primary-key",
+        "OPENROUTER_API_KEY": "sk-or-test-key",
+        "OPENROUTER_MODEL_FALLBACK_1": "custom/model-a:free",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        mgr = AIProviderManager.__new__(AIProviderManager)
+        providers = mgr._load_providers()
+
+    or1, or2 = providers[1], providers[2]
+    assert or1.model == "custom/model-a:free"
+    # Only fallback_1 was overridden - fallback_2 keeps its own default.
+    assert or2.model == "meta-llama/llama-3.3-70b-instruct:free"
 
 
 def test_load_providers_omits_groq_when_unset():
@@ -177,6 +226,34 @@ def test_client_for_uses_each_providers_own_base_url():
     client = mgr._client_for(groq_provider)
 
     assert str(client.base_url).rstrip("/") == "https://api.groq.com/openai/v1"
+
+
+@pytest.mark.asyncio
+async def test_full_chain_falls_back_mistral_to_openrouter_to_groq():
+    """End-to-end proof of the recommended chain: Mistral primary fails,
+    both OpenRouter tiers fail, Groq finally succeeds - one response, every
+    intermediate provider tried exactly once, in order."""
+    mgr = _manager_with("primary")
+    mgr._providers.append(_Provider("openrouter_fallback_1", "sk-or-test", "mistralai/mistral-nemo:free", base_url="https://openrouter.ai/api/v1"))
+    mgr._providers.append(_Provider("openrouter_fallback_2", "sk-or-test", "meta-llama/llama-3.3-70b-instruct:free", base_url="https://openrouter.ai/api/v1"))
+    mgr._providers.append(_Provider("groq_fallback_1", "gsk_test", "llama-3.1-8b-instant", base_url="https://api.groq.com/openai/v1"))
+    for label in ("primary", "openrouter_fallback_1", "openrouter_fallback_2"):
+        client = MagicMock()
+        client.chat.completions.create.side_effect = Rate429("429 rate limit")
+        mgr._clients[label] = client
+    groq_client = MagicMock()
+    groq_client.chat.completions.create.return_value = _fake_response("groq reply")
+    mgr._clients["groq_fallback_1"] = groq_client
+
+    with patch("src.services.ai_provider_manager.asyncio.sleep", new=AsyncMock(return_value=None)):
+        response, label, model, usage = await mgr.create_chat_completion(messages=[{"role": "user", "content": "hi"}])
+
+    assert label == "groq_fallback_1"
+    assert model == "llama-3.1-8b-instant"
+    assert response.choices[0].message.content == "groq reply"
+    assert usage["attempts"] == 4
+    for prior_label in ("primary", "openrouter_fallback_1", "openrouter_fallback_2"):
+        mgr._clients[prior_label].chat.completions.create.assert_called_once()
 
 
 @pytest.mark.asyncio
