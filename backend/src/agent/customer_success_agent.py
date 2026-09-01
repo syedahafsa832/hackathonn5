@@ -1222,11 +1222,24 @@ class CustomerSuccessAgent:
                         get_tracking_status,
                         get_last_failure_reason,
                         shopify_carrier_to_aftership_slug,
+                        CARRIER_UNKNOWN,
                     )
                     await _emit("shipping_lookup", "Checking shipping status…")
                     _shipments = []
                     _any_live_data = False
-                    _any_provider_failure = False
+                    # True whenever ANY shipment with a real tracking number
+                    # did NOT get live status back, for ANY reason - timeout,
+                    # rate limit, provider error, unmapped carrier, or a
+                    # genuine "not found". Previously this excluded
+                    # TRACKING_NOT_FOUND specifically, which meant a
+                    # not-registered/plan-blocked tracking number produced
+                    # NO event at all (neither retrieved nor unavailable) and
+                    # left the "no live data" prompt block with no signal to
+                    # apply its no-fabrication guardrail correctly - confirmed
+                    # live: Luna invented "it should arrive in a couple of
+                    # days" with zero tracking evidence. Every "we don't have
+                    # real live data" case must be treated the same way here.
+                    _any_missing_data = False
                     for _f in _shipments_with_numbers:
                         _tn = _f.get("tracking_number")
                         _tc = _f.get("tracking_company") or ""
@@ -1245,28 +1258,31 @@ class CustomerSuccessAgent:
                                 if _info:
                                     _any_live_data = True
                                 else:
-                                    _reason = get_last_failure_reason()
-                                    _shipment_entry["failure_reason"] = _reason
-                                    if _reason and _reason != "TRACKING_NOT_FOUND":
-                                        _any_provider_failure = True
+                                    _shipment_entry["failure_reason"] = get_last_failure_reason()
+                                    _any_missing_data = True
                                 logger.info(f"[Agent] Aftership tracking fetched for {_tn}: status={(_info or {}).get('status')}")
                             except Exception as _te:
                                 logger.warning(f"[Agent] Aftership call failed for {_tn} (non-blocking): {_te}")
                                 _shipment_entry["failure_reason"] = "TRACKING_PROVIDER_ERROR"
-                                _any_provider_failure = True
+                                _any_missing_data = True
                         else:
                             logger.info(f"[Agent] Carrier '{_tc}' not in Aftership map for {_tn} — skipping live tracking")
+                            _shipment_entry["failure_reason"] = CARRIER_UNKNOWN
+                            _any_missing_data = True
                         _shipments.append(_shipment_entry)
 
                     tool_results["shipments"] = _shipments
                     # Backward-compatible single mirror — first shipment's result.
                     tool_results["tracking_info"] = _shipments[0]["tracking_info"] if _shipments else None
-                    # Only ever emit a success event when a lookup genuinely
-                    # returned live data — never on a provider failure, so
-                    # this stays truthful, not a fake "success" animation.
+                    # Independent, not mutually exclusive: a multi-shipment
+                    # order can have one delivered (real success) and one
+                    # with no live data (real failure) at the same time -
+                    # both events fire when both are true, so the activity
+                    # timeline never hides a genuine partial failure just
+                    # because another shipment succeeded.
                     if _any_live_data:
                         await _emit("tracking_retrieved", "Tracking information retrieved")
-                    elif _any_provider_failure:
+                    if _any_missing_data:
                         await _emit("tracking_unavailable", "Carrier tracking temporarily unavailable")
 
             # 4. Build tool context for the AI (explicit Shopify data — AI must use this verbatim)

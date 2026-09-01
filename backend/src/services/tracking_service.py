@@ -372,27 +372,45 @@ def build_tracking_context(
 ) -> str:
     """
     Returns the tracking block to inject into the order context string.
-    Priority: live Aftership data → fallback URL → nothing yet.
+    Priority: live Aftership data → real tracking number/URL with no live
+    status → nothing at all.
 
-    failure_reason (optional, additive): when set to one of the
-    TRACKING_PROVIDER_* constants above, the response makes clear this is a
-    PROVIDER outage, not a shipment delay - a provider outage must never be
-    reported to the customer as "your package is delayed".
+    failure_reason: accepted for callers that pass it (logging/future use)
+    but no longer changes which branch fires below - ANY case with a real
+    tracking_number and no tracking_info gets the same hard
+    no-status/no-ETA-fabrication instruction, regardless of the specific
+    reason live data is missing (timeout, rate limit, provider error, or a
+    genuine "not found"). Narrowing this to only certain reasons was the
+    actual bug: a "not found" case fell through to a branch with no
+    fabrication guardrail at all, and the LLM padded the reply with an
+    invented ETA ("it should arrive in a couple of days") - confirmed live.
     """
-    _provider_failure_reasons = {
-        TRACKING_PROVIDER_TIMEOUT, TRACKING_PROVIDER_RATE_LIMIT,
-        TRACKING_PROVIDER_ERROR, TRACKING_PROVIDER_UNAVAILABLE,
-    }
-    if not tracking_info and tracking_number and failure_reason in _provider_failure_reasons:
+    # Any case where we have a real tracking number/URL from Shopify but NO
+    # live status from Aftership - whatever the exact reason (timeout, rate
+    # limit, provider error, cooldown, or a genuine "not found" because
+    # nothing was ever registered with Aftership) - must get the SAME hard
+    # no-fabrication instruction. This used to only fire for the narrow
+    # TRACKING_PROVIDER_* reasons, which meant a plain "not found" (get_
+    # tracking_status returning None with no _provider_failure_reasons
+    # match) silently fell through to the plain URL-sharing branch below,
+    # which had no prohibition on padding the reply with an invented ETA -
+    # confirmed live: "It should arrive in a couple of days" with zero
+    # tracking evidence behind it. Any tracking_number/URL present here is
+    # still 100% real (from Shopify) and safe to share; only the STATUS/
+    # ETA claims must be blocked.
+    if not tracking_info and tracking_number:
         return (
-            "\nTRACKING: Carrier tracking service is temporarily unavailable "
-            "(NOT a shipment delay - our tracking provider itself isn't responding).\n"
+            "\nTRACKING: No live carrier status available for this tracking number right now "
+            "(the tracking link below is real Shopify data and safe to share; the STATUS is not known).\n"
             f"  Tracking number: {tracking_number} via {tracking_company or 'courier'}\n"
             + (f"  Tracking link: {tracking_url}\n" if tracking_url else "")
             + "Tell the customer: 'I found the tracking information for your order, but the "
-            "carrier's tracking service isn't returning an update right now."
-            + (" You can also check the tracking link directly.'" if tracking_url else "'")
-            + "\nDo NOT say the shipment is delayed - the provider check itself failed, the shipment status is simply unknown right now.\n"
+            "carrier isn't returning a current tracking update right now."
+            + (" You can check the tracking link directly here: [link].'" if tracking_url else "'")
+            + "\nHARD RULES: Do NOT say the shipment is delayed, in transit, out for delivery, or "
+            "delivered - the live status is simply unknown, not confirmed as any of those. Do NOT "
+            "invent or estimate a delivery date/ETA (e.g. never say 'a couple of days' or similar) - "
+            "no ETA exists here to share. Only share the tracking link/number above, nothing else.\n"
         )
 
     if tracking_info:
@@ -442,22 +460,16 @@ def build_tracking_context(
             "IMPORTANT: Do NOT share the raw tracking URL. Do NOT say 'check your email'.\n"
         )
 
-    # No live data — fall back to URL if available
+    # Reachable only for the edge case of a URL with no tracking_number at
+    # all (any real tracking_number already returned above, with or without
+    # a URL) - kept for defensive completeness, not the normal path.
     if tracking_url:
         return (
             "\nTRACKING: Live status unavailable. Tracking URL available.\n"
             f"  You MAY share this link: {tracking_url}\n"
             f"  Carrier: {tracking_company or 'courier'}\n"
-            f"  Tracking number: {tracking_number or 'see link'}\n"
             "Say: 'You can track your order here: [link]'\n"
-        )
-
-    if tracking_number:
-        return (
-            f"\nTRACKING: Tracking number {tracking_number} via {tracking_company or 'courier'} "
-            "— no tracking URL yet.\n"
-            "Tell the customer: 'Your tracking number is [number] via [carrier]. "
-            "Tracking usually activates within 24 hours of dispatch.'\n"
+            "Do NOT invent a status or ETA - none is known.\n"
         )
 
     return (

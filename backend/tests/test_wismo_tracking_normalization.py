@@ -82,23 +82,41 @@ def test_missing_eta_is_never_invented():
 
 
 def test_provider_unavailable_is_never_reported_as_a_shipment_delay():
-    """The core distinction the task requires: TRACKING_PROVIDER_* failure
-    reasons must produce a provider-outage message, never a 'delayed'
-    claim."""
+    """The core distinction the task requires: no live data must produce a
+    no-fabrication message, never a 'delayed'/'in transit'/etc. claim."""
     ctx = build_tracking_context(None, "TN1", "https://track.example/TN1", "USPS", failure_reason=TRACKING_PROVIDER_TIMEOUT)
-    assert "isn't returning an update right now" in ctx
-    assert "NOT a shipment delay" in ctx
+    assert "isn't returning a current tracking update right now" in ctx
+    assert "Do NOT say the shipment is delayed, in transit, out for delivery, or delivered" in ctx
+    assert "Do NOT invent or estimate a delivery date/ETA" in ctx
     # Explicitly forbids the false claim, but must never assert it as fact.
     assert "your order is delayed" not in ctx.lower()
     assert "shipment is delayed" not in ctx.lower().replace("say the shipment is delayed", "")
 
 
-def test_tracking_not_found_reason_does_not_trigger_the_provider_outage_message():
+def test_tracking_not_found_also_gets_the_no_fabrication_guardrail():
     """A genuine 404 (Aftership itself is healthy, this tracking number just
-    isn't in its system yet) is not a provider outage - falls through to the
-    normal "no live data" branch instead."""
-    ctx = build_tracking_context(None, "TN1", None, "USPS", failure_reason=TRACKING_NOT_FOUND)
-    assert "isn't returning an update right now" not in ctx
+    isn't in its system yet - e.g. plan-restricted/never registered) must
+    get the SAME hard no-fabrication instruction as a real provider outage.
+    This is the exact bug this fix closes: TRACKING_NOT_FOUND used to fall
+    through to a branch with no such guardrail at all, and the LLM padded
+    the reply with an invented ETA ("it should arrive in a couple of days")
+    - confirmed live with zero tracking evidence behind it."""
+    ctx = build_tracking_context(None, "TN1", "https://track.example/TN1", "USPS", failure_reason=TRACKING_NOT_FOUND)
+    assert "isn't returning a current tracking update right now" in ctx
+    assert "Do NOT invent or estimate a delivery date/ETA" in ctx
+    # The phrase appears only inside the "never say X" instruction, never as
+    # a standalone claim the LLM could copy out as fact.
+    assert "never say 'a couple of days'" in ctx.lower()
+
+
+def test_tracking_not_found_with_no_failure_reason_still_gets_the_guardrail():
+    """Even with failure_reason entirely unset (None), any tracking_number
+    with no tracking_info must still get the guardrail - the branch no
+    longer depends on classifying the specific reason at all."""
+    ctx = build_tracking_context(None, "TN1", "https://track.example/TN1", "USPS")
+    assert "isn't returning a current tracking update right now" in ctx
+    assert "on its way" not in ctx.lower()
+    assert "Do NOT say the shipment is delayed, in transit, out for delivery, or delivered" in ctx
 
 
 # ── Multiple shipments ──────────────────────────────────────────────────────
@@ -133,3 +151,40 @@ def test_shipment_with_no_tracking_number_is_reported_truthfully_not_skipped():
     ]
     ctx = build_shipment_context(shipments)
     assert "no tracking number yet" in ctx
+
+
+# ── Per-status claims require real provider evidence (required test items 3-6, 10) ─
+
+def test_no_live_data_never_claims_in_transit():
+    ctx = build_tracking_context(None, "TN1", "https://x/TN1", "USPS", failure_reason=TRACKING_PROVIDER_TIMEOUT)
+    assert "in transit" not in ctx.lower().replace("do not say the shipment is delayed, in transit, out for delivery, or delivered", "")
+
+
+def test_no_live_data_never_claims_out_for_delivery():
+    ctx = build_tracking_context(None, "TN1", "https://x/TN1", "USPS", failure_reason=TRACKING_PROVIDER_TIMEOUT)
+    assert "out for delivery" not in ctx.lower().replace("do not say the shipment is delayed, in transit, out for delivery, or delivered", "")
+
+
+def test_no_live_data_never_claims_delivered():
+    ctx = build_tracking_context(None, "TN1", "https://x/TN1", "USPS", failure_reason=TRACKING_PROVIDER_TIMEOUT)
+    assert "your order was delivered" not in ctx.lower()
+
+
+def test_no_live_data_never_claims_delayed():
+    ctx = build_tracking_context(None, "TN1", "https://x/TN1", "USPS", failure_reason=TRACKING_PROVIDER_TIMEOUT)
+    # "delayed" only appears inside the prohibiting instruction itself.
+    assert ctx.lower().count("delayed") == 1
+    assert "do not say the shipment is delayed" in ctx.lower()
+
+
+# ── ETA only when the provider actually returned one ────────────────────────
+
+def test_eta_is_included_when_the_provider_actually_returns_one():
+    info = {
+        "status": "InTransit", "status_text": "In transit", "latest_location": "Austin",
+        "latest_message": "In transit", "latest_time": None, "expected_delivery": "2026-09-05",
+        "recent_checkpoints": [],
+    }
+    ctx = build_tracking_context(info, "TN1", None, "USPS")
+    assert "Sep 05" in ctx
+    assert "not confirmed yet" not in ctx
