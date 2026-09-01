@@ -811,6 +811,28 @@ class ReturnActionsIntegration:
             logger.warning(f"[ReturnActions] Dedup check failed for order {order_id} ({e}) — continuing without it")
             return None
 
+    async def find_pending_actions_for_ticket(self, ticket_id: Optional[str]) -> List[Dict[str, Any]]:
+        """The durable "is there an active action this reply might be
+        confirming/continuing" signal, keyed by ticket_id alone - unlike
+        _find_active_action above, which needs order_id/action_type
+        already resolved (this is used BEFORE they're known, to decide
+        whether to resolve them from conversation state at all). Same
+        active-status set as the dedup check, same fail-open behavior.
+        Returns every match (not just the latest) so the caller can detect
+        real ambiguity — e.g. two pending actions for two different
+        orders — and refuse to guess rather than silently picking one."""
+        if not ticket_id:
+            return []
+        try:
+            return supabase_select("actions", {
+                "ticket_id": f"eq.{ticket_id}",
+                "status": "in.(pending,approved,executed,awaiting_manual_step)",
+                "order": "created_at.desc",
+            }) or []
+        except Exception as e:
+            logger.warning(f"[ReturnActions] Pending-action lookup failed for ticket {ticket_id} ({e}) — continuing without it")
+            return []
+
     def _duplicate_status_context(self, existing: Dict[str, Any], intent_type: str) -> str:
         """Truthful status wording for a repeat request against an action
         that's already pending/approved/executed — never re-stages, and

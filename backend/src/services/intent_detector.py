@@ -11,7 +11,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 
 from openai import OpenAI
 
@@ -64,9 +64,32 @@ Examples:
 - "Can I exchange this for a size L?" -> {{"action_type": "exchange", "exchange_target": "size L", ...}}
 - "Can I exchange this?" (no size/color/product mentioned yet) -> {{"action_type": "exchange", "exchange_target": null, ...}}
 - "I actually want the black one in L" (replying to an earlier exchange conversation) -> {{"action_type": "exchange", "exchange_target": "black, size L", ...}}
-
+{pending_context}
 Customer message:
 {message}"""
+
+# Inserted into INTENT_PROMPT only when this ticket has a real, durable
+# pending action (see return_actions_integration.py's
+# find_pending_actions_for_ticket) - i.e. the EXISTENCE of something to
+# potentially confirm is always a fact from the actions table, never a
+# guess. What the customer's specific wording means GIVEN that fact
+# ("yes", "absolutely", "that's fine", "cancel it", or something entirely
+# unrelated) is then left to the same language understanding the model
+# already uses to classify every fresh message - not a fixed phrase list.
+_PENDING_CONTEXT_TEMPLATE = """
+PENDING ACTION CONTEXT (real, durable state - not a guess): this conversation \
+already has an unresolved "{action_type}" request for order #{order_number}, \
+currently "{status}".
+- If the customer's message agrees with, confirms, or continues THIS pending \
+request — in any wording ("yes", "go ahead", "absolutely", "that's fine", \
+"cancel it", "please proceed", etc.) — and does not name a different order \
+number, classify action_type="{action_type}" and order_id="{order_number}".
+- If the customer's message explicitly names a DIFFERENT order number, \
+classify based on that new order instead — never keep the old one.
+- If the customer's message is unrelated to this pending request (a new \
+question, a different topic), classify normally based on the message alone \
+— do not force an unrelated message to match the pending action.
+"""
 
 # Short fragment fallback — intentionally broad so any phrasing is caught
 # restore_order must come BEFORE cancel — "mistakenly canceled" matches both
@@ -169,7 +192,32 @@ def _extract_exchange_target_fallback(message: str) -> Optional[str]:
     return ", ".join(found) if found else None
 
 
-def _keyword_fallback(message: str) -> IntentResult:
+# LLM-unavailable-only degrade path (see _keyword_fallback's own note below) —
+# not the primary mechanism for resolving a pending-action confirmation.
+# When a real LLM call can run, PENDING ACTION CONTEXT in the prompt above
+# lets the model judge arbitrary real-world phrasing via genuine language
+# understanding; this fixed, necessarily-incomplete list only exists for
+# the narrow window where no provider is reachable at all.
+_BARE_AGREEMENT_FALLBACK_RE = re.compile(
+    r"^(?:yes|yeah|yep|yup|sure|ok|okay|confirmed|absolutely)?[\s,\.!]*"
+    r"(?:please)?[\s,\.!]*"
+    r"(?:go\s*ahead|go\s*for\s*it|proceed|do\s*it|do\s*that|confirmed|"
+    r"sounds\s*good|that\s*works|that.?s\s*fine)?[\s,\.!]*$"
+)
+
+
+def _looks_like_bare_agreement_fallback(message: str) -> bool:
+    stripped = re.sub(r"[^\w\s']", " ", (message or "").lower())
+    stripped = re.sub(r"\s+", " ", stripped).strip()
+    if not stripped:
+        return False
+    m = _BARE_AGREEMENT_FALLBACK_RE.match(stripped)
+    # The regex's every component is optional, so it also matches an empty
+    # string - require it to have actually consumed the (non-empty) input.
+    return bool(m) and m.group(0) == stripped
+
+
+def _keyword_fallback(message: str, pending_action_context: Optional[Dict[str, Any]] = None) -> IntentResult:
     """Broad fragment matching — short tokens match across any phrasing."""
     m = message.lower()
     order_id = _extract_order_id(message)
@@ -203,6 +251,19 @@ def _keyword_fallback(message: str) -> IntentResult:
         return IntentResult("return", order_id, None, 0.7, "fallback")
     if any(f in m for f in _REFUND_FRAGS):
         return IntentResult("refund", order_id, None, 0.7, "fallback")
+
+    # Last resort, LLM unavailable only: a real, durable pending action
+    # exists for this ticket (an actual actions-table row, not a guess)
+    # AND this message names no order number of its own AND is nothing
+    # more than a short, unambiguous agreement. See the fallback regex's
+    # own comment - the LLM path is what actually understands arbitrary
+    # phrasing; this only covers the narrow provider-outage window.
+    if pending_action_context and not order_id and _looks_like_bare_agreement_fallback(message):
+        pending_order = pending_action_context.get("order_number") or pending_action_context.get("order_id")
+        pending_type = pending_action_context.get("action_type")
+        if pending_order and pending_type:
+            return IntentResult(str(pending_type), str(pending_order), None, 0.6, "fallback_pending_confirmation")
+
     return IntentResult("none", order_id, None, 0.9, "fallback")
 
 
@@ -236,14 +297,32 @@ class IntentDetector:
             )
         return self._client
 
-    async def detect(self, message: str) -> IntentResult:
-        """Detect action intent. Falls back to keyword matching if LLM unavailable."""
+    async def detect(self, message: str, pending_action_context: Optional[Dict[str, Any]] = None) -> IntentResult:
+        """Detect action intent. Falls back to keyword matching if LLM unavailable.
+
+        pending_action_context, when provided, describes a real, durable
+        pending action already staged for this ticket (see
+        return_actions_integration.py's find_pending_actions_for_ticket) -
+        e.g. {"action_type": "cancel", "order_number": "1009", "status":
+        "pending"}. Its EXISTENCE is always a fact (a real actions-table
+        row, resolved by the caller before this is ever invoked) - what
+        the customer's own wording means given that fact ("yes", "go
+        ahead", "absolutely", "cancel it", or something unrelated) is left
+        to the same language understanding this call already uses to
+        classify a fresh message, not a fixed phrase list."""
         client = self._get_client()
         if not client:
             logger.warning("[Intent] No LLM client — using keyword fallback")
-            return _keyword_fallback(message)
+            return _keyword_fallback(message, pending_action_context)
 
-        prompt = INTENT_PROMPT.format(message=message[:1500])
+        pending_block = ""
+        if pending_action_context and pending_action_context.get("action_type"):
+            pending_block = _PENDING_CONTEXT_TEMPLATE.format(
+                action_type=pending_action_context.get("action_type"),
+                order_number=pending_action_context.get("order_number") or pending_action_context.get("order_id"),
+                status=pending_action_context.get("status", "pending"),
+            )
+        prompt = INTENT_PROMPT.format(message=message[:1500], pending_context=pending_block)
         model = os.getenv("MISTRAL_MODEL", "mistral-large-latest")
         call_start = time.monotonic()
 

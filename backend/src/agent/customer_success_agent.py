@@ -1456,7 +1456,33 @@ class CustomerSuccessAgent:
             # critical path of every request, so on a currently-degraded
             # Mistral key this alone can cost up to this client's full timeout
             # before falling back to keyword matching.
-            _intent_result = _NO_ACTION if _is_catalog_query else await _intent_detector.detect(query)
+            # Durable pending-action lookup: a real actions-table row for
+            # this ticket, not a guess. Its EXISTENCE is what tells detect()
+            # below whether there's anything for a short reply to possibly
+            # be confirming; the model then judges what the customer's own
+            # wording means given that fact using its normal language
+            # understanding, not a fixed phrase list. Only used when
+            # exactly one is active - two pending actions for two different
+            # orders is genuine ambiguity ("multiple orders" safety
+            # requirement), never resolved by guessing "the latest one".
+            _pending_action_context = None
+            if ticket_id and not _is_catalog_query:
+                try:
+                    _pending_actions = await return_actions.find_pending_actions_for_ticket(ticket_id)
+                    if len(_pending_actions) == 1:
+                        _pa = _pending_actions[0]
+                        _pending_action_context = {
+                            "action_type": _pa.get("action_type"),
+                            "order_number": _pa.get("order_number") or _pa.get("order_id"),
+                            "status": _pa.get("status"),
+                        }
+                except Exception as _pae:
+                    logger.warning(f"[Agent] Pending-action lookup failed (continuing without it): {_pae}")
+
+            _intent_result = _NO_ACTION if _is_catalog_query else await _intent_detector.detect(
+                query, pending_action_context=_pending_action_context
+            )
+
             if _intent_result.has_action and not _intent_result.order_id and ticket_id:
                 # Conversation-history rule: an order number the customer
                 # already gave in an EARLIER message of this same ticket
