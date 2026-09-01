@@ -13,7 +13,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from bs4 import BeautifulSoup, Comment
 
@@ -205,9 +205,14 @@ class EmailGuardianService:
         email: dict,
         classification: str,
         confidence: float,
+        status: str = "pending",
     ) -> Optional[str]:
-        """Insert a quarantine record. Returns the record id (existing or new)
-        or None on error.
+        """Insert a quarantine/decision record. Returns the record id
+        (existing or new) or None on error. `status="pending"` (default) is
+        a genuine quarantine awaiting merchant review; `status="auto_blocked"`
+        persists an outright-blocked decision purely so it's never
+        re-classified (see _find_existing_decision below) - it never appears
+        in the merchant's review queue.
 
         Dedupes on gmail_message_id first: Gmail's `after:` search operator
         is date-level, not time-level, so the same message keeps reappearing
@@ -237,14 +242,62 @@ class EmailGuardianService:
                 "gmail_message_id":  gmail_message_id,
                 "ai_classification": classification,
                 "ai_confidence":     confidence,
-                "status":            "pending",
+                "status":            status,
             })
             qid = row.get("id") if row else None
-            logger.info(f"[Guardian] Quarantine record created: {qid}")
+            logger.info(f"[Guardian] Quarantine record created: {qid} (status={status})")
             return qid
         except Exception as e:
             logger.warning(f"[Guardian] Failed to create quarantine record: {e}")
             return None
+
+    def _find_existing_decision(self, brand_id: str, gmail_message_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Looks up a persisted guardian decision for this exact message
+        BEFORE spending a fresh AI classification call on it.
+
+        The dedup check inside _create_quarantine_record above only ever
+        prevented a duplicate DATABASE ROW - it runs after _classify_email()
+        already called the AI, so a message already quarantined minutes
+        earlier still burned a brand-new classification call on every
+        subsequent ~15s poll cycle (confirmed live: the same
+        gmail_message_id was re-classified 5+ minutes after its quarantine
+        row already existed). This check runs first so a message this brand
+        has already evaluated - quarantined OR outright blocked - is never
+        re-classified for the rest of the day Gmail's `after:` window keeps
+        surfacing it."""
+        if not gmail_message_id:
+            return None
+        try:
+            existing = supabase_select("email_quarantine", {
+                "brand_id": f"eq.{brand_id}",
+                "gmail_message_id": f"eq.{gmail_message_id}",
+            })
+            return existing[0] if existing else None
+        except Exception as e:
+            logger.warning(f"[Guardian] Existing-decision lookup failed, proceeding to classify: {e}")
+            return None
+
+    def _result_from_existing_record(self, record: Dict[str, Any]) -> "GuardianResult":
+        """Reconstructs the GuardianResult a fresh classification would have
+        produced, from what was already persisted - no AI call. 'discarded'
+        is already filtered out upstream by email_poller.py before evaluate()
+        is ever called, and 'promoted' means a real ticket exists (caught by
+        the poller's own gmail_message_id-on-tickets check before this), so
+        in practice this only ever sees 'pending' or 'auto_blocked' - anything
+        else fails toward quarantine (never silently auto-replying to a
+        message this brand hasn't cleared)."""
+        status = record.get("status")
+        classification = record.get("ai_classification") or "unknown"
+        confidence = record.get("ai_confidence") or 0.0
+        if status == "auto_blocked":
+            return GuardianResult(
+                decision="blocked", classification=classification, confidence=confidence,
+                reason="previously_blocked", quarantine_id=record.get("id"), auto_reply_enabled=False,
+            )
+        return GuardianResult(
+            decision="quarantined", classification=classification, confidence=confidence,
+            reason="previously_quarantined", quarantine_id=record.get("id"), auto_reply_enabled=False,
+        )
 
     # ── T007: Main evaluate entry-point ──────────────────────────────────────
 
@@ -263,6 +316,15 @@ class EmailGuardianService:
             body    = email.get("body") or email.get("content", "")
             sender  = email.get("sender_email", "")
 
+            gmail_message_id = email.get("id")
+            existing_record = await asyncio.to_thread(self._find_existing_decision, brand_id, gmail_message_id)
+            if existing_record:
+                logger.info(
+                    f"[Guardian] Reusing prior decision for gmail_message_id={gmail_message_id} "
+                    f"sender={sender} — skipping re-classification"
+                )
+                return self._result_from_existing_record(existing_record)
+
             classification, confidence, relevant = await self._classify_email(subject, body, brand_name)
 
             # Relevance gate: the email may look like customer support in shape
@@ -273,13 +335,16 @@ class EmailGuardianService:
             # uncertain is quarantined rather than auto-replied to.
             if not relevant:
                 if confidence >= confidence_threshold:
+                    qid = await asyncio.to_thread(
+                        self._create_quarantine_record, brand_id, email, classification, confidence, "auto_blocked"
+                    )
                     logger.info(f"[email_filter] rejected sender={sender} reason=unrelated_to_brand classification={classification}")
                     return GuardianResult(
                         decision="blocked",
                         classification=classification,
                         confidence=confidence,
                         reason="unrelated_to_brand",
-                        quarantine_id=None,
+                        quarantine_id=qid,
                         auto_reply_enabled=auto_reply_enabled,
                     )
                 qid = await asyncio.to_thread(self._create_quarantine_record, brand_id, email, classification, confidence)
@@ -297,13 +362,16 @@ class EmailGuardianService:
             # "unknown" is intentionally NOT in BLOCKED_CLASSIFICATIONS: when the AI
             # can't decide, we fail-open so real customers aren't silently lost.
             if support_only_mode and classification in BLOCKED_CLASSIFICATIONS:
+                qid = await asyncio.to_thread(
+                    self._create_quarantine_record, brand_id, email, classification, confidence, "auto_blocked"
+                )
                 logger.info(f"[email_filter] rejected sender={sender} reason=ai_classification classification={classification}")
                 return GuardianResult(
                     decision="blocked",
                     classification=classification,
                     confidence=confidence,
                     reason="ai_classification",
-                    quarantine_id=None,
+                    quarantine_id=qid,
                     auto_reply_enabled=auto_reply_enabled,
                 )
 

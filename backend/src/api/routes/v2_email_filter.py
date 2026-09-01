@@ -194,11 +194,15 @@ async def get_filter_logs(
                 key = r["filter_reason"]
                 by_reason[key] = by_reason.get(key, 0) + 1
 
-        # Live quarantine count (non-expired records in the quarantine table)
+        # Live quarantine count (non-expired records genuinely awaiting/having
+        # gone through merchant review). Excludes auto_blocked - those never
+        # entered the review queue at all (see email_guardian_service.py's
+        # "auto_blocked" status - persisted purely to avoid re-classifying
+        # the same message on every poll, never shown to the merchant).
         quarantine_rows = supabase_select("email_quarantine", {
             "brand_id":   f"eq.{brand_id}",
             "created_at": f"gte.{cutoff}",
-            "status":     "neq.expired",
+            "status":     "not.in.(expired,auto_blocked)",
         })
         total_quarantined = len(quarantine_rows)
 
