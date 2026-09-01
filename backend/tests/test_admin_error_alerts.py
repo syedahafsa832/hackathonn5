@@ -17,6 +17,8 @@ import os
 import sys
 from unittest.mock import patch, AsyncMock
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("SUPABASE_URL", "http://localhost")
 os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test")
@@ -26,6 +28,30 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from src.api.middleware.logging import setup_logging_middleware  # noqa: E402
 from src.services import admin_alert_service  # noqa: E402
+
+
+# Alert-dedup/incident state is persisted via the settings key-value table
+# (supabase_get_setting/supabase_set_setting) rather than an in-memory dict -
+# see admin_alert_service.py's PART on surviving a redeploy mid-incident.
+# This fakes that store with a plain dict, reset per test, so every test
+# below stays isolated without needing a real Supabase connection.
+_fake_settings_store = {}
+
+
+def _fake_get_setting(key):
+    return _fake_settings_store.get(key)
+
+
+def _fake_set_setting(key, value):
+    _fake_settings_store[key] = value
+
+
+@pytest.fixture(autouse=True)
+def _isolated_alert_state():
+    _fake_settings_store.clear()
+    with patch("src.services.admin_alert_service.supabase_get_setting", side_effect=_fake_get_setting), \
+         patch("src.services.admin_alert_service.supabase_set_setting", side_effect=_fake_set_setting):
+        yield
 
 
 def _build_app():
@@ -53,11 +79,6 @@ def _build_app():
         return {"ok": True}
 
     return app
-
-
-def setup_function():
-    admin_alert_service._alert_state.clear()
-    admin_alert_service._incident_active.clear()
 
 
 # ── 1. Unexpected failures trigger the alert, expected ones don't ──────────
@@ -182,10 +203,11 @@ def test_repeated_identical_errors_are_deduplicated():
 def test_alert_resumes_after_window_expires_and_reports_suppressed_count():
     signature = "ValueError:GET:/x"
     # Simulate an alert sent well outside the window, with 23 suppressed since.
-    admin_alert_service._alert_state[signature] = {
+    _fake_set_setting(f"{admin_alert_service._SETTING_PREFIX}{signature}", {
         "last_sent": 0.0,
         "suppressed": 23,
-    }
+        "incident_active": False,
+    })
     with patch("src.services.admin_alert_service.send_admin_notification") as mock_send:
         admin_alert_service.notify_critical_error(
             error_type="ValueError", error_message="boom again", route="/x", method="GET",
@@ -272,9 +294,6 @@ def test_every_provider_failing_sends_exactly_one_exhaustion_alert():
     if len(mgr._providers) < 1:
         import pytest
         pytest.skip("no providers configured in this environment")
-
-    admin_alert_service._alert_state.clear()
-    admin_alert_service._incident_active.clear()
 
     async def _always_fail(fn):
         raise TimeoutError("Request timed out.")

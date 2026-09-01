@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("SUPABASE_URL", "http://localhost")
 os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test")
 
-from src.services.ai_provider_manager import AIProviderManager, AllProvidersFailedError, _Provider
+from src.services.ai_provider_manager import AIProviderManager, AllProvidersFailedError, _Provider, DEFAULT_MODEL
 
 
 def _fake_response(text="ok", usage=None):
@@ -162,7 +162,14 @@ def test_load_providers_interleaves_openrouter_around_mistral_primary():
     assert or2.base_url == "https://openrouter.ai/api/v1"
     assert or1.model == "z-ai/glm-5.2:free"
     assert or2.model == "google/gemma-4-31b-it:free"
-    assert providers[1].model == "mistral-small-latest"
+    # DEFAULT_MODEL, not a literal - it's a module-level constant read from
+    # MISTRAL_MODEL at import time, so its value depends on what was already
+    # in the process environment before this test file's first import (real
+    # .env in a combined test run vs. none in an isolated run). primary's
+    # own model resolution (MISTRAL_MODEL_PRIMARY, unset here, falling back
+    # to DEFAULT_MODEL) uses that exact same constant, so asserting against
+    # it - not a hardcoded string - is correct in both cases.
+    assert providers[1].model == DEFAULT_MODEL
 
 
 def test_load_providers_puts_extra_mistral_keys_after_both_openrouter_tiers():

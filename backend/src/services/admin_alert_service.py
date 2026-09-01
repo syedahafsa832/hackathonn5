@@ -38,6 +38,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from src.lib.supabase_client import supabase_get_setting, supabase_set_setting
 from src.services.system_email_service import send_admin_notification
 
 logger = logging.getLogger(__name__)
@@ -72,35 +73,79 @@ def redact_text(text: Optional[str]) -> str:
 
 
 # ── Dedup / rate limiting ────────────────────────────────────────────────
-# Plain in-memory dict, per-process, TTL-window style - the same shape as
-# this codebase's other lightweight caches. No new infrastructure.
+# Persisted via the existing settings key-value table (supabase_get_setting/
+# supabase_set_setting in src/lib/supabase_client.py - already used by
+# auth.py for GMAIL_TOKEN) instead of an in-memory dict. An in-memory dict
+# only lives for the life of one process, so every deploy/restart reset it
+# to empty - a genuine ongoing incident spanning several redeploys (e.g.
+# active debugging of a real outage) then looked like a brand-new incident
+# on each restart, sending a fresh exhausted+recovered email pair every
+# time instead of the intended "one alert pair per incident, however long
+# it lasts and however many redeploys happen during it." Reuses the
+# existing settings table rather than adding a second state store; alerts
+# are inherently low-frequency, so the extra round trip is never a hot path.
 _ALERT_WINDOW_SECONDS = 300  # 5 minutes
-_alert_state: Dict[str, Dict[str, float]] = {}
+_SETTING_PREFIX = "admin_alert_state:"
 
-# Whether an incident signature is CURRENTLY active (as of the most recent
-# occurrence/success observed for it) - separate from _alert_state, which
-# only tracks when an email was last actually sent. Lets notify_*_recovered()
-# tell "this closes out a real incident" apart from "nothing was wrong",
-# so a service that simply always succeeds never gets a spurious recovery
-# email, and rapid failure/success flapping only ever sends the one initial
-# alert (suppressed by the cooldown below) and the one recovery email.
-_incident_active: Dict[str, bool] = {}
+
+def _load_alert_state(signature: str) -> Dict[str, Any]:
+    """{'last_sent': epoch seconds or None, 'suppressed': int,
+    'incident_active': bool}. Missing/unreadable state degrades to the same
+    "nothing sent yet, no incident active" starting point a fresh in-memory
+    dict used to have."""
+    value = supabase_get_setting(f"{_SETTING_PREFIX}{signature}")
+    if not isinstance(value, dict):
+        return {"last_sent": None, "suppressed": 0, "incident_active": False}
+    return {
+        "last_sent": value.get("last_sent"),
+        "suppressed": int(value.get("suppressed") or 0),
+        "incident_active": bool(value.get("incident_active")),
+    }
+
+
+def _save_alert_state(signature: str, state: Dict[str, Any]) -> None:
+    try:
+        supabase_set_setting(f"{_SETTING_PREFIX}{signature}", state)
+    except Exception as e:
+        logger.warning(f"[AdminAlert] Could not persist alert state for {signature}: {e}")
 
 
 def _should_send(signature: str) -> Optional[int]:
     """Returns None if this occurrence should be suppressed (an alert for
-    this same signature already went out within the window). Otherwise
-    returns how many prior occurrences were suppressed since the last alert
-    (0 for a fresh signature or one whose window has expired) and starts a
-    new window."""
+    this same signature already went out within the window - persisted, so
+    a redeploy mid-cooldown does not reset it). Otherwise returns how many
+    prior occurrences were suppressed since the last alert (0 for a fresh
+    signature or one whose window has expired) and starts a new window."""
     now = time.time()
-    entry = _alert_state.get(signature)
-    if entry and (now - entry["last_sent"]) < _ALERT_WINDOW_SECONDS:
-        entry["suppressed"] += 1
+    state = _load_alert_state(signature)
+    last_sent = state.get("last_sent")
+    if last_sent is not None and (now - last_sent) < _ALERT_WINDOW_SECONDS:
+        state["suppressed"] = int(state.get("suppressed") or 0) + 1
+        _save_alert_state(signature, state)
         return None
-    suppressed_since_last = int(entry["suppressed"]) if entry else 0
-    _alert_state[signature] = {"last_sent": now, "suppressed": 0}
+    suppressed_since_last = int(state.get("suppressed") or 0)
+    state["last_sent"] = now
+    state["suppressed"] = 0
+    _save_alert_state(signature, state)
     return suppressed_since_last
+
+
+def _mark_incident_active(signature: str, active: bool) -> None:
+    state = _load_alert_state(signature)
+    state["incident_active"] = active
+    _save_alert_state(signature, state)
+
+
+def _pop_incident_active(signature: str) -> bool:
+    """Reads the current incident_active flag and immediately clears it -
+    same read-then-clear semantics the in-memory version had, so rapid
+    failure/success flapping still produces exactly one recovery email."""
+    state = _load_alert_state(signature)
+    was_active = bool(state.get("incident_active"))
+    if was_active:
+        state["incident_active"] = False
+        _save_alert_state(signature, state)
+    return was_active
 
 
 def notify_critical_error(
@@ -185,8 +230,8 @@ def notify_provider_exhausted(
         suppressed = _should_send(signature)
         if suppressed is None:
             # Still genuinely failing, but this occurrence's email is
-            # suppressed by the cooldown - deliberately does NOT touch
-            # _incident_active here. Only an occurrence that actually sends
+            # suppressed by the cooldown - deliberately does NOT mark the
+            # incident active here. Only an occurrence that actually sends
             # an email marks the incident "active" for recovery purposes, so
             # a later notify_provider_recovered() only fires to close out an
             # incident the admin was actually told about - otherwise rapid
@@ -195,7 +240,7 @@ def notify_provider_exhausted(
             # failure alert that never went out. See PART 10 ("do not spam
             # failure/recovery/failure/recovery for rapid flapping").
             return
-        _incident_active[signature] = True
+        _mark_incident_active(signature, True)
 
         attempt_lines = "; ".join(f"{a['label']}={a['reason']}" for a in attempts) or "no providers configured"
         lines = [
@@ -228,11 +273,17 @@ def notify_provider_recovered(*, service: str = "chat_completion") -> None:
     genuinely active notify_provider_exhausted() incident for this service -
     a service that simply always succeeds never triggers this. Immediately
     clears the active flag so rapid failure/success flapping produces
-    exactly one recovery email, not one per success. Never raises."""
+    exactly one recovery email, not one per success. Never raises.
+
+    Called on every successful chat_completion (see ai_provider_manager.py),
+    so this always costs one settings-table read even on the overwhelming
+    common case (no incident active) - a deliberate tradeoff of one small
+    read per response for the persistence guarantee above (a plain
+    in-memory flag can't survive the deploy/restart that happens mid-
+    incident). No write happens unless an incident was actually active."""
     try:
         signature = f"provider_exhausted:{service}"
-        was_active = _incident_active.get(signature, False)
-        _incident_active[signature] = False
+        was_active = _pop_incident_active(signature)
         if not was_active:
             return
 

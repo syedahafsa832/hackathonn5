@@ -42,6 +42,8 @@ import sys
 import time
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("SUPABASE_URL", "http://localhost")
 os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test")
@@ -62,9 +64,28 @@ def run(coro):
     return loop.run_until_complete(coro)
 
 
-def setup_function():
-    admin_alert_service._alert_state.clear()
-    admin_alert_service._incident_active.clear()
+# Alert-dedup/incident state is persisted via the settings key-value table
+# (supabase_get_setting/supabase_set_setting) rather than an in-memory dict -
+# see admin_alert_service.py's PART on surviving a redeploy mid-incident.
+# This fakes that store with a plain dict, reset per test, so every test
+# below stays isolated without needing a real Supabase connection.
+_fake_settings_store = {}
+
+
+def _fake_get_setting(key):
+    return _fake_settings_store.get(key)
+
+
+def _fake_set_setting(key, value):
+    _fake_settings_store[key] = value
+
+
+@pytest.fixture(autouse=True)
+def _isolated_alert_state():
+    _fake_settings_store.clear()
+    with patch("src.services.admin_alert_service.supabase_get_setting", side_effect=_fake_get_setting), \
+         patch("src.services.admin_alert_service.supabase_set_setting", side_effect=_fake_set_setting):
+        yield
 
 
 def _manager_with(*labels, base_urls=None):
@@ -214,6 +235,45 @@ def test_recovery_sends_at_most_one_email():
         admin_alert_service.notify_provider_recovered(service="chat_completion")
 
     assert mock_send.call_count == 2  # exactly: one exhausted alert + one recovery alert
+
+
+# ── 8b. The actual production bug: a redeploy mid-incident must not reset
+#        the cooldown/incident state - it lives in Supabase (the settings
+#        table, via _fake_settings_store here standing in for it), not a
+#        module-level dict scoped to one process's lifetime. A real restart
+#        re-imports admin_alert_service fresh, so simulating one means
+#        reloading the module while keeping the fake settings store intact -
+#        exactly what an in-memory dict could never survive.
+
+def test_incident_state_survives_a_simulated_process_restart():
+    """Reproduces the exact incident this fix targets: exhausted alert
+    fires, the service restarts (module reloaded - any module-level dict
+    would be wiped), and within the same cooldown window a second failure
+    must still be suppressed, and the eventual recovery must still fire
+    exactly once - because the state lives in the persisted store, not in
+    the process that sent the first alert."""
+    import importlib
+
+    with patch("src.services.admin_alert_service.send_admin_notification") as mock_send:
+        admin_alert_service.notify_provider_exhausted(attempts=ATTEMPTS, model="m", elapsed_seconds=1.0, service="chat_completion")
+        assert mock_send.call_count == 1
+
+        # Simulate a redeploy: reload the module fresh. Re-patch the two
+        # settings functions on the fresh module object so it still reads
+        # from the SAME fake store - a real restart would still be backed
+        # by the same real Supabase table.
+        reloaded = importlib.reload(admin_alert_service)
+        with patch("src.services.admin_alert_service.supabase_get_setting", side_effect=_fake_get_setting), \
+             patch("src.services.admin_alert_service.supabase_set_setting", side_effect=_fake_set_setting), \
+             patch("src.services.admin_alert_service.send_admin_notification") as mock_send_after_restart:
+            # Still within the cooldown window - the "new" process must know
+            # this incident already alerted and suppress the repeat.
+            reloaded.notify_provider_exhausted(attempts=ATTEMPTS, model="m", elapsed_seconds=1.0, service="chat_completion")
+            mock_send_after_restart.assert_not_called()
+
+            # And recovery still fires exactly once, even after the restart.
+            reloaded.notify_provider_recovered(service="chat_completion")
+            mock_send_after_restart.assert_called_once()
 
 
 def test_recovery_with_no_prior_incident_sends_nothing():
