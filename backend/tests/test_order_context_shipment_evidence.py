@@ -74,7 +74,19 @@ async def test_no_fulfillments_yields_empty_shipments_list_no_fabrication():
 
 
 @pytest.mark.asyncio
-async def test_no_aftership_key_returns_shopify_fields_only_no_live_call():
+async def test_no_aftership_key_returns_shopify_fields_only_no_live_call(monkeypatch):
+    """Must exercise the true "no credential resolves at all" case - not the
+    developer's real local .env AFTERSHIP_API_KEY. resolve_aftership_api_key()
+    falls back to the module-level PLATFORM_AFTERSHIP_API_KEY (set once, at
+    import time, from the real environment) whenever a brand has no key of
+    its own, so this brand-scoped assertion is only meaningful with that
+    platform key forced off for the duration of this test. monkeypatch
+    reverts it automatically even on failure, and never touches os.environ,
+    so no other test (or the real key already imported into tracking_mod)
+    is affected."""
+    import src.services.tracking_service as tracking_mod
+    monkeypatch.setattr(tracking_mod, "PLATFORM_AFTERSHIP_API_KEY", None)
+
     fulfillment = {"tracking_number": "TN1", "tracking_url": "https://x/TN1", "tracking_company": "USPS"}
     with patch("src.services.shopify_service.decrypt_token", return_value="tok"), \
          patch("src.services.shopify_service.ShopifyClient.get_order", new=AsyncMock(return_value=_order_with_fulfillments(fulfillment))), \

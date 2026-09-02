@@ -284,6 +284,20 @@ def _build_order_context(order: dict, tracking_context: str = "") -> str:
         lines.append(f"  This order shipped in {len(shipments)} separate packages — mention EACH shipment distinctly (e.g. 'shipment 1 of 2 is...').")
         lines.append("  Do NOT combine them into a single tracking number or status. Do NOT invent tracking for a shipment that doesn't have one yet.")
         lines.append("  If you cannot clearly explain all shipments, say a team member will confirm the full shipping breakdown rather than guessing.")
+        if tracking_context:
+            # Live per-shipment Aftership evidence (build_shipment_context) -
+            # this used to be silently discarded whenever there was more
+            # than one fulfillment, since this whole branch took priority
+            # over the `elif tracking_context:` below and never even looked
+            # at it. That meant a multi-shipment order fell back to
+            # Shopify's own often-stale/absent shipment_status with NONE of
+            # the no-fabrication guardrails tracking_context carries -
+            # confirmed by test_path_d_one_failed_shipment_never_corrupts_
+            # the_others_real_status. Appended here, not replacing the
+            # section above, so the LLM still sees the raw per-package
+            # tracking numbers even when live status is unavailable.
+            lines.append("")
+            lines.append(tracking_context)
     elif tracking_context:
         # Live Aftership data or fallback instructions — injected by caller
         lines.append(tracking_context)

@@ -251,3 +251,178 @@ def test_tracking_not_found_never_fabricates_shipped_status_or_eta_in_llm_prompt
     # requirement: don't remove the tracking URL, just don't claim it means
     # live-verified status).
     assert "9205510200881234567890" in prompt_text
+
+
+# WISMO TEST MODE: Paths A-D (synthetic/mocked provider data only)
+
+def _full_evidence_tracking_result():
+    """PATH A: a realistic, complete provider response - every field the
+    task requires present at once."""
+    return {
+        "status": "InTransit", "status_text": "In transit", "latest_location": "Austin, TX",
+        "latest_message": "Arrived at Austin distribution center", "latest_time": "2026-09-01T10:00:00Z",
+        "expected_delivery": "2026-09-05", "carrier_slug": "usps", "recent_checkpoints": [],
+        "carrier_status": "InTransit", "normalized_status": "AT_DISTRIBUTION_CENTER",
+        "status_description": "Arrived at Austin distribution center", "latest_event": "Arrived at Austin distribution center",
+        "latest_event_location": "Austin, TX", "latest_event_timestamp": "2026-09-01T10:00:00Z", "events": [],
+        "is_delivered": False, "is_out_for_delivery": False, "is_delayed": False,
+        "is_exception": False, "provider": "aftership", "last_updated_at": "2026-09-01T10:00:00Z",
+    }
+
+
+def test_path_a_provider_success_reaches_luna_with_full_evidence_and_correct_event():
+    """Shopify fulfillment -> tracking number -> provider lookup ->
+    normalized tracking evidence -> Luna receives evidence -> activity says
+    tracking retrieved -> response uses only verified tracking data."""
+    async def side_effect(tracking_number, carrier_slug, api_key):
+        return _full_evidence_tracking_result()
+
+    prompt_text, events = _run_wismo_query_one_shipment(BRAND_WITH_AFTERSHIP, side_effect)
+
+    stages = [s for s, _ in events]
+    assert "tracking_retrieved" in stages
+    assert "tracking_unavailable" not in stages
+    # Single-shipment rendering (build_tracking_context) uses human-readable
+    # status_text/message, not the raw normalized_status enum - that literal
+    # string only appears in the multi-shipment renderer (see PATH D below).
+    # The real evidence itself reaching the prompt is what matters here.
+    assert "Arrived at Austin distribution center" in prompt_text
+    assert "Sep 05" in prompt_text
+
+
+def test_path_c_missing_tracking_number_never_invents_a_status():
+    """Shopify fulfillment exists but carries no tracking number at all
+    (order placed/fulfilled, label not yet created) -> no Aftership call,
+    truthful "not available yet" message, never a fabricated status."""
+    order_no_tracking = {
+        "success": True, "order_number": "1008", "order_id": "1008",
+        "status": "fulfilled", "financial_status": "paid", "cancelled_at": None,
+        "tracking_number": None, "tracking_url": None, "tracking_company": None,
+        "shipment_status": "fulfilled", "shipped_at": "2026-09-01T00:00:00Z",
+        "fulfillments": [{"tracking_number": None, "tracking_url": None, "tracking_company": None,
+                           "shipment_status": "fulfilled", "created_at": "2026-09-01T00:00:00Z"}],
+        "fulfillment_count": 1, "total_amount": "25.00", "items": [], "created_at": "2026-08-26T00:00:00Z",
+    }
+    captured = {}
+    events = []
+
+    async def capturing_completion(*args, messages=None, **kwargs):
+        captured["messages"] = messages
+        return (_fake_ai_response(), "test_provider", "test_model", _FAKE_USAGE)
+
+    async def on_progress(stage, label):
+        events.append((stage, label))
+
+    def fake_select(table, params=None):
+        if table == "brands":
+            return [BRAND_WITH_AFTERSHIP]
+        return []
+
+    tracking_mock = AsyncMock()
+
+    with patch("src.services.ai_provider_manager.AIProviderManager.has_providers", new_callable=PropertyMock, return_value=True), \
+         patch("src.agent.customer_success_agent.ai_provider_manager.create_chat_completion", new=capturing_completion), \
+         patch("src.agent.customer_success_agent.v3_tools.get_order_status", new=AsyncMock(return_value=order_no_tracking)), \
+         patch("src.agent.customer_success_agent.v3_tools.get_orders_by_email", new=AsyncMock(return_value={"success": False})), \
+         patch("src.agent.customer_success_agent.brand_knowledge_service.get_brand_context", new=AsyncMock(return_value="")), \
+         patch("src.services.tracking_service.get_tracking_status", new=tracking_mock), \
+         patch("src.lib.supabase_client.supabase_select", side_effect=fake_select):
+        run(customer_success_agent.process_customer_query(
+            query="where is my order #1008?",
+            customer_info={"name": "Kamran", "email": "customer@example.com"},
+            tenant_id="tenant-1", store_id="brand-1", ticket_id="ticket-1",
+            on_progress=on_progress,
+        ))
+
+    prompt_text = "\n".join(m.get("content", "") for m in captured.get("messages", []))
+    tracking_mock.assert_not_awaited()
+    assert "isn't available yet" in prompt_text
+    # Checked against the actual order-evidence block only, not the whole
+    # prompt - the static system-prompt boilerplate legitimately mentions
+    # words like "in transit"/"delayed" as generic instructional examples
+    # unrelated to this specific order; what must never happen is THIS
+    # order's own evidence section claiming one of them with no data.
+    order_block = prompt_text.split("=== REAL ORDER DATA")[1].split("=== END ORDER DATA")[0]
+    for forbidden in ("in transit", "delivered", "out for delivery", "delayed", "couple of days", "arriving tomorrow"):
+        assert forbidden not in order_block.lower()
+
+
+def test_path_d_one_failed_shipment_never_corrupts_the_others_real_status():
+    """Two fulfillments: TRACK-A gets full live evidence, TRACK-B's lookup
+    fails (not found). TRACK-A's real status must reach the prompt intact,
+    TRACK-B must show unavailable, and both activity events fire - one
+    shipment's failure never overwrites or hides the other's real data."""
+    async def side_effect(tracking_number, carrier_slug, api_key):
+        if tracking_number == "TRACK-A":
+            return _full_evidence_tracking_result()
+        from src.services import tracking_service
+        tracking_service._last_failure_reason = tracking_service.TRACKING_NOT_FOUND
+        return None
+
+    captured = {}
+    events = []
+
+    async def capturing_completion(*args, messages=None, **kwargs):
+        captured["messages"] = messages
+        return (_fake_ai_response(), "test_provider", "test_model", _FAKE_USAGE)
+
+    async def on_progress(stage, label):
+        events.append((stage, label))
+
+    def fake_select(table, params=None):
+        if table == "brands":
+            return [BRAND_WITH_AFTERSHIP]
+        return []
+
+    with patch("src.services.ai_provider_manager.AIProviderManager.has_providers", new_callable=PropertyMock, return_value=True), \
+         patch("src.agent.customer_success_agent.ai_provider_manager.create_chat_completion", new=capturing_completion), \
+         patch("src.agent.customer_success_agent.v3_tools.get_order_status", new=AsyncMock(return_value=TWO_SHIPMENT_ORDER)), \
+         patch("src.agent.customer_success_agent.v3_tools.get_orders_by_email", new=AsyncMock(return_value={"success": False})), \
+         patch("src.agent.customer_success_agent.brand_knowledge_service.get_brand_context", new=AsyncMock(return_value="")), \
+         patch("src.services.tracking_service.get_tracking_status", new=side_effect), \
+         patch("src.lib.supabase_client.supabase_select", side_effect=fake_select):
+        run(customer_success_agent.process_customer_query(
+            query="where is my order #1013?",
+            customer_info={"name": "Syeda", "email": "customer10@example.com"},
+            tenant_id="tenant-1", store_id="brand-1", ticket_id="ticket-1",
+            on_progress=on_progress,
+        ))
+
+    prompt_text = "\n".join(m.get("content", "") for m in captured.get("messages", []))
+    stages = [s for s, _ in events]
+    assert "tracking_retrieved" in stages
+    assert "tracking_unavailable" in stages
+    assert "AT_DISTRIBUTION_CENTER" in prompt_text
+    assert "2 separate packages" in prompt_text
+    assert "Do NOT invent a status for any package not listed above" in prompt_text
+
+
+# UNKNOWN status can never be upgraded to a confident claim
+
+def test_unknown_normalized_status_is_not_a_confident_claim_single_shipment():
+    """build_tracking_context's single-shipment renderer only produces a
+    specific confident claim (delivered / out for delivery / exception
+    wording) for a small explicit set of recognized raw carrier tags -
+    anything else, including a genuinely unrecognized one, falls through to
+    the generic "on its way" phrasing, never a specific status claim it
+    can't back up. This is what actually protects against an UNKNOWN
+    status being dressed up as confident, since this renderer never emits
+    the normalized_status enum literally at all (only the multi-shipment
+    renderer does - see the mixed-status assertions in
+    test_wismo_tracking_normalization.py, which do check the literal
+    "UNKNOWN" string there)."""
+    async def side_effect(tracking_number, carrier_slug, api_key):
+        result = _full_evidence_tracking_result()
+        result["status"] = "SomeNewUnrecognizedCarrierTag"  # raw tag genuinely unrecognized
+        result["status_text"] = "Unrecognized carrier scan"  # must match - status_text is what's actually rendered
+        result["normalized_status"] = "UNKNOWN"
+        result["status_description"] = "Unrecognized carrier scan"
+        result["latest_event"] = "Unrecognized carrier scan"
+        result["expected_delivery"] = None
+        return result
+
+    prompt_text, events = _run_wismo_query_one_shipment(BRAND_WITH_AFTERSHIP, side_effect)
+
+    order_block = prompt_text.split("=== REAL ORDER DATA")[1].split("=== END ORDER DATA")[0]
+    for forbidden in ("in transit", "out for delivery", "your order was delivered", "delayed"):
+        assert forbidden not in order_block.lower()
