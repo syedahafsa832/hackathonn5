@@ -463,8 +463,27 @@ class ReturnActionsIntegration:
         if not existing_action:
             existing_action = await self._find_active_action(tenant_id, order_id, "cancel_order")
         if existing_action:
-            result["action_context"] = self._duplicate_status_context(existing_action, intent_type)
             result["duplicate_of_existing_action"] = existing_action
+            # A pending/approved/executed cancel_order for THIS order already
+            # produces the refund the customer is now separately asking
+            # about — established, existing business logic, not a new rule:
+            # shopify_service.cancel_order() only ever runs for an
+            # unfulfilled order (Shopify itself rejects cancelling a
+            # fulfilled one — see its ORDER_ALREADY_FULFILLED check) and
+            # Shopify auto-refunds a paid order's payment on cancellation;
+            # actions_service.py's own cancel_order confirmation email
+            # already tells the customer "your refund will appear within
+            # 3–5 business days" as part of the SAME action. So a cancel_order
+            # match genuinely satisfies a refund/return intent for the same
+            # order — one coherent answer, not two ("cancellation pending" +
+            # "I've also noted your refund"). Never the reverse: a pending
+            # refund action does NOT retroactively cancel the order, so a
+            # "cancel" intent matching an existing "refund" action still
+            # gets the plain, type-accurate duplicate wording below.
+            if intent_type in ("refund", "return") and existing_action.get("action_type") == "cancel_order":
+                result["action_context"] = self._cancellation_covers_refund_context(existing_action)
+            else:
+                result["action_context"] = self._duplicate_status_context(existing_action, intent_type)
             return result
 
         await _emit("order_lookup", f"Finding order #{order_id}…")
@@ -888,6 +907,69 @@ class ReturnActionsIntegration:
                 f"actually present here (do not invent an amount, item, or date if none is given)."
             )
         return f"**{noun.upper()} ALREADY ON FILE** (status: {status}). Do NOT create a new request — ask the customer to give our team a moment."
+
+    def _cancellation_covers_refund_context(self, existing: Dict[str, Any]) -> str:
+        """Only called when the customer's CURRENT intent is refund/return
+        but the only real record found is a `cancel_order` action (see the
+        refund/cancel duplicate-request guard above). Confirmed-live bug:
+        without this, the caller fell back to `_duplicate_status_context`,
+        whose wording only ever talks about the cancellation — it never
+        tells the model the refund the customer just asked about is the
+        SAME outcome, not a separate open question. The model then filled
+        that gap itself, producing one reply that both restated the
+        cancellation AND separately claimed "I've noted your refund
+        request" — a second, entirely fabricated promise with no backing
+        action, on top of the first (real) one.
+
+        This is one-directional and never a guess: shopify_service's
+        cancel_order() only ever runs for an unfulfilled order (Shopify
+        itself refuses to cancel a fulfilled one), and Shopify auto-refunds
+        a cancelled paid order's payment — actions_service.py's own
+        cancel_order confirmation email already promises the customer
+        "your refund will appear within 3–5 business days" as part of
+        executing this SAME action, not a separate one. A pending refund
+        action, by contrast, never cancels the order — so this is only
+        ever invoked for cancel_order-satisfies-refund, never the reverse."""
+        status = existing.get("status")
+        if status == "pending":
+            return (
+                "**EXISTING CANCELLATION ALREADY COVERS THIS REFUND REQUEST**: This order already has "
+                "a cancellation request awaiting our team's approval, and cancelling it will also "
+                "produce the refund the customer is now asking about — they are the SAME outcome, not "
+                "two separate things. Do NOT create a new refund request. Do NOT say you've 'also "
+                "noted' or separately logged a refund request — there is only one pending request, and "
+                "mentioning a second implies a promise nothing backs. Tell the customer ONE coherent "
+                "thing: 'Your cancellation request for this order is already pending approval — that "
+                "process covers the refund you're asking about, so you don't need to submit a separate "
+                "request. You'll hear back once it's reviewed.'"
+            )
+        if status == "approved":
+            return (
+                "**CANCELLATION (COVERING THIS REFUND) APPROVED, BEING PROCESSED**: Do NOT create a new "
+                "refund request. Tell the customer: 'Good news — your cancellation was approved and "
+                "we're finishing it up now. That includes the refund you asked about, which follows "
+                "automatically once the cancellation completes.'"
+            )
+        if status == "executed":
+            execution_result = existing.get("execution_result") or {}
+            if execution_result.get("manual_action_required"):
+                return (
+                    "**CANCELLATION (COVERING THIS REFUND) APPROVED — TEAM FINISHING LAST STEP**: Do NOT "
+                    "create a new refund request. Tell the customer honestly: 'Yes, your cancellation "
+                    "was approved, which includes the refund you asked about. Our team is completing "
+                    "the last step manually and you'll get a confirmation shortly.' Do NOT say the "
+                    "refund has already landed."
+                )
+            return (
+                "**CANCELLATION (COVERING THIS REFUND) ALREADY COMPLETED**: This order was already "
+                "cancelled, and that included the refund the customer is asking about. Do NOT create a "
+                "new refund request. Tell the customer it's done — reference only real details actually "
+                "present here (do not invent an amount or date if none is given)."
+            )
+        return (
+            f"**CANCELLATION (COVERING THIS REFUND) ALREADY ON FILE** (status: {status}). Do NOT create "
+            "a new refund request — ask the customer to give our team a moment."
+        )
 
     async def _handle_exchange(
         self,
