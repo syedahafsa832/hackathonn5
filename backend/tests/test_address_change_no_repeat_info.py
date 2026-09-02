@@ -202,13 +202,16 @@ def test_identity_mismatch_does_not_ask_customer_to_repeat_email():
 def test_ownership_mismatch_wording_states_the_mismatch_not_a_repeat_request():
     """Direct check on the fixed tool_context wording (customer_success_agent.py) -
     must never instruct the LLM to ask the customer to confirm/repeat/resend
-    an email; must instead state the mismatch and defer to team verification."""
+    an email, and must never promise a team follow-up that will never happen
+    (a live incident showed exactly that false promise) - instead it must
+    state the mismatch and fully resolve it in one reply."""
     import inspect
     source = inspect.getsource(CustomerSuccessAgent)
     block = source.split('order.get("ownership_mismatch")')[1].split("elif order.get")[0]
     assert "ask them to confirm the email used when ordering" not in block
     assert "do NOT ask them to confirm/repeat/resend" in block
-    assert "needs our team to verify ownership" in block or "verify ownership before" in block
+    assert "do NOT say a team will" in block or "do NOT say 'I need our team to verify ownership'" in block
+    assert "NOTHING is being escalated" in block
 
 
 # ── 5. Generic order question is never misclassified as address change ────

@@ -255,8 +255,16 @@ class ActionsManager:
             # either, same as the "order not found" branch above — an unverified
             # sender never gets real order details, matching
             # tools.py's get_order_status ownership check.
+            # Symmetric to the order-has-no-email leniency above: an
+            # unverified chat visitor with NO email at all (email="") has
+            # no sender identity to compare either, so this must not be
+            # treated as a mismatch - that would falsely tell a customer
+            # who never gave any contact email that "the email you're
+            # contacting us from doesn't match", and would silently block
+            # a legitimate order-number-only chat request that used to
+            # reach a human via staging_required.
             order_email = order.get("email", "").lower()
-            if order_email and order_email != email.lower():
+            if order_email and email and order_email != email.lower():
                 logger.warning(
                     f"[ReturnActions] Sender email mismatch for order #{order_id} — "
                     f"order has {order_email}, sender is {email}. Blocking — no action will be staged."
