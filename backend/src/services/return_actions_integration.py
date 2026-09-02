@@ -693,7 +693,24 @@ class ReturnActionsIntegration:
 
         # NOT ELIGIBLE and fulfilled
         if not eligibility.get("eligible"):
-            if eligibility.get("staging_required") or eligibility.get("requires_manual_review"):
+            if eligibility.get("identity_mismatch"):
+                # Never staged, never escalated for this reason alone - see
+                # check_return_eligibility's own comment for the confirmed-live
+                # incident (a "manual review" action from this exact case
+                # reached "executed"). Nothing is pending anywhere for this
+                # request, so the reply must resolve it in one message, not
+                # promise a follow-up that will never happen.
+                result["action_context"] = (
+                    f"**IDENTITY UNVERIFIED - DO NOT PROCESS {intent_type.upper()}**: The email this "
+                    "customer is contacting from does not match the email on file for this order. "
+                    "Do NOT create a request. Do NOT say this has been escalated, sent to the team, or "
+                    "that anyone will follow up - nothing has been submitted anywhere. Resolve this in "
+                    "this one reply: state plainly that the order was found but the contact email "
+                    "doesn't match the one on the order, so for security this request can't be "
+                    f"processed from this email, and ask the customer to reach out to us from the email "
+                    "address used when placing the order so we can help right away."
+                )
+            elif eligibility.get("staging_required") or eligibility.get("requires_manual_review"):
                 # eligibility["reason"] is a short, deterministic string from
                 # check_return_eligibility (e.g. "order not yet fulfilled")
                 # - safe to keep here. custom_policy_text is the raw,
@@ -708,6 +725,7 @@ class ReturnActionsIntegration:
                     customer_name=customer_info.get("name"), query=query,
                     ai_reasoning=ai_reasoning, eligibility=eligibility,
                     policy_evidence=policy_evidence,
+                    requested_amount=self._extract_requested_refund_amount(query),
                 )
                 result["staged"] = staged
                 result["action_context"] = (
@@ -765,6 +783,10 @@ class ReturnActionsIntegration:
             action_type="cancel_order" if is_unfulfilled else "refund", order_id=order_id, email=email,
             customer_name=customer_info.get("name"), query=query,
             ai_reasoning=ai_reasoning, eligibility=eligibility,
+            # A dollar figure only ever means something for a real refund —
+            # cancel_order is a whole-order Shopify cancellation with no
+            # partial-amount concept, so never attach one there.
+            requested_amount=None if is_unfulfilled else self._extract_requested_refund_amount(query),
         )
         result["staged"] = staged
 
@@ -1370,15 +1392,43 @@ class ReturnActionsIntegration:
         )
 
     # A customer stating their own dollar figure ("refund me $30 for the
-    # damaged item") is never captured anywhere in extracted_data by this
-    # integration - the refund action always stages as a full-order refund
-    # regardless, with a human approver deciding the real amount at
-    # approval time. That means an AI-generated/customer-stated amount can
-    # never silently reach Shopify - but a customer who explicitly named a
-    # figure clearly wants something other than a full refund, so treat any
-    # dollar mention in their message as inherently ambiguous and never
-    # eligible for automatic execution, matching the task's own example.
+    # damaged item") is inherently ambiguous for AUTOMATIC execution - a
+    # human approver still decides the real amount at approval time, and
+    # this is never itself authorization to refund that amount (see
+    # actions_service.approve_action's override_amount docstring: only a
+    # human-typed figure at approval time ever reaches Shopify). So any
+    # dollar mention in the message keeps disqualifying this from
+    # _maybe_autopilot_refund below, unchanged.
+    #
+    # It IS captured (via _extract_requested_refund_amount below) and
+    # stored on the staged action as extracted_data.requested_amount so the
+    # approval UI can show and pre-fill what the customer actually asked
+    # for, instead of always silently defaulting to a full refund the
+    # human then has to notice and override by re-reading the raw message.
+    # A human still has to click Approve either way - this only fixes what
+    # the form defaults to.
     _AMOUNT_MENTION_RE = re.compile(r'\$\s*\d|\b\d+(?:\.\d+)?\s*(?:dollars|usd|bucks)\b', re.IGNORECASE)
+    _REQUESTED_AMOUNT_RE = re.compile(
+        r'\$\s*(\d+(?:\.\d{1,2})?)|(\d+(?:\.\d{1,2})?)\s*(?:dollars|usd|bucks)\b', re.IGNORECASE
+    )
+
+    @classmethod
+    def _extract_requested_refund_amount(cls, query: str) -> Optional[float]:
+        """Deterministic regex extraction only - never an LLM guess, never
+        itself sufficient to execute anything (see the class comment
+        above). Returns None when the customer named no figure, or named
+        one that doesn't parse to a positive number - the caller's existing
+        full-refund default is preserved in both cases."""
+        if not query:
+            return None
+        m = cls._REQUESTED_AMOUNT_RE.search(query)
+        if not m:
+            return None
+        try:
+            value = float(m.group(1) or m.group(2))
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
 
     async def _maybe_autopilot_refund(
         self,
@@ -1492,6 +1542,7 @@ class ReturnActionsIntegration:
         current_fulfillment_status: Optional[str] = None,
         identity_verified: Optional[bool] = None,
         identity_verification_reason: Optional[str] = None,
+        requested_amount: Optional[float] = None,
     ) -> dict:
         """Create action in `actions` table (new system) when tenant_id is available,
         otherwise fall back to legacy `pending_actions` via stage_pending_action."""
@@ -1533,6 +1584,13 @@ class ReturnActionsIntegration:
                 if identity_verified is not None:
                     extracted["identity_verified"] = identity_verified
                     extracted["identity_verification_reason"] = identity_verification_reason
+                if requested_amount is not None:
+                    # Displayed/pre-filled by the approval UI only - never
+                    # read by approve_action() itself, which only ever
+                    # trusts a human-typed override_amount at approval
+                    # time (see that function's own docstring). The human
+                    # still submits (or edits) this figure explicitly.
+                    extracted["requested_amount"] = requested_amount
                 return await actions_service.create_action(
                     tenant_id=tenant_id,
                     brand_id=brand_id,

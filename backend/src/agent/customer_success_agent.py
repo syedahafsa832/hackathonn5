@@ -626,6 +626,50 @@ def _enforce_no_escalation_for_duplicate_action_notice(
     return structured
 
 
+def _enforce_no_escalation_for_identity_mismatch(
+    structured: Dict[str, Any], identity_mismatch: bool,
+) -> Dict[str, Any]:
+    """Confirmed-live contradiction, a second root cause of the same
+    "escalated but nothing pending" shape as the backstops above: a refund/
+    cancel request where the requester's email doesn't match the order's
+    Shopify customer email reached status="escalated" (real ticket
+    01b2c6cb..., order #1009) purely because the model rated this turn
+    risk_level="high" - the confidence/risk block earlier in this function
+    has no way to know that check_return_eligibility already hard-blocked
+    any action for this exact reason (see return_actions_integration.py's
+    identity_mismatch flag) and that the reply itself is a complete, safe,
+    self-contained explanation, not a request waiting on anyone.
+
+    Unlike every other backstop in this file, this one does NOT gate on
+    risk_level != "high". That is deliberate, not a general weakening of
+    high-risk escalation: identity_mismatch is a real, backend-verified
+    fact (a live Shopify email comparison), never a guess, and it means
+    with certainty that no action was staged and nothing is pending - so
+    there is nothing left for "escalated" to actually mean here. Every
+    OTHER backstop's risk_level guard stays exactly as it was; this is a
+    narrow, additive override that only ever fires when
+    return_actions_integration.py itself already refused to act.
+
+    Independent of order-status keyword phrasing: identity_mismatch comes
+    from the refund/cancel/return intent-detection path (LLM-classified,
+    not a "order"/"shipped"/etc. keyword match), so it fires the same way
+    whether or not the customer's message happens to contain the word
+    "order". Only overrides when a real reply exists - a failed generation
+    still escalates for safety, same as every other backstop here."""
+    if identity_mismatch and structured.get("reply_body"):
+        structured["escalate"] = False
+        structured["status"] = "auto_resolved"
+        # message_processor.py's _decide_ticket_routing reads this to skip
+        # its own risk-level-driven fallback entirely for this turn (see
+        # identity_mismatch param there) - has_new_pending_action's
+        # risk_level != "high" carve-out is deliberately NOT reused here,
+        # since that one exists specifically to never weaken a genuine
+        # high-risk signal, which this backstop's whole point is to
+        # override for this one verified-safe reason.
+        structured["identity_mismatch"] = True
+    return structured
+
+
 # Reused by both the recommendation-anchor and variant-followup resolvers
 # below — the same "does this look like a real product name, not a
 # pronoun" filter the current-message anchor extraction already applies.
@@ -1447,11 +1491,18 @@ class CustomerSuccessAgent:
                             "This comparison already used the email this conversation is verified as coming from - if the "
                             "customer already stated an email in their message (e.g. 'the email I used was X'), that has "
                             "ALREADY been checked and doesn't match, so do NOT ask them to confirm/repeat/resend any email. "
-                            "Instead, state plainly that you found the order but the identity doesn't match, and that this "
-                            "needs to go to the team for verification before any change can be made - e.g. 'I found order "
-                            f"#{mentioned_num}, but the email you're contacting us from doesn't match the one on that order. "
-                            "I need our team to verify ownership before I can make any changes.' Do NOT ask a clarifying "
-                            "question expecting a new answer here - this is a statement, followed by escalation.\n"
+                            "NOTHING is being escalated or sent to a team for this reason alone, and no request has been "
+                            "submitted anywhere - do NOT say 'I need our team to verify ownership', do NOT say a team will "
+                            "follow up or reach out, and do NOT claim you're escalating this. Instead, fully resolve this "
+                            "in this one reply: state plainly that you found the order but the contact email doesn't match "
+                            "the one on the order, explain that for security this can't be processed from this email, and "
+                            "ask the customer to reach out to us from the email address used when placing the order so we "
+                            f"can help right away - e.g. 'I found order #{mentioned_num}, but the email you're contacting "
+                            "us from doesn't match the one on that order. For your security I'm not able to share order "
+                            "details or make changes from this email. Could you reach out to us from the email address "
+                            "used when this order was placed? If that's not possible, let us know and we'll help you "
+                            "verify another way.' Do NOT ask a clarifying question expecting a new answer here - this is "
+                            "a complete, self-contained response.\n"
                         )
                         _needs_identity_verification = True
                     elif order.get("error"):
@@ -1579,6 +1630,7 @@ class CustomerSuccessAgent:
             action_context = ""
             action_taken = None
             duplicate_action = None
+            identity_mismatch = False
             from src.services.intent_detector import intent_detector as _intent_detector, NO_ACTION as _NO_ACTION
             # A detected catalog question ("what products do you sell?") can
             # never plausibly be a return/refund/cancel/exchange/address-change
@@ -1652,6 +1704,7 @@ class CustomerSuccessAgent:
                 tool_results["return_action"] = action_result
                 action_taken = action_result.get("staged")
                 duplicate_action = action_result.get("duplicate_of_existing_action")
+                identity_mismatch = bool((action_result.get("eligibility") or {}).get("identity_mismatch"))
             else:
                 logger.info(f"[ReturnActions] No action intent (source={_intent_result.source})")
 
@@ -1805,6 +1858,15 @@ class CustomerSuccessAgent:
             # docstring for the exact contradiction this closes.
             structured = _enforce_no_escalation_for_duplicate_action_notice(
                 structured, duplicate_action
+            )
+
+            # 5g. Safety backstop: an email/order ownership mismatch is a
+            # real, backend-verified fact that no action was staged and
+            # nothing is pending — takes precedence over risk/confidence
+            # (never a general weakening of high-risk escalation; see the
+            # function's own docstring for why this one case is different).
+            structured = _enforce_no_escalation_for_identity_mismatch(
+                structured, identity_mismatch
             )
 
             # 6. Signature Enforcement - Make it natural, not robotic. Falls

@@ -666,6 +666,7 @@ class ShopifyClient:
                                 "success": True,
                                 "refund_id": existing.get("id"),
                                 "amount": amount,
+                                "currency": order.get("currency"),
                                 "order_id": order_id,
                                 "order_name": order.get("name"),
                                 "message": f"Successfully refunded ${amount:.2f}",
@@ -754,6 +755,7 @@ class ShopifyClient:
             "success": True,
             "refund_id": refund.get("id"),
             "amount": amount,
+            "currency": order.get("currency"),
             "order_id": order_id,
             "order_name": order.get("name"),
             "message": f"Successfully refunded ${amount:.2f}"

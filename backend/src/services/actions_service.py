@@ -24,6 +24,27 @@ logger = logging.getLogger(__name__)
 # approval any more than a refund or cancel may.
 _AUDITED_ACTION_TYPES = {"refund", "cancel_order", "exchange"}
 
+# Common ISO 4217 codes mapped to their customer-facing symbol. Deliberately
+# small and additive-only — never used to convert an amount, only to decide
+# how to *display* whatever currency the order/refund already carries.
+_CURRENCY_SYMBOLS = {"USD": "$", "CAD": "$", "AUD": "$", "GBP": "£", "EUR": "€"}
+
+
+def _format_money(amount, currency_code: Optional[str]) -> str:
+    """Render a customer-facing amount using the order's OWN currency only -
+    never inferred from locale/country, never converted, never defaulted to
+    USD or any other fixed currency. `currency_code` must come straight from
+    the authoritative Shopify order/refund data (execution_result["currency"]).
+    An unrecognized-but-present code (e.g. "PKR", "JPY") is shown as-is via
+    its ISO code rather than guessing a symbol; a genuinely missing code
+    falls back to the bare number rather than inventing one."""
+    if not isinstance(amount, (int, float)):
+        return str(amount)
+    if not currency_code:
+        return f"{amount:.2f}"
+    symbol = _CURRENCY_SYMBOLS.get(currency_code.upper())
+    return f"{symbol}{amount:.2f}" if symbol else f"{currency_code.upper()} {amount:.2f}"
+
 
 class ActionType(str, Enum):
     REFUND = "refund"
@@ -830,7 +851,7 @@ class ActionsService:
                     }
                     if action_type == ActionType.REFUND.value:
                         amount = execution_result.get("amount", "")
-                        variables["refund_amount"] = f"PKR {amount:.2f}" if isinstance(amount, (int, float)) else str(amount)
+                        variables["refund_amount"] = _format_money(amount, execution_result.get("currency"))
                     subject = email_automation_service.render_template(custom_automation["subject"], variables)
                     body = email_automation_service.render_template(custom_automation["body"], variables)
 
@@ -872,7 +893,7 @@ class ActionsService:
                 )
             elif action_type == ActionType.REFUND.value:
                 amount = execution_result.get("amount", "")
-                amount_str = f"PKR {amount:.2f}" if isinstance(amount, (int, float)) else str(amount)
+                amount_str = _format_money(amount, execution_result.get("currency"))
                 body = (
                     f"Hey {customer_name},\n\n"
                     f"Your refund for order {order_name} has been processed.\n\n"

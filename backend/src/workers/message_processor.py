@@ -551,6 +551,7 @@ class UnifiedMessageProcessor:
                 risk_level=risk_level,
                 reply_body=reply_body,
                 has_new_pending_action=not ai_result.get("duplicate_action_notice", False),
+                identity_mismatch=ai_result.get("identity_mismatch", False),
             )
             should_auto_reply = routing["should_auto_reply"]
             if routing["status"] is not None:
@@ -846,6 +847,7 @@ class UnifiedMessageProcessor:
             confidence_threshold=confidence_threshold, ai_flagged_escalate=ai_result.get("escalate", False),
             risk_level=risk_level, reply_body=reply_body,
             has_new_pending_action=not ai_result.get("duplicate_action_notice", False),
+            identity_mismatch=ai_result.get("identity_mismatch", False),
         )
         should_auto_reply = routing["should_auto_reply"]
 
@@ -913,6 +915,7 @@ class UnifiedMessageProcessor:
         self, ai_mode: str, is_overridden: bool, confidence: float,
         confidence_threshold: float, ai_flagged_escalate: bool,
         risk_level: str, reply_body: str, has_new_pending_action: bool = True,
+        identity_mismatch: bool = False,
     ) -> Dict[str, Any]:
         """Pure decision logic for STAGE 8 (unsupported/ambiguous/failed/sensitive
         requests must escalate, not auto-reply as if resolved). Extracted from
@@ -933,7 +936,19 @@ class UnifiedMessageProcessor:
         customer_success_agent.py's
         _enforce_no_escalation_for_duplicate_action_notice) - producing a
         ticket that shows "Escalated: Needs Your Attention" over a reply
-        that already fully and truthfully answered the customer."""
+        that already fully and truthfully answered the customer.
+
+        identity_mismatch defaults False (no behavior change for any other
+        caller/ticket) and is only ever passed True alongside a real
+        return_actions_integration.py identity_mismatch finding (a live
+        Shopify email comparison, never a guess) - see
+        customer_success_agent.py's _enforce_no_escalation_for_identity_mismatch.
+        Deliberately NOT folded into has_new_pending_action's
+        `risk_level != "high"` carve-out: that carve-out exists specifically
+        to never weaken a genuine high-risk signal, while this is the one
+        case where the backend already knows with certainty that nothing
+        was staged and nothing is pending, so "escalated" would be a fake
+        escalation regardless of what risk_level the model assigned."""
         if not has_new_pending_action and not ai_flagged_escalate and risk_level != "high":
             risk_level = "low"
 
@@ -950,6 +965,19 @@ class UnifiedMessageProcessor:
                     "should_auto_reply": False, "status": "human_managing",
                     "ai_draft": reply_body,
                     "log_message": "Human takeover active - suppressing reply",
+                }
+
+            if identity_mismatch:
+                if reply_body:
+                    return {
+                        "should_auto_reply": True, "status": "auto_resolved",
+                        "ai_reply": reply_body,
+                        "log_message": "Identity mismatch - resolved in this reply, nothing pending",
+                    }
+                return {
+                    "should_auto_reply": False, "status": "escalated",
+                    "ai_draft": reply_body,
+                    "log_message": "Identity mismatch but reply generation failed - escalating for safety",
                 }
 
             if confidence >= confidence_threshold and not ai_flagged_escalate and risk_level == "low":

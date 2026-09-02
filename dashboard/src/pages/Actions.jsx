@@ -85,9 +85,18 @@ function ActionCard({ action, onApprove, onReject }) {
   const requiresPolicyCheck = !!policyEvidence ||
     !!(action.extracted_data?.eligibility && !action.extracted_data.eligibility.eligible &&
        (action.extracted_data.eligibility.staging_required || action.extracted_data.eligibility.requires_manual_review));
-  // Human-entered partial refund override — never AI-suggested, blank means
-  // "full refund" (unchanged existing behavior). Only shown for refunds.
-  const [amountOverride, setAmountOverride] = useState('');
+  // Pre-filled from what the customer actually typed (e.g. "$5 refund for
+  // #1001" — see return_actions_integration.py's requested_amount, deterministic
+  // regex extraction, never AI-inferred), so the reviewer isn't stuck
+  // re-reading the raw message to notice a partial ask and manually retype
+  // it — but it stays a plain editable field: the reviewer can change or
+  // clear it before clicking Approve, and blank still means "full refund"
+  // exactly as before. This is still the human's own submitted value —
+  // never sent anywhere until Approve is clicked.
+  const requestedAmount = action.extracted_data?.requested_amount;
+  const [amountOverride, setAmountOverride] = useState(
+    requestedAmount != null ? String(requestedAmount) : ''
+  );
 
   // Reship escalations enrich extracted_data with a live Shopify snapshot
   // (order_snapshot — see return_actions_integration.py's reship staging)
@@ -328,7 +337,9 @@ function ActionCard({ action, onApprove, onReject }) {
             {isRefund && (
               <div style={{ marginBottom: '8px' }}>
                 <label style={{ display: 'block', fontSize: '12px', color: '#64748B', marginBottom: '4px' }}>
-                  Partial refund amount (optional, leave blank for the full ${orderTotal.toFixed(2)})
+                  {requestedAmount != null
+                    ? `Customer requested $${Number(requestedAmount).toFixed(2)} — edit if needed, leave blank for the full $${orderTotal.toFixed(2)}`
+                    : `Partial refund amount (optional, leave blank for the full $${orderTotal.toFixed(2)})`}
                 </label>
                 <input
                   type="number" min="0.01" step="0.01"

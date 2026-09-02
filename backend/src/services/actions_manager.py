@@ -237,22 +237,39 @@ class ActionsManager:
             # file in Shopify. If the order has no email at all, be lenient (nothing
             # to compare against). A mismatch does NOT silently continue as eligible
             # — that would let anyone claiming an order number by email trigger a
-            # cancel/refund for an order that isn't theirs. Instead it's staged for
-            # manual review with an explicit reason, same as "order not found" above.
+            # cancel/refund for an order that isn't theirs.
+            #
+            # This is a HARD block, never staging_required/requires_manual_review:
+            # a live incident confirmed a "manual review" refund/cancel action
+            # staged from an unverified email reached "executed" status (the
+            # confirmation email — and the refund/cancel outcome itself — went
+            # out under the SENDER's email, who never owned this order). Ownership
+            # isn't something a human reviewer can retroactively fix by approving
+            # a queued action; it has to stop the action from ever being created.
+            # Both callers of this function (return_actions_integration.py and
+            # actions_service.py's detect_and_create) treat
+            # staging_required/requires_manual_review as "create an action for
+            # human review" — so this case must set neither. identity_mismatch is
+            # the distinct signal callers use to give the customer an accurate,
+            # resolving explanation instead. No order/item data is returned here
+            # either, same as the "order not found" branch above — an unverified
+            # sender never gets real order details, matching
+            # tools.py's get_order_status ownership check.
             order_email = order.get("email", "").lower()
             if order_email and order_email != email.lower():
                 logger.warning(
                     f"[ReturnActions] Sender email mismatch for order #{order_id} — "
-                    f"order has {order_email}, sender is {email}. Flagging for manual review, not auto-staging."
+                    f"order has {order_email}, sender is {email}. Blocking — no action will be staged."
                 )
                 return {
                     "eligible": False,
                     "eligibility_verified": False,
                     "reason": "sender email does not match order email on file",
-                    "order": self._extract_order_summary(order),
-                    "items": self._extract_items(order),
-                    "requires_manual_review": True,
-                    "staging_required": True,
+                    "order": None,
+                    "items": [],
+                    "requires_manual_review": False,
+                    "staging_required": False,
+                    "identity_mismatch": True,
                 }
 
             # Step 3: Check fulfillment status
