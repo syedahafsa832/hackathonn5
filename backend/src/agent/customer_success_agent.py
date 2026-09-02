@@ -565,6 +565,53 @@ def _enforce_no_escalation_for_safe_identity_verification_response(
     return structured
 
 
+def _enforce_no_escalation_for_duplicate_action_notice(
+    structured: Dict[str, Any], duplicate_action: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Confirmed-live contradiction: a ticket showed "Escalated: Needs Your
+    Attention" while its own Activity ended in "Draft ready" / "Email
+    sent" and the reply itself was a complete, successful answer telling
+    the customer their request "is already with our team for approval."
+    Traced to return_actions_integration.py's duplicate-request guard: when
+    an order already has a pending/approved/executed action (from THIS
+    conversation or an earlier one), handle_return_intent() never stages a
+    new action for the CURRENT turn — it just returns a truthful status
+    notice about the existing one (see `_duplicate_status_context`) — but
+    the confidence/risk-based status block earlier in this function has
+    no visibility into that and still marks the turn "escalated" purely
+    off confidence/risk, exactly as if a brand-new action were pending on
+    THIS ticket.
+
+    `duplicate_action` is the real, backend-found `actions` row this reply
+    is describing (see return_actions_integration.py's
+    `duplicate_of_existing_action`) — never a guess. Escalating this
+    ticket a second time would be redundant at best (the actual pending
+    work is already tracked on whichever ticket/action created it) and
+    misleading at worst (the referenced action may already be approved or
+    executed, meaning nothing is waiting on anyone). Only overrides when a
+    real reply exists and risk_level isn't independently "high" — same
+    guardrails as the identity-verification backstop above."""
+    if (
+        duplicate_action
+        and structured.get("reply_body")
+        and structured.get("risk_level") != "high"
+    ):
+        structured["escalate"] = False
+        if structured.get("status") == "escalated":
+            structured["status"] = "auto_resolved"
+        # message_processor.py's _decide_ticket_routing recomputes ticket
+        # status itself from (confidence, risk_level, escalate) and never
+        # reads structured["status"] above — a refund/cancel intent's
+        # risk_level is routinely "medium" by topic alone, which on its
+        # own still forces that routing into its escalated fallback branch
+        # even with escalate now False here. This flag is the explicit,
+        # narrowly-scoped signal routing needs to know THIS turn's medium
+        # risk_level was about a topic already resolved elsewhere, not a
+        # new pending action on THIS ticket - see has_new_pending_action.
+        structured["duplicate_action_notice"] = True
+    return structured
+
+
 # Reused by both the recommendation-anchor and variant-followup resolvers
 # below — the same "does this look like a real product name, not a
 # pronoun" filter the current-message anchor extraction already applies.
@@ -1517,6 +1564,7 @@ class CustomerSuccessAgent:
             # whether an action actually exists.
             action_context = ""
             action_taken = None
+            duplicate_action = None
             from src.services.intent_detector import intent_detector as _intent_detector, NO_ACTION as _NO_ACTION
             # A detected catalog question ("what products do you sell?") can
             # never plausibly be a return/refund/cancel/exchange/address-change
@@ -1589,6 +1637,7 @@ class CustomerSuccessAgent:
                 logger.info(f"[ReturnActions] Action context: {action_context[:200] if action_context else 'EMPTY'}")
                 tool_results["return_action"] = action_result
                 action_taken = action_result.get("staged")
+                duplicate_action = action_result.get("duplicate_of_existing_action")
             else:
                 logger.info(f"[ReturnActions] No action intent (source={_intent_result.source})")
 
@@ -1733,6 +1782,15 @@ class CustomerSuccessAgent:
             # exact contradiction this closes.
             structured = _enforce_no_escalation_for_safe_identity_verification_response(
                 structured, _needs_identity_verification
+            )
+
+            # 5f. Safety backstop: a reply that only relays the status of an
+            # already-existing (real, backend-found) pending/approved/
+            # executed action is a complete, self-contained answer — not a
+            # new request waiting on this ticket. See the function's own
+            # docstring for the exact contradiction this closes.
+            structured = _enforce_no_escalation_for_duplicate_action_notice(
+                structured, duplicate_action
             )
 
             # 6. Signature Enforcement - Make it natural, not robotic. Falls

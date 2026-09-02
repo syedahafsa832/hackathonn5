@@ -550,6 +550,7 @@ class UnifiedMessageProcessor:
                 ai_flagged_escalate=ticket_payload["escalate"],
                 risk_level=risk_level,
                 reply_body=reply_body,
+                has_new_pending_action=not ai_result.get("duplicate_action_notice", False),
             )
             should_auto_reply = routing["should_auto_reply"]
             if routing["status"] is not None:
@@ -844,6 +845,7 @@ class UnifiedMessageProcessor:
             ai_mode=ai_mode, is_overridden=is_overridden, confidence=confidence,
             confidence_threshold=confidence_threshold, ai_flagged_escalate=ai_result.get("escalate", False),
             risk_level=risk_level, reply_body=reply_body,
+            has_new_pending_action=not ai_result.get("duplicate_action_notice", False),
         )
         should_auto_reply = routing["should_auto_reply"]
 
@@ -910,13 +912,31 @@ class UnifiedMessageProcessor:
     def _decide_ticket_routing(
         self, ai_mode: str, is_overridden: bool, confidence: float,
         confidence_threshold: float, ai_flagged_escalate: bool,
-        risk_level: str, reply_body: str,
+        risk_level: str, reply_body: str, has_new_pending_action: bool = True,
     ) -> Dict[str, Any]:
         """Pure decision logic for STAGE 8 (unsupported/ambiguous/failed/sensitive
         requests must escalate, not auto-reply as if resolved). Extracted from
         process_message() so the escalation rules can be unit tested directly
         without mocking Supabase/plan_service/the AI agent. Behavior is
-        unchanged from the inline version this replaced."""
+        unchanged from the inline version this replaced.
+
+        has_new_pending_action defaults True (preserves prior behavior for
+        every existing caller/test) and is only ever passed False by a
+        caller that already knows, from a real backend record, that this
+        turn's reply merely relayed the status of an action staged on a
+        DIFFERENT ticket/earlier turn - never a guess. A refund/cancel
+        request's risk_level is "medium" by topic alone regardless of
+        whether a NEW action was actually staged for THIS ticket, so
+        without this the branch below would still force "escalated" here
+        purely off topic, even once the caller has already cleared
+        ai_flagged_escalate for exactly this reason (see
+        customer_success_agent.py's
+        _enforce_no_escalation_for_duplicate_action_notice) - producing a
+        ticket that shows "Escalated: Needs Your Attention" over a reply
+        that already fully and truthfully answered the customer."""
+        if not has_new_pending_action and not ai_flagged_escalate and risk_level != "high":
+            risk_level = "low"
+
         if ai_mode in ("paused", "supervised"):
             return {
                 "should_auto_reply": False, "status": "ai_suggested",

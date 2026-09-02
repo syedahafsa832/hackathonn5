@@ -192,6 +192,7 @@ class ReturnActionsIntegration:
             existing_action = await self._find_active_action(tenant_id, order_id, "change_address")
             if existing_action:
                 result["action_context"] = self._duplicate_status_context(existing_action, intent_type)
+                result["duplicate_of_existing_action"] = existing_action
                 return result
 
             new_address_text = intent_result.raw_address or None
@@ -356,6 +357,7 @@ class ReturnActionsIntegration:
             existing_action = await self._find_active_action(tenant_id, order_id, "reship")
             if existing_action:
                 result["action_context"] = self._duplicate_status_context(existing_action, intent_type)
+                result["duplicate_of_existing_action"] = existing_action
                 return result
 
             # Best-effort order enrichment so the human reviewer sees what's
@@ -462,6 +464,7 @@ class ReturnActionsIntegration:
             existing_action = await self._find_active_action(tenant_id, order_id, "cancel_order")
         if existing_action:
             result["action_context"] = self._duplicate_status_context(existing_action, intent_type)
+            result["duplicate_of_existing_action"] = existing_action
             return result
 
         await _emit("order_lookup", f"Finding order #{order_id}…")
@@ -837,12 +840,25 @@ class ReturnActionsIntegration:
         """Truthful status wording for a repeat request against an action
         that's already pending/approved/executed — never re-stages, and
         never claims completion that hasn't actually happened. Reused by
-        both the refund/return/cancel path and the exchange path."""
-        noun = "exchange" if existing.get("action_type") == "exchange" else (
-            "return" if intent_type == "return" else "refund" if intent_type == "refund"
-            else "reship" if intent_type == "reship"
-            else "address change" if intent_type == "address_change" else "cancellation"
-        )
+        both the refund/return/cancel path and the exchange path.
+
+        `noun` is derived from the EXISTING action's own `action_type`,
+        never from the customer's current `intent_type` — the refund/cancel
+        dedup check above intentionally matches either action_type against
+        the same order (a pending cancellation also covers a later refund
+        ask for the same order), so a customer asking for a refund can
+        legitimately have this triggered by a `cancel_order` row. Wording
+        it as "refund" in that case would tell the customer a refund is
+        awaiting approval when the real, only record on file is a
+        cancellation — a fabricated action-state claim. Always naming the
+        record's actual type keeps every claim traceable to a real row."""
+        noun = {
+            "exchange": "exchange",
+            "cancel_order": "cancellation",
+            "refund": "refund",
+            "reship": "reship",
+            "change_address": "address change",
+        }.get(existing.get("action_type"), "request")
         status = existing.get("status")
         if status == "pending":
             return (
@@ -906,6 +922,7 @@ class ReturnActionsIntegration:
         existing_action = await self._find_active_action(tenant_id, order_id, "exchange")
         if existing_action:
             result["action_context"] = self._duplicate_status_context(existing_action, "exchange")
+            result["duplicate_of_existing_action"] = existing_action
             return result
 
         await _emit("order_lookup", f"Finding order #{order_id}…")
