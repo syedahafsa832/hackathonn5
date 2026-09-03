@@ -437,7 +437,22 @@ class EmailPoller:
             # group's own messages still run in strict order internally.
             await asyncio.gather(*[_handle_group(g) for g in groups.values()])
 
-            logger.info(f"[POLL] Brand {brand_id} summary: fetched={len(emails)} processed={processed_count} failures={failure_count}")
+            # gmail_fetch_failures: messages Gmail's search matched but this
+            # backend could NOT retrieve this poll (a genuine content-fetch
+            # error inside get_new_emails - see FetchedEmails.fetch_failures).
+            # getattr's default (0) keeps this identical to today's behavior
+            # for a bare-list return, which every existing mock of
+            # get_new_emails still uses. Folded into `failures` so this one
+            # summary line stays truthful - previously a Gmail-level fetch
+            # failure was silently swallowed inside get_new_emails and never
+            # counted anywhere, so a poll with real failures could log
+            # "failures=0".
+            gmail_fetch_failures = getattr(emails, "fetch_failures", 0)
+            logger.info(
+                f"[POLL] Brand {brand_id} summary: fetched={len(emails)} processed={processed_count} "
+                f"failures={failure_count + gmail_fetch_failures}"
+                + (f" (gmail_fetch_failures={gmail_fetch_failures})" if gmail_fetch_failures else "")
+            )
 
             # Update last_polled_at after processing all emails in this batch
             try:

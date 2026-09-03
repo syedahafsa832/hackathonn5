@@ -18,13 +18,37 @@ from typing import Dict, Any, List, Optional
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
+import tenacity
 from src.services.email_layout import render_plain_text_email_html
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 logging.getLogger('googleapiclient.discovery_cache').setLevel(logging.ERROR)
+
+# Transient Gmail API failures (server-side/rate-limit) worth one bounded
+# retry with backoff+jitter - never permanent auth/permission errors (401/
+#403), which a retry can't fix and would only delay the real failure.
+_TRANSIENT_GMAIL_STATUSES = {429, 500, 502, 503, 504}
+
+
+def _is_transient_http_error(exc: BaseException) -> bool:
+    return isinstance(exc, HttpError) and getattr(exc, "status_code", None) in _TRANSIENT_GMAIL_STATUSES
+
+
+@tenacity.retry(
+    retry=tenacity.retry_if_exception(_is_transient_http_error),
+    stop=tenacity.stop_after_attempt(3),  # 1 try + up to 2 retries
+    wait=tenacity.wait_exponential_jitter(initial=0.5, max=4),
+    reraise=True,
+)
+def _batch_modify_with_retry(svc, message_id: str, remove_label_ids: list) -> None:
+    svc.users().messages().batchModify(
+        userId="me",
+        body={"ids": [message_id], "removeLabelIds": remove_label_ids},
+    ).execute()
 
 from src.lib.supabase_client import supabase_select, supabase_update
 # Reused as-is from shopify_service.py — generic string-in/string-out AES-256-GCM
@@ -40,6 +64,19 @@ logger = logging.getLogger(__name__)
 
 SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
 _STATE_TTL = 600  # 10-minute OAuth window
+
+
+class FetchedEmails(list):
+    """A plain list of email dicts everywhere it's used (iteration, len(),
+    indexing) - existing callers/tests that mock get_new_emails with a bare
+    list are unaffected. Also carries fetch_failures: how many messages
+    Gmail's search matched that could NOT be retrieved this poll (genuine
+    content-fetch errors only, not a cosmetic mark-as-read failure - see
+    _get_new_emails_sync). email_poller.py reads this to make its
+    "fetched=X processed=Y failures=Z" summary log accurate; a plain list
+    (as every existing mock still returns) reports 0 via getattr's default,
+    identical to today's behavior."""
+    fetch_failures = 0
 
 
 def _state_key() -> bytes:
@@ -278,7 +315,7 @@ class BrandGmailService:
                     plain = nested
         return plain or html
 
-    async def get_new_emails(self, brand: dict, max_results: int = 10, since_dt=None) -> List[Dict]:
+    async def get_new_emails(self, brand: dict, max_results: int = 10, since_dt=None) -> "FetchedEmails":
         """Fetch + mark-as-read emails for one brand received after since_dt (or unread if no timestamp).
         Raises on network/API failure so the caller can skip updating last_polled_at.
 
@@ -287,11 +324,11 @@ class BrandGmailService:
         instead of each brand blocking the event loop in turn."""
         return await asyncio.to_thread(self._get_new_emails_sync, brand, max_results, since_dt)
 
-    def _get_new_emails_sync(self, brand: dict, max_results: int = 10, since_dt=None) -> List[Dict]:
+    def _get_new_emails_sync(self, brand: dict, max_results: int = 10, since_dt=None) -> "FetchedEmails":
         svc = self._build_service(brand)
         if not svc:
             logger.warning(f"[BrandGmail] Could not build Gmail service for brand {brand.get('name')}")
-            return []
+            return FetchedEmails()
 
         if since_dt:
             # Gmail 'after' expects a date in YYYY/MM/DD format
@@ -313,7 +350,7 @@ class BrandGmailService:
         # is evaluated in this account's OWN timezone setting, not UTC/ours.
         logger.info(f"[BrandGmail] query={q!r} message_ids={[m.get('id') for m in messages]}")
 
-        emails = []
+        emails = FetchedEmails()
         for msg in messages[:max_results]:
             try:
                 full = svc.users().messages().get(userId="me", id=msg["id"]).execute()
@@ -350,12 +387,6 @@ class BrandGmailService:
                     except (ValueError, TypeError):
                         gmail_received_at = None
 
-                # Mark as read immediately
-                svc.users().messages().batchModify(
-                    userId="me",
-                    body={"ids": [msg["id"]], "removeLabelIds": ["UNREAD"]},
-                ).execute()
-
                 emails.append({
                     "id":           msg["id"],
                     "thread_id":    full.get("threadId"),
@@ -370,8 +401,39 @@ class BrandGmailService:
                     "headers":      {h["name"].lower(): h["value"] for h in headers},
                     "gmail_received_at": gmail_received_at,
                 })
+
+                # Mark as read - best-effort, AFTER the message is already
+                # queued for processing above. This is a cosmetic side effect
+                # only: in the normal `after:`-date polling mode (the steady-
+                # state path once last_polled_at is set), dedup against a
+                # repeat message is handled entirely by the DB's
+                # gmail_message_id check in email_poller.py, never by Gmail's
+                # own read/unread flag - so a message this backend has
+                # already correctly retrieved and will process must never be
+                # dropped just because this non-essential call fails.
+                # Confirmed live: a transient Aftership-unrelated Gmail 502 on
+                # batchModify (Bad Gateway from Google's own infra) used to
+                # raise from inside this same try block, which skipped the
+                # emails.append() above entirely - silently discarding a
+                # message that had already been fully and successfully
+                # fetched, moments earlier in this exact iteration. One
+                # bounded retry (_batch_modify_with_retry, transient 429/5xx
+                # only) resolves most of these outright; if it still fails,
+                # the message is still returned and processed - it just stays
+                # "unread" in the raw Gmail inbox UI until a later successful
+                # attempt (e.g. the identical call fired by the poller's own
+                # up-front "mark existing unread as read" pass on a later
+                # poll), which has zero effect on this app's own behavior.
+                try:
+                    _batch_modify_with_retry(svc, msg["id"], ["UNREAD"])
+                except Exception as mark_err:
+                    logger.warning(
+                        f"[BrandGmail] Could not mark {msg['id']} as read (non-blocking, "
+                        f"message is still processed normally): {mark_err}"
+                    )
             except Exception as e:
                 logger.exception(f"[BrandGmail] Error reading message {msg['id']}")
+                emails.fetch_failures += 1
 
         return emails
 

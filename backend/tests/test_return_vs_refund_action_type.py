@@ -228,28 +228,34 @@ def test_previous_return_action_is_not_contaminated_by_a_later_refund_message():
 # ── 7. A previous CANCELLATION must not be mislabeled as either ────────────
 
 def test_previous_cancellation_does_not_contaminate_a_later_return_message():
-    existing_cancel = {"id": "existing-3", "action_type": "cancel_order", "status": "pending"}
+    # Only an EXECUTED cancellation is treated as "covering" a later
+    # refund/return ask (see return_actions_integration.py's
+    # cancel_order_resolved guard) - a merely-pending one falls through to
+    # a fresh eligibility check instead, so this exercises the executed
+    # branch of _cancellation_covers_refund_context, the code this fix
+    # made intent-aware.
+    existing_cancel = {"id": "existing-3", "action_type": "cancel_order", "status": "executed"}
     result, mock_create = _run(
         "I'd like to return order #1006", _intent("return"), {}, existing_action=existing_cancel,
     )
     mock_create.assert_not_awaited()
     context = result["action_context"].lower()
-    assert "this return request" in context
-    assert "the return you're asking about" in context
-    assert "this refund request" not in context
-    assert "the refund you're asking about" not in context
+    assert "the return the customer is asking about" in context
+    assert "new return request" in context
+    assert "the refund the customer is asking about" not in context
+    assert "new refund request" not in context
 
 
 def test_previous_cancellation_does_not_contaminate_a_later_refund_message():
-    existing_cancel = {"id": "existing-4", "action_type": "cancel_order", "status": "pending"}
+    existing_cancel = {"id": "existing-4", "action_type": "cancel_order", "status": "executed"}
     result, mock_create = _run(
         "I want a refund for order #1006", _intent("refund"), {}, existing_action=existing_cancel,
     )
     mock_create.assert_not_awaited()
     context = result["action_context"].lower()
-    assert "this refund request" in context
-    assert "the refund you're asking about" in context
-    assert "this return request" not in context
+    assert "the refund the customer is asking about" in context
+    assert "new refund request" in context
+    assert "the return the customer is asking about" not in context
 
 
 # ── 8 & 9. Customer-facing wording never claims the wrong intent ───────────
