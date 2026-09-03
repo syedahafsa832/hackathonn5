@@ -716,7 +716,38 @@ class ReturnActionsIntegration:
                 # - safe to keep here. custom_policy_text is the raw,
                 # possibly multi-document RAG lookup - never appended to
                 # this short reason (see _policy_evidence_excerpt below).
-                ai_reasoning = f"Customer requests {intent_type} for order #{order_id}. Manual review required: {eligibility.get('reason')}"
+                #
+                # action_type is deliberately ALWAYS "refund" here, same as
+                # before - never _ACTION_TYPE_MAP.get(intent_type). Unlike
+                # the "eligible + unfulfilled" branches above (which know
+                # FOR CERTAIN the order is unfulfilled, so cancel_order is
+                # guaranteed to succeed), this branch is reached specifically
+                # when the order's fulfillment status is NOT confirmed
+                # unfulfilled - either it wasn't found at all, or it's
+                # fulfilled-and-ineligible. shopify_service.cancel_order()
+                # hard-rejects a fulfilled order (ORDER_ALREADY_FULFILLED),
+                # with no retry path other than a human working around the
+                # action entirely - so staging as "cancel_order" here would
+                # trade one bug for a worse one (a permanently-failing
+                # action) on every fulfilled order that reaches this branch.
+                # "refund" always executes.
+                #
+                # What WAS a real, confirmed-live bug: this reasoning text
+                # silently described the customer's actual ask (e.g. "cancel")
+                # while the stored action_type said "refund" - a reviewer
+                # would see a self-contradictory card (type badge: Refund;
+                # reason: "Customer requests cancel_order..."). Fixed by
+                # disclosing the substitution in the text itself whenever the
+                # customer's intent isn't already a refund/return, so nothing
+                # AI-decided is hidden from the human who has to act on it.
+                if intent_type in ("refund", "return"):
+                    ai_reasoning = f"Customer requests {intent_type} for order #{order_id}. Manual review required: {eligibility.get('reason')}"
+                else:
+                    ai_reasoning = (
+                        f"Customer requested a cancellation for order #{order_id}, but it's being staged as a "
+                        "REFUND for manual review instead - Shopify can only cancel a confirmed-unfulfilled "
+                        f"order, and that couldn't be confirmed here. Manual review required: {eligibility.get('reason')}"
+                    )
                 policy_evidence = _policy_evidence_excerpt(eligibility.get("custom_policy_text"))
                 await _emit("staging_action", f"Preparing your {_noun} request…")
                 staged = await self._create_action(
@@ -728,11 +759,38 @@ class ReturnActionsIntegration:
                     requested_amount=self._extract_requested_refund_amount(query),
                 )
                 result["staged"] = staged
-                result["action_context"] = (
-                    f"**REQUEST SUBMITTED FOR MANUAL REVIEW**: {eligibility.get('reason')} "
-                    "Tell the customer: 'I've submitted your request to our team for manual review. "
-                    "They'll review it and you'll get an email confirmation once it's processed.'"
-                )
+                if intent_type in ("refund", "return"):
+                    result["action_context"] = (
+                        f"**REQUEST SUBMITTED FOR MANUAL REVIEW**: {eligibility.get('reason')} "
+                        "Tell the customer: 'I've submitted your request to our team for manual review. "
+                        "They'll review it and you'll get an email confirmation once it's processed.'"
+                    )
+                else:
+                    # Customer-facing wording for the cancel -> refund
+                    # fallback: the internal ai_reasoning/action_type above
+                    # already say "refund" for execution reasons, but the
+                    # CUSTOMER never asked for a refund - they asked to
+                    # cancel. Telling them in plain language what actually
+                    # happened (asked to cancel, couldn't be safely
+                    # auto-cancelled, sent for human review, refund only a
+                    # possible outcome) - never that anything has already
+                    # been cancelled or refunded, and never in terms like
+                    # "action type"/"staging"/"refund-family" the customer
+                    # has no reason to know about.
+                    result["action_context"] = (
+                        f"**REQUEST SUBMITTED FOR MANUAL REVIEW**: {eligibility.get('reason')} "
+                        "Do NOT say the order has been cancelled. Do NOT say a refund has been issued. "
+                        "Neither has happened yet - this is going to a human for review. Do NOT use "
+                        "internal terms like 'action type', 'staging', 'refund-family', or 'fallback' - "
+                        "the customer has no reason to know how this works internally. Tell the customer "
+                        "plainly and briefly, in your own natural words, covering exactly these points: "
+                        "(1) they asked to cancel their order, (2) it couldn't be safely cancelled "
+                        "automatically, (3) their request has been sent to the team for review, (4) the "
+                        "team may handle it as a refund instead if that's the right outcome. For example: "
+                        "'You're asking to cancel your order. I wasn't able to safely cancel it "
+                        "automatically, so I've sent your request for review. The team will check it and "
+                        "let you know what can be done, including whether a refund is possible.'"
+                    )
             else:
                 result["action_context"] = (
                     f"**{intent_type.upper()} NOT ELIGIBLE**: {eligibility.get('reason')}. "
@@ -1040,17 +1098,28 @@ class ReturnActionsIntegration:
 
         if not eligibility.get("eligible"):
             if eligibility.get("staging_required") or eligibility.get("requires_manual_review"):
-                ai_reasoning = f"Customer requests exchange for order #{order_id}. Manual review required: {eligibility.get('reason')}"
+                # Unlike the shared refund/return/cancel path, this action_type
+                # is deliberately NOT _ACTION_TYPE_MAP.get(intent_type) - there
+                # is no live target variant/price-difference data to attach
+                # (eligibility itself failed), so an "exchange" action here
+                # would have nothing for approve_action()'s EXCHANGE branch to
+                # execute. Staging as a refund-family review action is the
+                # only real option. That substitution must be stated plainly
+                # in ai_reasoning itself, never left implicit - a reviewer
+                # reading "Customer requests exchange..." on a card whose type
+                # badge says "Refund" would see the same self-contradictory
+                # record this whole fix removes from the cancel/refund path.
+                ai_reasoning = (
+                    f"Customer requested an exchange for order #{order_id}, but eligibility couldn't be "
+                    f"verified automatically ({eligibility.get('reason')}) - staged as a refund-family manual "
+                    "review since there's no verified exchange target yet. A human should review the original "
+                    "message to process the correct outcome (exchange or refund)."
+                )
                 if eligibility.get("custom_policy_text"):
                     ai_reasoning += f" | Store policy on file: {eligibility['custom_policy_text']}"
                 await _emit("staging_action", "Preparing your exchange request…")
                 staged = await self._create_action(
                     tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
-                    # We can't safely verify eligibility automatically (order
-                    # mismatch / lookup failure) — stage as a plain refund-
-                    # family review action, exactly like the shared refund/
-                    # return path does for the same "requires_manual_review"
-                    # case, since there's no live target data to attach yet.
                     action_type="refund", order_id=order_id, email=email,
                     customer_name=customer_info.get("name"), query=query,
                     ai_reasoning=ai_reasoning, eligibility=eligibility,

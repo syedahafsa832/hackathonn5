@@ -19,6 +19,7 @@ os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test")
 from src.agent.customer_success_agent import (  # noqa: E402
     _enforce_no_unconfirmed_action_success,
     _enforce_human_handoff_request,
+    _label_human_request_escalation_reason,
 )
 
 
@@ -181,3 +182,99 @@ def test_unrelated_query_does_not_trigger_human_handoff_guard():
     result = _enforce_human_handoff_request(structured, "where is my order?")
     assert result["escalate"] is False
     assert result["reply_body"] == "Your order shipped yesterday!"
+
+
+# ── Dashboard "Why AI stopped" accuracy: _label_human_request_escalation_reason ──
+# Reported bug: "are you ai? i want to talk to human not you" doesn't match
+# _HUMAN_HANDOFF_FRAGS above (no article - "talk to a human"), so when the
+# model escalates on its own judgment (its RESPONSE schema lets it set
+# "escalate": true directly - see _construct_v3_prompt) with a normal 80%
+# confidence and "low" risk_level, nothing ever explains why. The dashboard
+# then falls back to "The AI was not confident enough..." - false, since the
+# AI's reply was generated and sent at full confidence. This function only
+# ever LABELS an escalation that already happened; it never sets/clears
+# "escalate" or touches "reply_body".
+
+def test_human_request_without_article_labels_the_reported_bug_scenario():
+    """The exact reported conversation: model escalated on its own (no
+    _HUMAN_HANDOFF_FRAGS match, so escalate/reply_body are already final by
+    the time this runs), confidence 80%, risk low. Must be labeled as a
+    human request, not left for the dashboard to guess."""
+    structured = {
+        "intent": "general_inquiry", "action_detected": "none",
+        "reply_body": (
+            "Hey there, I'm Luna, Hafsa Clothing's AI support! I'm here to help with "
+            "orders, sizing, or anything else you need.\n\nwith care,\nLuna"
+        ),
+        "status": "escalated", "escalate": True, "risk_level": "low",
+        "confidence_score": 80,
+    }
+    result = _label_human_request_escalation_reason(structured, "are you ai? i want to talk to human not you")
+    assert result["escalation_reason"] == "Customer explicitly requested a human agent."
+    # Never touches the reply or the escalate/status decision itself.
+    assert result["reply_body"].startswith("Hey there, I'm Luna")
+    assert result["escalate"] is True
+    assert result["confidence_score"] == 80
+
+
+def test_genuine_low_confidence_escalation_is_not_relabeled():
+    """No mention of wanting a human at all - a real low-confidence
+    escalation must keep showing no escalation_reason here, so the
+    dashboard's own genuine "AI wasn't confident enough" text still applies."""
+    structured = {
+        "intent": "general_inquiry", "action_detected": "none",
+        "reply_body": "I'm not fully sure about that - let me get someone to double check.",
+        "status": "escalated", "escalate": True, "risk_level": "low",
+        "confidence_score": 45,
+    }
+    result = _label_human_request_escalation_reason(
+        structured, "does the blue hoodie run small in the shoulders for a size 14?"
+    )
+    assert "escalation_reason" not in result
+
+
+def test_successful_reply_escalated_for_human_request_reply_is_never_touched():
+    """AI successfully generated and (per the caller) already sent a reply;
+    escalation is because the customer asked for a human - the labeled
+    reason must never look like the AI failed to reply, and the reply text
+    itself must be completely unchanged."""
+    original_reply = "Hey there, happy to help! Let me know what you need."
+    structured = {
+        "intent": "general_inquiry", "action_detected": "none",
+        "reply_body": original_reply,
+        "status": "escalated", "escalate": True, "risk_level": "low",
+        "confidence_score": 85,
+    }
+    result = _label_human_request_escalation_reason(structured, "ok but speak to human please")
+    assert result["escalation_reason"] == "Customer explicitly requested a human agent."
+    assert "not confident" not in result["escalation_reason"].lower()
+    assert "failed" not in result["escalation_reason"].lower()
+    assert result["reply_body"] == original_reply
+
+
+def test_existing_escalation_reason_is_preserved_even_if_human_is_mentioned():
+    """An earlier backstop already explained why (e.g. the false-success
+    guard, or the model's own reason) - must never be overwritten, even
+    when the message also happens to mention a human."""
+    structured = {
+        "intent": "refund_request", "action_detected": "refund",
+        "reply_body": "I've sent this to our team to confirm before anything changes.",
+        "status": "escalated", "escalate": True, "risk_level": "medium",
+        "escalation_reason": "AI reply claimed an unconfirmed action was completed - routed to human review.",
+    }
+    result = _label_human_request_escalation_reason(structured, "fine, just get me a human then")
+    assert result["escalation_reason"] == "AI reply claimed an unconfirmed action was completed - routed to human review."
+
+
+def test_human_mention_on_a_non_escalated_conversation_is_never_labeled():
+    """If the conversation isn't escalating at all, there's nothing to
+    label - adding a reason here would misrepresent an auto-resolved
+    conversation as escalated-for-a-reason."""
+    structured = {
+        "intent": "general_inquiry", "action_detected": "none",
+        "reply_body": "Sure, here's what I found!",
+        "status": "auto_resolved", "escalate": False,
+    }
+    result = _label_human_request_escalation_reason(structured, "can I speak to human about something else later?")
+    assert "escalation_reason" not in result
+    assert result["escalate"] is False

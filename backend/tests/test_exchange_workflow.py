@@ -264,6 +264,14 @@ def test_unknown_order_exchange_goes_to_manual_review():
     _, kwargs = mock_create.call_args
     assert kwargs["action_type"] == "refund"  # can't verify -> generic review action, no fabricated target data
     assert "MANUAL REVIEW" in result["action_context"]
+    # Regression: the stored type substitution (exchange -> refund, since
+    # there's no verified target data to attach) must be stated in the
+    # reasoning a human reviewer reads - never a silent "Customer requests
+    # exchange..." next to a "Refund" type badge with no explanation.
+    reasoning = kwargs["ai_reasoning"]
+    assert "exchange" in reasoning.lower()
+    assert "refund" in reasoning.lower()
+    assert "Order #9999 was not found" in reasoning
 
 
 # ── 23. Wrong customer/order mismatch ────────────────────────────────────────
