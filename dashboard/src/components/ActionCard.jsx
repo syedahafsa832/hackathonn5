@@ -95,7 +95,23 @@ export default function ActionCard({ action, onApproved, onRejected, compact }) 
     }
   };
 
-  const actionLabel = action.action_type === 'refund'
+  // A "refund"-typed action can mean two different customer asks: a
+  // genuine refund request, or a RETURN request this store can only
+  // fulfill via a Shopify refund mutation (no separate Returns-API call -
+  // see return_actions_integration.py's _create_action customer_intent
+  // docstring). Both are stored as action_type="refund" because that's the
+  // only mutation that can execute either one once approved, but the
+  // merchant still needs to see which the customer actually asked for -
+  // confirmed live: "I'd like to return order #1006" produced a card
+  // labeled "Issue $0.00 refund" with no way to tell it apart from a real
+  // refund ask. extracted_data.customer_intent (backend-set at staging
+  // time) is the source of truth; older actions without it fall back to
+  // the plain refund label, unchanged from before. Approval still issues
+  // the same Shopify refund either way - this only fixes what it's called.
+  const isReturnStagedAsRefund = action.action_type === 'refund' && action.extracted_data?.customer_intent === 'return';
+  const actionLabel = isReturnStagedAsRefund
+    ? `Return request ($${orderTotal.toFixed(2)} refund if approved)`
+    : action.action_type === 'refund'
     ? `Issue $${orderTotal.toFixed(2)} refund`
     : action.action_type === 'cancel_order'
     ? 'Cancel order'
@@ -118,7 +134,7 @@ export default function ActionCard({ action, onApproved, onRejected, compact }) 
     }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '12px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <Badge status={action.action_type} />
+          <Badge status={isReturnStagedAsRefund ? 'return' : action.action_type} />
           <ConfidencePill score={action.ai_confidence} />
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>

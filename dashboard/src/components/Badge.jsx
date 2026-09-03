@@ -27,6 +27,10 @@ const STATUS_MAP = {
   // Action tags
   REFUND: { label: 'Refund', color: '#EF4444', bg: '#FEF2F2' },
   refund: { label: 'Refund', color: '#EF4444', bg: '#FEF2F2' },
+  // A return staged as action_type="refund" (see ActionCard.jsx's
+  // isReturnStagedAsRefund) - never a real status/action_type value on
+  // its own, only ever passed in by that one derived case.
+  return: { label: 'Return', color: '#EF4444', bg: '#FEF2F2' },
   CANCEL: { label: 'Cancel', color: '#EF4444', bg: '#FEF2F2' },
   cancel_order: { label: 'Cancel', color: '#EF4444', bg: '#FEF2F2' },
   EXCHANGE: { label: 'Exchange', color: '#06B6D4', bg: '#ECFEFF' },
