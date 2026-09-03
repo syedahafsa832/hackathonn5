@@ -31,6 +31,26 @@ const ACTION_LABELS = {
   RESTORE_ORDER: { label: 'Restore Order', color: '#0E7490', isDestructive: false },
 };
 
+// A "refund"-typed action can mean two different customer asks: a genuine
+// refund request, or a RETURN request that this store can only fulfill via
+// a Shopify refund mutation (no separate Returns-API call - see
+// return_actions_integration.py's _create_action customer_intent
+// docstring). Both are stored with action_type="refund" because that's the
+// only mutation that can execute either one once approved, but the
+// merchant still needs to see which the customer actually asked for -
+// confirmed live: "I'd like to return order #1006" produced a card
+// labeled "Refund" with no way to tell it apart from a real refund ask.
+// extracted_data.customer_intent (backend-set at staging time) is the
+// source of truth here; older actions staged before this field existed
+// simply have no override and fall back to the plain action_type label,
+// unchanged from before.
+function getActionMeta(action) {
+  if (action.action_type === 'refund' && action.extracted_data?.customer_intent === 'return') {
+    return { label: 'Return', color: '#EF4444', isDestructive: true };
+  }
+  return ACTION_LABELS[action.action_type] || { label: action.action_type, color: '#0E7490', isDestructive: false };
+}
+
 const ACTION_EXECUTE_LABELS = {
   cancel_order: 'Cancel in Shopify',
   CANCEL: 'Cancel in Shopify',
@@ -130,7 +150,7 @@ function ActionCard({ action, onApprove, onReject }) {
   // check existed - neither should show a warning.
   const identityUnverified = isAddressChange && action.extracted_data?.identity_verified === false;
 
-  const meta = ACTION_LABELS[action.action_type] || { label: action.action_type, color: '#0E7490', isDestructive: false };
+  const meta = getActionMeta(action);
   const execMsg = action.execution_result
     ? (EXECUTION_MESSAGES[action.action_type]?.(action.execution_result) || JSON.stringify(action.execution_result))
     : null;
@@ -639,7 +659,7 @@ export default function Actions() {
           {showRejected && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               {rejectedActions.map(action => {
-                const meta = ACTION_LABELS[action.action_type] || { label: action.action_type, color: '#0E7490' };
+                const meta = getActionMeta(action);
                 return (
                   <div key={action.id} style={{ background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: '8px', opacity: 0.75 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
@@ -689,7 +709,7 @@ export default function Actions() {
           {showFailed && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               {failedActions.map(action => {
-                const meta = ACTION_LABELS[action.action_type] || { label: action.action_type, color: '#0E7490' };
+                const meta = getActionMeta(action);
                 return (
                   <div key={action.id} style={{ background: 'white', border: '1px solid #FECACA', borderRadius: '8px', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
@@ -750,7 +770,7 @@ export default function Actions() {
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             {awaitingManualActions.map(action => {
-              const meta = ACTION_LABELS[action.action_type] || { label: action.action_type, color: '#0E7490' };
+              const meta = getActionMeta(action);
               const orderRef = action.order_id || action.order_number;
               return (
                 <div key={action.id} style={{ background: 'white', border: '1px solid #FDE68A', borderRadius: '8px', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -802,7 +822,7 @@ export default function Actions() {
           {showCompleted && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               {completedActions.map(action => {
-                const meta = ACTION_LABELS[action.action_type] || { label: action.action_type, color: '#0E7490' };
+                const meta = getActionMeta(action);
                 const manualStepRemains = !!action.execution_result?.manual_action_required;
                 const msg = EXECUTION_MESSAGES[action.action_type]?.(action.execution_result) || 'Completed.';
                 return (

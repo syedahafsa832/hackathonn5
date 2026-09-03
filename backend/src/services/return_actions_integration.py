@@ -481,7 +481,7 @@ class ReturnActionsIntegration:
             # "cancel" intent matching an existing "refund" action still
             # gets the plain, type-accurate duplicate wording below.
             if intent_type in ("refund", "return") and existing_action.get("action_type") == "cancel_order":
-                result["action_context"] = self._cancellation_covers_refund_context(existing_action)
+                result["action_context"] = self._cancellation_covers_refund_context(existing_action, intent_type)
             else:
                 result["action_context"] = self._duplicate_status_context(existing_action, intent_type)
             return result
@@ -629,6 +629,7 @@ class ReturnActionsIntegration:
                     customer_name=customer_info.get("name"), query=query,
                     ai_reasoning=ai_reasoning, eligibility=eligibility,
                     policy_evidence=policy_evidence,
+                    customer_intent=intent_type,
                 )
                 result["staged"] = staged
                 result["action_context"] = (
@@ -661,6 +662,7 @@ class ReturnActionsIntegration:
                 customer_name=customer_info.get("name"), query=query,
                 ai_reasoning=ai_reasoning, eligibility=eligibility,
                 policy_evidence=policy_evidence,
+                customer_intent=intent_type,
             )
             result["staged"] = staged
 
@@ -757,6 +759,7 @@ class ReturnActionsIntegration:
                     ai_reasoning=ai_reasoning, eligibility=eligibility,
                     policy_evidence=policy_evidence,
                     requested_amount=self._extract_requested_refund_amount(query),
+                    customer_intent=intent_type,
                 )
                 result["staged"] = staged
                 if intent_type in ("refund", "return"):
@@ -845,6 +848,7 @@ class ReturnActionsIntegration:
             # cancel_order is a whole-order Shopify cancellation with no
             # partial-amount concept, so never attach one there.
             requested_amount=None if is_unfulfilled else self._extract_requested_refund_amount(query),
+            customer_intent=intent_type,
         )
         result["staged"] = staged
 
@@ -958,6 +962,17 @@ class ReturnActionsIntegration:
             "reship": "reship",
             "change_address": "address change",
         }.get(existing.get("action_type"), "request")
+        # A "refund"-typed row is the one ambiguous case: this REST-only
+        # integration stages both genuine refund asks AND return asks as
+        # action_type="refund" (see _create_action's customer_intent
+        # docstring - there's no separate Shopify "return" mutation). If
+        # the row's own extracted_data still remembers the customer
+        # originally asked to RETURN, say that here instead of "refund" -
+        # otherwise a later duplicate-request reply would tell the
+        # customer a refund is pending when they actually asked to return
+        # the item, exactly the contamination this whole fix closes.
+        if existing.get("action_type") == "refund" and (existing.get("extracted_data") or {}).get("customer_intent") == "return":
+            noun = "return"
         status = existing.get("status")
         if status == "pending":
             return (
@@ -988,7 +1003,7 @@ class ReturnActionsIntegration:
             )
         return f"**{noun.upper()} ALREADY ON FILE** (status: {status}). Do NOT create a new request — ask the customer to give our team a moment."
 
-    def _cancellation_covers_refund_context(self, existing: Dict[str, Any]) -> str:
+    def _cancellation_covers_refund_context(self, existing: Dict[str, Any], intent_type: str = "refund") -> str:
         """Only called when the customer's CURRENT intent is refund/return
         but the only real record found is a `cancel_order` action (see the
         refund/cancel duplicate-request guard above). Confirmed-live bug:
@@ -1009,46 +1024,55 @@ class ReturnActionsIntegration:
         "your refund will appear within 3–5 business days" as part of
         executing this SAME action, not a separate one. A pending refund
         action, by contrast, never cancels the order — so this is only
-        ever invoked for cancel_order-satisfies-refund, never the reverse."""
+        ever invoked for cancel_order-satisfies-refund, never the reverse.
+
+        intent_type: the customer's CURRENT ask ("refund" or "return" - the
+        only two values the caller ever passes here). All the wording below
+        used to hardcode "refund" regardless, so a customer who asked to
+        RETURN an order that already has a pending cancellation would be
+        told the cancellation "covers the refund you're asking about" -
+        putting a word in the customer's mouth they never said. `noun` below
+        makes every sentence match what was actually asked."""
+        noun = "return" if intent_type == "return" else "refund"
         status = existing.get("status")
         if status == "pending":
             return (
-                "**EXISTING CANCELLATION ALREADY COVERS THIS REFUND REQUEST**: This order already has "
-                "a cancellation request awaiting our team's approval, and cancelling it will also "
-                "produce the refund the customer is now asking about — they are the SAME outcome, not "
-                "two separate things. Do NOT create a new refund request. Do NOT say you've 'also "
-                "noted' or separately logged a refund request — there is only one pending request, and "
+                f"**EXISTING CANCELLATION ALREADY COVERS THIS {noun.upper()} REQUEST**: This order already has "
+                f"a cancellation request awaiting our team's approval, and cancelling it will also "
+                f"produce the {noun} the customer is now asking about — they are the SAME outcome, not "
+                f"two separate things. Do NOT create a new {noun} request. Do NOT say you've 'also "
+                f"noted' or separately logged a {noun} request — there is only one pending request, and "
                 "mentioning a second implies a promise nothing backs. Tell the customer ONE coherent "
                 "thing: 'Your cancellation request for this order is already pending approval — that "
-                "process covers the refund you're asking about, so you don't need to submit a separate "
+                f"process covers the {noun} you're asking about, so you don't need to submit a separate "
                 "request. You'll hear back once it's reviewed.'"
             )
         if status == "approved":
             return (
-                "**CANCELLATION (COVERING THIS REFUND) APPROVED, BEING PROCESSED**: Do NOT create a new "
-                "refund request. Tell the customer: 'Good news — your cancellation was approved and "
-                "we're finishing it up now. That includes the refund you asked about, which follows "
+                f"**CANCELLATION (COVERING THIS {noun.upper()}) APPROVED, BEING PROCESSED**: Do NOT create a new "
+                f"{noun} request. Tell the customer: 'Good news — your cancellation was approved and "
+                f"we're finishing it up now. That includes the {noun} you asked about, which follows "
                 "automatically once the cancellation completes.'"
             )
         if status == "executed":
             execution_result = existing.get("execution_result") or {}
             if execution_result.get("manual_action_required"):
                 return (
-                    "**CANCELLATION (COVERING THIS REFUND) APPROVED — TEAM FINISHING LAST STEP**: Do NOT "
-                    "create a new refund request. Tell the customer honestly: 'Yes, your cancellation "
-                    "was approved, which includes the refund you asked about. Our team is completing "
-                    "the last step manually and you'll get a confirmation shortly.' Do NOT say the "
-                    "refund has already landed."
+                    f"**CANCELLATION (COVERING THIS {noun.upper()}) APPROVED — TEAM FINISHING LAST STEP**: Do NOT "
+                    f"create a new {noun} request. Tell the customer honestly: 'Yes, your cancellation "
+                    f"was approved, which includes the {noun} you asked about. Our team is completing "
+                    f"the last step manually and you'll get a confirmation shortly.' Do NOT say the "
+                    f"{noun} has already landed."
                 )
             return (
-                "**CANCELLATION (COVERING THIS REFUND) ALREADY COMPLETED**: This order was already "
-                "cancelled, and that included the refund the customer is asking about. Do NOT create a "
-                "new refund request. Tell the customer it's done — reference only real details actually "
+                f"**CANCELLATION (COVERING THIS {noun.upper()}) ALREADY COMPLETED**: This order was already "
+                f"cancelled, and that included the {noun} the customer is asking about. Do NOT create a "
+                f"new {noun} request. Tell the customer it's done — reference only real details actually "
                 "present here (do not invent an amount or date if none is given)."
             )
         return (
-            f"**CANCELLATION (COVERING THIS REFUND) ALREADY ON FILE** (status: {status}). Do NOT create "
-            "a new refund request — ask the customer to give our team a moment."
+            f"**CANCELLATION (COVERING THIS {noun.upper()}) ALREADY ON FILE** (status: {status}). Do NOT create "
+            f"a new {noun} request — ask the customer to give our team a moment."
         )
 
     async def _handle_exchange(
@@ -1123,6 +1147,7 @@ class ReturnActionsIntegration:
                     action_type="refund", order_id=order_id, email=email,
                     customer_name=customer_info.get("name"), query=query,
                     ai_reasoning=ai_reasoning, eligibility=eligibility,
+                    customer_intent="exchange",
                 )
                 result["staged"] = staged
                 result["action_context"] = (
@@ -1612,9 +1637,30 @@ class ReturnActionsIntegration:
         identity_verified: Optional[bool] = None,
         identity_verification_reason: Optional[str] = None,
         requested_amount: Optional[float] = None,
+        customer_intent: Optional[str] = None,
     ) -> dict:
         """Create action in `actions` table (new system) when tenant_id is available,
-        otherwise fall back to legacy `pending_actions` via stage_pending_action."""
+        otherwise fall back to legacy `pending_actions` via stage_pending_action.
+
+        customer_intent: the RAW intent_type the customer's own message
+        actually classified as ("return", "refund", "cancel", "exchange", ...)
+        - never the same thing as `action_type`/`mapped_type` above, which is
+        an EXECUTION choice: this REST-only integration has no separate
+        Shopify "return" mutation, so a "return" (and, when the order can't
+        be confirmed unfulfilled, a "cancel") intent is staged with
+        action_type="refund" because that's the only mutation that can
+        actually fulfill it once a human approves. Collapsing "return" into
+        "refund" at the execution layer is intentional and unavoidable
+        given that constraint - but until now nothing preserved the
+        customer's ORIGINAL ask anywhere queryable, so a merchant reviewing
+        a return request saw a "Refund" card with no way to tell it apart
+        from a genuine refund ask (confirmed live: order #1006, "I'd like
+        to return order #1006" produced a card titled "Refund", not
+        "Return"). Stored here, read by the dashboard (ActionCard.jsx /
+        Actions.jsx) for the card's type label and by
+        _duplicate_status_context for correctly-worded repeat-request
+        replies - never read by approve_action(), which only ever executes
+        whatever the stored action_type actually says."""
         mapped_type = _ACTION_TYPE_MAP.get(action_type, "refund")
 
         if tenant_id:
@@ -1660,6 +1706,8 @@ class ReturnActionsIntegration:
                     # time (see that function's own docstring). The human
                     # still submits (or edits) this figure explicitly.
                     extracted["requested_amount"] = requested_amount
+                if customer_intent is not None:
+                    extracted["customer_intent"] = customer_intent
                 return await actions_service.create_action(
                     tenant_id=tenant_id,
                     brand_id=brand_id,
