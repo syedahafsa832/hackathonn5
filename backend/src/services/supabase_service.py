@@ -87,6 +87,17 @@ class SupabaseService:
                 "detected_order_id": ticket_data.get("detected_order_id"),
                 "status": ticket_data.get("status", "open"),
                 "messages": ticket_data.get("messages"),
+                # Written only here and by message_processor.py's STAGE 1.5
+                # thread-continuation update — the Conversations list's
+                # primary sort key (see migration 056). Was previously
+                # dropped by this method's fixed field whitelist, so every
+                # brand-new ticket (first message in a thread) got created
+                # with this column NULL and sorted to the very bottom via
+                # nullslast, even when it was the most recent activity - the
+                # Recent Conversations widget's raw server-order slice(0, 3)
+                # could then never surface a customer message that arrived
+                # while the merchant was away.
+                "last_customer_message_at": ticket_data.get("last_customer_message_at"),
                 "email_category": ticket_data.get("email_category"),
                 "sender_type": ticket_data.get("sender_type"),
                 "customer_sentiment": ticket_data.get("customer_sentiment"),
