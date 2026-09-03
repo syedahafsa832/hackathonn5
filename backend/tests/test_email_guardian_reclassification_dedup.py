@@ -19,8 +19,13 @@ nothing at all, so they had zero protection whatsoever.
 Fix: evaluate() now looks up a persisted decision for this gmail_message_id
 FIRST, before calling the classifier at all, and reconstructs the result
 from what's stored - and outright-blocked decisions are now persisted too
-(status="auto_blocked" - a new status that's excluded from the merchant's
-quarantine review queue, since it was never something they needed to see).
+(status="auto_blocked" when the noise verdict is confident, "pending"
+otherwise - see the "noise gate" comment in email_guardian_service.py and
+test_quarantine_classification_noise_filtering.py for why confidence
+gating on BOTH sides of that decision matters: a real customer's "are you
+AI? I want to talk to a human, not you" was once classified spam at 0.98
+and auto_blocked with zero merchant visibility, because that branch had no
+confidence gate at all).
 """
 import os
 import sys
@@ -98,10 +103,14 @@ async def test_new_message_with_no_existing_decision_still_classifies():
     assert result.classification == "customer_support"
 
 
-# ── 4. Outright-blocked decisions now persist a record (previously none) ───
+# ── 4. Outright-blocked decisions persist a record - "auto_blocked" when the
+#      noise verdict is confident, "pending" when it isn't ──────────────────
+# (full coverage of the noise-vs-ambiguous-human distinction lives in
+# test_quarantine_classification_noise_filtering.py; these two just confirm
+# _create_quarantine_record is invoked correctly at the confidence boundary)
 
 @pytest.mark.asyncio
-async def test_unrelated_high_confidence_block_now_persists_auto_blocked_record():
+async def test_unrelated_high_confidence_block_persists_auto_blocked():
     svc = EmailGuardianService()
 
     with patch.object(svc, "_load_settings", return_value=_DEFAULT_SETTINGS), \
@@ -114,15 +123,14 @@ async def test_unrelated_high_confidence_block_now_persists_auto_blocked_record(
     assert result.quarantine_id == "q-new"
     mock_create.assert_called_once()
     args, kwargs = mock_create.call_args
-    # status is the 5th positional arg (brand_id, email, classification, confidence, status)
     assert (args[4] if len(args) > 4 else kwargs.get("status")) == "auto_blocked"
 
 
 @pytest.mark.asyncio
-async def test_blocked_ai_classification_now_persists_auto_blocked_record():
-    """The other outright-blocked path (support_only_mode + a classification
-    in BLOCKED_CLASSIFICATIONS) - previously the one with zero persistence
-    at all, never even a duplicate-row-safe insert."""
+async def test_blocked_ai_classification_high_confidence_persists_auto_blocked():
+    """The other noise path (support_only_mode + a classification in
+    BLOCKED_CLASSIFICATIONS) at high confidence - genuinely bulk/automated
+    content, e.g. a marketing blast the classifier is sure about."""
     from src.services.email_guardian_service import BLOCKED_CLASSIFICATIONS
     blocked_classification = next(iter(BLOCKED_CLASSIFICATIONS))
     svc = EmailGuardianService()
@@ -138,6 +146,28 @@ async def test_blocked_ai_classification_now_persists_auto_blocked_record():
     mock_create.assert_called_once()
     args, kwargs = mock_create.call_args
     assert (args[4] if len(args) > 4 else kwargs.get("status")) == "auto_blocked"
+
+
+@pytest.mark.asyncio
+async def test_blocked_ai_classification_low_confidence_persists_pending():
+    """Same BLOCKED_CLASSIFICATIONS label, but the classifier isn't
+    confident - e.g. a "spam" call on a message that might really be a
+    person, not bulk content. Must land in "pending" (merchant-visible),
+    never "auto_blocked" - this is the exact bug that swallowed a real
+    "are you AI?"-style message before the confidence gate was added here."""
+    svc = EmailGuardianService()
+
+    with patch.object(svc, "_load_settings", return_value=_DEFAULT_SETTINGS), \
+         patch.object(svc, "_find_existing_decision", return_value=None), \
+         patch.object(svc, "_classify_email", new=AsyncMock(return_value=("spam", 0.5, True))), \
+         patch.object(svc, "_create_quarantine_record", return_value="q-new-3") as mock_create:
+        result = await svc.evaluate(_email(), "brand-1", brand_name="Acme")
+
+    assert result.decision == "quarantined"
+    assert result.quarantine_id == "q-new-3"
+    mock_create.assert_called_once()
+    args, kwargs = mock_create.call_args
+    assert len(args) <= 4 and "status" not in kwargs
 
 
 # ── 5. The lookup itself is scoped by brand_id + gmail_message_id ──────────

@@ -126,8 +126,9 @@ export default function QuarantineQueue() {
         )}
       </div>
       <p style={{ color: '#64748B', fontSize: '13px', margin: 0, maxWidth: '640px' }}>
-        Emails the AI classified as <strong>customer_support</strong> but with confidence below your threshold.
-        Review each email and either promote it to a ticket or discard it.
+        Emails the AI wasn't confident were obvious marketing, newsletters, or automated
+        notifications — so they might still be a real person. Review each one and
+        either promote it to a ticket or discard it.
       </p>
 
       {loading && (
