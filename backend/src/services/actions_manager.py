@@ -281,7 +281,23 @@ class ActionsManager:
                 }
 
             # Step 3: Check fulfillment status
+            #
+            # fulfillment_status == "fulfilled" only means Shopify generated
+            # a shipping label / marked the order shipped - it is NOT the
+            # same fact as "the package has arrived". Do not conflate the
+            # two here: the wording above stays a fulfillment-status check,
+            # never a delivery claim. Shopify's REST fulfillment resource
+            # separately exposes shipment_status (in_transit/out_for_
+            # delivery/delivered/etc.) when the carrier reports it back -
+            # surfaced below (never invented when the carrier hasn't
+            # reported it) so a caller that needs real delivery state (see
+            # the RETURN-intent handling in return_actions_integration.py)
+            # has it without a new tracking integration.
             fulfillment_status = order.get("fulfillment_status")
+            shipment_status = None
+            fulfillments = order.get("fulfillments") or []
+            if fulfillments:
+                shipment_status = fulfillments[-1].get("shipment_status")
             if fulfillment_status != "fulfilled":
                 return {
                     "eligible": False,
@@ -291,6 +307,7 @@ class ActionsManager:
                     "staging_required": True,
                     "action_hint": "cancel_order",
                     "fulfillment_status": fulfillment_status,
+                    "shipment_status": shipment_status,
                 }
 
             # Merchant refund policy — falls back to the hardcoded defaults
@@ -459,6 +476,7 @@ class ActionsManager:
                     "custom_policy_text": custom_policy_text,
                     "requires_manual_review": True,
                     "staging_required": True,
+                    "shipment_status": shipment_status,
                 }
 
             # All checks passed - eligible for return
@@ -468,6 +486,13 @@ class ActionsManager:
                 "order": self._extract_order_summary(order),
                 "items": items,
                 "policy_snapshot": policy,
+                # See the fulfillment_status check above: "eligible" here is a
+                # policy/window/tag determination, not proof the package has
+                # actually arrived. shipment_status carries whatever real
+                # signal Shopify has (None when the carrier hasn't reported
+                # one) so a caller that needs delivery state - not just
+                # fulfillment state - can tell the two apart.
+                "shipment_status": shipment_status,
                 **({"policy_verification": window_result} if window_verified_eligible else {}),
             }
 

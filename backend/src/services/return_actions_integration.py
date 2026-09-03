@@ -462,7 +462,20 @@ class ReturnActionsIntegration:
         existing_action = await self._find_active_action(tenant_id, order_id, "refund")
         if not existing_action:
             existing_action = await self._find_active_action(tenant_id, order_id, "cancel_order")
-        if existing_action:
+
+        # "return" is never short-circuited by this guard at all — see the
+        # dedicated return-handling block after eligibility is fetched
+        # below. There is no "return" executable action type in this system
+        # (return and refund share the refund mutation, but only when a
+        # human has actually decided that's the outcome), so an existing
+        # refund/cancel_order record - pending, approved, or even executed -
+        # is never grounds to claim a fresh return request is "already
+        # covered": a refund can be issued for reasons that never involved
+        # the physical item coming back, and a still-pending cancellation
+        # may never even execute (see below). existing_action is preserved
+        # (not discarded) so the return branch can still mention it as
+        # honest context, never as something that resolves the return ask.
+        if existing_action and intent_type != "return":
             # An EXECUTED cancel_order for THIS order already produced the
             # refund the customer is now separately asking about —
             # established, existing business logic, not a new rule:
@@ -473,7 +486,7 @@ class ReturnActionsIntegration:
             # actions_service.py's own cancel_order confirmation email
             # already tells the customer "your refund will appear within
             # 3–5 business days" as part of the SAME action. So an EXECUTED
-            # cancel_order match genuinely satisfies a refund/return intent
+            # cancel_order match genuinely satisfies a refund intent
             # for the same order — one coherent answer, not two
             # ("cancellation pending" + "I've also noted your refund").
             #
@@ -497,12 +510,19 @@ class ReturnActionsIntegration:
                 and existing_action.get("status") == "executed"
             )
             unresolved_cancel_order_for_refund_intent = (
-                intent_type in ("refund", "return")
+                intent_type == "refund"
                 and existing_action.get("action_type") == "cancel_order"
                 and not cancel_order_resolved
             )
             if not unresolved_cancel_order_for_refund_intent:
                 result["duplicate_of_existing_action"] = existing_action
+                # intent_type == "return" can never reach this point at all
+                # (see the guard above this whole block) - "return" is
+                # included in the tuple only for symmetry with the merged
+                # _cancellation_covers_refund_context signature below, which
+                # now takes intent_type for correct return/refund wording on
+                # the *other* remaining caller (the "return" case here is
+                # dead but harmless).
                 if intent_type in ("refund", "return") and cancel_order_resolved:
                     result["action_context"] = self._cancellation_covers_refund_context(existing_action, intent_type)
                 else:
@@ -540,6 +560,92 @@ class ReturnActionsIntegration:
             result["action_context"] = (
                 f"**{intent_type.upper()} NOT NEEDED**: {already_handled_reason} "
                 f"Do NOT process the {intent_type} again. Tell the customer the truthful current status."
+            )
+            return result
+
+        # ── RETURN — never automated yet (Part 1 of the intent/action
+        # foundation rework). There is no "return" executable action type in
+        # this system, and staging a "refund" or "cancel_order" record as a
+        # silent substitute is exactly the RETURN -> REFUND/CANCEL
+        # contamination this branch exists to stop (confirmed live: a
+        # fulfilled order's plain return request was answered as if an
+        # unrelated, still-pending cancel_order for that order "also covered"
+        # it - the customer never asked to cancel anything). A return always
+        # escalates to a human here: no action of any kind is staged, no
+        # refund/cancellation is ever claimed to be in progress. The real
+        # order/policy/identity context already available from the
+        # eligibility check above (and any existing_action found by the
+        # duplicate-guard, purely as informational context - never as
+        # something that resolves this request) all flow into one honest,
+        # human-handoff reply.
+        if intent_type == "return":
+            if eligibility.get("identity_mismatch"):
+                result["action_context"] = (
+                    "**IDENTITY UNVERIFIED - DO NOT PROCESS RETURN**: The email this customer is "
+                    "contacting from does not match the email on file for this order. Do NOT create "
+                    "a request. Do NOT say this has been escalated, sent to the team, or that anyone "
+                    "will follow up - nothing has been submitted anywhere. Resolve this in this one "
+                    "reply: state plainly that the order was found but the contact email doesn't "
+                    "match the one on the order, so for security this request can't be processed "
+                    "from this email, and ask the customer to reach out to us from the email address "
+                    "used when placing the order so we can help right away."
+                )
+                return result
+
+            # fulfillment_status == "fulfilled" means Shopify marked the
+            # order shipped - it does NOT mean the package has arrived (see
+            # actions_manager.check_return_eligibility's own comment).
+            # shipment_status is Shopify's own carrier-reported signal, when
+            # present; never invented when the carrier hasn't reported one.
+            shipment_status = eligibility.get("shipment_status")
+            if is_unfulfilled:
+                delivery_note = (
+                    " This order has not shipped yet, so there is nothing to physically return yet - "
+                    "if the customer wants to stop the order before it ships, that is a cancellation, "
+                    "not a return; ask which they mean if it's unclear."
+                )
+            elif shipment_status and shipment_status != "delivered":
+                delivery_note = (
+                    f" Shipment tracking shows this order is currently '{shipment_status}', not yet "
+                    "confirmed delivered - do not treat this as a normal post-delivery return without "
+                    "first checking with the customer whether the package has actually arrived."
+                )
+            else:
+                delivery_note = ""
+
+            existing_action_note = ""
+            if existing_action:
+                existing_noun = {"cancel_order": "cancellation", "refund": "refund"}.get(
+                    existing_action.get("action_type"), "request"
+                )
+                existing_action_note = (
+                    f" Note: this order also has a separate {existing_noun} request on file, currently "
+                    f"'{existing_action.get('status')}' - mention it as related context if relevant, but "
+                    "it does NOT substitute for this return request; do not describe it as satisfying or "
+                    "replacing what the customer is asking about now."
+                )
+
+            reason = eligibility.get("reason") or ""
+            policy_evidence = _policy_evidence_excerpt(
+                eligibility.get("custom_policy_text") or eligibility.get("policy_evidence")
+            )
+            ai_reasoning = (
+                f"Customer requests a return for order #{order_id}."
+                f"{(' ' + reason) if reason else ''}{delivery_note}{existing_action_note}"
+            )
+            if policy_evidence:
+                ai_reasoning += f" | Store policy on file: {policy_evidence}"
+            logger.info(f"[ReturnActions] Return escalated to human, no action staged: {ai_reasoning}")
+            await _emit("staging_action", "Reviewing your return request…")
+            result["action_context"] = (
+                "**RETURN REQUEST - ESCALATE TO HUMAN, NO ACTION CREATED**: Returns are not automated "
+                f"yet.{delivery_note}{existing_action_note} "
+                f"{('Known order/policy context: ' + reason) if reason else ''} "
+                "Do NOT say a refund or cancellation was started, staged, or submitted for this - none "
+                "was, and do NOT confuse this with any unrelated request mentioned above. Tell the "
+                "customer honestly that you've noted their return request and a team member will "
+                "follow up with next steps (like a return label or return address) shortly. Never say "
+                "the return, or any refund, has already been processed or approved."
             )
             return result
 

@@ -62,6 +62,24 @@ never read at execution time, so this fix cannot let a return silently
 become an executable refund action any more than it already could (it
 already required, and still requires, explicit human approval either
 way).
+
+SUPERSEDED FOR "return" SPECIFICALLY (see test_intent_action_separation.py):
+a later pass concluded that tagging a "refund" action with
+customer_intent="return" still wasn't the right fix - there is no way to
+review a "Return" card in the Actions queue and actually process a return
+through it (approve_action() only ever executes process_refund() for
+action_type="refund", whatever customer_intent says), so a merchant could
+still approve what displays as a "Return" and unintentionally issue a
+refund with no item ever confirmed back. RETURN now never stages ANY
+action - see return_actions_integration.py's dedicated intent_type=="return"
+branch. It always escalates the ticket directly, with no action card at
+all. customer_intent staging/wording is therefore still real and exercised
+for "refund" (this file's still-passing tests below) and "exchange", but
+no NEW row will ever be created with customer_intent="return" going
+forward - the tests that asserted a return-tagged action gets staged were
+rewritten below to assert the current (no action, escalate) behavior
+instead, keeping their original "return is never confused with refund"
+intent.
 """
 import os
 import sys
@@ -147,38 +165,33 @@ def test_explicit_refund_request_manual_review_stages_refund_with_matching_inten
     assert "Customer requests refund" in kwargs["ai_reasoning"]
 
 
-# ── 2. Explicit return request -> the return intent is preserved even though
-#     action_type stays "refund" for execution (no separate Shopify Returns
-#     mutation exists - see module docstring). This IS the reported bug. ───
+# ── 2. Explicit return request -> escalated to a human, no action of any
+#     kind staged (returns are not automated yet - see the dedicated
+#     intent_type=="return" branch in return_actions_integration.py).
+#     This IS the reported bug's real fix. ────────────────────────────────
 
 def test_explicit_return_request_manual_review_preserves_return_intent():
     result, mock_create = _run(
         "Hi Luna, I'd like to return order #1006. Can you check if it's still within the return window?",
         _intent("return"), _NOT_ELIGIBLE_MANUAL_REVIEW,
     )
-    mock_create.assert_awaited_once()
-    _, kwargs = mock_create.call_args
-    # action_type is still "refund" - that's the only mutation that can
-    # execute this once approved. customer_intent is what tells the
-    # dashboard (and any later duplicate-request reply) this was really a
-    # return, not a refund ask.
-    assert kwargs["action_type"] == "refund"
-    assert kwargs["customer_intent"] == "return"
-    assert "Customer requests return" in kwargs["ai_reasoning"]
-    assert "Customer requests refund" not in kwargs["ai_reasoning"]
+    mock_create.assert_not_awaited()
+    assert not result.get("staged")
+    context = result["action_context"]
+    assert "RETURN" in context.upper()
+    assert "REFUND" not in context.upper() or "DO NOT" in context.upper()
 
 
-# ── 3. Return-window / eligibility question -> return eligibility flow ─────
+# ── 3. Return-window / eligibility question -> escalated, never a refund
+#     ask ──────────────────────────────────────────────────────────────────
 
 def test_return_window_question_within_window_stages_as_return_not_refund_ask():
     result, mock_create = _run(
         "Is order #1006 still within the return window?", _intent("return"), _ELIGIBLE_FULFILLED,
     )
-    mock_create.assert_awaited_once()
-    _, kwargs = mock_create.call_args
-    assert kwargs["action_type"] == "refund"  # execution constraint, unchanged
-    assert kwargs["customer_intent"] == "return"
-    assert "Customer requests return" in kwargs["ai_reasoning"]
+    mock_create.assert_not_awaited()
+    assert not result.get("staged")
+    assert "escalate" in result["action_context"].lower() or "human" in result["action_context"].lower()
 
 
 # ── 4. Refund eligibility question -> refund flow ───────────────────────────
@@ -196,6 +209,11 @@ def test_refund_eligibility_question_stages_as_refund():
 # ── 5. A previous REFUND action must not be relabeled as a return ──────────
 
 def test_previous_refund_action_is_not_contaminated_by_a_later_return_message():
+    """A "return" intent never even reaches _duplicate_status_context /
+    _cancellation_covers_refund_context anymore (see the dedicated
+    intent_type=="return" branch) - the existing refund action is only
+    ever surfaced as informational context in the escalation reply, never
+    as something that resolves this new, different request."""
     existing_refund = {
         "id": "existing-1", "action_type": "refund", "status": "pending",
         "extracted_data": {"customer_intent": "refund"},
@@ -205,8 +223,10 @@ def test_previous_refund_action_is_not_contaminated_by_a_later_return_message():
         existing_action=existing_refund,
     )
     mock_create.assert_not_awaited()
-    assert "REFUND ALREADY PENDING" in result["action_context"]
-    assert "RETURN ALREADY PENDING" not in result["action_context"]
+    context = result["action_context"].lower()
+    assert "refund already pending" not in context
+    assert "does not substitute" in context or "does not" in context
+    assert "escalate" in context or "human" in context
 
 
 # ── 6. A previous RETURN action must not be relabeled as a refund ──────────
@@ -228,22 +248,18 @@ def test_previous_return_action_is_not_contaminated_by_a_later_refund_message():
 # ── 7. A previous CANCELLATION must not be mislabeled as either ────────────
 
 def test_previous_cancellation_does_not_contaminate_a_later_return_message():
-    # Only an EXECUTED cancellation is treated as "covering" a later
-    # refund/return ask (see return_actions_integration.py's
-    # cancel_order_resolved guard) - a merely-pending one falls through to
-    # a fresh eligibility check instead, so this exercises the executed
-    # branch of _cancellation_covers_refund_context, the code this fix
-    # made intent-aware.
+    """"return" intent never reaches _cancellation_covers_refund_context at
+    all (unlike "refund", below) - even an EXECUTED cancellation is only
+    ever mentioned as context in the escalation reply, never treated as
+    resolving the return."""
     existing_cancel = {"id": "existing-3", "action_type": "cancel_order", "status": "executed"}
     result, mock_create = _run(
         "I'd like to return order #1006", _intent("return"), {}, existing_action=existing_cancel,
     )
     mock_create.assert_not_awaited()
     context = result["action_context"].lower()
-    assert "the return the customer is asking about" in context
-    assert "new return request" in context
-    assert "the refund the customer is asking about" not in context
-    assert "new refund request" not in context
+    assert "cancellation already covers this return request" not in context
+    assert "does not substitute" in context or "does not" in context
 
 
 def test_previous_cancellation_does_not_contaminate_a_later_refund_message():
@@ -279,31 +295,34 @@ def test_eligible_refund_customer_facing_text_never_says_return():
 
 
 def test_manual_review_return_generic_customer_reply_never_says_refund_or_return():
-    """The manual-review branch's customer-facing text is intentionally
-    generic/non-committal (never claims which outcome, per the earlier
-    cancel-to-refund fix's precedent) - must stay that way for a return
-    too, never drifting into 'your refund is pending'."""
+    """The return branch's instructional text may mention "refund" only as
+    part of an explicit negative instruction telling the model NOT to say
+    it (the same pattern _duplicate_status_context's "do NOT say you've
+    'also noted'..." already uses elsewhere in this file) - never as
+    something to affirm to the customer."""
     result, _ = _run(
         "I'd like to return order #1006", _intent("return"), _NOT_ELIGIBLE_MANUAL_REVIEW,
     )
-    tell_customer = result["action_context"].split("Tell the customer:")[-1].lower()
-    assert "refund" not in tell_customer
+    text = result["action_context"].lower()
+    assert "do not say a refund" in text or "do not say" in text
+    assert "your refund is pending" not in text
+    assert "your refund request" not in text
 
 
-# ── 10. Manual-review return: intent stays RETURN, clearly represented ─────
+# ── 10. Manual-review return: intent stays RETURN, no action ever staged ───
 
 def test_manual_review_return_is_clearly_represented_as_a_return_in_stored_data():
+    """No `actions` row is ever created for a return anymore - "clearly
+    represented as a return" now means the escalation itself (logged and
+    surfaced in action_context) says "return", not that a row exists with
+    return metadata on it."""
     result, mock_create = _run(
         "Hi Luna, I'd like to return order #1006. Can you check if it's still within the return window?",
         _intent("return"), _NOT_ELIGIBLE_MANUAL_REVIEW,
     )
-    _, kwargs = mock_create.call_args
-    # The original intent is queryable from the stored row, not just
-    # buried in free-text ai_reasoning.
-    assert kwargs["customer_intent"] == "return"
-    # Nothing about staging itself executes anything - _create_action is
-    # the only call made, no Shopify mutation call exists in this path.
-    assert mock_create.await_count == 1
+    mock_create.assert_not_awaited()
+    assert not result.get("staged")
+    assert "return" in result["action_context"].lower()
 
 
 # ── 11. Approval execution reads ONLY the stored action_type ───────────────
