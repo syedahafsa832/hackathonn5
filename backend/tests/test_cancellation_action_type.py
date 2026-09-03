@@ -240,3 +240,69 @@ def test_refund_request_with_order_not_found_reasoning_is_not_flagged_as_a_subst
     reasoning = kwargs["ai_reasoning"]
     assert "Customer requests refund for order #2026" in reasoning
     assert "staged as a" not in reasoning.lower()
+
+
+# ── 7. Regression: the customer-facing reply for this exact scenario must
+# never sound like the cancellation (or a refund) already happened. This is
+# result["action_context"] - the instruction fed to the reply-generating LLM
+# (see customer_success_agent.py's _construct_v3_prompt) - not the merchant-
+# facing ai_reasoning covered by test 6 above. It must plainly cover: the
+# customer asked to cancel, it couldn't be safely auto-cancelled, it's gone
+# to a human for review, and a refund is only a possible outcome - all in
+# plain language, with no internal jargon ("action type", "staging",
+# "refund-family", "fallback") a customer has no reason to know about. ─────
+
+def test_cancel_request_with_order_not_found_customer_reply_never_claims_completion():
+    eligibility = {
+        "eligible": False, "requires_manual_review": True, "staging_required": True,
+        "reason": "Order #2026 was not found in our system. Our team will verify and process your request manually.",
+        "order": None, "items": [],
+    }
+    result, mock_create = _run(
+        "yes, please go ahead", _intent("cancel", "2026"), eligibility,
+    )
+
+    mock_create.assert_awaited_once()
+    context = result["action_context"]
+    context_lower = context.lower()
+
+    # Must explicitly forbid claiming either outcome already happened -
+    # these are the exact false-completion claims the reported bug's
+    # customer-facing message must never produce.
+    assert "do not say the order has been cancelled" in context_lower
+    assert "do not say a refund has been issued" in context_lower
+    for phrase in ("your order has been cancelled", "your order is cancelled", "the refund has been issued",
+                   "we've refunded", "we have refunded", "your cancellation has been processed"):
+        assert phrase not in context_lower
+
+    # Must cover the four required points, in plain language.
+    assert "cancel" in context_lower
+    assert "review" in context_lower
+    assert "refund" in context_lower
+    assert "safely" in context_lower or "automatically" in context_lower
+
+    # The illustrative reply itself (what an LLM following this instruction
+    # would actually say to the customer) must be jargon-free - the
+    # instruction ABOVE that example is allowed to name the forbidden terms
+    # in order to forbid them (e.g. "Do NOT use... 'action type'"), so the
+    # jargon check only applies to the quoted example text itself.
+    example = context_lower.split("for example:", 1)[1]
+    for jargon in ("action type", "staging", "refund-family", "fallback workflow", "manual-review branch"):
+        assert jargon not in example
+
+
+def test_refund_request_with_order_not_found_customer_reply_is_unaffected():
+    # Sanity check the other direction: a genuine refund/return ask keeps the
+    # existing plain wording - this change only touches the cancel-intent
+    # substitution case, per the task's own scope.
+    eligibility = {
+        "eligible": False, "requires_manual_review": True, "staging_required": True,
+        "reason": "Order #2026 was not found in our system. Our team will verify and process your request manually.",
+        "order": None, "items": [],
+    }
+    result, mock_create = _run(
+        "please refund order #2026", _intent("refund", "2026"), eligibility,
+    )
+
+    mock_create.assert_awaited_once()
+    assert "I've submitted your request to our team for manual review" in result["action_context"]
