@@ -18,9 +18,16 @@ nothing at all, so they had zero protection whatsoever.
 
 Fix: evaluate() now looks up a persisted decision for this gmail_message_id
 FIRST, before calling the classifier at all, and reconstructs the result
-from what's stored - and outright-blocked decisions are now persisted too
-(status="auto_blocked" - a new status that's excluded from the merchant's
-quarantine review queue, since it was never something they needed to see).
+from what's stored - and outright-blocked decisions are now persisted too.
+
+They're persisted as status="pending", not "auto_blocked" - a later fix
+(see the "always pending, never auto_blocked" comments in
+email_guardian_service.py) found that "auto_blocked" excluded a message from
+the merchant's quarantine review queue entirely, with no way to see or
+recover a misclassified block. _result_from_existing_record still
+understands a legacy "auto_blocked" row (test 2 below) for any that were
+already persisted before that fix, but evaluate() itself no longer creates
+new ones.
 """
 import os
 import sys
@@ -98,10 +105,11 @@ async def test_new_message_with_no_existing_decision_still_classifies():
     assert result.classification == "customer_support"
 
 
-# ── 4. Outright-blocked decisions now persist a record (previously none) ───
+# ── 4. Outright-blocked decisions persist a "pending" record, never a
+#      silent/unrecoverable "auto_blocked" one ─────────────────────────────
 
 @pytest.mark.asyncio
-async def test_unrelated_high_confidence_block_now_persists_auto_blocked_record():
+async def test_unrelated_high_confidence_block_persists_pending_not_auto_blocked():
     svc = EmailGuardianService()
 
     with patch.object(svc, "_load_settings", return_value=_DEFAULT_SETTINGS), \
@@ -110,16 +118,19 @@ async def test_unrelated_high_confidence_block_now_persists_auto_blocked_record(
          patch.object(svc, "_create_quarantine_record", return_value="q-new") as mock_create:
         result = await svc.evaluate(_email(), "brand-1", brand_name="Acme")
 
-    assert result.decision == "blocked"
+    # "quarantined", not "blocked" — this now goes into the same merchant-visible
+    # review queue as a low-confidence email, not a silent dead end.
+    assert result.decision == "quarantined"
     assert result.quarantine_id == "q-new"
     mock_create.assert_called_once()
     args, kwargs = mock_create.call_args
-    # status is the 5th positional arg (brand_id, email, classification, confidence, status)
-    assert (args[4] if len(args) > 4 else kwargs.get("status")) == "auto_blocked"
+    # No explicit status arg passed at all — _create_quarantine_record's own
+    # default ("pending") is what persists, never "auto_blocked".
+    assert len(args) <= 4 and "status" not in kwargs
 
 
 @pytest.mark.asyncio
-async def test_blocked_ai_classification_now_persists_auto_blocked_record():
+async def test_blocked_ai_classification_persists_pending_not_auto_blocked():
     """The other outright-blocked path (support_only_mode + a classification
     in BLOCKED_CLASSIFICATIONS) - previously the one with zero persistence
     at all, never even a duplicate-row-safe insert."""
@@ -133,11 +144,11 @@ async def test_blocked_ai_classification_now_persists_auto_blocked_record():
          patch.object(svc, "_create_quarantine_record", return_value="q-new-2") as mock_create:
         result = await svc.evaluate(_email(), "brand-1", brand_name="Acme")
 
-    assert result.decision == "blocked"
+    assert result.decision == "quarantined"
     assert result.quarantine_id == "q-new-2"
     mock_create.assert_called_once()
     args, kwargs = mock_create.call_args
-    assert (args[4] if len(args) > 4 else kwargs.get("status")) == "auto_blocked"
+    assert len(args) <= 4 and "status" not in kwargs
 
 
 # ── 5. The lookup itself is scoped by brand_id + gmail_message_id ──────────

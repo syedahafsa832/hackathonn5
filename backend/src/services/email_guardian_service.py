@@ -208,11 +208,14 @@ class EmailGuardianService:
         status: str = "pending",
     ) -> Optional[str]:
         """Insert a quarantine/decision record. Returns the record id
-        (existing or new) or None on error. `status="pending"` (default) is
-        a genuine quarantine awaiting merchant review; `status="auto_blocked"`
-        persists an outright-blocked decision purely so it's never
-        re-classified (see _find_existing_decision below) - it never appears
-        in the merchant's review queue.
+        (existing or new) or None on error. Every caller now uses
+        `status="pending"` — a genuine quarantine awaiting merchant review.
+        `status="auto_blocked"` still exists as a legacy value some
+        already-persisted rows carry (and _result_from_existing_record below
+        still understands it), but evaluate() no longer creates new ones: an
+        AI block decision that's invisible and unrecoverable through the
+        product is a worse failure mode than one more row in the review
+        queue - see the "always pending" comments at each call site below.
 
         Dedupes on gmail_message_id first: Gmail's `after:` search operator
         is date-level, not time-level, so the same message keeps reappearing
@@ -283,9 +286,11 @@ class EmailGuardianService:
         is already filtered out upstream by email_poller.py before evaluate()
         is ever called, and 'promoted' means a real ticket exists (caught by
         the poller's own gmail_message_id-on-tickets check before this), so
-        in practice this only ever sees 'pending' or 'auto_blocked' - anything
-        else fails toward quarantine (never silently auto-replying to a
-        message this brand hasn't cleared)."""
+        in practice this only ever sees 'pending' (or a legacy 'auto_blocked'
+        row created before evaluate() stopped writing that status - see
+        _create_quarantine_record) - anything else fails toward quarantine
+        (never silently auto-replying to a message this brand hasn't
+        cleared)."""
         status = record.get("status")
         classification = record.get("ai_classification") or "unknown"
         confidence = record.get("ai_confidence") or 0.0
@@ -334,26 +339,20 @@ class EmailGuardianService:
             # brand's inbox. Confident "not relevant" is ignored outright; anything
             # uncertain is quarantined rather than auto-replied to.
             if not relevant:
-                if confidence >= confidence_threshold:
-                    qid = await asyncio.to_thread(
-                        self._create_quarantine_record, brand_id, email, classification, confidence, "auto_blocked"
-                    )
-                    logger.info(f"[email_filter] rejected sender={sender} reason=unrelated_to_brand classification={classification}")
-                    return GuardianResult(
-                        decision="blocked",
-                        classification=classification,
-                        confidence=confidence,
-                        reason="unrelated_to_brand",
-                        quarantine_id=qid,
-                        auto_reply_enabled=auto_reply_enabled,
-                    )
+                # Always "pending", never "auto_blocked" — a merchant must be able to
+                # see and override every AI block decision, including a confident one.
+                # "auto_blocked" used to skip the quarantine queue entirely (see
+                # _create_quarantine_record's status param), which meant a
+                # misclassification here was invisible and unrecoverable through the
+                # product, with no way for the merchant to know it happened at all.
                 qid = await asyncio.to_thread(self._create_quarantine_record, brand_id, email, classification, confidence)
-                logger.info(f"[email_filter] quarantined sender={sender} reason=unrelated_to_brand_low_confidence classification={classification}")
+                reason = "unrelated_to_brand" if confidence >= confidence_threshold else "unrelated_to_brand_low_confidence"
+                logger.info(f"[email_filter] quarantined sender={sender} reason={reason} classification={classification}")
                 return GuardianResult(
                     decision="quarantined",
                     classification=classification,
                     confidence=confidence,
-                    reason="unrelated_to_brand_low_confidence",
+                    reason=reason,
                     quarantine_id=qid,
                     auto_reply_enabled=False,
                 )
@@ -361,18 +360,18 @@ class EmailGuardianService:
             # Layer 4: intent gate — block known non-support categories.
             # "unknown" is intentionally NOT in BLOCKED_CLASSIFICATIONS: when the AI
             # can't decide, we fail-open so real customers aren't silently lost.
+            # Same as above: always "pending" so the merchant can review/promote a
+            # message the AI blocked, never a silent, unreviewable "auto_blocked".
             if support_only_mode and classification in BLOCKED_CLASSIFICATIONS:
-                qid = await asyncio.to_thread(
-                    self._create_quarantine_record, brand_id, email, classification, confidence, "auto_blocked"
-                )
-                logger.info(f"[email_filter] rejected sender={sender} reason=ai_classification classification={classification}")
+                qid = await asyncio.to_thread(self._create_quarantine_record, brand_id, email, classification, confidence)
+                logger.info(f"[email_filter] quarantined sender={sender} reason=ai_classification classification={classification}")
                 return GuardianResult(
-                    decision="blocked",
+                    decision="quarantined",
                     classification=classification,
                     confidence=confidence,
                     reason="ai_classification",
                     quarantine_id=qid,
-                    auto_reply_enabled=auto_reply_enabled,
+                    auto_reply_enabled=False,
                 )
 
             # Layer 5: confidence gate — quarantine low-confidence support emails
