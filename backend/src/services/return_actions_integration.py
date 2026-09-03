@@ -463,28 +463,55 @@ class ReturnActionsIntegration:
         if not existing_action:
             existing_action = await self._find_active_action(tenant_id, order_id, "cancel_order")
         if existing_action:
-            result["duplicate_of_existing_action"] = existing_action
-            # A pending/approved/executed cancel_order for THIS order already
-            # produces the refund the customer is now separately asking
-            # about — established, existing business logic, not a new rule:
+            # An EXECUTED cancel_order for THIS order already produced the
+            # refund the customer is now separately asking about —
+            # established, existing business logic, not a new rule:
             # shopify_service.cancel_order() only ever runs for an
             # unfulfilled order (Shopify itself rejects cancelling a
             # fulfilled one — see its ORDER_ALREADY_FULFILLED check) and
             # Shopify auto-refunds a paid order's payment on cancellation;
             # actions_service.py's own cancel_order confirmation email
             # already tells the customer "your refund will appear within
-            # 3–5 business days" as part of the SAME action. So a cancel_order
-            # match genuinely satisfies a refund/return intent for the same
-            # order — one coherent answer, not two ("cancellation pending" +
-            # "I've also noted your refund"). Never the reverse: a pending
-            # refund action does NOT retroactively cancel the order, so a
-            # "cancel" intent matching an existing "refund" action still
-            # gets the plain, type-accurate duplicate wording below.
-            if intent_type in ("refund", "return") and existing_action.get("action_type") == "cancel_order":
-                result["action_context"] = self._cancellation_covers_refund_context(existing_action)
-            else:
-                result["action_context"] = self._duplicate_status_context(existing_action, intent_type)
-            return result
+            # 3–5 business days" as part of the SAME action. So an EXECUTED
+            # cancel_order match genuinely satisfies a refund/return intent
+            # for the same order — one coherent answer, not two
+            # ("cancellation pending" + "I've also noted your refund").
+            #
+            # A cancel_order that hasn't executed yet (still "pending",
+            # "approved", or "awaiting_manual_step" — see
+            # _find_active_action) is NOT the same guarantee: cancel_order()
+            # hard-rejects a fulfilled order at execution time, so if this
+            # order has since become fulfilled (as it may well have, between
+            # whenever that cancellation was staged and now), that pending
+            # cancellation will never actually execute and never produce a
+            # refund. Confirmed live: a fulfilled order's genuine refund
+            # request got told "your cancellation request ... will also
+            # cover the refund you're asking about" off a still-pending
+            # cancel_order — false, and the customer was left with neither.
+            # Falls through to a fresh eligibility check below instead,
+            # exactly as if no existing action had matched at all — the
+            # earlier cancel request is left completely untouched, never
+            # re-staged or duplicated here.
+            cancel_order_resolved = (
+                existing_action.get("action_type") == "cancel_order"
+                and existing_action.get("status") == "executed"
+            )
+            unresolved_cancel_order_for_refund_intent = (
+                intent_type in ("refund", "return")
+                and existing_action.get("action_type") == "cancel_order"
+                and not cancel_order_resolved
+            )
+            if not unresolved_cancel_order_for_refund_intent:
+                result["duplicate_of_existing_action"] = existing_action
+                if intent_type in ("refund", "return") and cancel_order_resolved:
+                    result["action_context"] = self._cancellation_covers_refund_context(existing_action)
+                else:
+                    # Never the reverse: a pending refund action does NOT
+                    # retroactively cancel the order, so a "cancel" intent
+                    # matching an existing "refund" action still gets the
+                    # plain, type-accurate duplicate wording here.
+                    result["action_context"] = self._duplicate_status_context(existing_action, intent_type)
+                return result
 
         await _emit("order_lookup", f"Finding order #{order_id}…")
         eligibility = await self.actions.check_return_eligibility(

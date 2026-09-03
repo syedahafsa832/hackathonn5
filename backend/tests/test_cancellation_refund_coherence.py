@@ -30,11 +30,20 @@ not invented here):
   - actions_service.py's own cancel_order confirmation email already tells
     the customer "your refund will appear within 3-5 business days" as
     part of executing that SAME action — never a second one.
-  So a pending/approved/executed cancel_order for an order genuinely
-  satisfies a refund/return request for THAT SAME order. This is
-  one-directional: a pending refund action never retroactively cancels the
-  order, so a "cancel" intent matching an existing "refund" record still
-  gets the plain, type-accurate duplicate wording, unchanged.
+  So an EXECUTED cancel_order for an order genuinely satisfies a
+  refund/return request for THAT SAME order. This is one-directional: a
+  pending refund action never retroactively cancels the order, so a
+  "cancel" intent matching an existing "refund" record still gets the
+  plain, type-accurate duplicate wording, unchanged.
+
+  FOLLOW-UP FIX (see test_refund_intent_not_converted_to_cancellation.py):
+  the above is only true once the cancel_order has actually EXECUTED. A
+  still-pending/approved cancel_order is NOT the same guarantee —
+  cancel_order() hard-rejects a fulfilled order at execution, so a pending
+  cancellation on an order that has since become fulfilled would never
+  actually execute or produce a refund. The tests below that use a pending
+  cancellation now use an EXECUTED one instead to keep testing the
+  genuinely-true case; the pending case is covered separately.
 
 Fix: return_actions_integration.py's refund/cancel duplicate guard now
 recognizes this one specific cross-type case (refund/return intent +
@@ -91,6 +100,14 @@ def _pending_cancellation(order_id=_ORDER, **overrides):
     return row
 
 
+def _executed_cancellation(order_id=_ORDER, **overrides):
+    """A cancel_order that has actually run — Shopify really did cancel and
+    auto-refund it, so this is the one case where "covers the refund" is
+    genuinely true (see the follow-up fix this file's later tests cover:
+    a still-PENDING cancel_order must NOT make this same claim)."""
+    return _pending_cancellation(order_id=order_id, status="executed", **overrides)
+
+
 def _eligible_fulfilled_order():
     return {
         "eligible": True,
@@ -134,30 +151,27 @@ def _run_refund_request(
 
 
 # ── 1 & 3. Existing cancellation genuinely covers the new refund request ──
+# (only once it has actually EXECUTED — see the follow-up fix below for why
+# a still-pending cancel_order cannot make this same claim)
 
 def test_refund_request_against_existing_cancellation_gives_one_coherent_answer():
-    existing = _pending_cancellation()
+    existing = _executed_cancellation()
     result, _find, create_mock = _run_refund_request(_ORDER, {(_TENANT, _ORDER): existing})
 
     create_mock.assert_not_awaited()
     assert "duplicate_of_existing_action" in result
     assert result["duplicate_of_existing_action"] is existing
-    assert "EXISTING CANCELLATION ALREADY COVERS THIS REFUND REQUEST" in result["action_context"]
+    assert "CANCELLATION (COVERING THIS REFUND) ALREADY COMPLETED" in result["action_context"]
     # Never the old, ambiguity-inviting generic wording for this cross-type case.
     assert "REFUND ALREADY PENDING" not in result["action_context"]
 
 
 def test_no_duplicate_refund_action_or_misleading_noted_request_phrase():
-    existing = _pending_cancellation()
+    existing = _executed_cancellation()
     result, _find, create_mock = _run_refund_request(_ORDER, {(_TENANT, _ORDER): existing})
 
     create_mock.assert_not_awaited()  # no duplicate refund action, no duplicate approval
     text = result["action_context"].lower()
-    # This is backend-computed instructional context fed to the LLM, not the
-    # customer-facing reply itself — it correctly contains "also noted" only
-    # as part of an explicit negative instruction telling the model not to
-    # say it, never as something to affirm.
-    assert "do not say you've 'also noted'" in text
     assert "do not create a new refund request" in text
     # Explains the real cancellation/refund relationship, not silence about it.
     assert "cancellation" in text and "refund" in text
@@ -214,9 +228,10 @@ def test_cancellation_under_a_different_tenant_never_leaks_across_boundary():
 
 
 # ── 6. Multi-turn continuation — repeat ask stays consistent, no re-staging ─
+# (executed cancellation — see the follow-up fix for the still-pending case)
 
 def test_repeat_refund_ask_across_two_turns_stays_consistent_and_never_double_stages():
-    existing = _pending_cancellation()
+    existing = _executed_cancellation()
     by_order = {(_TENANT, _ORDER): existing}
 
     first, _f1, create1 = _run_refund_request(_ORDER, by_order, ticket_id="ticket-turn-1")
