@@ -112,7 +112,8 @@
       "Bash(git commit -m ' *)",
       "Bash(git push *)",
       "Bash(git -C D:/hack5/hack5 log --oneline -20)",
-      "Bash(git remote *)"
+      "Bash(git remote *)",
+      "mcp__Claude_Code_Remote__send_later"
     ]
   }
 }

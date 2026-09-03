@@ -277,14 +277,20 @@ async def test_mismatched_sender_email_is_not_silently_eligible():
 
 
 @pytest.mark.asyncio
-async def test_mismatched_sender_email_still_stages_for_manual_review():
-    """Must not vanish silently — detect_and_create() only skips staging
-    entirely when neither staging_required nor requires_manual_review is
-    set, so both must be true here for the request to reach a human."""
+async def test_mismatched_sender_email_is_hard_blocked_not_staged():
+    """A sender/order email mismatch must never reach staging_required or
+    requires_manual_review — those flags mean "create an action for human
+    review", and a live incident showed a "manual review" refund/cancel
+    staged from an unverified email reaching status="executed". Ownership
+    is now a hard block: identity_mismatch is set instead, and no order
+    data is returned (see actions_manager.check_return_eligibility)."""
     order = _order(days_old=10)
     result = await _run(order, brand={"id": "b1"}, sender_email="attacker@example.com")
-    assert result["staging_required"] is True
-    assert result["requires_manual_review"] is True
+    assert result["staging_required"] is False
+    assert result["requires_manual_review"] is False
+    assert result["identity_mismatch"] is True
+    assert result["order"] is None
+    assert result["items"] == []
 
 
 @pytest.mark.asyncio

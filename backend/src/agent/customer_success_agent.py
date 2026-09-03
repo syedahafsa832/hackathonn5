@@ -471,6 +471,49 @@ def _enforce_human_handoff_request(structured: Dict[str, Any], query: str) -> Di
     return structured
 
 
+# A few common ways customers ask for a human WITHOUT matching
+# _HUMAN_HANDOFF_FRAGS above (that list requires an article - "a human"/
+# "a person" - so "I want to talk to human" or "speak to human" never
+# matches it). Only used by _label_human_request_escalation_reason below,
+# purely to LABEL an escalation that has already happened for some other
+# reason - never merged into _HUMAN_HANDOFF_FRAGS itself, which also
+# overrides escalate/reply_body and would change what reply actually gets
+# sent for messages it newly started matching.
+_HUMAN_REQUEST_LABEL_FRAGS = _HUMAN_HANDOFF_FRAGS + [
+    "talk to human", "speak to human", "talk with human", "speak with human",
+    "want a human", "want human", "need a human", "need human", "give me a human",
+]
+
+
+def _label_human_request_escalation_reason(structured: Dict[str, Any], query: str) -> Dict[str, Any]:
+    """Purely a labeling fix - never changes whether this conversation
+    escalates, or what reply was already generated/sent. Confirmed live:
+    "are you ai? i want to talk to human not you" escalated (the model set
+    its own "escalate": true directly in its structured JSON output - see
+    the RESPONSE schema in _construct_v3_prompt, which asks the model for
+    an "escalate" boolean the model can set for reasons of its own
+    judgment) while replying at a normal, ungrounded-in-any-problem 80%
+    confidence and "low" risk_level - so nothing else in this file ever
+    explains WHY. _HUMAN_HANDOFF_FRAGS above didn't match either (no
+    article - "talk to a human"), so escalation_reason stayed empty, and
+    the dashboard fell back to its generic "AI wasn't confident enough"
+    text - false here, since the reply was generated and sent at normal
+    confidence; the real reason was the customer's own request.
+
+    Only ever ADDS a label when the conversation is already escalating
+    (escalate already True by this point, from any source) and nothing
+    more specific has already explained why (escalation_reason not yet
+    set) - it never sets/clears "escalate" or touches "reply_body", so it
+    can never change whether this escalates or what was already sent."""
+    if not structured.get("escalate") or structured.get("escalation_reason"):
+        return structured
+    q = (query or "").lower()
+    current_turn = q.rsplit("customer:", 1)[-1]
+    if any(frag in current_turn for frag in _HUMAN_REQUEST_LABEL_FRAGS):
+        structured["escalation_reason"] = "Customer explicitly requested a human agent."
+    return structured
+
+
 def _enforce_no_ambiguous_product_claim(structured: Dict[str, Any], inventory_result: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """If the live Shopify product lookup couldn't resolve to a single
     product (ambiguous=True — e.g. "Essential Hoodie V1" title-matching
@@ -1869,6 +1912,17 @@ class CustomerSuccessAgent:
                 structured, identity_mismatch
             )
 
+            # 5h. Dashboard-accuracy fix (labeling only, never changes
+            # escalate/reply_body): if the model escalated on its own
+            # judgment (e.g. the customer asked for a human in wording
+            # _HUMAN_HANDOFF_FRAGS above doesn't catch) and left no
+            # escalation_reason, but the customer's own message plainly
+            # asked for a human, label it as that instead of leaving the
+            # merchant dashboard to guess "not confident enough" - see the
+            # function's own docstring for the confirmed-live contradiction
+            # this closes.
+            structured = _label_human_request_escalation_reason(structured, query)
+
             # 6. Signature Enforcement - Make it natural, not robotic. Falls
             # back to the neutral idiom "there" ("Hey there,") - never a
             # placeholder treated as a real name - when none is known.
@@ -2020,15 +2074,15 @@ class CustomerSuccessAgent:
         - WRONG: "I'd love to help—could you share your order number?"
         - RIGHT: "I'd love to help! Could you share your order number?"{_chat_formatting_rule}
 
-        KNOWLEDGE BASE (authoritative ONLY for claims explicitly present in the text below —
-        do NOT invent material, fit, texture, quality, popularity, durability, price,
-        availability, or marketing claims that aren't written here. If this section is empty,
-        that does NOT mean the store has no such policy — it may just mean we couldn't
-        confirm it right now. NEVER tell a customer the store "doesn't have" a return,
-        refund, shipping, or other policy just because this section is empty. Instead say
-        you don't have that specific detail confirmed and you'll get them a confirmed
-        answer / have the team follow up):
+        KNOWLEDGE BASE (authoritative ONLY for claims explicitly present in the text below — do NOT invent material, fit, texture, quality, popularity, durability, price, availability, marketing claims, founder, owner, or any other company/brand-identity fact that isn't written here.
+        If this section is empty, that does NOT mean the store has no such policy — it may just mean we couldn't confirm it right now.
+        NEVER tell a customer the store "doesn't have" a return, refund, shipping, or other policy just because this section is empty.
+        Instead say you don't have that specific detail confirmed and you'll get them a confirmed answer / have the team follow up):
         {rag_context}
+
+        COMPANY/BRAND IDENTITY QUESTIONS ("who is the founder", "who owns this company", "tell me about your brand", "what does your company do", etc.):
+        You work for {brand_name} ONLY. You are never allowed to answer using tResolv's own company, founder, team, or "about us" details, no matter how confident you are in them — tResolv is only the software running this chat and must stay invisible here; it is NEVER the answer to a question about "this company".
+        Answer strictly from KNOWLEDGE BASE above. If it doesn't contain the answer, do not guess from general knowledge — use the same honest "don't have that confirmed, team will follow up" wording described above instead of inventing a founder, owner, or backstory.
 
         SIZING:
         {sizing_context}
