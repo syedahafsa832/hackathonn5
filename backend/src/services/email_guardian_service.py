@@ -63,12 +63,22 @@ CLASSIFIER_PROMPT = """You are screening inbound email for the support inbox of 
 Classify the email into exactly one of these categories:
 customer_support, promotion, newsletter, outreach, spam, automation, unknown
 
-Also decide: is this email actually addressed to "{brand_name}" as one of ITS customers
-(an order, product, shipping, refund, or account question about buying from {brand_name})?
-An email that merely contains the word "support" — e.g. a receipt, registration confirmation,
-or notification from a DIFFERENT company or service — is NOT relevant, even if it reads as
-formal/transactional. Only mark relevant=true if the email is genuinely about {brand_name}
-as a business the sender bought from or is asking to buy from.
+promotion/newsletter/outreach/spam/automation are for BULK, automated, or third-party
+content nobody at {brand_name} personally wrote to send: mass marketing, newsletters,
+cold outreach, scams, or an automated system notification (e.g. a shipping/refund
+notice, a legal/ToS update). Do NOT use these labels just because a message is
+unusual, off-topic, blunt, or hostile — a short one-off message that reads like a
+single real person typed it (even "are you AI?", "who is the founder?", "I want a
+human, not you", "why do you use AI?") is customer_support, not spam, even at low
+confidence. Reserve spam for actual junk/scam content, never for a real person
+expressing skepticism or frustration.
+
+Also decide: is this email from a real person actually writing TO {brand_name}'s own
+inbox (an order/product/account question, OR any other direct message a person sent
+this business — including one about the AI, the company, or wanting a human)? Mark
+relevant=false only for content that isn't really addressed to {brand_name} as its
+own audience at all — e.g. a receipt or notification from a DIFFERENT company/service
+that merely landed in this inbox, or a mass send with no individual sender intent.
 
 Respond with valid JSON only:
 {{"classification": "<label>", "confidence": <0.0-1.0>, "relevant": <true|false>}}
@@ -208,14 +218,15 @@ class EmailGuardianService:
         status: str = "pending",
     ) -> Optional[str]:
         """Insert a quarantine/decision record. Returns the record id
-        (existing or new) or None on error. Every caller now uses
-        `status="pending"` — a genuine quarantine awaiting merchant review.
-        `status="auto_blocked"` still exists as a legacy value some
-        already-persisted rows carry (and _result_from_existing_record below
-        still understands it), but evaluate() no longer creates new ones: an
-        AI block decision that's invisible and unrecoverable through the
-        product is a worse failure mode than one more row in the review
-        queue - see the "always pending" comments at each call site below.
+        (existing or new) or None on error. `status="pending"` (default) is
+        a genuine quarantine awaiting merchant review; `status="auto_blocked"`
+        persists a CONFIDENT noise verdict (bulk marketing/newsletter/
+        automated notification/etc, or content unrelated to this brand at
+        all) purely so it's never re-classified (see _find_existing_decision
+        below) - it never appears in the merchant's review queue, since a
+        real customer wouldn't send it. Only ever passed when evaluate()'s
+        own confidence gate has already ruled out "this might actually be a
+        real, if unusual, human message" - see the noise-gate comment there.
 
         Dedupes on gmail_message_id first: Gmail's `after:` search operator
         is date-level, not time-level, so the same message keeps reappearing
@@ -286,11 +297,9 @@ class EmailGuardianService:
         is already filtered out upstream by email_poller.py before evaluate()
         is ever called, and 'promoted' means a real ticket exists (caught by
         the poller's own gmail_message_id-on-tickets check before this), so
-        in practice this only ever sees 'pending' (or a legacy 'auto_blocked'
-        row created before evaluate() stopped writing that status - see
-        _create_quarantine_record) - anything else fails toward quarantine
-        (never silently auto-replying to a message this brand hasn't
-        cleared)."""
+        in practice this only ever sees 'pending' or 'auto_blocked' - anything
+        else fails toward quarantine (never silently auto-replying to a
+        message this brand hasn't cleared)."""
         status = record.get("status")
         classification = record.get("ai_classification") or "unknown"
         confidence = record.get("ai_confidence") or 0.0
@@ -332,44 +341,47 @@ class EmailGuardianService:
 
             classification, confidence, relevant = await self._classify_email(subject, body, brand_name)
 
-            # Relevance gate: the email may look like customer support in shape
-            # (formal tone, "support" in the sender, a registration/transactional
-            # style) but be about a completely different company/product — e.g. a
-            # course registration receipt from an unrelated service landing in the
-            # brand's inbox. Confident "not relevant" is ignored outright; anything
-            # uncertain is quarantined rather than auto-replied to.
-            if not relevant:
-                # Always "pending", never "auto_blocked" — a merchant must be able to
-                # see and override every AI block decision, including a confident one.
-                # "auto_blocked" used to skip the quarantine queue entirely (see
-                # _create_quarantine_record's status param), which meant a
-                # misclassification here was invisible and unrecoverable through the
-                # product, with no way for the merchant to know it happened at all.
+            # Noise gate: catches content a real customer would never send — mass
+            # marketing/newsletters/outreach/automated notifications (BLOCKED_
+            # CLASSIFICATIONS), or anything not really addressed to this brand's
+            # own inbox at all (not relevant). Both conditions reuse only the
+            # classifier's own output (classification/confidence/relevant) — no
+            # sender/domain rule.
+            #
+            # Confidence-gated, same pattern on both sides: a CONFIDENT noise
+            # verdict is excluded from the merchant's Quarantine Queue entirely
+            # (status="auto_blocked" — still persisted so the same message isn't
+            # re-classified on every poll, just never shown). Below that
+            # confidence, it's genuinely ambiguous — maybe a real person wrote
+            # something the classifier can't cleanly place — and must go to
+            # "pending" so a human decides, never silently either allowed or
+            # dropped. Un-gating the BLOCKED_CLASSIFICATIONS side (it used to
+            # auto_blocked regardless of confidence) was the actual bug: a real
+            # customer's "are you AI? I want to talk to a human, not you" was
+            # classified spam at 0.98 and vanished with zero merchant visibility.
+            is_noise = (not relevant) or (support_only_mode and classification in BLOCKED_CLASSIFICATIONS)
+            if is_noise:
+                reason = "unrelated_to_brand" if not relevant else "ai_classification"
+                if confidence >= confidence_threshold:
+                    qid = await asyncio.to_thread(
+                        self._create_quarantine_record, brand_id, email, classification, confidence, "auto_blocked"
+                    )
+                    logger.info(f"[email_filter] rejected sender={sender} reason={reason} classification={classification} confidence={confidence:.2f}")
+                    return GuardianResult(
+                        decision="blocked",
+                        classification=classification,
+                        confidence=confidence,
+                        reason=reason,
+                        quarantine_id=qid,
+                        auto_reply_enabled=auto_reply_enabled,
+                    )
                 qid = await asyncio.to_thread(self._create_quarantine_record, brand_id, email, classification, confidence)
-                reason = "unrelated_to_brand" if confidence >= confidence_threshold else "unrelated_to_brand_low_confidence"
-                logger.info(f"[email_filter] quarantined sender={sender} reason={reason} classification={classification}")
+                logger.info(f"[email_filter] quarantined sender={sender} reason={reason}_low_confidence classification={classification} confidence={confidence:.2f}")
                 return GuardianResult(
                     decision="quarantined",
                     classification=classification,
                     confidence=confidence,
-                    reason=reason,
-                    quarantine_id=qid,
-                    auto_reply_enabled=False,
-                )
-
-            # Layer 4: intent gate — block known non-support categories.
-            # "unknown" is intentionally NOT in BLOCKED_CLASSIFICATIONS: when the AI
-            # can't decide, we fail-open so real customers aren't silently lost.
-            # Same as above: always "pending" so the merchant can review/promote a
-            # message the AI blocked, never a silent, unreviewable "auto_blocked".
-            if support_only_mode and classification in BLOCKED_CLASSIFICATIONS:
-                qid = await asyncio.to_thread(self._create_quarantine_record, brand_id, email, classification, confidence)
-                logger.info(f"[email_filter] quarantined sender={sender} reason=ai_classification classification={classification}")
-                return GuardianResult(
-                    decision="quarantined",
-                    classification=classification,
-                    confidence=confidence,
-                    reason="ai_classification",
+                    reason=f"{reason}_low_confidence",
                     quarantine_id=qid,
                     auto_reply_enabled=False,
                 )

@@ -18,16 +18,14 @@ nothing at all, so they had zero protection whatsoever.
 
 Fix: evaluate() now looks up a persisted decision for this gmail_message_id
 FIRST, before calling the classifier at all, and reconstructs the result
-from what's stored - and outright-blocked decisions are now persisted too.
-
-They're persisted as status="pending", not "auto_blocked" - a later fix
-(see the "always pending, never auto_blocked" comments in
-email_guardian_service.py) found that "auto_blocked" excluded a message from
-the merchant's quarantine review queue entirely, with no way to see or
-recover a misclassified block. _result_from_existing_record still
-understands a legacy "auto_blocked" row (test 2 below) for any that were
-already persisted before that fix, but evaluate() itself no longer creates
-new ones.
+from what's stored - and outright-blocked decisions are now persisted too
+(status="auto_blocked" when the noise verdict is confident, "pending"
+otherwise - see the "noise gate" comment in email_guardian_service.py and
+test_quarantine_classification_noise_filtering.py for why confidence
+gating on BOTH sides of that decision matters: a real customer's "are you
+AI? I want to talk to a human, not you" was once classified spam at 0.98
+and auto_blocked with zero merchant visibility, because that branch had no
+confidence gate at all).
 """
 import os
 import sys
@@ -105,11 +103,14 @@ async def test_new_message_with_no_existing_decision_still_classifies():
     assert result.classification == "customer_support"
 
 
-# ── 4. Outright-blocked decisions persist a "pending" record, never a
-#      silent/unrecoverable "auto_blocked" one ─────────────────────────────
+# ── 4. Outright-blocked decisions persist a record - "auto_blocked" when the
+#      noise verdict is confident, "pending" when it isn't ──────────────────
+# (full coverage of the noise-vs-ambiguous-human distinction lives in
+# test_quarantine_classification_noise_filtering.py; these two just confirm
+# _create_quarantine_record is invoked correctly at the confidence boundary)
 
 @pytest.mark.asyncio
-async def test_unrelated_high_confidence_block_persists_pending_not_auto_blocked():
+async def test_unrelated_high_confidence_block_persists_auto_blocked():
     svc = EmailGuardianService()
 
     with patch.object(svc, "_load_settings", return_value=_DEFAULT_SETTINGS), \
@@ -118,22 +119,18 @@ async def test_unrelated_high_confidence_block_persists_pending_not_auto_blocked
          patch.object(svc, "_create_quarantine_record", return_value="q-new") as mock_create:
         result = await svc.evaluate(_email(), "brand-1", brand_name="Acme")
 
-    # "quarantined", not "blocked" — this now goes into the same merchant-visible
-    # review queue as a low-confidence email, not a silent dead end.
-    assert result.decision == "quarantined"
+    assert result.decision == "blocked"
     assert result.quarantine_id == "q-new"
     mock_create.assert_called_once()
     args, kwargs = mock_create.call_args
-    # No explicit status arg passed at all — _create_quarantine_record's own
-    # default ("pending") is what persists, never "auto_blocked".
-    assert len(args) <= 4 and "status" not in kwargs
+    assert (args[4] if len(args) > 4 else kwargs.get("status")) == "auto_blocked"
 
 
 @pytest.mark.asyncio
-async def test_blocked_ai_classification_persists_pending_not_auto_blocked():
-    """The other outright-blocked path (support_only_mode + a classification
-    in BLOCKED_CLASSIFICATIONS) - previously the one with zero persistence
-    at all, never even a duplicate-row-safe insert."""
+async def test_blocked_ai_classification_high_confidence_persists_auto_blocked():
+    """The other noise path (support_only_mode + a classification in
+    BLOCKED_CLASSIFICATIONS) at high confidence - genuinely bulk/automated
+    content, e.g. a marketing blast the classifier is sure about."""
     from src.services.email_guardian_service import BLOCKED_CLASSIFICATIONS
     blocked_classification = next(iter(BLOCKED_CLASSIFICATIONS))
     svc = EmailGuardianService()
@@ -144,8 +141,30 @@ async def test_blocked_ai_classification_persists_pending_not_auto_blocked():
          patch.object(svc, "_create_quarantine_record", return_value="q-new-2") as mock_create:
         result = await svc.evaluate(_email(), "brand-1", brand_name="Acme")
 
-    assert result.decision == "quarantined"
+    assert result.decision == "blocked"
     assert result.quarantine_id == "q-new-2"
+    mock_create.assert_called_once()
+    args, kwargs = mock_create.call_args
+    assert (args[4] if len(args) > 4 else kwargs.get("status")) == "auto_blocked"
+
+
+@pytest.mark.asyncio
+async def test_blocked_ai_classification_low_confidence_persists_pending():
+    """Same BLOCKED_CLASSIFICATIONS label, but the classifier isn't
+    confident - e.g. a "spam" call on a message that might really be a
+    person, not bulk content. Must land in "pending" (merchant-visible),
+    never "auto_blocked" - this is the exact bug that swallowed a real
+    "are you AI?"-style message before the confidence gate was added here."""
+    svc = EmailGuardianService()
+
+    with patch.object(svc, "_load_settings", return_value=_DEFAULT_SETTINGS), \
+         patch.object(svc, "_find_existing_decision", return_value=None), \
+         patch.object(svc, "_classify_email", new=AsyncMock(return_value=("spam", 0.5, True))), \
+         patch.object(svc, "_create_quarantine_record", return_value="q-new-3") as mock_create:
+        result = await svc.evaluate(_email(), "brand-1", brand_name="Acme")
+
+    assert result.decision == "quarantined"
+    assert result.quarantine_id == "q-new-3"
     mock_create.assert_called_once()
     args, kwargs = mock_create.call_args
     assert len(args) <= 4 and "status" not in kwargs
