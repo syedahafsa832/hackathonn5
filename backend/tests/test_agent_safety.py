@@ -278,3 +278,225 @@ def test_human_mention_on_a_non_escalated_conversation_is_never_labeled():
     result = _label_human_request_escalation_reason(structured, "can I speak to human about something else later?")
     assert "escalation_reason" not in result
     assert result["escalate"] is False
+
+
+# ── PART 2/3 Phase 8.1/8.2 — the Resolution-vs-response-layer boundary
+# gap: proven in 8.1, fixed in 8.2 ────────────────────────────────────────
+#
+# _enforce_no_unconfirmed_action_success now takes an optional
+# authoritative_action_type param (_intent_result.action_type - the real,
+# backend-classified intent, decided BEFORE the response LLM ever runs).
+# When it's "refund" or "cancel", the guard inspects reply_body regardless
+# of what the model self-reports in structured["intent"]/["action_detected"].
+#
+# test_action_detected_alone_without_matching_intent_still_triggers_guard
+# above already proves ONE self-reported field being wrong isn't enough to
+# defeat the guard (it's an OR check). This test proves the harder case
+# Phase 8 flagged: the LLM mislabeling BOTH self-reported fields
+# simultaneously used to defeat the guard entirely (proven failing in
+# Phase 8.1) - now caught via the authoritative backend value instead.
+def test_both_fields_mislabeled_to_general_inquiry_defeats_the_completion_guard():
+    """AUTHORITATIVE BACKEND STATE: _intent_result.action_type == "refund" -
+    a refund action was staged (NOT completed - see
+    return_actions_integration.py, nothing is ever synchronously executed
+    here), so action_context/Resolution would say something like "ACTION
+    STAGED FOR APPROVAL", never "processed".
+
+    THE LLM'S OWN REPLY mislabels both self-reported fields to
+    "general_inquiry"/"none" - as if this were an unrelated question - while
+    still writing a false completion claim into reply_body. Passing the
+    authoritative_action_type (as the real call site in
+    generate_channel_appropriate_response now does) must still catch this,
+    regardless of the model's mislabeling."""
+    structured = {
+        "intent": "general_inquiry",
+        "action_detected": "none",
+        "reply_body": "Good news, your refund has been processed!",
+        "status": "auto_resolved",
+        "escalate": False,
+    }
+    result = _enforce_no_unconfirmed_action_success(structured, authoritative_action_type="refund")
+
+    assert result["escalate"] is True, (
+        "GAP STILL PRESENT: _enforce_no_unconfirmed_action_success did not fire even "
+        "given the authoritative backend action_type='refund', despite both self-reported "
+        "structured['intent']/['action_detected'] being mislabeled to safe values."
+    )
+    assert "processed" not in result["reply_body"].lower()
+    assert result["status"] == "escalated"
+
+
+def test_mislabeled_cancellation_reply_is_still_caught_via_authoritative_state():
+    """Same contradiction, cancellation side: authoritative
+    _intent_result.action_type == "cancel" (CancellationSpecialist may
+    stage a real cancel_order - see PART 2/3 Phase 7), but the LLM
+    mislabels both self-reported fields and falsely claims completion."""
+    structured = {
+        "intent": "general_inquiry",
+        "action_detected": "none",
+        "reply_body": "Your order has been successfully cancelled!",
+        "status": "auto_resolved",
+        "escalate": False,
+    }
+    result = _enforce_no_unconfirmed_action_success(structured, authoritative_action_type="cancel")
+    assert result["escalate"] is True
+    assert result["status"] == "escalated"
+
+
+def test_legitimate_pending_response_not_rewritten_even_with_authoritative_action_type():
+    """A truthful "sent for approval" reply must survive unchanged even
+    when authoritative_action_type is passed - the guard only overrides
+    replies that actually contain false-completion language (_FALSE_SUCCESS_RE),
+    never legitimate pending/awaiting-approval wording. Mirrors the existing
+    test_refund_reply_that_correctly_says_pending_is_left_alone, now also
+    exercising the new authoritative-state path."""
+    structured = {
+        "intent": "general_inquiry",
+        "action_detected": "none",
+        "reply_body": "Your refund request has been sent for approval. You'll hear back soon!",
+        "status": "auto_resolved",
+        "escalate": False,
+    }
+    result = _enforce_no_unconfirmed_action_success(structured, authoritative_action_type="refund")
+    assert result["escalate"] is False
+    assert result["reply_body"] == "Your refund request has been sent for approval. You'll hear back soon!"
+    assert result["status"] == "auto_resolved"
+
+
+# ── PART 2/3 Phase 9.1 — reship/restore_order were missing from the Phase
+# 8.2 authoritative-state fix, despite return_actions_integration.py
+# staging real, pending-approval actions table rows for both via direct
+# _create_action calls (same semantics as refund/cancel). Proven in the
+# Phase 9 audit; fixed by adding "reship"/"restore_order" to
+# _AUTHORITATIVE_ACTION_TYPES_REQUIRING_COMPLETION_CHECK and extending
+# _FALSE_SUCCESS_RE's vocabulary to "shipped"/"restored" ─────────────────
+
+def test_mislabeled_reship_reply_falsely_claiming_shipped_is_caught_via_authoritative_state():
+    """AUTHORITATIVE BACKEND STATE: _intent_result.action_type == "reship" -
+    a reship action was staged for manual review, nothing shipped yet. The
+    LLM mislabels both self-reported fields to safe values (general_inquiry/
+    none, neither of which was ever in _UNCONFIRMED_ACTION_INTENTS/
+    _UNCONFIRMED_ACTION_DETECTED to begin with) while falsely claiming the
+    replacement already shipped."""
+    structured = {
+        "intent": "general_inquiry",
+        "action_detected": "none",
+        "reply_body": "Good news, your replacement has already shipped!",
+        "status": "auto_resolved",
+        "escalate": False,
+    }
+    result = _enforce_no_unconfirmed_action_success(structured, authoritative_action_type="reship")
+    assert result["escalate"] is True, (
+        "GAP: a false 'already shipped' claim for a staged reship action was not caught."
+    )
+    assert "shipped" not in result["reply_body"].lower()
+    assert result["status"] == "escalated"
+
+
+def test_mislabeled_reship_reply_using_was_shipped_phrasing_is_caught():
+    structured = {
+        "intent": "shipping_inquiry",
+        "action_detected": "none",
+        "reply_body": "Your replacement was shipped this morning.",
+        "status": "auto_resolved",
+        "escalate": False,
+    }
+    result = _enforce_no_unconfirmed_action_success(structured, authoritative_action_type="reship")
+    assert result["escalate"] is True
+    assert result["status"] == "escalated"
+
+
+def test_mislabeled_restore_order_reply_falsely_claiming_restored_is_caught_via_authoritative_state():
+    """Same contradiction, restore_order side: authoritative
+    _intent_result.action_type == "restore_order", but the LLM mislabels
+    both self-reported fields and falsely claims the order was restored."""
+    structured = {
+        "intent": "general_inquiry",
+        "action_detected": "none",
+        "reply_body": "Your order has been restored and is ready to go!",
+        "status": "auto_resolved",
+        "escalate": False,
+    }
+    result = _enforce_no_unconfirmed_action_success(structured, authoritative_action_type="restore_order")
+    assert result["escalate"] is True, (
+        "GAP: a false 'restored' claim for a staged restore_order action was not caught."
+    )
+    assert result["status"] == "escalated"
+
+
+def test_legitimate_pending_reship_response_not_rewritten():
+    structured = {
+        "intent": "general_inquiry",
+        "action_detected": "none",
+        "reply_body": "Your replacement request is awaiting approval. You'll hear back soon!",
+        "status": "auto_resolved",
+        "escalate": False,
+    }
+    result = _enforce_no_unconfirmed_action_success(structured, authoritative_action_type="reship")
+    assert result["escalate"] is False
+    assert result["reply_body"] == "Your replacement request is awaiting approval. You'll hear back soon!"
+    assert result["status"] == "auto_resolved"
+
+
+def test_legitimate_pending_reship_submitted_for_approval_response_not_rewritten():
+    structured = {
+        "intent": "general_inquiry",
+        "action_detected": "none",
+        "reply_body": "Your replacement request has been submitted for approval.",
+        "status": "auto_resolved",
+        "escalate": False,
+    }
+    result = _enforce_no_unconfirmed_action_success(structured, authoritative_action_type="reship")
+    assert result["escalate"] is False
+    assert result["reply_body"] == "Your replacement request has been submitted for approval."
+    assert result["status"] == "auto_resolved"
+
+
+def test_legitimate_pending_restore_order_response_not_rewritten():
+    structured = {
+        "intent": "general_inquiry",
+        "action_detected": "none",
+        "reply_body": "Your restoration request is pending approval.",
+        "status": "auto_resolved",
+        "escalate": False,
+    }
+    result = _enforce_no_unconfirmed_action_success(structured, authoritative_action_type="restore_order")
+    assert result["escalate"] is False
+    assert result["reply_body"] == "Your restoration request is pending approval."
+    assert result["status"] == "auto_resolved"
+
+
+def test_refund_and_cancel_authoritative_behavior_unchanged_after_reship_restore_addition():
+    """Regression guard: adding reship/restore_order to the authoritative
+    set and extending _FALSE_SUCCESS_RE's vocabulary must not change
+    refund/cancel's existing Phase 8.2 behavior."""
+    refund_structured = {
+        "intent": "general_inquiry",
+        "action_detected": "none",
+        "reply_body": "Good news, your refund has been processed!",
+        "status": "auto_resolved",
+        "escalate": False,
+    }
+    refund_result = _enforce_no_unconfirmed_action_success(refund_structured, authoritative_action_type="refund")
+    assert refund_result["escalate"] is True
+    assert "processed" not in refund_result["reply_body"].lower()
+
+    cancel_structured = {
+        "intent": "general_inquiry",
+        "action_detected": "none",
+        "reply_body": "Your order has been successfully cancelled!",
+        "status": "auto_resolved",
+        "escalate": False,
+    }
+    cancel_result = _enforce_no_unconfirmed_action_success(cancel_structured, authoritative_action_type="cancel")
+    assert cancel_result["escalate"] is True
+
+    pending_structured = {
+        "intent": "general_inquiry",
+        "action_detected": "none",
+        "reply_body": "Your refund request has been sent for approval. You'll hear back soon!",
+        "status": "auto_resolved",
+        "escalate": False,
+    }
+    pending_result = _enforce_no_unconfirmed_action_success(pending_structured, authoritative_action_type="refund")
+    assert pending_result["escalate"] is False

@@ -13,6 +13,15 @@ from typing import Dict, Any, List, Optional, Tuple, TYPE_CHECKING, Callable, Aw
 from src.lib.supabase_client import supabase_select
 from src.services.intent_detector import intent_detector, IntentResult
 from src.services.policy_evidence import verify_time_window
+from src.services.specialist_resolution import (
+    Resolution,
+    stage_resolution_action,
+    policy_evidence_excerpt as _policy_evidence_excerpt,
+)
+from src.services.return_specialist import ReturnSpecialist
+from src.services.exchange_specialist import ExchangeSpecialist
+from src.services.refund_specialist import RefundSpecialist
+from src.services.cancellation_specialist import CancellationSpecialist
 
 from .actions_manager import actions_manager, stage_pending_action
 
@@ -33,27 +42,16 @@ _ACTION_TYPE_MAP = {
     "restore_order": "restore_order",
 }
 
-# get_custom_policy_text() can return up to several full RAG chunks (Store
-# Pages / FAQ Pages) joined together - never dumped into the short,
-# merchant-facing "reason" a human reads in ~5-10 seconds. Bounded here for
-# the dashboard's expandable "View policy evidence" section instead; the
-# untruncated eligibility dict (which still holds the raw text) is never
-# deleted from extracted_data, only not surfaced as the primary reason.
-_POLICY_EVIDENCE_MAX_CHARS = 800
-
-
-def _policy_evidence_excerpt(raw_policy_text: Optional[str]) -> Optional[str]:
-    """Bound a possibly multi-document policy/RAG lookup to a reasonable
-    excerpt. Returns None (never an empty-but-present blob) when there's
-    nothing to show, so the frontend can fall back to a safe, honest
-    "policy information was found and requires human review" message
-    instead of rendering nothing or the full dump."""
-    text = (raw_policy_text or "").strip()
-    if not text:
-        return None
-    if len(text) <= _POLICY_EVIDENCE_MAX_CHARS:
-        return text
-    return text[:_POLICY_EVIDENCE_MAX_CHARS].rstrip() + "…"
+# _policy_evidence_excerpt: get_custom_policy_text() can return up to
+# several full RAG chunks (Store Pages / FAQ Pages) joined together - never
+# dumped into the short, merchant-facing "reason" a human reads in ~5-10
+# seconds. Bounded there for the dashboard's expandable "View policy
+# evidence" section instead; the untruncated eligibility dict (which still
+# holds the raw text) is never deleted from extracted_data, only not
+# surfaced as the primary reason. Now lives in specialist_resolution.py
+# (PART 2/3 Phase 4) so return_specialist.py can share it without a
+# circular import — imported here under its original name so none of this
+# file's existing call sites needed to change.
 
 
 class ReturnActionsIntegration:
@@ -579,74 +577,21 @@ class ReturnActionsIntegration:
         # something that resolves this request) all flow into one honest,
         # human-handoff reply.
         if intent_type == "return":
-            if eligibility.get("identity_mismatch"):
-                result["action_context"] = (
-                    "**IDENTITY UNVERIFIED - DO NOT PROCESS RETURN**: The email this customer is "
-                    "contacting from does not match the email on file for this order. Do NOT create "
-                    "a request. Do NOT say this has been escalated, sent to the team, or that anyone "
-                    "will follow up - nothing has been submitted anywhere. Resolve this in this one "
-                    "reply: state plainly that the order was found but the contact email doesn't "
-                    "match the one on the order, so for security this request can't be processed "
-                    "from this email, and ask the customer to reach out to us from the email address "
-                    "used when placing the order so we can help right away."
-                )
+            resolution = self._resolve_return(order_id, eligibility, is_unfulfilled, existing_action)
+            # Adapter-layer safety net (PART 2/3 Phase 4), redundant with
+            # ReturnSpecialist.resolve()'s own assertion: this call site is
+            # the ONLY place RETURN could reach _stage_gated_action/
+            # _create_action, and it never does — the Resolution returned
+            # here is used only to build result["action_context"]/logging
+            # below, never passed to _stage_gated_action. Asserted, not just
+            # assumed, so any future edit that accidentally wired RETURN
+            # into the executable-action gate fails loudly here first.
+            assert resolution.requested_action_type is None, "RETURN must never request an executable action"
+            result["action_context"] = resolution.customer_facing_note
+            if resolution.resolution_type == "return_identity_unverified":
                 return result
-
-            # fulfillment_status == "fulfilled" means Shopify marked the
-            # order shipped - it does NOT mean the package has arrived (see
-            # actions_manager.check_return_eligibility's own comment).
-            # shipment_status is Shopify's own carrier-reported signal, when
-            # present; never invented when the carrier hasn't reported one.
-            shipment_status = eligibility.get("shipment_status")
-            if is_unfulfilled:
-                delivery_note = (
-                    " This order has not shipped yet, so there is nothing to physically return yet - "
-                    "if the customer wants to stop the order before it ships, that is a cancellation, "
-                    "not a return; ask which they mean if it's unclear."
-                )
-            elif shipment_status and shipment_status != "delivered":
-                delivery_note = (
-                    f" Shipment tracking shows this order is currently '{shipment_status}', not yet "
-                    "confirmed delivered - do not treat this as a normal post-delivery return without "
-                    "first checking with the customer whether the package has actually arrived."
-                )
-            else:
-                delivery_note = ""
-
-            existing_action_note = ""
-            if existing_action:
-                existing_noun = {"cancel_order": "cancellation", "refund": "refund"}.get(
-                    existing_action.get("action_type"), "request"
-                )
-                existing_action_note = (
-                    f" Note: this order also has a separate {existing_noun} request on file, currently "
-                    f"'{existing_action.get('status')}' - mention it as related context if relevant, but "
-                    "it does NOT substitute for this return request; do not describe it as satisfying or "
-                    "replacing what the customer is asking about now."
-                )
-
-            reason = eligibility.get("reason") or ""
-            policy_evidence = _policy_evidence_excerpt(
-                eligibility.get("custom_policy_text") or eligibility.get("policy_evidence")
-            )
-            ai_reasoning = (
-                f"Customer requests a return for order #{order_id}."
-                f"{(' ' + reason) if reason else ''}{delivery_note}{existing_action_note}"
-            )
-            if policy_evidence:
-                ai_reasoning += f" | Store policy on file: {policy_evidence}"
-            logger.info(f"[ReturnActions] Return escalated to human, no action staged: {ai_reasoning}")
+            logger.info(f"[ReturnActions] Return escalated to human, no action staged: {resolution.reasoning}")
             await _emit("staging_action", "Reviewing your return request…")
-            result["action_context"] = (
-                "**RETURN REQUEST - ESCALATE TO HUMAN, NO ACTION CREATED**: Returns are not automated "
-                f"yet.{delivery_note}{existing_action_note} "
-                f"{('Known order/policy context: ' + reason) if reason else ''} "
-                "Do NOT say a refund or cancellation was started, staged, or submitted for this - none "
-                "was, and do NOT confuse this with any unrelated request mentioned above. Tell the "
-                "customer honestly that you've noted their return request and a team member will "
-                "follow up with next steps (like a return label or return address) shortly. Never say "
-                "the return, or any refund, has already been processed or approved."
-            )
             return result
 
         # UNFULFILLED → cancel is right (not refund). Only when we actually
@@ -732,20 +677,17 @@ class ReturnActionsIntegration:
                 await _emit("policy_verified", "Cancellation policy verified — within window")
 
             if cancel_policy_text != "" and not window_verified_eligible:
+                # PART 2/3 Phase 7 — Cancellation Specialist boundary (CP1).
                 # Merchant-facing reason stays short (a card a human can read
                 # in 5-10 seconds) - the raw, possibly multi-document RAG
                 # lookup (Store Pages/FAQ Pages) never goes in this field.
                 # It's still not discarded: a bounded excerpt goes into
                 # extracted_data.policy_evidence for the dashboard's
-                # expandable "View policy evidence" section (see
-                # _policy_evidence_excerpt below and _create_action).
-                ai_reasoning = (
-                    f"Customer requests {intent_type} for order #{order_id}. "
-                    "Store policy requires a human check before cancelling."
-                    if cancel_policy_text else
-                    f"Customer requests {intent_type} for order #{order_id}. "
-                    "Store policy details could not be confirmed just now — needs a human check before cancelling."
+                # expandable "View policy evidence" section.
+                resolution = CancellationSpecialist.resolve_unfulfilled_manual_review(
+                    order_id, intent_type, cancel_policy_text,
                 )
+                assert resolution.requested_action_type in (None, "cancel_order"), "Cancellation must never request a non-cancel_order/None action here"
                 policy_evidence = _policy_evidence_excerpt(cancel_policy_text)
                 await _emit("staging_action", f"Preparing your {_noun} request…")
                 # Unfulfilled order -> Shopify cancel_order (which also
@@ -756,44 +698,33 @@ class ReturnActionsIntegration:
                 # recognize this as "already handled" on a repeat request,
                 # letting a second (correctly-typed) action get created for
                 # the same order.
-                staged = await self._create_action(
+                staged = await self._stage_gated_action(
+                    resolution.resolution_type, resolution.requested_action_type,
                     tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
-                    action_type="cancel_order", order_id=order_id, email=email,
+                    order_id=order_id, email=email,
                     customer_name=customer_info.get("name"), query=query,
-                    ai_reasoning=ai_reasoning, eligibility=eligibility,
+                    ai_reasoning=resolution.reasoning, eligibility=eligibility,
                     policy_evidence=policy_evidence,
                     customer_intent=intent_type,
                 )
                 result["staged"] = staged
-                result["action_context"] = (
-                    "**REQUEST SUBMITTED FOR MANUAL REVIEW**: This store has additional cancellation policy "
-                    "details on file that need a human check. "
-                    "Tell the customer: 'I've sent your cancellation request to our team for a quick review "
-                    "given our store policy. They'll follow up once it's reviewed.'"
-                )
+                result["action_context"] = resolution.customer_facing_note
                 return result
 
-            if window_verified_eligible:
-                ev = window_result["evidence"]
-                ai_reasoning = (
-                    f"Customer requests {intent_type} for order #{order_id}. "
-                    f"Order is unfulfilled — cancel + auto-refund is appropriate. "
-                    f"Store's free-text cancellation window verified against the real order timestamp: "
-                    f"placed {ev['elapsed_hours']:.2f}h ago, policy allows {ev['policy_window_hours']:.0f}h — ELIGIBLE."
-                )
-                policy_evidence = _policy_evidence_excerpt(cancel_policy_text)
-            else:
-                ai_reasoning = (
-                    f"Customer requests {intent_type} for order #{order_id}. "
-                    f"Order is unfulfilled — cancel + auto-refund is appropriate."
-                )
-                policy_evidence = None
+            # PART 2/3 Phase 7 — Cancellation Specialist boundary (CP4).
+            policy_evidence = _policy_evidence_excerpt(cancel_policy_text) if window_verified_eligible else None
+            resolution = CancellationSpecialist.resolve_unfulfilled_eligible(
+                order_id, intent_type, window_verified_eligible,
+                window_result["evidence"] if window_verified_eligible else None,
+            )
+            assert resolution.requested_action_type in (None, "cancel_order"), "Cancellation must never request a non-cancel_order/None action here"
             await _emit("staging_action", f"Preparing your {_noun} request…")
-            staged = await self._create_action(
+            staged = await self._stage_gated_action(
+                resolution.resolution_type, resolution.requested_action_type,
                 tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
-                action_type="cancel_order", order_id=order_id, email=email,
+                order_id=order_id, email=email,
                 customer_name=customer_info.get("name"), query=query,
-                ai_reasoning=ai_reasoning, eligibility=eligibility,
+                ai_reasoning=resolution.reasoning, eligibility=eligibility,
                 policy_evidence=policy_evidence,
                 customer_intent=intent_type,
             )
@@ -819,11 +750,7 @@ class ReturnActionsIntegration:
                 result["action_context"] = autopilot_context
                 return result
 
-            result["action_context"] = (
-                "**CANCEL QUEUED**: Order hasn't shipped yet — cancel + refund is the right action. "
-                "Tell the customer: 'Since your order hasn't shipped yet, I've sent your cancellation request "
-                "to our team. They'll cancel it and your refund will appear within 3–5 business days.'"
-            )
+            result["action_context"] = resolution.customer_facing_note
             return result
 
         # NOT ELIGIBLE and fulfilled
@@ -835,16 +762,26 @@ class ReturnActionsIntegration:
                 # reached "executed"). Nothing is pending anywhere for this
                 # request, so the reply must resolve it in one message, not
                 # promise a follow-up that will never happen.
-                result["action_context"] = (
-                    f"**IDENTITY UNVERIFIED - DO NOT PROCESS {intent_type.upper()}**: The email this "
-                    "customer is contacting from does not match the email on file for this order. "
-                    "Do NOT create a request. Do NOT say this has been escalated, sent to the team, or "
-                    "that anyone will follow up - nothing has been submitted anywhere. Resolve this in "
-                    "this one reply: state plainly that the order was found but the contact email "
-                    "doesn't match the one on the order, so for security this request can't be "
-                    f"processed from this email, and ask the customer to reach out to us from the email "
-                    "address used when placing the order so we can help right away."
-                )
+                #
+                # PART 2/3 Phase 6 — a genuine refund intent's identity-
+                # mismatch text is now owned by RefundSpecialist; cancel
+                # (and any other non-refund intent still reachable here)
+                # keeps this exact inline wording, byte for byte unchanged.
+                if intent_type == "refund":
+                    resolution = RefundSpecialist.resolve_identity_mismatch(order_id)
+                    assert resolution.requested_action_type is None, "REFUND identity-mismatch must never request an executable action"
+                    result["action_context"] = resolution.customer_facing_note
+                else:
+                    result["action_context"] = (
+                        f"**IDENTITY UNVERIFIED - DO NOT PROCESS {intent_type.upper()}**: The email this "
+                        "customer is contacting from does not match the email on file for this order. "
+                        "Do NOT create a request. Do NOT say this has been escalated, sent to the team, or "
+                        "that anyone will follow up - nothing has been submitted anywhere. Resolve this in "
+                        "this one reply: state plainly that the order was found but the contact email "
+                        "doesn't match the one on the order, so for security this request can't be "
+                        f"processed from this email, and ask the customer to reach out to us from the email "
+                        "address used when placing the order so we can help right away."
+                    )
             elif eligibility.get("staging_required") or eligibility.get("requires_manual_review"):
                 # eligibility["reason"] is a short, deterministic string from
                 # check_return_eligibility (e.g. "order not yet fulfilled")
@@ -867,6 +804,33 @@ class ReturnActionsIntegration:
                 # action) on every fulfilled order that reaches this branch.
                 # "refund" always executes.
                 #
+                # PART 2/3 Phase 6 — a genuine refund (or return, which
+                # shares this wording) intent's manual-review decision is
+                # now owned by RefundSpecialist. Cancel's fallback-to-refund
+                # substitution below (with its own disclosure wording) is
+                # NOT a refund decision - it's cancellation's own consolation
+                # resolution reusing the refund executable type, left
+                # completely untouched here (PART 2/3 Phase 7's territory).
+                if intent_type in ("refund", "return"):
+                    requested_amount = self._extract_requested_refund_amount(query)
+                    resolution = RefundSpecialist.resolve_manual_review(order_id, eligibility, requested_amount)
+                    assert resolution.requested_action_type in (None, "refund"), "REFUND must never request a non-refund executable action"
+                    await _emit("staging_action", f"Preparing your {_noun} request…")
+                    staged = await self._stage_gated_action(
+                        resolution.resolution_type, resolution.requested_action_type,
+                        tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
+                        order_id=order_id, email=email,
+                        customer_name=customer_info.get("name"), query=query,
+                        ai_reasoning=resolution.reasoning, eligibility=eligibility,
+                        policy_evidence=_policy_evidence_excerpt(eligibility.get("custom_policy_text")),
+                        requested_amount=requested_amount,
+                        customer_intent=intent_type,
+                    )
+                    result["staged"] = staged
+                    result["action_context"] = resolution.customer_facing_note
+                    return result
+
+                # PART 2/3 Phase 7 — Cancellation Specialist boundary (CP6).
                 # What WAS a real, confirmed-live bug: this reasoning text
                 # silently described the customer's actual ask (e.g. "cancel")
                 # while the stored action_type said "refund" - a reviewer
@@ -875,58 +839,22 @@ class ReturnActionsIntegration:
                 # disclosing the substitution in the text itself whenever the
                 # customer's intent isn't already a refund/return, so nothing
                 # AI-decided is hidden from the human who has to act on it.
-                if intent_type in ("refund", "return"):
-                    ai_reasoning = f"Customer requests {intent_type} for order #{order_id}. Manual review required: {eligibility.get('reason')}"
-                else:
-                    ai_reasoning = (
-                        f"Customer requested a cancellation for order #{order_id}, but it's being staged as a "
-                        "REFUND for manual review instead - Shopify can only cancel a confirmed-unfulfilled "
-                        f"order, and that couldn't be confirmed here. Manual review required: {eligibility.get('reason')}"
-                    )
+                resolution = CancellationSpecialist.resolve_fulfilled_unverifiable_fallback_to_refund(order_id, eligibility)
+                assert resolution.requested_action_type in (None, "refund"), "Cancellation's fallback-to-refund must never request a non-refund/None action here"
                 policy_evidence = _policy_evidence_excerpt(eligibility.get("custom_policy_text"))
                 await _emit("staging_action", f"Preparing your {_noun} request…")
-                staged = await self._create_action(
+                staged = await self._stage_gated_action(
+                    resolution.resolution_type, resolution.requested_action_type,
                     tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
-                    action_type="refund", order_id=order_id, email=email,
+                    order_id=order_id, email=email,
                     customer_name=customer_info.get("name"), query=query,
-                    ai_reasoning=ai_reasoning, eligibility=eligibility,
+                    ai_reasoning=resolution.reasoning, eligibility=eligibility,
                     policy_evidence=policy_evidence,
                     requested_amount=self._extract_requested_refund_amount(query),
                     customer_intent=intent_type,
                 )
                 result["staged"] = staged
-                if intent_type in ("refund", "return"):
-                    result["action_context"] = (
-                        f"**REQUEST SUBMITTED FOR MANUAL REVIEW**: {eligibility.get('reason')} "
-                        "Tell the customer: 'I've submitted your request to our team for manual review. "
-                        "They'll review it and you'll get an email confirmation once it's processed.'"
-                    )
-                else:
-                    # Customer-facing wording for the cancel -> refund
-                    # fallback: the internal ai_reasoning/action_type above
-                    # already say "refund" for execution reasons, but the
-                    # CUSTOMER never asked for a refund - they asked to
-                    # cancel. Telling them in plain language what actually
-                    # happened (asked to cancel, couldn't be safely
-                    # auto-cancelled, sent for human review, refund only a
-                    # possible outcome) - never that anything has already
-                    # been cancelled or refunded, and never in terms like
-                    # "action type"/"staging"/"refund-family" the customer
-                    # has no reason to know about.
-                    result["action_context"] = (
-                        f"**REQUEST SUBMITTED FOR MANUAL REVIEW**: {eligibility.get('reason')} "
-                        "Do NOT say the order has been cancelled. Do NOT say a refund has been issued. "
-                        "Neither has happened yet - this is going to a human for review. Do NOT use "
-                        "internal terms like 'action type', 'staging', 'refund-family', or 'fallback' - "
-                        "the customer has no reason to know how this works internally. Tell the customer "
-                        "plainly and briefly, in your own natural words, covering exactly these points: "
-                        "(1) they asked to cancel their order, (2) it couldn't be safely cancelled "
-                        "automatically, (3) their request has been sent to the team for review, (4) the "
-                        "team may handle it as a refund instead if that's the right outcome. For example: "
-                        "'You're asking to cancel your order. I wasn't able to safely cancel it "
-                        "automatically, so I've sent your request for review. The team will check it and "
-                        "let you know what can be done, including whether a refund is possible.'"
-                    )
+                result["action_context"] = resolution.customer_facing_note
             else:
                 result["action_context"] = (
                     f"**{intent_type.upper()} NOT ELIGIBLE**: {eligibility.get('reason')}. "
@@ -938,7 +866,6 @@ class ReturnActionsIntegration:
         # this block's header comment for why there's no separate action type)
         await _emit("policy_verified", f"{_noun.capitalize()} policy verified")
         items = eligibility.get("items", [])
-        item_names = ", ".join([i.get("title", "item") for i in items[:2]])
 
         # Partial-order return (PART 3/11): this integration has no
         # line-item-specific refund mutation — process_refund() takes a
@@ -951,6 +878,91 @@ class ReturnActionsIntegration:
         # matcher the exchange flow uses to identify a single named item —
         # never guessed, only surfaced when there's a real, only match.
         specific_item = self._match_order_item(query, items) if len(items) > 1 else None
+
+        # PART 2/3 Phase 6 — Refund Specialist boundary. The genuine
+        # refund-eligible happy path: a fulfilled order (is_unfulfilled
+        # False) the customer explicitly asked to refund. Every other
+        # combination reaching this point (any refund request against an
+        # eligible-but-UNFULFILLED order, every cancel intent, "return"
+        # here still shares refund's mutation) stays on the unchanged
+        # shared path below — those are cancellation's own decisions even
+        # when a refund intent happens to fall through to them (PART 2/3
+        # Phase 7's territory), never touched by this specialist.
+        if intent_type == "refund" and not is_unfulfilled:
+            requested_amount = self._extract_requested_refund_amount(query)
+            resolution = RefundSpecialist.resolve_eligible(order_id, eligibility, specific_item, requested_amount)
+            assert resolution.requested_action_type == "refund", "REFUND eligible path must request exactly 'refund'"
+            await _emit("staging_action", f"Preparing your {_noun} request…")
+            staged = await self._stage_gated_action(
+                resolution.resolution_type, resolution.requested_action_type,
+                tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
+                order_id=order_id, email=email,
+                customer_name=customer_info.get("name"), query=query,
+                ai_reasoning=resolution.reasoning, eligibility=eligibility,
+                requested_amount=requested_amount,
+                customer_intent=intent_type,
+            )
+            result["staged"] = staged
+
+            if staged.get("success"):
+                # Refund Autopilot: only ever the plain, whole-order, no-
+                # ambiguity happy path (see _maybe_autopilot_refund's own
+                # internal gating for the full list of conditions) — human
+                # approval remains mandatory otherwise; this hook re-uses
+                # the exact same approve_action() a human clicking Approve
+                # calls, unchanged.
+                autopilot_context = await self._maybe_autopilot_refund(
+                    tenant_id=tenant_id, brand_id=brand_id, staged=staged, order_id=order_id,
+                    query=query, is_unfulfilled=is_unfulfilled, specific_item=specific_item,
+                )
+                if autopilot_context:
+                    result["action_context"] = autopilot_context
+                    return result
+                result["action_context"] = resolution.customer_facing_note
+            else:
+                result["action_context"] = (
+                    f"Refund eligible but staging failed: {staged.get('message') or staged.get('error')}. "
+                    "Process normally but flag for manual review."
+                )
+            return result
+
+        # PART 2/3 Phase 7 — Cancellation Specialist boundary (CP8). The
+        # genuine cancel-intent-on-a-fulfilled-eligible-order case: Shopify
+        # cannot cancel a fulfilled order, so this always resolves to a
+        # refund action instead — same fallback CP6 already makes, now with
+        # the same explicit disclosure (this used to be undisclosed, shared,
+        # intent-agnostic code — see the PART 2/3 Phase 7 inspection report).
+        # Every other combination still reaching this point (any cancel
+        # intent on an unfulfilled order — impossible per the eligibility
+        # contract traced in the Phase 6 investigation, since eligible=True
+        # structurally implies fulfilled — plus any other non-refund/cancel
+        # intent) stays on the unchanged generic path below, unaltered.
+        if intent_type == "cancel" and not is_unfulfilled:
+            resolution = CancellationSpecialist.resolve_fulfilled_eligible_fallback_to_refund(
+                order_id, eligibility, specific_item,
+            )
+            assert resolution.requested_action_type in (None, "refund"), "Cancellation's fallback-to-refund must never request a non-refund/None action here"
+            await _emit("staging_action", f"Preparing your {_noun} request…")
+            staged = await self._stage_gated_action(
+                resolution.resolution_type, resolution.requested_action_type,
+                tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
+                order_id=order_id, email=email,
+                customer_name=customer_info.get("name"), query=query,
+                ai_reasoning=resolution.reasoning, eligibility=eligibility,
+                requested_amount=self._extract_requested_refund_amount(query),
+                customer_intent=intent_type,
+            )
+            result["staged"] = staged
+            if staged.get("success"):
+                result["action_context"] = resolution.customer_facing_note
+            else:
+                result["action_context"] = (
+                    f"{intent_type.capitalize()} eligible but staging failed: {staged.get('message') or staged.get('error')}. "
+                    "Process normally but flag for manual review."
+                )
+            return result
+
+        item_names = ", ".join([i.get("title", "item") for i in items[:2]])
         if specific_item:
             ai_reasoning = (
                 f"Customer requests {intent_type} for order #{order_id}, SPECIFICALLY ONLY: "
@@ -961,8 +973,8 @@ class ReturnActionsIntegration:
             ai_reasoning = f"Customer requests {intent_type} for order #{order_id}: {item_names}"
 
         await _emit("staging_action", f"Preparing your {_noun} request…")
-        # This "eligible" happy-path is reached for BOTH fulfilled orders
-        # (only a refund is possible) and unfulfilled orders that eligibility
+        # This remaining path is reached for BOTH fulfilled orders (only a
+        # refund is possible) and unfulfilled orders that eligibility
         # itself didn't flag as ineligible (the unfulfilled-specific branch
         # above only intercepts the *not*-eligible case) - so is_unfulfilled
         # still has to decide the action type here, exactly like it does
@@ -972,9 +984,12 @@ class ReturnActionsIntegration:
         # "Refund" instead of "refund" - which broke both dedup matching
         # above and approval in actions_service.py, since neither compares
         # against the exact stored string case-insensitively.)
-        staged = await self._create_action(
+        _resolved_action_type = "cancel_order" if is_unfulfilled else "refund"
+        _resolution_type = "cancellation_eligible" if is_unfulfilled else "refund_eligible"
+        staged = await self._stage_gated_action(
+            _resolution_type, _resolved_action_type,
             tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
-            action_type="cancel_order" if is_unfulfilled else "refund", order_id=order_id, email=email,
+            order_id=order_id, email=email,
             customer_name=customer_info.get("name"), query=query,
             ai_reasoning=ai_reasoning, eligibility=eligibility,
             # A dollar figure only ever means something for a real refund —
@@ -988,19 +1003,10 @@ class ReturnActionsIntegration:
         if staged.get("success"):
             noun = "return" if intent_type == "return" else "refund" if intent_type == "refund" else "cancellation"
 
-            # Refund Autopilot: only ever the plain, whole-order, no-
-            # ambiguity happy path (see _maybe_autopilot_refund's own
-            # internal gating for the full list of conditions). Cancellation
-            # Autopilot is a separate, already-existing hook elsewhere and
-            # is unaffected by this.
-            autopilot_context = await self._maybe_autopilot_refund(
-                tenant_id=tenant_id, brand_id=brand_id, staged=staged, order_id=order_id,
-                query=query, is_unfulfilled=is_unfulfilled, specific_item=specific_item,
-            )
-            if autopilot_context:
-                result["action_context"] = autopilot_context
-                return result
-
+            # Cancellation Autopilot is a separate, already-existing hook
+            # elsewhere and is unaffected by this — this remaining path
+            # never reaches Refund Autopilot (that only ever fires from the
+            # genuine refund-eligible branch above).
             if specific_item:
                 result["action_context"] = (
                     f"**ACTION STAGED FOR APPROVAL (PARTIAL — only {specific_item.get('title')})**: "
@@ -1023,6 +1029,50 @@ class ReturnActionsIntegration:
             )
 
         return result
+
+    def _resolve_return(
+        self,
+        order_id: str,
+        eligibility: Dict[str, Any],
+        is_unfulfilled: bool,
+        existing_action: Optional[Dict[str, Any]],
+    ) -> Resolution:
+        """Adapter method — delegates to the Return Specialist boundary
+        (PART 2/3 Phase 4, return_specialist.py's ReturnSpecialist.resolve).
+        Kept as a method here (rather than calling ReturnSpecialist directly
+        from handle_return_intent) purely so existing callers/tests that
+        already reach the Return Specialist through `integration._resolve_return(...)`
+        keep working unchanged; this file owns no return-decision logic of
+        its own anymore — see ReturnSpecialist's own docstring for that."""
+        return ReturnSpecialist.resolve(order_id, eligibility, is_unfulfilled, existing_action)
+
+    async def _stage_gated_action(
+        self, resolution_type: str, requested_action_type: str, **create_action_kwargs
+    ) -> dict:
+        """PART 2/3 Phase 2 — the one path refund/cancellation staging is
+        allowed to reach _create_action through. Builds the minimal
+        Resolution the shared gate (specialist_resolution.stage_resolution_action)
+        needs and lets IT decide, against the whitelist, whether
+        requested_action_type may actually be created for this
+        resolution_type — never decided here. Raises
+        ExecutableActionRejected (a programming-time contract violation,
+        not a customer-facing failure) if a call site ever asks for a
+        mapping the whitelist doesn't allow.
+
+        Only wired into the refund/cancel_order call sites today — return
+        already creates no action (see _resolve_return), and
+        restore_order/address_change/reship/exchange stay on the direct
+        _create_action path unchanged (outside this policy's whitelist;
+        exchange's own gating is PART 2/3 Phase 5, not yet done)."""
+        resolution = Resolution(
+            resolution_type=resolution_type,
+            specialist="refund" if resolution_type == "refund_eligible" else "cancellation",
+            order_id=create_action_kwargs.get("order_id"),
+            reasoning=create_action_kwargs.get("ai_reasoning", ""),
+            customer_facing_note="",
+            requested_action_type=requested_action_type,
+        )
+        return await stage_resolution_action(self, resolution, **create_action_kwargs)
 
     async def _find_active_action(
         self, tenant_id: Optional[str], order_id: Optional[str], action_type: str
@@ -1221,13 +1271,19 @@ class ReturnActionsIntegration:
         result: Dict[str, Any],
         _emit: Callable[[str, str], Awaitable[None]],
     ) -> Dict[str, Any]:
-        """Full exchange workflow: order + customer verification, the exact
-        same eligibility/policy check returns and refunds use, item
-        identification (asks rather than guesses on a multi-item order),
-        LIVE Shopify target-variant resolution (never stale RAG/product
-        memory), availability + price-difference checks, then either stages
-        a real "exchange" action for approval or explains honestly why it
-        can't — never a fabricated "your exchange is being processed"."""
+        """Full exchange context-gathering: order + customer verification,
+        the exact same eligibility/policy check returns and refunds use,
+        item identification (asks rather than guesses on a multi-item
+        order), LIVE Shopify target-variant resolution (never stale RAG/
+        product memory), availability + price-difference checks. This
+        adapter method owns all of that I/O; the actual decision of what to
+        tell the customer is delegated to ExchangeSpecialist (PART 2/3
+        Phase 5) at the two points where a real decision is made (below).
+        Current product policy: exchange is not automated — every genuine
+        exchange request escalates to a human, NEVER creating an
+        executable action of any kind (not exchange, not refund/cancel as
+        a substitute) — never a fabricated "your exchange is being
+        processed" either way."""
         result["return_checked"] = True
 
         if not order_id or not email:
@@ -1255,39 +1311,17 @@ class ReturnActionsIntegration:
 
         if not eligibility.get("eligible"):
             if eligibility.get("staging_required") or eligibility.get("requires_manual_review"):
-                # Unlike the shared refund/return/cancel path, this action_type
-                # is deliberately NOT _ACTION_TYPE_MAP.get(intent_type) - there
-                # is no live target variant/price-difference data to attach
-                # (eligibility itself failed), so an "exchange" action here
-                # would have nothing for approve_action()'s EXCHANGE branch to
-                # execute. Staging as a refund-family review action is the
-                # only real option. That substitution must be stated plainly
-                # in ai_reasoning itself, never left implicit - a reviewer
-                # reading "Customer requests exchange..." on a card whose type
-                # badge says "Refund" would see the same self-contradictory
-                # record this whole fix removes from the cancel/refund path.
-                ai_reasoning = (
-                    f"Customer requested an exchange for order #{order_id}, but eligibility couldn't be "
-                    f"verified automatically ({eligibility.get('reason')}) - staged as a refund-family manual "
-                    "review since there's no verified exchange target yet. A human should review the original "
-                    "message to process the correct outcome (exchange or refund)."
-                )
-                if eligibility.get("custom_policy_text"):
-                    ai_reasoning += f" | Store policy on file: {eligibility['custom_policy_text']}"
-                await _emit("staging_action", "Preparing your exchange request…")
-                staged = await self._create_action(
-                    tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
-                    action_type="refund", order_id=order_id, email=email,
-                    customer_name=customer_info.get("name"), query=query,
-                    ai_reasoning=ai_reasoning, eligibility=eligibility,
-                    customer_intent="exchange",
-                )
-                result["staged"] = staged
-                result["action_context"] = (
-                    f"**EXCHANGE REQUEST SUBMITTED FOR MANUAL REVIEW**: {eligibility.get('reason')} "
-                    "Tell the customer: 'I've submitted your exchange request to our team for manual review. "
-                    "They'll review it and you'll get an email confirmation once it's processed.'"
-                )
+                # PART 2/3 Phase 5 — Exchange Specialist boundary. There is
+                # no live target variant/price-difference data to attach
+                # (eligibility itself failed), and current product policy
+                # is that exchange is not automated at all: no action of
+                # ANY type (not exchange, not refund as a substitute) is
+                # ever created here — always escalate to a human instead.
+                await _emit("staging_action", "Reviewing your exchange request…")
+                resolution = ExchangeSpecialist.resolve_eligibility_unclear(order_id, eligibility)
+                assert resolution.requested_action_type is None, "EXCHANGE must never request an executable action"
+                result["action_context"] = resolution.customer_facing_note
+                logger.info(f"[ReturnActions] Exchange escalated to human, no action staged: {resolution.reasoning}")
             else:
                 result["action_context"] = (
                     f"**EXCHANGE NOT ELIGIBLE**: {eligibility.get('reason')}. "
@@ -1351,75 +1385,22 @@ class ReturnActionsIntegration:
         original_price = float(original_item.get("price") or 0)
         price_difference = round(target["price"] - original_price, 2)
 
-        if price_difference < 0:
-            # Cheaper replacement — refunding/crediting the difference is a
-            # real business decision with no configured store policy
-            # anywhere in this system. Never decided here — staged for a
-            # human, with the live numbers attached so they don't have to
-            # look them up again.
-            ai_reasoning = (
-                f"Customer requests exchange for order #{order_id}: {original_item.get('title')} -> "
-                f"{target.get('product_title')} ({target.get('variant_title')}). "
-                f"Replacement is ${abs(price_difference):.2f} cheaper — needs merchant decision on the difference."
-            )
-            await _emit("staging_action", "Preparing your exchange request…")
-            staged = await self._create_action(
-                tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
-                action_type="exchange", order_id=order_id, email=email,
-                customer_name=customer_info.get("name"), query=query,
-                ai_reasoning=ai_reasoning, eligibility=eligibility,
-                exchange_target=target, original_item=raw_item, price_difference=price_difference,
-            )
-            result["staged"] = staged
-            result["action_context"] = (
-                f"**EXCHANGE SUBMITTED FOR MANUAL REVIEW (price difference)**: The replacement "
-                f"({target.get('product_title')}, {target.get('variant_title')}) is ${abs(price_difference):.2f} "
-                "cheaper than the original item, our team needs to decide how to handle the difference. "
-                "Tell the customer: 'I found your replacement item and sent this to our team for approval "
-                "since there is a price difference to sort out. You'll hear back once it's reviewed.' "
-                "Do NOT say the exchange is done or promise a refund of the difference."
-            )
-            return result
-
-        ai_reasoning = (
-            f"Customer requests exchange for order #{order_id}: "
-            f"{original_item.get('title')} ({original_item.get('variant_title')}) -> "
-            f"{target.get('product_title')} ({target.get('variant_title')}). "
-            f"Price difference: ${price_difference:.2f}."
-        )
+        # PART 2/3 Phase 5 — Exchange Specialist boundary. A live, in-stock
+        # replacement was found (this used to be the "everything checks
+        # out" happy path that auto-staged a real "exchange" action,
+        # regardless of whether the price difference was negative, zero, or
+        # positive). Current product policy: exchange is not automated at
+        # all — always escalate to a human instead, no action of any kind,
+        # while still preserving exactly what was found (item, replacement,
+        # price difference) so nothing useful is lost.
         await _emit("staging_action", "Preparing your exchange request…")
-        staged = await self._create_action(
-            tenant_id=tenant_id, brand_id=brand_id, ticket_id=ticket_id,
-            action_type="exchange", order_id=order_id, email=email,
-            customer_name=customer_info.get("name"), query=query,
-            ai_reasoning=ai_reasoning, eligibility=eligibility,
-            exchange_target=target, original_item=raw_item, price_difference=price_difference,
+        resolution = ExchangeSpecialist.resolve_target_found(
+            order_id=order_id, original_item=original_item, target=target,
+            price_difference=price_difference,
         )
-        result["staged"] = staged
-
-        if staged.get("success"):
-            variant_label = f"{target.get('product_title')} ({target.get('variant_title')})"
-            if price_difference == 0:
-                result["action_context"] = (
-                    f"**EXCHANGE STAGED FOR APPROVAL (no price difference)**: {variant_label} is in stock and "
-                    "confirmed available. Tell the customer: 'Good news, that is in stock! I have sent this "
-                    "exchange to our team for approval, once confirmed you will not need to pay anything extra "
-                    "and we will get your replacement on its way.' Do NOT say the exchange is already done."
-                )
-            else:
-                result["action_context"] = (
-                    f"**EXCHANGE STAGED FOR APPROVAL (${price_difference:.2f} difference)**: {variant_label} is "
-                    f"available. Tell the customer: 'I found that in stock! There is a ${price_difference:.2f} "
-                    "price difference for the new item. I have sent this to our team for approval, once "
-                    "confirmed you will get a checkout link to pay the difference and complete the exchange.' "
-                    "Do NOT say the exchange is already done."
-                )
-        else:
-            result["action_context"] = (
-                f"Exchange target found but staging failed: {staged.get('message') or staged.get('error')}. "
-                "Process normally but flag for manual review."
-            )
-
+        assert resolution.requested_action_type is None, "EXCHANGE must never request an executable action"
+        result["action_context"] = resolution.customer_facing_note
+        logger.info(f"[ReturnActions] Exchange escalated to human, no action staged: {resolution.reasoning}")
         return result
 
     def _match_order_item(self, query: str, items: List[Dict]) -> Optional[Dict]:
