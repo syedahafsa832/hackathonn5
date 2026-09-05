@@ -96,71 +96,91 @@ def _run(
 # ── 14. Same product, different size ─────────────────────────────────────────
 
 def test_same_product_different_size_stages_real_exchange_action():
+    """UPDATED for PART 2/3 Phase 5 (Exchange Specialist boundary): exchange
+    is not automated — a live, in-stock replacement is found and its details
+    (item, replacement, price) are still surfaced honestly, but NO action of
+    any kind is created; the request always escalates to a human. Old
+    assertion here — "EXCHANGE STAGED FOR APPROVAL" / an "exchange" action
+    created — no longer matches current policy."""
     result, mock_create = _run(
         "I bought the hoodie in M but need L.",
         target=_found_target(same_product=True, variant_title="L", price=45.0),
     )
 
-    mock_create.assert_awaited_once()
-    _, kwargs = mock_create.call_args
-    assert kwargs["action_type"] == "exchange"
-    assert kwargs["exchange_target"]["variant_title"] == "L"
-    assert kwargs["original_item"]["variant_id"] == 9001  # the RAW line item, not the trimmed eligibility one
-    assert kwargs["price_difference"] == 0.0
-    assert result["staged"]["success"] is True
-    assert "EXCHANGE STAGED FOR APPROVAL" in result["action_context"]
-    assert "no additional cost" in result["action_context"].lower() or "no price difference" in result["action_context"].lower()
+    mock_create.assert_not_awaited()
+    assert result.get("staged") is None
+    assert "ESCALATE TO HUMAN, NO ACTION CREATED" in result["action_context"]
+    assert "Essential Hoodie" in result["action_context"]
+    assert "L" in result["action_context"]
+    assert "same price" in result["action_context"].lower()
 
 
 # ── 15. Same product, different color ────────────────────────────────────────
 
 def test_same_product_different_color_stages_real_exchange_action():
+    """UPDATED for PART 2/3 Phase 5 — see the previous test's docstring."""
     result, mock_create = _run(
         "Can I exchange this for a different color?",
         intent_result=_intent(exchange_target="black"),
         target=_found_target(variant_title="Black", price=45.0),
     )
 
-    mock_create.assert_awaited_once()
-    assert result["staged"]["success"] is True
+    mock_create.assert_not_awaited()
+    assert result.get("staged") is None
+    assert "ESCALATE TO HUMAN, NO ACTION CREATED" in result["action_context"]
+    assert "Black" in result["action_context"]
 
 
 # ── 16. Different product ────────────────────────────────────────────────────
 
 def test_different_product_exchange_uses_real_policy_not_assumption():
-    """A different-product swap is only staged when find_exchange_target
-    (which title-searches the live catalog, same_product=False) actually
-    resolves a real product - never assumed permitted."""
+    """UPDATED for PART 2/3 Phase 5: a different-product swap is only ever
+    resolved when find_exchange_target (which title-searches the live
+    catalog, same_product=False) actually resolves a real product - never
+    assumed permitted. It still never creates any action under current
+    policy (the price/target info is preserved as reasoning instead of
+    action kwargs, since there is no longer a mock_create call to inspect)."""
     result, mock_create = _run(
         "Can I exchange this for a different product, the canvas tote?",
         intent_result=_intent(exchange_target="canvas tote"),
         target=_found_target(same_product=False, product_title="Canvas Tote Bag", variant_title="Default Title", price=15.0),
     )
 
-    mock_create.assert_awaited_once()
-    _, kwargs = mock_create.call_args
-    assert kwargs["exchange_target"]["same_product"] is False
-    assert kwargs["price_difference"] == 15.0 - 45.0  # negative -> should NOT auto-stage as ready; see next test
+    mock_create.assert_not_awaited()
+    assert result.get("staged") is None
+    assert "ESCALATE TO HUMAN, NO ACTION CREATED" in result["action_context"]
+    assert "Canvas Tote Bag" in result["action_context"]
+    assert "$30.00" in result["action_context"]  # |15.00 - 45.00| cheaper — still surfaced, never invented
 
 
 def test_different_product_cheaper_replacement_escalates_price_difference():
+    """UPDATED for PART 2/3 Phase 5: a cheaper replacement no longer stages
+    ANYTHING (old policy staged an "exchange" action for manual review of
+    the price difference) — it escalates with the real price difference
+    still surfaced honestly, never claiming the exchange is done."""
     result, mock_create = _run(
         "Can I exchange this for the canvas tote instead?",
         intent_result=_intent(exchange_target="canvas tote"),
         target=_found_target(same_product=False, product_title="Canvas Tote Bag", variant_title="Default Title", price=15.0),
     )
-    mock_create.assert_awaited_once()
-    assert "MANUAL REVIEW" in result["action_context"] or "manual review" in result["action_context"].lower()
-    assert "$30.00" in result["action_context"] or "30.00" in result["action_context"]
-    assert "do not say the exchange is done" in result["action_context"].lower() or "do not say the exchange is done" in result["action_context"].lower()
+    mock_create.assert_not_awaited()
+    assert result.get("staged") is None
+    assert "ESCALATE TO HUMAN, NO ACTION CREATED" in result["action_context"]
+    assert "$30.00" in result["action_context"]
+    assert "do not say the exchange has been staged, approved, or completed" in result["action_context"].lower()
 
 
 # ── 17/18/19. Availability ───────────────────────────────────────────────────
 
 def test_replacement_available_and_in_stock_stages_exchange():
+    """UPDATED for PART 2/3 Phase 5 — see test_same_product_different_size's
+    docstring: availability is still confirmed and surfaced, but escalates
+    rather than creating any action."""
     result, mock_create = _run("Is L available? Please exchange it.", target=_found_target(variant_title="L", price=45.0))
-    mock_create.assert_awaited_once()
-    assert result["staged"]["success"] is True
+    mock_create.assert_not_awaited()
+    assert result.get("staged") is None
+    assert "ESCALATE TO HUMAN, NO ACTION CREATED" in result["action_context"]
+    assert "confirmed available and in stock" in result["action_context"]
 
 
 def test_replacement_out_of_stock_never_promises_the_exchange():
@@ -217,18 +237,25 @@ def test_ambiguous_target_product_asks_rather_than_guesses():
 # ── 20. Price difference (positive) ──────────────────────────────────────────
 
 def test_positive_price_difference_stages_with_balance_shown_never_invented_policy():
+    """UPDATED for PART 2/3 Phase 5: no action is created (old policy staged
+    an "exchange" action and promised a checkout link - that promise
+    implied automated staging/execution machinery that current policy
+    explicitly forbids). The real price difference is still surfaced
+    honestly; how it will be collected is left to the human team, never
+    invented here."""
     result, mock_create = _run(
         "Can I exchange this for the Premium Hoodie?",
         intent_result=_intent(exchange_target="premium hoodie"),
         target=_found_target(same_product=False, product_title="Premium Hoodie", variant_title="M", price=65.0),
     )
 
-    mock_create.assert_awaited_once()
-    _, kwargs = mock_create.call_args
-    assert kwargs["price_difference"] == 20.0
+    mock_create.assert_not_awaited()
+    assert result.get("staged") is None
+    assert "ESCALATE TO HUMAN, NO ACTION CREATED" in result["action_context"]
     assert "$20.00" in result["action_context"]
-    assert "checkout link" in result["action_context"].lower()
-    # Never invents how the difference is collected beyond "you'll get a checkout link" (the real, safe mechanism)
+    # Never invents a specific collection mechanism (no more "checkout
+    # link" promise, since nothing is staged/executed automatically).
+    assert "checkout link" not in result["action_context"].lower()
     assert "charged automatically" not in result["action_context"].lower()
     assert "card on file" not in result["action_context"].lower()
 
@@ -252,6 +279,16 @@ def test_ineligible_exchange_is_not_staged():
 # ── 22. Unknown order ─────────────────────────────────────────────────────────
 
 def test_unknown_order_exchange_goes_to_manual_review():
+    """UPDATED for PART 2/3 Phase 5: eligibility couldn't be verified (order
+    not found) so there's no verified target data either way - old policy
+    staged a "refund"-typed action as a generic review substitute; current
+    policy creates NO action at all (not refund, not exchange), only
+    escalates. The original regression this test guarded against - a
+    reviewer seeing an unexplained type substitution - no longer applies
+    since nothing is stored at all, but the underlying honesty requirement
+    (the reasoning must mention both "exchange" and why, never silently) is
+    preserved via resolution.reasoning, checked indirectly through the
+    customer-facing note here since mock_create is never called to inspect."""
     result, mock_create = _run(
         "Can I exchange this for a L?",
         eligibility={
@@ -260,23 +297,22 @@ def test_unknown_order_exchange_goes_to_manual_review():
         },
     )
 
-    mock_create.assert_awaited_once()
-    _, kwargs = mock_create.call_args
-    assert kwargs["action_type"] == "refund"  # can't verify -> generic review action, no fabricated target data
-    assert "MANUAL REVIEW" in result["action_context"]
-    # Regression: the stored type substitution (exchange -> refund, since
-    # there's no verified target data to attach) must be stated in the
-    # reasoning a human reviewer reads - never a silent "Customer requests
-    # exchange..." next to a "Refund" type badge with no explanation.
-    reasoning = kwargs["ai_reasoning"]
-    assert "exchange" in reasoning.lower()
-    assert "refund" in reasoning.lower()
-    assert "Order #9999 was not found" in reasoning
+    mock_create.assert_not_awaited()
+    assert result.get("staged") is None
+    assert "ESCALATE TO HUMAN, NO ACTION CREATED" in result["action_context"]
+    assert "Order #9999 was not found" in result["action_context"]
+    # Never CLAIMS a refund/cancellation/exchange was actually started as a
+    # substitute for the exchange the customer asked about (the note
+    # explicitly disclaims all three, which is the honest opposite of a
+    # silent substitution).
+    assert "do not say a refund, cancellation, or exchange was started, staged, or submitted" in result["action_context"].lower()
 
 
 # ── 23. Wrong customer/order mismatch ────────────────────────────────────────
 
 def test_sender_mismatch_exchange_goes_to_manual_review_not_auto_eligible():
+    """UPDATED for PART 2/3 Phase 5 — see test_unknown_order_exchange's
+    docstring: no action of any kind is created, only escalation."""
     result, mock_create = _run(
         "Can I exchange my order?",
         eligibility={
@@ -286,8 +322,10 @@ def test_sender_mismatch_exchange_goes_to_manual_review_not_auto_eligible():
         },
     )
 
-    mock_create.assert_awaited_once()
-    assert "MANUAL REVIEW" in result["action_context"]
+    mock_create.assert_not_awaited()
+    assert result.get("staged") is None
+    assert "ESCALATE TO HUMAN, NO ACTION CREATED" in result["action_context"]
+    assert "sender email does not match" in result["action_context"]
 
 
 # ── 24. Partial-order exchange (PART 3: never exchange the whole order) ─────
@@ -307,6 +345,11 @@ def test_multi_item_order_exchange_asks_which_item_never_guesses():
 
 
 def test_multi_item_order_exchange_with_named_item_only_exchanges_that_one():
+    """UPDATED for PART 2/3 Phase 5: item disambiguation still correctly
+    identifies just the named item (never the whole order) - that logic is
+    unchanged. Only the outcome changes: no action is created, only
+    escalation, so the correct item is verified via the customer-facing
+    note's wording instead of mock_create's kwargs."""
     eligibility = _eligible(items=[
         {"id": 1, "title": "Essential Hoodie", "variant_title": "M", "price": "45.00"},
         {"id": 2, "title": "Canvas Tote Bag", "variant_title": None, "price": "15.00"},
@@ -317,9 +360,9 @@ def test_multi_item_order_exchange_with_named_item_only_exchanges_that_one():
         raw_item=_raw_line_item(),  # matches the hoodie
     )
 
-    mock_create.assert_awaited_once()
-    _, kwargs = mock_create.call_args
-    assert kwargs["original_item"]["title"] == "Essential Hoodie"
+    mock_create.assert_not_awaited()
+    assert result.get("staged") is None
+    assert "Essential Hoodie" in result["action_context"]
     assert "Canvas Tote Bag" not in result["action_context"]
 
 
@@ -347,22 +390,40 @@ def test_duplicate_exchange_status_inquiry_reports_true_state_not_invented():
     assert "finishing it up" in result["action_context"].lower() or "being finished" in result["action_context"].lower()
 
 
-# ── 26. Exchange requiring approval (baseline — already covered by #14, kept
-#         explicit here as its own numbered PART 11 case) ──────────────────
+# ── 26. Exchange never auto-executes (baseline — already covered by #14,
+#         kept explicit here as its own numbered PART 11 case) ─────────────
 
 def test_exchange_always_requires_approval_never_auto_executes():
+    """UPDATED for PART 2/3 Phase 5: the original safety intent here —
+    exchange never silently executes on its own — now holds even more
+    strongly, since under current policy NOTHING is even staged for
+    approval; every exchange escalates to a human with no action created at
+    all. Old assertion ("STAGED FOR APPROVAL") implied an approval queue
+    entry that no longer exists for exchange."""
     result, mock_create = _run("I bought the hoodie in M but need L.")
-    assert "STAGED FOR APPROVAL" in result["action_context"]
-    assert "our team" in result["action_context"].lower() or "for approval" in result["action_context"].lower()
+    mock_create.assert_not_awaited()
+    assert result.get("staged") is None
+    assert "ESCALATE TO HUMAN, NO ACTION CREATED" in result["action_context"]
+    assert "team" in result["action_context"].lower()
 
 
-# ── 27. Failed exchange mutation (staging itself fails) ─────────────────────
+# ── 27. No staging step exists to fail (exchange creates no action) ─────────
 
-def test_exchange_staging_failure_is_reported_not_silently_swallowed():
+def test_exchange_never_calls_create_action_even_when_it_would_be_mocked_to_fail():
+    """UPDATED for PART 2/3 Phase 5: the original test simulated
+    _create_action failing and asserted the failure was reported, not
+    silently swallowed. Under current policy there is no more staging step
+    for a genuine exchange request to fail — the safety property this test
+    now proves is stronger: _create_action is never even reached, so
+    whatever create_result a caller configures (even a failure) can have no
+    effect on the outcome, and the response is always the calm escalation
+    note, never an error message about a database or staging failure."""
     result, mock_create = _run("I bought the hoodie in M but need L.", create_result={"success": False, "error": "database timeout"})
-    mock_create.assert_awaited_once()
-    assert "staging failed" in result["action_context"].lower()
-    assert "database timeout" in result["action_context"]
+    mock_create.assert_not_awaited()
+    assert result.get("staged") is None
+    assert "database timeout" not in result["action_context"]
+    assert "staging failed" not in result["action_context"].lower()
+    assert "ESCALATE TO HUMAN, NO ACTION CREATED" in result["action_context"]
 
 
 # ── 28. Policy-only question does not create exchange action ────────────────

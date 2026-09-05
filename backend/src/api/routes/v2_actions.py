@@ -566,19 +566,35 @@ async def approve_action(
                 execution_result = {"success": True, "message": "No execution needed"}
 
             if execution_result.get("success"):
-                supabase_update("actions", {"id": f"eq.{action_id}"}, {
-                    "status": "executed",
-                    "executed_at": datetime.now(timezone.utc).isoformat(),
-                    "execution_result": execution_result
-                })
+                # Shopify already executed successfully here - the mutation
+                # cannot be undone or safely repeated. Everything below is
+                # downstream bookkeeping (status write, log, notify); a
+                # failure in any of it must never reach the outer
+                # `except Exception as exec_error` below, which would set
+                # execution_error and mark the action "failed" - a status
+                # /retry can reset to "pending", risking a second real
+                # Shopify call for work that already succeeded. So this
+                # bookkeeping is isolated in its own try/except instead.
+                try:
+                    supabase_update("actions", {"id": f"eq.{action_id}"}, {
+                        "status": "executed",
+                        "executed_at": datetime.now(timezone.utc).isoformat(),
+                        "execution_result": execution_result
+                    })
 
-                supabase_insert("action_logs", {
-                    "action_id": action_id,
-                    "brand_id": action["brand_id"],
-                    "event_type": "executed",
-                    "performed_by": context.user.user_id,
-                    "details": execution_result
-                })
+                    supabase_insert("action_logs", {
+                        "action_id": action_id,
+                        "brand_id": action["brand_id"],
+                        "event_type": "executed",
+                        "performed_by": context.user.user_id,
+                        "details": execution_result
+                    })
+                except Exception as bookkeeping_err:
+                    logger.error(
+                        f"[v2_actions] Post-execution bookkeeping failed for {action_id} after Shopify "
+                        f"already executed successfully - needs manual reconciliation: {bookkeeping_err}",
+                        exc_info=True,
+                    )
 
                 # Send branded confirmation email + resolve ticket (non-blocking)
                 try:

@@ -376,8 +376,8 @@ PROVIDER_OUTAGE_CUSTOMER_MESSAGE = (
 _UNCONFIRMED_ACTION_INTENTS = {"refund_request", "return_request", "exchange_request", "cancellation_request", "address_change"}
 _UNCONFIRMED_ACTION_DETECTED = {"refund", "return", "exchange", "cancel_order", "change_address"}
 _FALSE_SUCCESS_RE = re.compile(
-    r"\b(has been|have been|is|was)\s+(processed|approved|completed|confirmed|issued|refunded|cancell?ed|updated)\b"
-    r"|\b(successfully|already)\s+(processed|approved|completed|refunded|cancell?ed|updated)\b",
+    r"\b(has been|have been|is|was)\s+(processed|approved|completed|confirmed|issued|refunded|cancell?ed|updated|shipped|restored)\b"
+    r"|\b(successfully|already)\s+(processed|approved|completed|refunded|cancell?ed|updated|shipped|restored)\b",
     re.IGNORECASE,
 )
 
@@ -404,15 +404,55 @@ def _strip_em_dash(text: str) -> str:
     return text
 
 
-def _enforce_no_unconfirmed_action_success(structured: Dict[str, Any]) -> Dict[str, Any]:
+# PART 2/3 Phase 8.2 — the authoritative backend intent types (from
+# intent_detector.py's IntentResult.action_type, resolved BEFORE the
+# response LLM ever runs) that must always be inspected for a false
+# completion claim, regardless of what the model self-reports in
+# structured["intent"]/structured["action_detected"]. Deliberately narrow:
+# only intents whose handling can stage a real, pending-approval row in the
+# actions table - RefundSpecialist/CancellationSpecialist (refund, cancel)
+# plus reship/restore_order's direct _create_action calls in
+# return_actions_integration.py (see the PART 2/3 Phase 9 audit, which
+# found reship/restore_order were missing here despite creating real
+# actions the same way). Return/exchange keep relying on the existing
+# self-reported check unchanged (they never stage an action at all, so the
+# self-report gap there is lower-severity and out of this fix's scope).
+_AUTHORITATIVE_ACTION_TYPES_REQUIRING_COMPLETION_CHECK = {
+    "refund", "cancel", "reship", "restore_order",
+}
+
+
+def _enforce_no_unconfirmed_action_success(
+    structured: Dict[str, Any],
+    authoritative_action_type: Optional[str] = None,
+) -> Dict[str, Any]:
     """If the model's reply claims a refund/cancellation/address-change already
     happened, that claim is always false in this pipeline (nothing sensitive is
     executed synchronously here - see module docstring above). Overrides the
     reply with an honest "sent for confirmation" message and forces escalation
-    rather than letting a false success claim reach the customer."""
+    rather than letting a false success claim reach the customer.
+
+    authoritative_action_type: the REAL, backend-classified intent for this
+    turn (_intent_result.action_type, decided by intent_detector.py before
+    the response LLM ever runs - see generate_channel_appropriate_response's
+    call site). PART 2/3 Phase 8.1 proved that relying solely on the
+    model's own self-reported structured["intent"]/structured["action_detected"]
+    lets it defeat this guard entirely by mislabeling BOTH fields at once
+    (see test_both_fields_mislabeled_to_general_inquiry_defeats_the_completion_guard).
+    When this authoritative value is one of
+    _AUTHORITATIVE_ACTION_TYPES_REQUIRING_COMPLETION_CHECK (refund, cancel,
+    reship, restore_order - PART 2/3 Phase 9.1 added the latter two after
+    the Phase 9 audit found they can stage real pending-approval actions
+    the same way), the guard now inspects reply_body regardless of the
+    model's self-report - the LLM may compose wording, but only the
+    backend decides whether an action actually happened. Optional/defaults
+    to None so direct unit-test calls
+    that only care about the self-reported path (still fully supported,
+    unchanged) don't need to pass it."""
     is_action_reply = (
         structured.get("intent") in _UNCONFIRMED_ACTION_INTENTS
         or structured.get("action_detected") in _UNCONFIRMED_ACTION_DETECTED
+        or authoritative_action_type in _AUTHORITATIVE_ACTION_TYPES_REQUIRING_COMPLETION_CHECK
     )
     if is_action_reply and _FALSE_SUCCESS_RE.search(structured.get("reply_body") or ""):
         logger.warning(
@@ -1867,8 +1907,15 @@ class CustomerSuccessAgent:
             else:
                 structured["status"] = "auto_resolved"
 
-            # 5b. Safety backstop: never let a false "action completed" claim through
-            structured = _enforce_no_unconfirmed_action_success(structured)
+            # 5b. Safety backstop: never let a false "action completed" claim
+            # through. authoritative_action_type is _intent_result.action_type -
+            # the real, backend-classified intent for this turn, resolved
+            # before the response LLM ever ran - so this can never be
+            # defeated by the model mislabeling its own self-reported
+            # intent/action_detected fields (PART 2/3 Phase 8.2).
+            structured = _enforce_no_unconfirmed_action_success(
+                structured, authoritative_action_type=_intent_result.action_type,
+            )
 
             # 5b2. Safety backstop: an explicit "let me talk to a human"
             # request must always actually escalate, regardless of what the
