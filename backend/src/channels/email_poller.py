@@ -296,12 +296,25 @@ class EmailPoller:
                     logger.info(f"[Poller] Skipping message with Gmail SENT label (our own outbound mail) — loop prevention")
                     return
 
-                # Skip if this exact Gmail message was already stored (survives restarts)
+                # Skip if this exact Gmail message was already stored (survives restarts).
+                # Checks processed_gmail_message_ids (every message folded into a
+                # ticket - the creating message AND any thread-continuation
+                # replies via STAGE 1.5), not just the legacy gmail_message_id
+                # column (which only ever reflects the ticket-creating message
+                # and previously let every same-day reply be reprocessed on each
+                # poll cycle - see migration 060). The `eq.` check on
+                # gmail_message_id is kept as a fallback for rows written before
+                # the new column existed/was backfilled.
                 if gmail_msg_id:
                     try:
                         already_seen = await asyncio.to_thread(
-                            supabase_select, "tickets", {"gmail_message_id": f"eq.{gmail_msg_id}"}
+                            supabase_select, "tickets",
+                            {"processed_gmail_message_ids": f"cs.{{{gmail_msg_id}}}"}
                         )
+                        if not already_seen:
+                            already_seen = await asyncio.to_thread(
+                                supabase_select, "tickets", {"gmail_message_id": f"eq.{gmail_msg_id}"}
+                            )
                         if already_seen:
                             logger.debug(f"[Poller] Skipping already-processed message {gmail_msg_id}")
                             return

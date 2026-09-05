@@ -652,49 +652,75 @@ class ActionsService:
                     "error_code": e.error_code
                 }
 
-            # Success - update action status. Reship's manual_action_required
-            # is a real Shopify no-op (the RESHIP branch above never calls
-            # Shopify) - marking it EXECUTED here would claim work that
-            # hasn't happened. It waits in AWAITING_MANUAL_STEP until the
-            # merchant explicitly confirms via complete_manual_action().
-            # Scoped to RESHIP only - Change Address's own manual_action_
-            # required case is unaffected, matching its existing behavior.
-            if action_type == ActionType.RESHIP.value:
-                supabase_update("actions", {"id": f"eq.{action_id}"}, {
-                    "status": ActionStatus.AWAITING_MANUAL_STEP.value,
-                    "execution_result": execution_result,
-                    "updated_at": datetime.now(timezone.utc).isoformat()
-                })
-            else:
-                supabase_update("actions", {"id": f"eq.{action_id}"}, {
-                    "status": ActionStatus.EXECUTED.value,
-                    "execution_result": execution_result,
-                    "executed_at": datetime.now(timezone.utc).isoformat(),
-                    "updated_at": datetime.now(timezone.utc).isoformat()
-                })
-
-            # Log success
-            await self._log_event(tenant_id, action_id, "executed", approved_by, execution_result)
-
-            # Invalidate the Order Context panel's cache (see fetch_shopify_order)
-            # so a ticket reopened right after this action shows the new order
-            # state instead of the pre-execution cached snapshot.
-            if action_type in (ActionType.REFUND.value, ActionType.CANCEL_ORDER.value, ActionType.RESTORE_ORDER.value):
-                from src.services.shopify_service import invalidate_order_cache
-                invalidate_order_cache(action.get("brand_id"), order_id)
-
-            logger.info(f"[Actions] Executed {action_type} action {action_id}")
-
-            # Post-execution: send branded confirmation email + resolve ticket
-            await self._post_execution_notify(action, action_type, execution_result)
-
+            # Shopify has now already executed (or, for reship, no Shopify
+            # call was ever needed) - the mutation itself cannot be undone or
+            # safely repeated. final_result is built from execution_result
+            # alone, before any of the bookkeeping below, and is always
+            # returned regardless of whether that bookkeeping succeeds.
             final_result = {
                 "success": True,
                 "message": execution_result.get("message", f"{action_type} completed"),
                 "execution_result": execution_result
             }
-            self._record_financial_audit(action, idempotency_key, ip_address, approved_by,
-                                          status="success", result=final_result)
+
+            try:
+                # Update action status. Reship's manual_action_required is a
+                # real Shopify no-op (the RESHIP branch above never calls
+                # Shopify) - marking it EXECUTED here would claim work that
+                # hasn't happened. It waits in AWAITING_MANUAL_STEP until the
+                # merchant explicitly confirms via complete_manual_action().
+                # Scoped to RESHIP only - Change Address's own manual_action_
+                # required case is unaffected, matching its existing behavior.
+                if action_type == ActionType.RESHIP.value:
+                    supabase_update("actions", {"id": f"eq.{action_id}"}, {
+                        "status": ActionStatus.AWAITING_MANUAL_STEP.value,
+                        "execution_result": execution_result,
+                        "updated_at": datetime.now(timezone.utc).isoformat()
+                    })
+                else:
+                    supabase_update("actions", {"id": f"eq.{action_id}"}, {
+                        "status": ActionStatus.EXECUTED.value,
+                        "execution_result": execution_result,
+                        "executed_at": datetime.now(timezone.utc).isoformat(),
+                        "updated_at": datetime.now(timezone.utc).isoformat()
+                    })
+
+                # Log success
+                await self._log_event(tenant_id, action_id, "executed", approved_by, execution_result)
+
+                # Invalidate the Order Context panel's cache (see fetch_shopify_order)
+                # so a ticket reopened right after this action shows the new order
+                # state instead of the pre-execution cached snapshot.
+                if action_type in (ActionType.REFUND.value, ActionType.CANCEL_ORDER.value, ActionType.RESTORE_ORDER.value):
+                    from src.services.shopify_service import invalidate_order_cache
+                    invalidate_order_cache(action.get("brand_id"), order_id)
+
+                logger.info(f"[Actions] Executed {action_type} action {action_id}")
+
+                # Post-execution: send branded confirmation email + resolve ticket
+                await self._post_execution_notify(action, action_type, execution_result)
+
+                self._record_financial_audit(action, idempotency_key, ip_address, approved_by,
+                                              status="success", result=final_result)
+            except Exception as post_exec_err:
+                # Shopify already executed successfully - everything in this
+                # block is downstream bookkeeping only. A failure here must
+                # NEVER fall through to the outer `except Exception` below,
+                # which calls _mark_failed() - that would leave a
+                # successfully-executed action sitting in the retryable
+                # FAILED status, and a subsequent retry would call Shopify
+                # a second time for work that already happened (real
+                # double-refund/double-cancel risk). Logged for manual
+                # reconciliation instead; the action's own status write is
+                # the first statement in this block, so in the common case
+                # (only a later step - log/cache/notify/audit - throws) the
+                # DB status is already correctly EXECUTED/AWAITING_MANUAL_STEP.
+                logger.error(
+                    f"[Actions] Post-execution bookkeeping failed for {action_id} after Shopify "
+                    f"already executed successfully - needs manual reconciliation: {post_exec_err}",
+                    exc_info=True,
+                )
+
             return final_result
 
         except Exception as e:

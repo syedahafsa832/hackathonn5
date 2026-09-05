@@ -153,8 +153,21 @@ class UnifiedMessageProcessor:
                             "from": customer_email, "body": content,
                             "received_at": received_at, "direction": "inbound",
                         })
+                        # Record this reply's own gmail_message_id alongside
+                        # the ticket's — the ticket's top-level
+                        # gmail_message_id column only ever reflects the
+                        # very first (ticket-creating) message, so without
+                        # this the poller's dedup check could never see a
+                        # thread-continuation reply as processed, and would
+                        # keep reprocessing it (and re-sending a reply) on
+                        # every poll for the rest of the day (see migration
+                        # 060 / email_poller.py's dedup check).
+                        processed_ids = list(existing_ticket.get("processed_gmail_message_ids") or [])
+                        if gmail_message_id and gmail_message_id not in processed_ids:
+                            processed_ids.append(gmail_message_id)
                         updates = {
                             "messages": current_msgs,
+                            "processed_gmail_message_ids": processed_ids,
                             "updated_at": datetime.now(timezone.utc).isoformat(),
                             # Genuine inbound customer message - the only kind
                             # of write allowed to move this field forward.

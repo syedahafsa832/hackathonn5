@@ -98,6 +98,16 @@ class SupabaseService:
                 # could then never surface a customer message that arrived
                 # while the merchant was away.
                 "last_customer_message_at": ticket_data.get("last_customer_message_at"),
+                # Every inbound Gmail message id already folded into this
+                # ticket (the creating message here; STAGE 1.5 thread-
+                # continuation replies append to it directly via
+                # supabase_update). email_poller.py's dedup check reads this
+                # instead of the single gmail_message_id column, which only
+                # ever reflected the ticket-creating message — see migration
+                # 060 for why a reply-level dedup gap caused reprocessing.
+                "processed_gmail_message_ids": (
+                    [ticket_data["gmail_message_id"]] if ticket_data.get("gmail_message_id") else []
+                ),
                 "email_category": ticket_data.get("email_category"),
                 "sender_type": ticket_data.get("sender_type"),
                 "customer_sentiment": ticket_data.get("customer_sentiment"),
