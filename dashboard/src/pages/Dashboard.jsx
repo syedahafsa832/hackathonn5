@@ -242,7 +242,7 @@ export default function Dashboard() {
           subtitle="Actions awaiting review"
         />
         <StatCard
-          label="Avg Response Time"
+          label="Median Response Time"
           value={(() => {
             const s = stats?.avgResponseSeconds;
             if (s == null) return '-';
@@ -250,7 +250,7 @@ export default function Dashboard() {
             return `${Math.floor(s / 60)}m ${s % 60}s`;
           })()}
           loading={loading}
-          subtitle="Time to first AI reply (7d)"
+          subtitle="Time to first AI auto-reply, last 7 days"
         />
         <StatCard
           label="Resolved"
