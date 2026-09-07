@@ -601,16 +601,33 @@ async def get_brand_analytics(
         resolved_by_luna = sum(1 for t in tickets if t.get("status") == "auto_resolved")
         escalated_to_human = sum(1 for t in tickets if t.get("status") == "escalated")
 
+        # Median, not mean: a rare provider-outage-recovered ticket (see
+        # ProviderRetryWorker) can leave a genuine multi-hour gap on a
+        # handful of tickets, and a mean lets those outliers dominate the
+        # whole figure - the same issue fixed on the main Dashboard's
+        # "Median Response Time" card (dashboard/src/api/services.js).
+        # Median reports what a typical customer actually experiences.
         response_times = []
         for t in tickets:
             if t.get("channel") == "email" and t.get("first_response_at") and t.get("created_at"):
                 try:
                     created = datetime.fromisoformat(t["created_at"].replace("Z", "+00:00"))
                     responded = datetime.fromisoformat(t["first_response_at"].replace("Z", "+00:00"))
-                    response_times.append((responded - created).total_seconds())
+                    delta = (responded - created).total_seconds()
+                    if delta >= 0:
+                        response_times.append(delta)
                 except (ValueError, AttributeError):
                     pass
-        avg_response_time_seconds = round(sum(response_times) / len(response_times)) if response_times else None
+        avg_response_time_seconds = None
+        if response_times:
+            response_times.sort()
+            mid = len(response_times) // 2
+            median = (
+                response_times[mid]
+                if len(response_times) % 2 == 1
+                else (response_times[mid - 1] + response_times[mid]) / 2
+            )
+            avg_response_time_seconds = round(median)
 
         actions = supabase_select("actions", {
             "brand_id": f"eq.{brand_id}",

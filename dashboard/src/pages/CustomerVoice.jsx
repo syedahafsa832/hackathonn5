@@ -138,7 +138,7 @@ export default function CustomerVoice() {
           <StatCard label="Resolved by Luna" value={analytics?.resolved_by_luna} loading={analyticsLoading} />
           <StatCard label="Escalated to Human" value={analytics?.escalated_to_human} loading={analyticsLoading} />
           {(analyticsLoading || analytics?.avg_response_time_seconds != null) && (
-            <StatCard label="Avg Response Time" value={formatDuration(analytics?.avg_response_time_seconds)} loading={analyticsLoading} subtitle="Email only" />
+            <StatCard label="Median Response Time" value={formatDuration(analytics?.avg_response_time_seconds)} loading={analyticsLoading} subtitle="Email only" />
           )}
           {(analyticsLoading || analytics?.approval_rate != null) && (
             <StatCard label="Approval Rate" value={analytics?.approval_rate != null ? `${analytics.approval_rate}%` : null} loading={analyticsLoading} />

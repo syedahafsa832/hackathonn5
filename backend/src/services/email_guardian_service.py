@@ -59,6 +59,12 @@ VALID_CLASSIFICATIONS = {
 BLOCKED_CLASSIFICATIONS = {"promotion", "newsletter", "outreach", "spam", "automation"}
 
 CLASSIFIER_PROMPT = """You are screening inbound email for the support inbox of "{brand_name}", a Shopify store.
+{brand_name}'s own AI support agent is named "{agent_name}" — customers routinely
+address their message directly to "{agent_name}" by name (e.g. "Hi {agent_name},
+...") the same way they'd write "Hi support team". A message addressed to
+"{agent_name}" is a message TO {brand_name}'s own inbox, not to some unrelated
+third party — never mark it irrelevant or automation-related just because it's
+addressed to "{agent_name}" by name.
 
 Classify the email into exactly one of these categories:
 customer_support, promotion, newsletter, outreach, spam, automation, unknown
@@ -75,10 +81,11 @@ expressing skepticism or frustration.
 
 Also decide: is this email from a real person actually writing TO {brand_name}'s own
 inbox (an order/product/account question, OR any other direct message a person sent
-this business — including one about the AI, the company, or wanting a human)? Mark
-relevant=false only for content that isn't really addressed to {brand_name} as its
-own audience at all — e.g. a receipt or notification from a DIFFERENT company/service
-that merely landed in this inbox, or a mass send with no individual sender intent.
+this business — including one about the AI, the company, wanting a human, or a
+message addressed to "{agent_name}")? Mark relevant=false only for content that
+isn't really addressed to {brand_name} as its own audience at all — e.g. a receipt
+or notification from a DIFFERENT company/service that merely landed in this inbox,
+or a mass send with no individual sender intent.
 
 Respond with valid JSON only:
 {{"classification": "<label>", "confidence": <0.0-1.0>, "relevant": <true|false>}}
@@ -135,7 +142,7 @@ class EmailGuardianService:
 
     # ── T005: AI classifier ──────────────────────────────────────────────────
 
-    async def _classify_email(self, subject: str, body: str, brand_name: str = "our store") -> tuple[str, float, bool]:
+    async def _classify_email(self, subject: str, body: str, brand_name: str = "our store", agent_name: str = "Luna") -> tuple[str, float, bool]:
         """Classify email intent via the shared ai_provider_manager (Mistral
         primary + fallback keys, then Groq — the same failover chain every
         other AI call in this app goes through). Returns
@@ -164,6 +171,7 @@ class EmailGuardianService:
 
         prompt = CLASSIFIER_PROMPT.format(
             brand_name=brand_name or "our store",
+            agent_name=agent_name or "Luna",
             subject=(subject or "")[:500],
             body=(body or "")[:2000],
         )
@@ -315,7 +323,7 @@ class EmailGuardianService:
 
     # ── T007: Main evaluate entry-point ──────────────────────────────────────
 
-    async def evaluate(self, email: dict, brand_id: str, brand_name: str = "our store") -> GuardianResult:
+    async def evaluate(self, email: dict, brand_id: str, brand_name: str = "our store", agent_name: str = "Luna") -> GuardianResult:
         """
         Run Layers 4–5 on an email that passed Layers 1–3.
         Returns GUARDIAN_ALLOW on any unhandled exception (fail-open).
@@ -339,7 +347,7 @@ class EmailGuardianService:
                 )
                 return self._result_from_existing_record(existing_record)
 
-            classification, confidence, relevant = await self._classify_email(subject, body, brand_name)
+            classification, confidence, relevant = await self._classify_email(subject, body, brand_name, agent_name)
 
             # Noise gate: catches content a real customer would never send — mass
             # marketing/newsletters/outreach/automated notifications (BLOCKED_

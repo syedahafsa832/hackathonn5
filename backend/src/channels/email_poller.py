@@ -358,7 +358,7 @@ class EmailPoller:
                 # be driven from a separate thread's event loop the way
                 # asyncio.to_thread + evaluate()'s own internals used to run.
                 guardian_result = await email_guardian_service.evaluate(
-                    email, brand_id, brand_name=brand.get("name")
+                    email, brand_id, brand_name=brand.get("name"), agent_name=brand.get("agent_name") or "Luna"
                 )
                 await asyncio.to_thread(
                     email_guardian_service.log_guardian_decision, brand_id, sender, thread_id, guardian_result
