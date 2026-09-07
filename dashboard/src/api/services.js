@@ -317,18 +317,35 @@ const api = {
       aiHandledPct,
       // Resolved: ticket lifecycle actually reached a close, not just "AI sent a reply".
       resolvedCount: tickets.filter(t => ['resolved', 'closed'].includes(t.status)).length,
-      // avg first response in seconds (from tickets with first_response_at set).
-      // Excludes negative deltas — a first_response_at earlier than created_at is
-      // a data anomaly (clock skew, backfilled timestamp), not a real response
-      // time, and would otherwise drag the average into a nonsensical negative.
+      // Median time from ticket creation to Luna's first AUTO-SENT reply,
+      // over tickets actually created in the last 7 days — matching what
+      // the card's own "(7d)" subtitle claims (previously this pulled from
+      // `tickets`, which is every ticket ever, all-time - the label was
+      // simply false).
+      //
+      // Median, not mean: first_response_at is only ever set at the moment
+      // _send_email_with_logging() actually sends an AI auto-reply (see
+      // message_processor.py STAGE 10) - a ticket held for human review
+      // never sets it, so this is already AI-reply-only by construction.
+      // But a provider outage recovered later by ProviderRetryWorker can
+      // leave a genuine multi-hour gap on a small number of tickets; a
+      // mean lets a couple of those outliers dominate the whole card (this
+      // is exactly how "459m 38s" happened), while the median reports what
+      // a typical customer actually experiences. `aiHandled` (defined
+      // above) adds an explicit belt-and-suspenders status filter on top
+      // of the first_response_at guarantee.
       avgResponseSeconds: (() => {
-        const responded = tickets
-          .filter(t => t.first_response_at && t.created_at)
+        const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+        const responded = aiHandled
+          .filter(t => t.first_response_at && t.created_at && new Date(t.created_at).getTime() >= sevenDaysAgo)
           .map(t => (new Date(t.first_response_at) - new Date(t.created_at)) / 1000)
-          .filter(seconds => Number.isFinite(seconds) && seconds >= 0);
-        return responded.length > 0
-          ? Math.round(responded.reduce((sum, s) => sum + s, 0) / responded.length)
-          : null;
+          .filter(seconds => Number.isFinite(seconds) && seconds >= 0)
+          .sort((a, b) => a - b);
+        if (responded.length === 0) return null;
+        const mid = Math.floor(responded.length / 2);
+        return Math.round(
+          responded.length % 2 === 0 ? (responded[mid - 1] + responded[mid]) / 2 : responded[mid]
+        );
       })(),
       // CSAT: % of YES responses out of all surveyed tickets
       csatPct: (() => {
