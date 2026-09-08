@@ -426,6 +426,100 @@ async def test_usage_reflects_the_successful_attempt_after_failover_not_the_fail
     assert usage["total_tokens"] == 380
 
 
+def test_load_providers_appends_cloudflare_last_after_groq():
+    """Cloudflare Workers AI is the final tier, after every Mistral/
+    OpenRouter/Groq key - a fourth independent provider/account for the rare
+    case every other configured key is exhausted at once. Requires BOTH
+    CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID."""
+    env = {
+        "MISTRAL_API_KEY": "mistral-primary-key",
+        "GROQ_API_KEY": "gsk_test_key",
+        "CLOUDFLARE_API_TOKEN": "cfut_test_token",
+        "CLOUDFLARE_ACCOUNT_ID": "acct-123",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        mgr = AIProviderManager.__new__(AIProviderManager)
+        providers = mgr._load_providers()
+
+    labels = [p.label for p in providers]
+    assert labels == ["primary", "groq_fallback_1", "cloudflare_fallback_1"]
+    cf = providers[-1]
+    assert cf.api_key == "cfut_test_token"
+    assert cf.base_url == "https://api.cloudflare.com/client/v4/accounts/acct-123/ai/v1"
+    assert cf.model == "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+
+
+def test_load_providers_omits_cloudflare_when_account_id_missing():
+    """The token alone can't build the account-scoped base_url - both env
+    vars are required, or the tier is silently omitted (same pattern as
+    every other optional provider)."""
+    env = {
+        "MISTRAL_API_KEY": "mistral-primary-key",
+        "CLOUDFLARE_API_TOKEN": "cfut_test_token",
+        # CLOUDFLARE_ACCOUNT_ID intentionally not set
+    }
+    with patch.dict(os.environ, env, clear=True):
+        mgr = AIProviderManager.__new__(AIProviderManager)
+        providers = mgr._load_providers()
+
+    assert [p.label for p in providers] == ["primary"]
+
+
+def test_load_providers_omits_cloudflare_when_token_missing():
+    env = {
+        "MISTRAL_API_KEY": "mistral-primary-key",
+        "CLOUDFLARE_ACCOUNT_ID": "acct-123",
+        # CLOUDFLARE_API_TOKEN intentionally not set
+    }
+    with patch.dict(os.environ, env, clear=True):
+        mgr = AIProviderManager.__new__(AIProviderManager)
+        providers = mgr._load_providers()
+
+    assert [p.label for p in providers] == ["primary"]
+
+
+def test_cloudflare_model_and_base_url_are_overridable():
+    env = {
+        "MISTRAL_API_KEY": "mistral-primary-key",
+        "CLOUDFLARE_API_TOKEN": "cfut_test_token",
+        "CLOUDFLARE_ACCOUNT_ID": "acct-123",
+        "CLOUDFLARE_MODEL": "@cf/mistral/mistral-7b-instruct-v0.1",
+    }
+    with patch.dict(os.environ, env, clear=True):
+        mgr = AIProviderManager.__new__(AIProviderManager)
+        providers = mgr._load_providers()
+
+    cf = providers[-1]
+    assert cf.model == "@cf/mistral/mistral-7b-instruct-v0.1"
+
+
+@pytest.mark.asyncio
+async def test_groq_and_cloudflare_both_exhausted_still_raises():
+    """End-to-end proof the new tier actually participates in failover:
+    Mistral primary and Groq both fail, Cloudflare finally succeeds."""
+    mgr = _manager_with("primary", "groq_fallback_1")
+    mgr._providers.append(_Provider(
+        "cloudflare_fallback_1", "cfut_test", "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        base_url="https://api.cloudflare.com/client/v4/accounts/acct-123/ai/v1",
+    ))
+    for label in ("primary", "groq_fallback_1"):
+        client = MagicMock()
+        client.chat.completions.create.side_effect = Rate429("429 rate limit")
+        mgr._clients[label] = client
+    cf_client = MagicMock()
+    cf_client.chat.completions.create.return_value = _fake_response("cloudflare reply")
+    mgr._clients["cloudflare_fallback_1"] = cf_client
+
+    with patch("src.services.ai_provider_manager.asyncio.sleep", new=AsyncMock(return_value=None)):
+        response, label, model, usage = await mgr.create_chat_completion(messages=[{"role": "user", "content": "hi"}])
+
+    assert label == "cloudflare_fallback_1"
+    assert response.choices[0].message.content == "cloudflare reply"
+    assert usage["attempts"] == 3
+    mgr._clients["primary"].chat.completions.create.assert_called_once()
+    mgr._clients["groq_fallback_1"].chat.completions.create.assert_called_once()
+
+
 def test_fallback_response_also_excluded_from_quota():
     """_get_fallback_response (empty API response / JSON parse error / any
     other exception) returns the same kind of canned reply_body as the

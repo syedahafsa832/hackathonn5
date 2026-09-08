@@ -8,9 +8,10 @@ handled — this exists to try the next configured option before giving up.
 
 Default chain: OpenRouter (mistral-nemo, free tier) -> Mistral primary
 (mistral-small-latest) -> OpenRouter (llama-3.3-70b, free tier) -> any extra
-Mistral fallback keys -> Groq (llama-3.1-8b-instant), each tier
-configured/overridden independently via env vars — see _load_providers()
-below.
+Mistral fallback keys -> Groq (llama-3.1-8b-instant) -> Cloudflare Workers AI
+(llama-3.3-70b, only if CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID are both
+set), each tier configured/overridden independently via env vars — see
+_load_providers() below.
 
 Do not construct a per-call OpenAI(api_key=...) client elsewhere for ticket
 reply generation — go through get_provider_manager() so every caller gets the
@@ -160,6 +161,28 @@ class AIProviderManager:
                     os.getenv(f"GROQ_MODEL_FALLBACK_{i}", groq_default_model),
                     base_url=os.getenv(f"GROQ_API_BASE_URL_FALLBACK_{i}", groq_default_base_url),
                 ))
+
+        # Final last-resort tier, after Groq: Cloudflare Workers AI, a fourth
+        # independent provider/account for the rare case every Mistral/
+        # OpenRouter/Groq key is exhausted at once. Cloudflare exposes an
+        # OpenAI-compatible /ai/v1 endpoint under the account, so this reuses
+        # the exact same OpenAI() client / chat.completions.create() path as
+        # every other tier - no special-casing needed elsewhere. Requires
+        # BOTH CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID (the token
+        # alone can't build the account-scoped base_url); silently omitted
+        # if either is missing, same as every other optional tier above.
+        cloudflare_token = os.getenv("CLOUDFLARE_API_TOKEN")
+        cloudflare_account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID")
+        if cloudflare_token and cloudflare_account_id:
+            providers.append(_Provider(
+                "cloudflare_fallback_1",
+                cloudflare_token,
+                os.getenv("CLOUDFLARE_MODEL", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"),
+                base_url=os.getenv(
+                    "CLOUDFLARE_API_BASE_URL",
+                    f"https://api.cloudflare.com/client/v4/accounts/{cloudflare_account_id}/ai/v1",
+                ),
+            ))
         return providers
 
     def _client_for(self, provider: _Provider) -> OpenAI:
