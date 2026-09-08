@@ -846,6 +846,64 @@ def _resolve_recent_product_anchor(query_text: str) -> Optional[str]:
     return None
 
 
+def _resolve_order_item_anchor(tool_results: Dict[str, Any], query_text: str = "") -> Optional[str]:
+    """Second fallback for a variant/color-size follow-up ("another size",
+    "do you have that in black") when _resolve_recent_product_anchor found
+    nothing in chat history — the common case on a customer's very FIRST
+    message, where there is no history to search yet.
+
+    tool_results["order_status"] is the SAME live Shopify order lookup this
+    request already ran earlier in this call (see the "order status
+    inquiry" block above) whenever the message named an order number - it
+    already contains the order's real line items (title/variant/sku/price),
+    not just an "order found" confirmation. Previously this data was fetched
+    and then never consulted for anchor resolution, so a customer whose
+    order genuinely has only one item ("I ordered the wrong size on order
+    #1009, can I exchange it for another size?") was still asked "which
+    product?" despite the order already answering that question.
+
+    Only resolves when it's unambiguous - a single-item order needs no
+    disambiguation; a multi-item order is only resolved when the message
+    names exactly one item (whole-word title match, or a distinctive word
+    unique to one title, same discipline as return_actions_integration.py's
+    _match_order_item). Otherwise returns None so the caller still asks
+    instead of guessing - a genuinely ambiguous multi-item order is
+    unaffected by this fallback."""
+    order_status = tool_results.get("order_status")
+    if not order_status or not order_status.get("success"):
+        return None
+    items = [i for i in (order_status.get("items") or []) if i.get("title")]
+    if not items:
+        return None
+    if len(items) == 1:
+        return items[0]["title"]
+
+    q = (query_text or "").lower()
+
+    def _whole_word(text: str) -> bool:
+        return bool(text) and bool(re.search(r'\b' + re.escape(text.lower()) + r'\b', q))
+
+    exact = [i for i in items if _whole_word(i["title"])]
+    if len(exact) == 1:
+        return exact[0]["title"]
+    if len(exact) > 1:
+        return None  # ambiguous full-title match — never guess
+
+    _STOPWORDS = {"the", "and", "with", "for", "size", "item", "color", "default", "title"}
+
+    def _sig_words(title: str) -> set:
+        return {w for w in re.findall(r"[a-z0-9']+", title.lower()) if len(w) >= 4 and w not in _STOPWORDS}
+
+    word_sets = [_sig_words(i["title"]) for i in items]
+    candidates = []
+    for idx, item in enumerate(items):
+        others = set().union(*(w for j, w in enumerate(word_sets) if j != idx)) if len(items) > 1 else set()
+        distinctive = word_sets[idx] - others
+        if any(_whole_word(w) for w in distinctive):
+            candidates.append(item)
+    return candidates[0]["title"] if len(candidates) == 1 else None
+
+
 class CustomerSuccessAgent:
     """
     V3 Customer Success Agent (Luna) for Aurelio & Finch.
@@ -1164,7 +1222,7 @@ class CustomerSuccessAgent:
                 and any(kw in query_lower for kw in _variant_followup_kw)
             )
             if _is_variant_followup_query:
-                variant_anchor = _resolve_recent_product_anchor(query)
+                variant_anchor = _resolve_recent_product_anchor(query) or _resolve_order_item_anchor(tool_results, query)
                 if variant_anchor:
                     await _emit("product_lookup", "Checking that item…")
                     tool_results["inventory"] = await v3_tools.get_inventory_status(
