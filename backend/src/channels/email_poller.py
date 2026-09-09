@@ -467,16 +467,33 @@ class EmailPoller:
                 + (f" (gmail_fetch_failures={gmail_fetch_failures})" if gmail_fetch_failures else "")
             )
 
-            # Update last_polled_at after processing all emails in this batch
-            try:
-                await asyncio.to_thread(
-                    supabase_update, "brands", {"id": f"eq.{brand_id}"}, {
-                        "last_polled_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                )
-                logger.debug(f"[Poller] Updated last_polled_at for brand '{brand.get('name')}'")
-            except Exception as ts_err:
-                logger.warning(f"[Poller] Could not update last_polled_at for brand {brand_id}: {ts_err}")
+            # Advance last_polled_at to the newest Gmail internalDate actually
+            # fetched this cycle - NOT wall-clock now(). A cycle that queries
+            # Gmail before its search index has caught up on a just-sent
+            # message would otherwise still stamp "now" as the cursor, which
+            # is already past that message's real timestamp - every later
+            # cycle's since_dt filter then excludes it forever, with zero
+            # trace anywhere (not in messages, not in processed_gmail_message_ids,
+            # not in quarantine - confirmed live for a customer's "yo" reply).
+            # since_dt above is this cycle's starting cursor (existing
+            # last_polled_at, or the 24h fallback) - only ever advance past
+            # it, never past "now", and never backward; zero emails this
+            # cycle means the cursor is left exactly as-is.
+            new_cursor = since_dt
+            for _email in emails:
+                _ts = _email.get("gmail_received_at")
+                if _ts and _ts > new_cursor:
+                    new_cursor = _ts
+            if new_cursor > since_dt:
+                try:
+                    await asyncio.to_thread(
+                        supabase_update, "brands", {"id": f"eq.{brand_id}"}, {
+                            "last_polled_at": new_cursor.isoformat(),
+                        }
+                    )
+                    logger.debug(f"[Poller] Updated last_polled_at for brand '{brand.get('name')}' to {new_cursor.isoformat()}")
+                except Exception as ts_err:
+                    logger.warning(f"[Poller] Could not update last_polled_at for brand {brand_id}: {ts_err}")
 
         except Exception as e:
             logger.error(f"[Poller] Error polling brand '{brand.get('name')}': {e}")
