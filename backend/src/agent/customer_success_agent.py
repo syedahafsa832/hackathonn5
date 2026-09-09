@@ -2037,6 +2037,16 @@ class CustomerSuccessAgent:
             reply = _strip_em_dash(structured.get("reply_body", ""))
             structured["reply_body"] = reply
 
+            # Safety backstop: never send/save a customer-facing reply with an
+            # empty body (e.g. the model returned reply_body="" for a trivial
+            # message like "hello") - a blank AI message in the dashboard is
+            # worse than a generic one. Skipped when escalating - an empty
+            # draft there legitimately means "no auto-reply, a human will
+            # write one", which this must not override.
+            if not reply.strip() and not structured.get("escalate"):
+                reply = f"Hi {name}! Thanks for reaching out - how can I help you today?"
+                structured["reply_body"] = reply
+
             # Post-process: ensure each sentence is on its own line for readability
             # Split on sentence endings and add newlines
             import re as regex_module
