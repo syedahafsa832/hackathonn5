@@ -173,6 +173,56 @@ def test_human_request_as_the_live_chat_message_still_escalates():
     assert result["escalate"] is True
 
 
+def test_get_me_a_person_after_stale_exchange_escalates_not_recommendation():
+    """Reported bug: ticket #7767d0be. After Luna's exchange/escalate-ask
+    reply, "Actually still need help, nobody followed up, please get me a
+    person." was answered with "Which product would you like recommendations
+    for?" instead of escalating - _HUMAN_HANDOFF_FRAGS had "get me a human"
+    but no "person" variant, so this explicit request never matched. The new
+    message must win over the stale exchange/product context regardless of
+    what any other keyword-gated code path (recommendations, inventory,
+    variant-followup) computed."""
+    structured = {
+        "intent": "exchange_request", "action_detected": "exchange",
+        "reply_body": "Which product would you like recommendations for? Let me know the item and I'll take a look.",
+        "status": "auto_resolved", "escalate": False,
+    }
+    query = (
+        "[CHAT HISTORY — earlier in this conversation:]\n"
+        "Customer: Hi Luna, I ordered the wrong size on order #1009. Can I exchange it "
+        "for another size, and do you have that variant available?\n"
+        "Luna: Hey there! I understand you're looking to exchange your item for another "
+        "size, but I would need to escalate this to our support team to see what can be "
+        "done. Would you like me to do that for you?\n"
+        "[END CHAT HISTORY]\n\n"
+        "Customer: Actually still need help, nobody followed up, please get me a person."
+    )
+    result = _enforce_human_handoff_request(structured, query)
+    assert result["escalate"] is True
+    assert result["status"] == "escalated"
+    assert "product" not in result["reply_body"].lower()
+
+
+def test_thanks_after_stale_exchange_does_not_escalate():
+    """The opposite case must stay untouched: a plain acknowledgement is not
+    an explicit human request and must not trigger escalation."""
+    structured = {
+        "intent": "exchange_request", "action_detected": "exchange",
+        "reply_body": "You're welcome!",
+        "status": "auto_resolved", "escalate": False,
+    }
+    query = (
+        "[CHAT HISTORY — earlier in this conversation:]\n"
+        "Customer: Can I exchange it for another size?\n"
+        "Luna: I've noted your request, a team member will follow up.\n"
+        "[END CHAT HISTORY]\n\n"
+        "Customer: thanks, okay"
+    )
+    result = _enforce_human_handoff_request(structured, query)
+    assert result["escalate"] is False
+    assert result["reply_body"] == "You're welcome!"
+
+
 def test_unrelated_query_does_not_trigger_human_handoff_guard():
     structured = {
         "intent": "order_status_inquiry", "action_detected": "none",

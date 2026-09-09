@@ -481,6 +481,7 @@ _HUMAN_HANDOFF_FRAGS = [
     "talk to someone", "speak to someone", "real person", "actual person",
     "human agent", "live agent", "human representative", "human support",
     "connect me with a human", "connect me to a human", "get me a human",
+    "connect me with a person", "connect me to a person", "get me a person",
     "talk to a representative", "speak to a representative", "customer service rep",
 ]
 
