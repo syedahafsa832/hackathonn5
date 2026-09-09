@@ -282,6 +282,12 @@ class BrandGmailService:
                         # instead of failing fast here. Caller (get_new_emails) already
                         # treats a None service as "skip this poll cycle, retry next time".
                         logger.warning(f"[BrandGmail] Token refresh warning for brand {brand.get('id')}: {e}")
+                        # Diagnostic only - exception type/message and brand id/name,
+                        # never the token/creds themselves.
+                        logger.error(
+                            f"[BrandGmail] Refresh failure detail for brand {brand.get('id')} "
+                            f"({brand.get('name')}): {type(e).__name__}: {e}"
+                        )
                         return None
 
             return build("gmail", "v1", credentials=creds)
