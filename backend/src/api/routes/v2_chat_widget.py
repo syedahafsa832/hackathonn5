@@ -166,7 +166,13 @@ def _build_history_context(messages: list, agent_name: str = "Luna") -> str:
     """Turn recent messages into a context string for the agent."""
     if not messages:
         return ""
-    recent = messages[-6:]  # last 3 exchanges
+    # Internal notes (direction="internal_note") are team-only - excluded
+    # before the [-6:] slice so they never reach the agent's own context or
+    # get echoed toward the customer via a "[agent_name]:" line.
+    visible = [m for m in messages if m.get("direction") != "internal_note"]
+    if not visible:
+        return ""
+    recent = visible[-6:]  # last 3 exchanges
     lines = ["[CHAT HISTORY — earlier in this conversation:]"]
     for m in recent:
         role = "Customer" if m.get("direction") == "inbound" else agent_name
@@ -228,6 +234,15 @@ async def _generate_reply(
     ticket_status_update: Optional[str] = None
     ticket_escalate: bool = False
     ticket_escalation_reason: Optional[str] = None
+
+    # A resolved/closed ticket must not stay stuck once a new customer
+    # message arrives - reopen it by default (mirrors message_processor.py's
+    # identical reopen-on-new-message check for the email channel, which
+    # chat never had). Only a default: if this new message itself warrants
+    # escalation, the block below still overwrites ticket_status_update with
+    # "escalated" regardless of the ticket's prior status.
+    if ticket.get("status") in ("closed", "resolved"):
+        ticket_status_update = "open"
 
     # Call the agent
     try:

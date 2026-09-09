@@ -20,7 +20,7 @@ function normalizeTicketMessages(ticket) {
 
   const thread = msgs.map(m => ({
     ...m,
-    role: m.direction === 'inbound' ? 'user' : m.role || 'ai',
+    role: m.direction === 'inbound' ? 'user' : m.direction === 'internal_note' ? 'internal' : m.role || 'ai',
     content: m.body || m.content || '',
     isDraft: m.direction === 'draft',
   }));
@@ -501,6 +501,22 @@ function ChatBubble({ message, role }) {
   const isAI = role === 'ai';
   const isDraft = message.isDraft;
   const body = cleanEmailBody(message.content || message.message || message.text || '');
+  // Internal note — CS-only, never a customer/AI bubble. Full-width, amber,
+  // clearly labeled so it can never be confused with a sent message. Never
+  // reaches the AI or customer (see message_processor.py's
+  // _format_history_messages / v2_chat_widget.py's _build_history_context,
+  // both of which explicitly exclude direction="internal_note").
+  if (role === 'internal') {
+    return (
+      <div style={{ margin: '10px 0', padding: '8px 12px', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: '6px' }}>
+        <div style={{ fontSize: '11px', fontWeight: '700', color: '#B45309', marginBottom: '3px' }}>
+          🔒 Internal note{message.from ? ` · ${message.from}` : ''}
+        </div>
+        <div style={{ fontSize: '13px', color: '#78350F', whiteSpace: 'pre-wrap' }}>{body}</div>
+        <div style={{ fontSize: '10.5px', color: '#B45309', marginTop: '3px' }}>{formatDate(message.created_at || message.timestamp)}</div>
+      </div>
+    );
+  }
   return (
     <div style={{ display: 'flex', justifyContent: isCustomer ? 'flex-start' : 'flex-end', marginBottom: '12px' }}>
       <div style={{ maxWidth: '70%' }}>
@@ -607,6 +623,57 @@ export default function TicketDetail() {
   // null = not yet initialized from the loaded ticket. Once set, further
   // ticket refetches never clobber an in-progress edit.
   const [draftText, setDraftText] = useState(null);
+
+  // Internal notes (CS-only) and "Mark resolved" — see backend/src/api/routes/v2_tickets.py's
+  // add_internal_note (new) and the existing /close endpoint (reused as-is: status="closed",
+  // resolved_at, no customer send, no AI reply, no escalation side effect).
+  const [noteText, setNoteText] = useState('');
+  const [addingNote, setAddingNote] = useState(false);
+  const [noteStatus, setNoteStatus] = useState('');
+  const [resolving, setResolving] = useState(false);
+
+  const handleAddNote = async () => {
+    if (!noteText.trim()) return;
+    setAddingNote(true);
+    setNoteStatus('');
+    try {
+      await client.post(`/api/v2/tickets/${ticket_id}/internal-note`, { body: noteText.trim() });
+      setNoteText('');
+      setTimeout(() => window.location.reload(), 400);
+    } catch (err) {
+      setNoteStatus(err.response?.data?.detail || 'Failed to add note.');
+    } finally {
+      setAddingNote(false);
+    }
+  };
+
+  const handleMarkResolved = async () => {
+    setResolving(true);
+    setActionStatus('');
+    try {
+      await client.post(`/api/v2/tickets/${ticket_id}/close`);
+      setActionStatus('Marked resolved.');
+      setTimeout(() => window.location.reload(), 800);
+    } catch (err) {
+      setActionStatus(err.response?.data?.detail || 'Failed to mark resolved.');
+    } finally {
+      setResolving(false);
+    }
+  };
+
+  // Escalation success toast — reuses the existing Alert component and the
+  // existing 5s polling in useTicket (no new notification system, no
+  // websocket). Fires once, only on a genuine transition INTO 'escalated'
+  // (never on initial load, never on every poll while already escalated).
+  const [escalationToast, setEscalationToast] = useState('');
+  const prevStatusRef = useRef(undefined);
+  useEffect(() => {
+    if (!ticket) return;
+    if (prevStatusRef.current !== undefined && prevStatusRef.current !== 'escalated' && ticket.status === 'escalated') {
+      setEscalationToast('Escalated — sent to your team’s queue.');
+    }
+    prevStatusRef.current = ticket.status;
+  }, [ticket?.status]);
 
   useEffect(() => {
     if (ticket && draftText === null) {
@@ -733,6 +800,11 @@ export default function TicketDetail() {
 
   return (
     <div className="split-panel" style={{ padding: '24px', gap: '24px', alignItems: 'flex-start' }}>
+      {escalationToast && (
+        <div style={{ position: 'fixed', top: '16px', right: '16px', zIndex: 1000, width: '320px' }}>
+          <Alert variant="success" onDismiss={() => setEscalationToast('')} autoDismissMs={5000}>{escalationToast}</Alert>
+        </div>
+      )}
 
       {/* Left panel — 60% */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '16px', minWidth: 0 }}>
@@ -795,7 +867,7 @@ export default function TicketDetail() {
             {messages.length === 0 ? (
               <div style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '32px' }}>No messages in this thread</div>
             ) : messages.map((msg, i) => (
-              <ChatBubble key={i} message={msg} role={msg.role === 'user' ? 'customer' : (msg.role === 'admin' ? 'admin' : 'ai')} />
+              <ChatBubble key={i} message={msg} role={msg.role === 'user' ? 'customer' : (msg.role === 'internal' ? 'internal' : (msg.role === 'admin' ? 'admin' : 'ai'))} />
             ))}
           </div>
 
@@ -899,6 +971,15 @@ export default function TicketDetail() {
                 🤖 Release to AI
               </button>
             )}
+            {ticket.status !== 'resolved' && ticket.status !== 'closed' && (
+              <button
+                onClick={handleMarkResolved}
+                disabled={resolving}
+                style={{ padding: '9px 14px', borderRadius: '4px', background: 'transparent', color: 'var(--text-secondary)', fontWeight: '500', fontSize: '13px', border: '1px solid var(--border)', textAlign: 'left', cursor: resolving ? 'not-allowed' : 'pointer', opacity: resolving ? 0.6 : 1 }}
+              >
+                ✓ {resolving ? 'Marking resolved…' : 'Mark Resolved'}
+              </button>
+            )}
           </div>
           <Alert
             variant={actionStatus.includes('fail') || actionStatus.includes('could not') ? 'error' : 'success'}
@@ -906,6 +987,29 @@ export default function TicketDetail() {
           >
             {actionStatus}
           </Alert>
+        </div>
+
+        {/* Internal Notes — CS-only, never sent to the customer or the AI.
+            See backend's add_internal_note (direction="internal_note") and
+            the history-builder exclusions in message_processor.py /
+            v2_chat_widget.py. */}
+        <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '6px', padding: '16px 20px' }}>
+          <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '10px' }}>🔒 Internal Notes (team only)</div>
+          <textarea
+            value={noteText}
+            onChange={e => setNoteText(e.target.value)}
+            placeholder="Add a note visible only to your team..."
+            rows={2}
+            style={{ width: '100%', padding: '8px 10px', borderRadius: '4px', border: '1px solid var(--border)', fontSize: '13px', resize: 'vertical', boxSizing: 'border-box' }}
+          />
+          <button
+            onClick={handleAddNote}
+            disabled={addingNote || !noteText.trim()}
+            style={{ marginTop: '8px', padding: '7px 14px', borderRadius: '4px', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontWeight: '600', fontSize: '12.5px', border: '1px solid var(--border)', cursor: addingNote ? 'not-allowed' : 'pointer', opacity: addingNote ? 0.6 : 1 }}
+          >
+            {addingNote ? 'Adding…' : 'Add internal note'}
+          </button>
+          <Alert variant="error" style={{ marginTop: '8px', fontSize: '12px' }}>{noteStatus}</Alert>
         </div>
 
         {/* Order Context */}

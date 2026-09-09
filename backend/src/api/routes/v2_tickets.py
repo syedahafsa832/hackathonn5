@@ -399,8 +399,46 @@ async def bulk_close_escalations_route(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in bulk escalation close: {e}")
-        raise HTTPException(status_code=500, detail="Failed to close escalations")
+        logger.error(f"[bulk-escalation-close] {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class InternalNoteRequest(BaseModel):
+    body: str
+
+
+@router.post("/{ticket_id}/internal-note")
+async def add_internal_note(
+    ticket_id: str,
+    request: InternalNoteRequest,
+    context: AuthenticatedContext = Depends(require_agent_or_admin),
+):
+    """CS-only note appended to the ticket's messages array with
+    direction="internal_note" — never sent to the customer, never a Gmail
+    call, and excluded from AI/customer history builders (see
+    message_processor.py's _format_history_messages and
+    v2_chat_widget.py's _build_history_context)."""
+    if not request.body.strip():
+        raise HTTPException(status_code=400, detail="Note body required")
+    rows = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
+    if not rows:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket = rows[0]
+    messages = ticket.get("messages") or []
+    if isinstance(messages, str):
+        import json as _json
+        try:
+            messages = _json.loads(messages)
+        except Exception:
+            messages = []
+    messages.append({
+        "direction": "internal_note",
+        "body": request.body,
+        "from": context.user.email,
+        "sent_at": datetime.now(timezone.utc).isoformat(),
+    })
+    supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {"messages": messages})
+    return {"success": True}
 
 
 @router.get("/{ticket_id}")

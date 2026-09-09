@@ -242,6 +242,39 @@ export function ChatWidget({
   const [resolutionSteps, setResolutionSteps] = useState<ResolutionStep[]>(INITIAL_STEPS)
   const [orderData, setOrderData]             = useState<OrderData | null>(null)
   const [customerName, setCustomerName]       = useState<string | null>(null)
+  // Pre-chat contact modal — name+email, shown once per session before the
+  // first message. Persisted in the SAME per-tab sessionStorage mechanism
+  // already used for the conversation itself (loadSession above), keyed
+  // separately so it survives independent of message history. Never
+  // invents a name/email; both start empty unless this exact tab already
+  // confirmed them earlier in this session.
+  const [contact] = useState(() => {
+    if (typeof window === 'undefined') return { name: '', email: '' }
+    try {
+      const raw = sessionStorage.getItem(`tresolv_contact_${brandId}`)
+      if (raw) return JSON.parse(raw)
+    } catch { /* ignore */ }
+    return { name: '', email: '' }
+  })
+  const [customerEmail, setCustomerEmail]     = useState<string | null>(contact.email || null)
+  const [contactGateOpen, setContactGateOpen] = useState(!(contact.name && contact.email))
+  const [nameInput, setNameInput]             = useState(contact.name)
+  const [emailInput, setEmailInput]           = useState(contact.email)
+  const [contactError, setContactError]       = useState('')
+  useEffect(() => { if (contact.name) setCustomerName(contact.name) }, [contact.name])
+
+  const handleContactContinue = () => {
+    const name = nameInput.trim()
+    const email = emailInput.trim()
+    const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+    if (!name) { setContactError('Please enter your name.'); return }
+    if (!emailValid) { setContactError('Please enter a valid email.'); return }
+    setCustomerName(name)
+    setCustomerEmail(email)
+    setContactGateOpen(false)
+    setContactError('')
+    try { sessionStorage.setItem(`tresolv_contact_${brandId}`, JSON.stringify({ name, email })) } catch { /* ignore */ }
+  }
   const [unreadCount, setUnreadCount]         = useState(0)
   // Real resolution steps for the in-flight turn, built only from actual
   // backend `status` events — starts empty every turn, never pre-seeded
@@ -325,6 +358,7 @@ export function ChatWidget({
   const sendMessage = useCallback(
     async (text: string) => {
       if (!text.trim()) return
+      if (contactGateOpen) return // contact modal must be completed first
 
       const userMsg: Message = {
         id: crypto.randomUUID ? crypto.randomUUID() : `u_${Date.now()}`,
@@ -381,6 +415,7 @@ export function ChatWidget({
               brand_id: brandId,
               org_id: orgId,
               customer_name: customerName ?? undefined,
+              customer_email: customerEmail ?? undefined,
               source: 'chat',
               conversation_history: history,
             }),
@@ -462,7 +497,7 @@ export function ChatWidget({
         setActivitySlow(false)
       }
     },
-    [messages, sessionId, brandId, orgId, customerName, isOpen, advanceSteps, apiBaseUrl]
+    [messages, sessionId, brandId, orgId, customerName, customerEmail, contactGateOpen, isOpen, advanceSteps, apiBaseUrl]
   )
 
   const handleOpen = () => {
@@ -488,6 +523,34 @@ export function ChatWidget({
         ['--accent-color' as string]: accentColor,
       } as CSSProperties}
     >
+      {/* ── Pre-chat contact modal — shown before any normal chat interaction,
+          gates sending only (the panel behind it still renders as usual). */}
+      {isOpen && contactGateOpen && (
+        <div style={{ position: 'fixed', bottom: '90px', right: '20px', zIndex: 10000, width: '300px', pointerEvents: 'auto', background: 'rgba(24,24,27,0.97)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '16px', padding: '20px', boxShadow: '0 8px 32px rgba(0,0,0,0.4)', color: 'white', fontFamily: 'inherit' }}>
+          <div style={{ fontSize: '15px', fontWeight: 600, marginBottom: '4px' }}>Before we get started</div>
+          <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.6)', marginBottom: '14px' }}>Let’s make sure we can reach you if you need help.</div>
+          <input
+            value={nameInput}
+            onChange={(e) => setNameInput(e.target.value)}
+            placeholder="Your name"
+            style={{ width: '100%', boxSizing: 'border-box', padding: '9px 12px', marginBottom: '8px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.05)', color: 'white', fontSize: '13px', outline: 'none' }}
+          />
+          <input
+            value={emailInput}
+            onChange={(e) => setEmailInput(e.target.value)}
+            placeholder="you@example.com"
+            style={{ width: '100%', boxSizing: 'border-box', padding: '9px 12px', marginBottom: '10px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.05)', color: 'white', fontSize: '13px', outline: 'none' }}
+          />
+          {contactError && <div style={{ fontSize: '12px', color: '#F87171', marginBottom: '8px' }}>{contactError}</div>}
+          <button
+            onClick={handleContactContinue}
+            style={{ width: '100%', padding: '10px', borderRadius: '8px', border: 'none', background: 'var(--accent-color)', color: 'white', fontSize: '13px', fontWeight: 600, cursor: 'pointer' }}
+          >
+            Continue
+          </button>
+        </div>
+      )}
+
       {/* ── Panel ── */}
       <AnimatePresence>
         {isOpen && (
