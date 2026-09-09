@@ -7,6 +7,7 @@ Handles: connection validation, refunds, cancellations, address updates.
 import os
 import re
 import time
+import asyncio
 import logging
 import requests
 from typing import Dict, Any, Optional, List
@@ -278,7 +279,25 @@ class ShopifyClient:
                 return str(error_data["error"])
         return fallback[:500] if fallback else "Unknown error"
 
-    def _request(
+    async def _request(
+        self,
+        method: str,
+        endpoint: str,
+        data: dict = None,
+        params: dict = None,
+        retry_count: int = 0
+    ) -> Dict[str, Any]:
+        """Async boundary for _request_sync — every caller here is already
+        async (confirmed: no synchronous caller of this method exists), so
+        the thread boundary goes here rather than inside _request_sync. This
+        keeps the entire retry loop below, including its time.sleep()
+        backoff, running inside one worker thread for the whole call
+        (recursion on rate-limit retry stays a plain sync self-call within
+        that same thread) instead of bouncing back to the event loop between
+        attempts."""
+        return await asyncio.to_thread(self._request_sync, method, endpoint, data, params, retry_count)
+
+    def _request_sync(
         self,
         method: str,
         endpoint: str,
@@ -312,7 +331,7 @@ class ShopifyClient:
                 wait_time = 2 ** retry_count  # Exponential backoff
                 logger.warning(f"[Shopify] Rate limited, retrying in {wait_time}s...")
                 time.sleep(wait_time)
-                return self._request(method, endpoint, data, params, retry_count + 1)
+                return self._request_sync(method, endpoint, data, params, retry_count + 1)
             raise
 
         except requests.exceptions.Timeout:
@@ -342,7 +361,7 @@ class ShopifyClient:
             Dict with success status and shop details
         """
         try:
-            result = self._request("GET", "shop.json")
+            result = await self._request("GET", "shop.json")
             shop = result.get("data", {}).get("shop", {})
 
             return {
@@ -370,12 +389,12 @@ class ShopifyClient:
         caught independently and reported as None rather than raising."""
         counts: Dict[str, Optional[int]] = {"products": None, "orders": None}
         try:
-            result = self._request("GET", "products/count.json")
+            result = await self._request("GET", "products/count.json")
             counts["products"] = result.get("data", {}).get("count")
         except Exception as e:
             logger.warning(f"[Shopify] Could not fetch product count: {e}")
         try:
-            result = self._request("GET", "orders/count.json", params={"status": "any"})
+            result = await self._request("GET", "orders/count.json", params={"status": "any"})
             counts["orders"] = result.get("data", {}).get("count")
         except Exception as e:
             logger.warning(f"[Shopify] Could not fetch order count: {e}")
@@ -414,7 +433,7 @@ class ShopifyClient:
 
         try:
             # First try by order name/number
-            result = self._request(
+            result = await self._request(
                 "GET",
                 "orders.json",
                 params={"name": order_identifier, "status": "any"}
@@ -424,7 +443,7 @@ class ShopifyClient:
                 return {"success": True, "order": orders[0]}
 
             # Try with # prefix
-            result = self._request(
+            result = await self._request(
                 "GET",
                 "orders.json",
                 params={"name": f"#{order_identifier}", "status": "any"}
@@ -436,7 +455,7 @@ class ShopifyClient:
             # Try direct ID lookup only for real Shopify internal IDs (10+ digits).
             # Order numbers like 1002 are NOT internal IDs — never fetch orders/1002.json.
             if order_identifier.isdigit() and len(order_identifier) >= 10:
-                result = self._request("GET", f"orders/{order_identifier}.json")
+                result = await self._request("GET", f"orders/{order_identifier}.json")
                 order = result.get("data", {}).get("order")
                 if order:
                     return {"success": True, "order": order}
@@ -444,7 +463,7 @@ class ShopifyClient:
             # Final fallback: scan recent orders by integer order_number field.
             # Works even when the store uses custom name prefixes (e.g. "HF-1002").
             if order_identifier.isdigit():
-                result = self._request(
+                result = await self._request(
                     "GET",
                     "orders.json",
                     params={"status": "any", "limit": 250, "order": "created_at desc"}
@@ -473,7 +492,7 @@ class ShopifyClient:
         match rather than picking one, so callers can surface "which order?"
         instead of guessing when there's more than one."""
         try:
-            result = self._request(
+            result = await self._request(
                 "GET",
                 "orders.json",
                 params={"email": email, "status": "any", "limit": 50}
@@ -500,7 +519,7 @@ class ShopifyClient:
         own deterministic candidate scoring on top, the same way
         get_inventory_status() already builds variant/stock logic on top of
         find_products_by_title()'s raw data."""
-        result = self._request(
+        result = await self._request(
             "GET",
             "products.json",
             params={"limit": limit, "fields": self._PRODUCT_FIELDS}
@@ -516,7 +535,7 @@ class ShopifyClient:
         matching by title when multiple similarly-named products exist.
         Returns None (not an error) if the product no longer exists."""
         try:
-            result = self._request(
+            result = await self._request(
                 "GET",
                 f"products/{product_id}.json",
                 params={"fields": self._PRODUCT_FIELDS},
@@ -655,7 +674,7 @@ class ShopifyClient:
         note_tag = f"[tResolv-ref:{idempotency_key}]" if idempotency_key else None
         if note_tag:
             try:
-                existing_refunds = self._request("GET", f"orders/{shopify_order_id}/refunds.json")
+                existing_refunds = await self._request("GET", f"orders/{shopify_order_id}/refunds.json")
                 for existing in existing_refunds.get("data", {}).get("refunds", []):
                     if note_tag in (existing.get("note") or ""):
                         existing_txns = existing.get("transactions", [])
@@ -690,7 +709,7 @@ class ShopifyClient:
         # Fetch the sale/capture transaction to use as parent_id
         parent_transaction_id = None
         try:
-            txn_result = self._request("GET", f"orders/{shopify_order_id}/transactions.json")
+            txn_result = await self._request("GET", f"orders/{shopify_order_id}/transactions.json")
             txns = txn_result.get("data", {}).get("transactions", [])
             for t in txns:
                 if t.get("kind") in ("sale", "capture") and t.get("status") == "success":
@@ -722,7 +741,7 @@ class ShopifyClient:
                 }
             ]
 
-        result = self._request("POST", f"orders/{shopify_order_id}/refunds.json", refund_data)
+        result = await self._request("POST", f"orders/{shopify_order_id}/refunds.json", refund_data)
         refund = result.get("data", {}).get("refund", {})
 
         # A 200/201 here only confirms Shopify accepted the refund REQUEST —
@@ -802,7 +821,7 @@ class ShopifyClient:
             "restock": restock
         }
 
-        result = self._request("POST", f"orders/{shopify_order_id}/cancel.json", cancel_data)
+        result = await self._request("POST", f"orders/{shopify_order_id}/cancel.json", cancel_data)
         cancelled_order = result.get("data", {}).get("order", {})
 
         # Defense in depth: a 200/201 here should always come with a
@@ -885,7 +904,7 @@ class ShopifyClient:
             }
         }
 
-        result = self._request("PUT", f"orders/{shopify_order_id}.json", update_data)
+        result = await self._request("PUT", f"orders/{shopify_order_id}.json", update_data)
         updated_order = result.get("data", {}).get("order", {})
         returned_address = updated_order.get("shipping_address") or {}
 
@@ -932,7 +951,7 @@ class ShopifyClient:
                 ShopifyErrorCode.INVALID_REQUEST
             )
 
-        result = self._request("POST", f"orders/{shopify_order_id}/reopen.json", {})
+        result = await self._request("POST", f"orders/{shopify_order_id}/reopen.json", {})
         reopened = result.get("data", {}).get("order", {})
 
         return {
@@ -1001,7 +1020,7 @@ class ShopifyClient:
                 "value": "100.0",
             }
 
-        result = self._request("POST", "draft_orders.json", draft_order_payload)
+        result = await self._request("POST", "draft_orders.json", draft_order_payload)
         draft_order = result.get("data", {}).get("draft_order", {})
         draft_order_id = draft_order.get("id")
 
@@ -1014,7 +1033,7 @@ class ShopifyClient:
 
         if no_balance_due:
             # Nothing owed — complete immediately, no customer action needed.
-            complete_result = self._request("POST", f"draft_orders/{draft_order_id}/complete.json", {})
+            complete_result = await self._request("POST", f"draft_orders/{draft_order_id}/complete.json", {})
             completed = complete_result.get("data", {}).get("draft_order", {})
             if completed.get("status") != "completed" or not completed.get("order_id"):
                 raise ShopifyError(
@@ -1037,7 +1056,7 @@ class ShopifyClient:
         # Shopify's real checkout. Never mark this completed/paid ourselves.
         invoice_sent = False
         try:
-            self._request("POST", f"draft_orders/{draft_order_id}/send_invoice.json", {"draft_order_invoice": {}})
+            await self._request("POST", f"draft_orders/{draft_order_id}/send_invoice.json", {"draft_order_invoice": {}})
             invoice_sent = True
         except ShopifyError as e:
             logger.warning(f"[Shopify] Exchange draft order {draft_order_id} created but invoice send failed: {e.message}")
@@ -1099,7 +1118,7 @@ class ShopifyService:
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }
 
-            supabase_update("tenants", {"id": f"eq.{tenant_id}"}, update_data)
+            await asyncio.to_thread(supabase_update, "tenants", {"id": f"eq.{tenant_id}"}, update_data)
 
             logger.info(f"[Shopify] Connected store {client.shop_domain} for tenant {tenant_id}")
 
@@ -1127,7 +1146,7 @@ class ShopifyService:
     async def disconnect_store(self, tenant_id: str) -> Dict[str, Any]:
         """Disconnect Shopify store from tenant."""
         try:
-            supabase_update("tenants", {"id": f"eq.{tenant_id}"}, {
+            await asyncio.to_thread(supabase_update, "tenants", {"id": f"eq.{tenant_id}"}, {
                 "shopify_domain": None,
                 "shopify_access_token": None,
                 "shopify_connected": False,
@@ -1138,9 +1157,9 @@ class ShopifyService:
 
             # Also clear from brands table (connect mirrors creds there)
             try:
-                brands = supabase_select("brands", {"tenant_id": f"eq.{tenant_id}"})
+                brands = await asyncio.to_thread(supabase_select, "brands", {"tenant_id": f"eq.{tenant_id}"})
                 for brand in brands:
-                    supabase_update("brands", {"id": f"eq.{brand['id']}"}, {
+                    await asyncio.to_thread(supabase_update, "brands", {"id": f"eq.{brand['id']}"}, {
                         "shopify_connected": False,
                         "shopify_access_token": None,
                         "shopify_domain": None,
@@ -1160,7 +1179,7 @@ class ShopifyService:
         """Test the Shopify connection for a tenant."""
         try:
             # Get tenant
-            tenants = supabase_select("tenants", {"id": f"eq.{tenant_id}"})
+            tenants = await asyncio.to_thread(supabase_select, "tenants", {"id": f"eq.{tenant_id}"})
             if not tenants:
                 return {"success": False, "error": "Tenant not found"}
 
@@ -1197,9 +1216,9 @@ class ShopifyService:
         # but fall back to any brand owned by this tenant — "is_active"
         # doesn't correlate with whether Shopify is actually connected, so a
         # connected brand that happens to be inactive must still be found.
-        brands = supabase_select("brands", {"tenant_id": f"eq.{tenant_id}", "is_active": "is.true"})
+        brands = await asyncio.to_thread(supabase_select, "brands", {"tenant_id": f"eq.{tenant_id}", "is_active": "is.true"})
         if not brands:
-            brands = supabase_select("brands", {"tenant_id": f"eq.{tenant_id}"})
+            brands = await asyncio.to_thread(supabase_select, "brands", {"tenant_id": f"eq.{tenant_id}"})
         brand = next((b for b in brands if b.get("shopify_connected")), None)
         if brand:
             shop_name = brand.get("shopify_shop_name") or brand.get("shopify_domain", "")
@@ -1214,7 +1233,7 @@ class ShopifyService:
                 )
 
         # --- Fall back to tenants table (legacy single-store setup) ---
-        tenants = supabase_select("tenants", {"id": f"eq.{tenant_id}"})
+        tenants = await asyncio.to_thread(supabase_select, "tenants", {"id": f"eq.{tenant_id}"})
         if not tenants:
             raise ShopifyError("Tenant not found", ShopifyErrorCode.INVALID_TOKEN)
 

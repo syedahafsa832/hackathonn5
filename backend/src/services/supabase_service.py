@@ -1,6 +1,7 @@
 """
 Supabase Service — handles all database operations via REST API.
 """
+import asyncio
 import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timezone
@@ -18,9 +19,9 @@ class SupabaseService:
         on first creation and never overwritten on an existing row, so a customer
         already owned by another store isn't silently reassigned."""
         try:
-            existing = supabase_select("customers", {"email": f"eq.{email}"})
+            existing = await asyncio.to_thread(supabase_select, "customers", {"email": f"eq.{email}"})
             if existing:
-                return self._update_customer_fields(existing[0], name, phone)
+                return await self._update_customer_fields(existing[0], name, phone)
 
             new_customer = {
                 "email": email,
@@ -35,20 +36,20 @@ class SupabaseService:
                 "created_at": datetime.now(timezone.utc).isoformat()
             }
             try:
-                return supabase_insert("customers", new_customer)
+                return await asyncio.to_thread(supabase_insert, "customers", new_customer)
             except Exception as insert_err:
                 err_str = str(insert_err)
                 if "409" in err_str or "23505" in err_str or "duplicate key" in err_str.lower():
                     # Lost the race to a concurrent request that inserted first — use its row.
-                    existing = supabase_select("customers", {"email": f"eq.{email}"})
+                    existing = await asyncio.to_thread(supabase_select, "customers", {"email": f"eq.{email}"})
                     if existing:
-                        return self._update_customer_fields(existing[0], name, phone)
+                        return await self._update_customer_fields(existing[0], name, phone)
                 raise
         except Exception as e:
             logger.error(f"Supabase error in get_or_create_customer: {e}")
             return {"email": email, "name": name or "Customer", "store_id": store_id}
 
-    def _update_customer_fields(self, customer: Dict[str, Any], name: Optional[str], phone: Optional[str]) -> Dict[str, Any]:
+    async def _update_customer_fields(self, customer: Dict[str, Any], name: Optional[str], phone: Optional[str]) -> Dict[str, Any]:
         """Patch an existing customer's name/phone when the caller has new values
         for them. Never touches store_id (see get_or_create_customer)."""
         updates = {}
@@ -59,7 +60,7 @@ class SupabaseService:
         if not updates:
             return customer
         try:
-            return supabase_update("customers", {"id": f"eq.{customer['id']}"}, updates)
+            return await asyncio.to_thread(supabase_update, "customers", {"id": f"eq.{customer['id']}"}, updates)
         except Exception as e:
             logger.warning(f"Supabase error updating customer fields: {e}")
             return customer
@@ -115,27 +116,27 @@ class SupabaseService:
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }
-            return supabase_insert("tickets", formatted_ticket)
+            return await asyncio.to_thread(supabase_insert, "tickets", formatted_ticket)
         except Exception as e:
             logger.error(f"Supabase error in create_ticket: {e}")
             raise e
 
     async def get_system_settings(self, store_id: str) -> Dict[str, Any]:
         """Fetch system settings for a store, falling back to global defaults."""
-        results = supabase_select("system_settings", {"store_id": f"eq.{store_id}"})
+        results = await asyncio.to_thread(supabase_select, "system_settings", {"store_id": f"eq.{store_id}"})
         if results:
             return results[0]
         # Fall back to the global/default settings row so the Settings UI affects all brands
         DEFAULT_STORE = "00000000-0000-0000-0000-000000000000"
         if store_id != DEFAULT_STORE:
-            global_results = supabase_select("system_settings", {"store_id": f"eq.{DEFAULT_STORE}"})
+            global_results = await asyncio.to_thread(supabase_select, "system_settings", {"store_id": f"eq.{DEFAULT_STORE}"})
             if global_results:
                 return global_results[0]
         return {"store_id": store_id, "ai_mode": "active", "confidence_threshold": 0.75}
 
     async def check_conversation_override(self, conversation_id: str) -> bool:
         """Check if a conversation has an active human takeover override."""
-        results = supabase_select("conversation_overrides", {
+        results = await asyncio.to_thread(supabase_select, "conversation_overrides", {
             "conversation_id": f"eq.{conversation_id}",
             "active": "eq.true"
         })
@@ -149,7 +150,7 @@ class SupabaseService:
             "performed_by": performer,
             "metadata": metadata or {}
         }
-        supabase_insert("audit_logs", payload)
+        await asyncio.to_thread(supabase_insert, "audit_logs", payload)
 
     async def log_onboarding_event(self, store_id: Optional[str], event_type: str, metadata: Dict = None):
         """Log an onboarding funnel event (signup_completed, shopify_connected, etc.)
@@ -159,7 +160,7 @@ class SupabaseService:
         that does exist rather than adding a new one. Never raises: a broken
         analytics write must not block the onboarding action it's logging."""
         try:
-            supabase_insert("audit_logs", {
+            await asyncio.to_thread(supabase_insert, "audit_logs", {
                 "store_id": store_id,
                 "action_type": event_type,
                 "performed_by": "onboarding",
@@ -181,17 +182,17 @@ class SupabaseService:
             params["store_id"] = f"eq.{store_id}"
         if status:
             params["status"] = f"eq.{status}"
-        return supabase_select("tickets", params)
+        return await asyncio.to_thread(supabase_select, "tickets", params)
 
     async def get_ticket_by_id(self, ticket_id: str) -> Optional[Dict[str, Any]]:
         """Fetch a single ticket by ID."""
-        results = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
+        results = await asyncio.to_thread(supabase_select, "tickets", {"id": f"eq.{ticket_id}"})
         return results[0] if results else None
 
     async def update_ticket(self, ticket_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
         """Update a ticket record."""
         updates["updated_at"] = datetime.now(timezone.utc).isoformat()
-        return supabase_update("tickets", {"id": f"eq.{ticket_id}"}, updates)
+        return await asyncio.to_thread(supabase_update, "tickets", {"id": f"eq.{ticket_id}"}, updates)
 
     async def delete_customer_data(self, email: str, store_id: str):
         """GDPR Right to Erasure: Delete all tickets and customer records for an email."""

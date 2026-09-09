@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import asyncio
 import logging
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Callable, Awaitable
@@ -1019,7 +1020,7 @@ class CustomerSuccessAgent:
                 try:
                     from src.lib.supabase_client import supabase_select as _sel
                     from src.services.shopify_service import decrypt_token as _dec
-                    _b = _sel("brands", {"id": f"eq.{store_id}"})
+                    _b = await asyncio.to_thread(_sel, "brands", {"id": f"eq.{store_id}"})
                     if _b:
                         _brand_name = _b[0].get("name") or _b[0].get("brand_name") or "our store"
                         _agent_name = _b[0].get("agent_name") or "Luna"
@@ -1028,11 +1029,11 @@ class CustomerSuccessAgent:
                         try:
                             from src.services.reply_style_service import get_active_style, get_uploaded_example_snippets
                             await _emit("style_check", "Checking reply style…")
-                            _active_style = get_active_style(_b[0])
+                            _active_style = await asyncio.to_thread(get_active_style, _b[0])
                             # Uploaded Examples are independent seed data (see reply_style_service.py) —
                             # they must reach the live prompt on their own, not only via the learned-
                             # profile pipeline, which gates on approved-reply volume unrelated to examples.
-                            _examples = get_uploaded_example_snippets(_b[0]["id"]) if _active_style is not None else None
+                            _examples = await asyncio.to_thread(get_uploaded_example_snippets, _b[0]["id"]) if _active_style is not None else None
                             _style_block = build_style_prompt_block(_active_style, _examples)
                         except Exception as _style_err:
                             logger.warning(f"[Agent] Reply Style resolution failed: {_style_err}")
@@ -1146,7 +1147,7 @@ class CustomerSuccessAgent:
                 if _verify_email_match:
                     try:
                         from src.lib.supabase_client import supabase_select as _sel2
-                        _t_rows = _sel2("tickets", {"id": f"eq.{ticket_id}"})
+                        _t_rows = await asyncio.to_thread(_sel2, "tickets", {"id": f"eq.{ticket_id}"})
                         _t = _t_rows[0] if _t_rows else {}
                         _last_outbound = next(
                             (m for m in reversed(_t.get("messages") or []) if m.get("direction") in ("outbound", "draft")),
@@ -1821,7 +1822,7 @@ class CustomerSuccessAgent:
                 # order number that was never actually given.
                 try:
                     from src.lib.supabase_client import supabase_select as _sel3
-                    _t_rows2 = _sel3("tickets", {"id": f"eq.{ticket_id}"})
+                    _t_rows2 = await asyncio.to_thread(_sel3, "tickets", {"id": f"eq.{ticket_id}"})
                     _prior_order_id = _t_rows2[0].get("detected_order_id") if _t_rows2 else None
                     if _prior_order_id:
                         _intent_result.order_id = str(_prior_order_id)

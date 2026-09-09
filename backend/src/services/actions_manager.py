@@ -153,7 +153,7 @@ class ActionsManager:
         try:
             from src.services.shopify_service import shopify_service
             client = await shopify_service.get_client_for_tenant(tenant_id)
-            result = client._request("GET", "collects.json", params={"product_id": product_id})
+            result = await client._request("GET", "collects.json", params={"product_id": product_id})
             collects = result.get("data", {}).get("collects", [])
             return [c.get("collection_id") for c in collects if c.get("collection_id")]
         except Exception as e:

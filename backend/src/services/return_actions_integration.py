@@ -100,7 +100,7 @@ class ReturnActionsIntegration:
         if not intent_result.has_action:
             return result
 
-        order_id, email = self._extract_order_info(query, customer_info, existing_tool_results, intent_result, ticket_id=ticket_id)
+        order_id, email = await self._extract_order_info(query, customer_info, existing_tool_results, intent_result, ticket_id=ticket_id)
         logger.info(f"[ReturnActions] intent={intent_type}, order_id={order_id}, email={email}")
 
         # ── RESTORE ORDER (un-cancel) ───────────────────────────────────────
@@ -1087,7 +1087,7 @@ class ReturnActionsIntegration:
         if not tenant_id or not order_id:
             return None
         try:
-            existing = supabase_select("actions", {
+            existing = await asyncio.to_thread(supabase_select, "actions", {
                 "tenant_id": f"eq.{tenant_id}",
                 "order_id": f"eq.{order_id}",
                 "action_type": f"eq.{action_type}",
@@ -1113,7 +1113,7 @@ class ReturnActionsIntegration:
         if not ticket_id:
             return []
         try:
-            return supabase_select("actions", {
+            return await asyncio.to_thread(supabase_select, "actions", {
                 "ticket_id": f"eq.{ticket_id}",
                 "status": "in.(pending,approved,executed,awaiting_manual_step)",
                 "order": "created_at.desc",
@@ -1561,7 +1561,7 @@ class ReturnActionsIntegration:
             return None
 
         try:
-            brands = supabase_select("brands", {"id": f"eq.{brand_id}"})
+            brands = await asyncio.to_thread(supabase_select, "brands", {"id": f"eq.{brand_id}"})
         except Exception as e:
             logger.warning(f"[Autopilot] Could not verify Autopilot flag for brand {brand_id} ({e}) — leaving action pending for human review")
             return None
@@ -1687,7 +1687,7 @@ class ReturnActionsIntegration:
             return None
 
         try:
-            brands = supabase_select("brands", {"id": f"eq.{brand_id}"})
+            brands = await asyncio.to_thread(supabase_select, "brands", {"id": f"eq.{brand_id}"})
         except Exception as e:
             logger.warning(f"[Autopilot] Could not verify Refund Autopilot flag for brand {brand_id} ({e}) — leaving action pending for human review")
             return None
@@ -1848,7 +1848,7 @@ class ReturnActionsIntegration:
             customer_name=customer_name,
         )
 
-    def _extract_order_info(
+    async def _extract_order_info(
         self,
         query: str,
         customer_info: Dict[str, Any],
@@ -1901,7 +1901,7 @@ class ReturnActionsIntegration:
 
         if not order_id and ticket_id:
             try:
-                rows = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
+                rows = await asyncio.to_thread(supabase_select, "tickets", {"id": f"eq.{ticket_id}"})
                 if rows and rows[0].get("detected_order_id"):
                     order_id = rows[0]["detected_order_id"]
             except Exception as e:

@@ -4,6 +4,7 @@ Actions Service for Multi-Tenant SaaS
 Handles action detection, creation, approval, execution with strict tenant isolation.
 """
 import re
+import asyncio
 import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timezone
@@ -186,7 +187,7 @@ class ActionsService:
             if brand_id:
                 action_data["brand_id"] = brand_id
 
-            result = supabase_insert("actions", action_data)
+            result = await asyncio.to_thread(supabase_insert, "actions", action_data)
             action_id = result.get("id")
 
             # Log creation
@@ -217,7 +218,7 @@ class ActionsService:
             if "409" in str(e):
                 logger.warning(f"[Actions] Duplicate insert caught by DB constraint for tenant {tenant_id}, order {order_id}, type {action_type} — returning existing action")
                 try:
-                    existing = supabase_select("actions", {
+                    existing = await asyncio.to_thread(supabase_select, "actions", {
                         "tenant_id": f"eq.{tenant_id}",
                         "order_id": f"eq.{order_id}",
                         "action_type": f"eq.{action_type}",
@@ -271,7 +272,7 @@ class ActionsService:
         if order_id:
             # Dedup: don't create a second pending action for the same order + type
             try:
-                existing = supabase_select("actions", {
+                existing = await asyncio.to_thread(supabase_select, "actions", {
                     "tenant_id": f"eq.{tenant_id}",
                     "action_type": f"eq.{detection['action_type']}",
                     "order_id": f"eq.{order_id}",
@@ -293,7 +294,7 @@ class ActionsService:
 
             # Also skip if the action was already executed (prevents re-creation after AI reply)
             try:
-                executed = supabase_select("actions", {
+                executed = await asyncio.to_thread(supabase_select, "actions", {
                     "tenant_id": f"eq.{tenant_id}",
                     "action_type": f"eq.{detection['action_type']}",
                     "order_id": f"eq.{order_id}",
@@ -364,7 +365,7 @@ class ActionsService:
     ) -> List[Dict[str, Any]]:
         """Get pending actions for tenant."""
         try:
-            actions = supabase_select("actions", {
+            actions = await asyncio.to_thread(supabase_select, "actions", {
                 "tenant_id": f"eq.{tenant_id}",
                 "status": f"eq.{ActionStatus.PENDING.value}",
                 "order": "created_at.desc",
@@ -383,7 +384,7 @@ class ActionsService:
     ) -> List[Dict[str, Any]]:
         """Get completed/rejected actions for tenant."""
         try:
-            actions = supabase_select("actions", {
+            actions = await asyncio.to_thread(supabase_select, "actions", {
                 "tenant_id": f"eq.{tenant_id}",
                 "status": f"in.(executed,rejected,failed,{ActionStatus.AWAITING_MANUAL_STEP.value})",
                 "order": "updated_at.desc",
@@ -398,7 +399,7 @@ class ActionsService:
     async def get_action(self, tenant_id: str, action_id: str) -> Optional[Dict[str, Any]]:
         """Get a single action (tenant-scoped)."""
         try:
-            actions = supabase_select("actions", {
+            actions = await asyncio.to_thread(supabase_select, "actions", {
                 "id": f"eq.{action_id}",
                 "tenant_id": f"eq.{tenant_id}"
             })
@@ -457,7 +458,7 @@ class ActionsService:
             ticket_id = action.get("ticket_id")
 
             if is_audited and idempotency_key and ticket_id:
-                cached = get_cached_result(ticket_id, action_type, idempotency_key)
+                cached = await asyncio.to_thread(get_cached_result, ticket_id, action_type, idempotency_key)
                 if cached:
                     if cached["status"] == "success":
                         return cached["result"]
@@ -476,7 +477,8 @@ class ActionsService:
             # where two concurrent approve calls (double-click, retry) could
             # both pass the check above and each execute a real refund/cancel
             # against the same order.
-            claimed = supabase_update(
+            claimed = await asyncio.to_thread(
+                supabase_update,
                 "actions",
                 {"id": f"eq.{action_id}", "status": f"in.({ActionStatus.PENDING.value},{ActionStatus.FAILED.value})"},
                 {
@@ -494,7 +496,7 @@ class ActionsService:
                 shopify_client = await shopify_service.get_client_for_tenant(tenant_id)
             except ShopifyError as e:
                 await self._mark_failed(action_id, e.message, e.error_code)
-                self._record_financial_audit(action, idempotency_key, ip_address, approved_by,
+                await self._record_financial_audit(action, idempotency_key, ip_address, approved_by,
                                               status="failed", error_detail=e.message)
                 return {"success": False, "error": e.message, "error_code": e.error_code}
 
@@ -503,7 +505,7 @@ class ActionsService:
 
             if not order_id:
                 await self._mark_failed(action_id, "Order ID is required", "missing_order_id")
-                self._record_financial_audit(action, idempotency_key, ip_address, approved_by,
+                await self._record_financial_audit(action, idempotency_key, ip_address, approved_by,
                                               status="failed", error_detail="Order ID is required")
                 return {"success": False, "error": "Order ID is required for this action"}
 
@@ -644,7 +646,7 @@ class ActionsService:
                     "error": e.message,
                     "error_code": e.error_code
                 }, e.error_code, e.message)
-                self._record_financial_audit(action, idempotency_key, ip_address, approved_by,
+                await self._record_financial_audit(action, idempotency_key, ip_address, approved_by,
                                               status="failed", error_detail=e.message)
                 return {
                     "success": False,
@@ -672,13 +674,13 @@ class ActionsService:
                 # Scoped to RESHIP only - Change Address's own manual_action_
                 # required case is unaffected, matching its existing behavior.
                 if action_type == ActionType.RESHIP.value:
-                    supabase_update("actions", {"id": f"eq.{action_id}"}, {
+                    await asyncio.to_thread(supabase_update, "actions", {"id": f"eq.{action_id}"}, {
                         "status": ActionStatus.AWAITING_MANUAL_STEP.value,
                         "execution_result": execution_result,
                         "updated_at": datetime.now(timezone.utc).isoformat()
                     })
                 else:
-                    supabase_update("actions", {"id": f"eq.{action_id}"}, {
+                    await asyncio.to_thread(supabase_update, "actions", {"id": f"eq.{action_id}"}, {
                         "status": ActionStatus.EXECUTED.value,
                         "execution_result": execution_result,
                         "executed_at": datetime.now(timezone.utc).isoformat(),
@@ -700,7 +702,7 @@ class ActionsService:
                 # Post-execution: send branded confirmation email + resolve ticket
                 await self._post_execution_notify(action, action_type, execution_result)
 
-                self._record_financial_audit(action, idempotency_key, ip_address, approved_by,
+                await self._record_financial_audit(action, idempotency_key, ip_address, approved_by,
                                               status="success", result=final_result)
             except Exception as post_exec_err:
                 # Shopify already executed successfully - everything in this
@@ -734,7 +736,7 @@ class ActionsService:
             safe_message = "Something went wrong completing this action. Please try again or check Shopify directly."
             await self._mark_failed(action_id, safe_message, "unknown_error")
             if 'action' in locals():
-                self._record_financial_audit(action, idempotency_key, ip_address, approved_by,
+                await self._record_financial_audit(action, idempotency_key, ip_address, approved_by,
                                               status="failed", error_detail=str(e))
             return {"success": False, "error": safe_message}
 
@@ -779,7 +781,8 @@ class ActionsService:
             "manually_completed_at": datetime.now(timezone.utc).isoformat(),
         }
 
-        claimed = supabase_update(
+        claimed = await asyncio.to_thread(
+            supabase_update,
             "actions",
             {"id": f"eq.{action_id}", "status": f"eq.{ActionStatus.AWAITING_MANUAL_STEP.value}"},
             {
@@ -823,18 +826,18 @@ class ActionsService:
             # Fetch ticket for context (subject, messages, customer_name)
             ticket = None
             if ticket_id:
-                rows = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
+                rows = await asyncio.to_thread(supabase_select, "tickets", {"id": f"eq.{ticket_id}"})
                 ticket = rows[0] if rows else None
 
             # Fetch brand for Gmail credentials and name — fall back to tenant_id lookup
             if brand_id:
-                brand_rows = supabase_select("brands", {
+                brand_rows = await asyncio.to_thread(supabase_select, "brands", {
                     "id": f"eq.{brand_id}",
                     "gmail_connected": "is.true",
                 })
             else:
                 tenant_id_lookup = action.get("tenant_id")
-                brand_rows = supabase_select("brands", {
+                brand_rows = await asyncio.to_thread(supabase_select, "brands", {
                     "tenant_id": f"eq.{tenant_id_lookup}",
                     "gmail_connected": "is.true",
                 }) if tenant_id_lookup else []
@@ -900,7 +903,7 @@ class ActionsService:
                             "sent_at": datetime.now(timezone.utc).isoformat(),
                             "direction": "outbound" if email_sent else "draft",
                         })
-                        supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {
+                        await asyncio.to_thread(supabase_update, "tickets", {"id": f"eq.{ticket_id}"}, {
                             "status": "resolved",
                             "messages": existing_msgs,
                             "email_sent": email_sent,
@@ -1027,7 +1030,7 @@ class ActionsService:
                     "sent_at": datetime.now(timezone.utc).isoformat(),
                     "direction": "outbound" if email_sent else "draft",
                 })
-                supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {
+                await asyncio.to_thread(supabase_update, "tickets", {"id": f"eq.{ticket_id}"}, {
                     "status": "resolved",
                     "messages": existing_msgs,
                     "email_sent": email_sent,
@@ -1062,7 +1065,8 @@ class ActionsService:
             # approved or executed back to "rejected", corrupting the audit
             # trail (the action itself was never re-executed by this path,
             # but its recorded status would silently lie about what happened).
-            claimed = supabase_update(
+            claimed = await asyncio.to_thread(
+                supabase_update,
                 "actions",
                 {"id": f"eq.{action_id}", "status": f"eq.{ActionStatus.PENDING.value}"},
                 {
@@ -1087,7 +1091,7 @@ class ActionsService:
     async def get_stats(self, tenant_id: str) -> Dict[str, Any]:
         """Get action statistics for tenant."""
         try:
-            actions = supabase_select("actions", {"tenant_id": f"eq.{tenant_id}"})
+            actions = await asyncio.to_thread(supabase_select, "actions", {"tenant_id": f"eq.{tenant_id}"})
 
             return {
                 "total": len(actions),
@@ -1141,7 +1145,7 @@ class ActionsService:
 
         # Check customer history
         try:
-            past_refunds = supabase_select("actions", {
+            past_refunds = await asyncio.to_thread(supabase_select, "actions", {
                 "tenant_id": f"eq.{tenant_id}",
                 "customer_email": f"eq.{customer_email}",
                 "action_type": f"eq.{ActionType.REFUND.value}",
@@ -1163,7 +1167,7 @@ class ActionsService:
 
         return level, factors
 
-    def _record_financial_audit(
+    async def _record_financial_audit(
         self,
         action: Dict[str, Any],
         idempotency_key: Optional[str],
@@ -1181,7 +1185,8 @@ class ActionsService:
         if action_type not in _AUDITED_ACTION_TYPES or not ticket_id:
             return
         try:
-            record_financial_action(
+            await asyncio.to_thread(
+                record_financial_action,
                 ticket_id=ticket_id,
                 tenant_id=action.get("tenant_id"),
                 brand_id=action.get("brand_id"),
@@ -1200,7 +1205,7 @@ class ActionsService:
     async def _mark_failed(self, action_id: str, error_message: str, error_code: str = None):
         """Mark an action as failed."""
         try:
-            supabase_update("actions", {"id": f"eq.{action_id}"}, {
+            await asyncio.to_thread(supabase_update, "actions", {"id": f"eq.{action_id}"}, {
                 "status": ActionStatus.FAILED.value,
                 "error_message": error_message,
                 "execution_result": {"error": error_message, "error_code": error_code},
@@ -1234,7 +1239,7 @@ class ActionsService:
         if not was_edited:
             return
         try:
-            supabase_update("actions", {"id": f"eq.{action_id}"}, {
+            await asyncio.to_thread(supabase_update, "actions", {"id": f"eq.{action_id}"}, {
                 "was_edited": True,
                 "approved_extracted_data": {**extracted_data, "amount": override_amount},
             })
@@ -1262,7 +1267,7 @@ class ActionsService:
                 "error_code": error_code,
                 "error_message": error_message,
             }
-            supabase_insert("action_logs", log_data)
+            await asyncio.to_thread(supabase_insert, "action_logs", log_data)
         except Exception as e:
             logger.warning(f"[Actions] Log event error: {e}")
 

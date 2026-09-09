@@ -28,18 +28,26 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-def _log_ticket_event(ticket_id: Optional[str], brand_id: Optional[str], stage: str, label: str, status: str = "done", detail: Optional[str] = None) -> None:
+async def _log_ticket_event(ticket_id: Optional[str], brand_id: Optional[str], stage: str, label: str, status: str = "done", detail: Optional[str] = None) -> None:
     """Persists one real processing milestone so the dashboard can show what
     Luna actually did, as it actually happens - never a fabricated/animated
     step. stage/label are always one of the fixed strings already hardcoded
     at each real dispatch point (customer_success_agent.py's/
     return_actions_integration.py's own `_emit` calls, or the coarse
     milestones logged directly below), never raw LLM output. Best-effort:
-    a failure here must never break the actual reply pipeline."""
+    a failure here must never break the actual reply pipeline.
+
+    Fires on every stage transition during a ticket's processing (often
+    6-10+ times per ticket) - offloaded via asyncio.to_thread so this
+    synchronous Supabase insert never blocks the single event loop this
+    app's HTTP server also runs on (see supabase_client.py's own docstring:
+    it wraps `requests` directly, no async client). Without this, opening
+    an unrelated ticket's detail page while another ticket is mid-pipeline
+    would stall behind every one of these inserts."""
     if not ticket_id:
         return
     try:
-        supabase_insert("ticket_events", {
+        await asyncio.to_thread(supabase_insert, "ticket_events", {
             "ticket_id": ticket_id,
             "brand_id": brand_id,
             "stage": stage,
@@ -143,7 +151,7 @@ class UnifiedMessageProcessor:
                     thread_filters = {"gmail_thread_id": f"eq.{gmail_thread_id}"}
                     if store_id:
                         thread_filters["store_id"] = f"eq.{store_id}"
-                    existing = supabase_select("tickets", thread_filters)
+                    existing = await asyncio.to_thread(supabase_select, "tickets", thread_filters)
                     if existing:
                         existing_ticket = existing[0]
                         early_ticket_id = existing_ticket.get("id")
@@ -175,7 +183,7 @@ class UnifiedMessageProcessor:
                         }
                         if existing_ticket.get("status") in ("closed", "resolved"):
                             updates["status"] = "open"
-                        supabase_update("tickets", {"id": f"eq.{early_ticket_id}"}, updates)
+                        await asyncio.to_thread(supabase_update, "tickets", {"id": f"eq.{early_ticket_id}"}, updates)
                         early_ticket = {**existing_ticket, **updates}
                         logger.info(f"[PROCESSOR] Thread match found — appended message, continuing with ticket {early_ticket_id}")
                 except Exception as thread_err:
@@ -225,9 +233,9 @@ class UnifiedMessageProcessor:
                 except Exception as early_err:
                     logger.warning(f"[PROCESSOR] Early ticket creation failed (non-blocking): {early_err}")
             logger.info(f"[TIMING] Ticket intake: {time.monotonic() - t_start:.2f}s")
-            _log_ticket_event(early_ticket_id, store_id, "message_received", "New customer message received")
+            await _log_ticket_event(early_ticket_id, store_id, "message_received", "New customer message received")
             if detected_order_id:
-                _log_ticket_event(early_ticket_id, store_id, "order_detected", f"Order #{detected_order_id} mentioned")
+                await _log_ticket_event(early_ticket_id, store_id, "order_detected", f"Order #{detected_order_id} mentioned")
 
             # ========== STAGE 2: SYSTEM SETTINGS ==========
             settings = await supabase_service.get_system_settings(store_id)
@@ -243,7 +251,7 @@ class UnifiedMessageProcessor:
                     # 1. Best source: the brand's own tenant_id (email-triggered tickets always have store_id)
                     if not tenant_id and store_id and store_id != "00000000-0000-0000-0000-000000000000":
                         try:
-                            brand_rows = supabase_select("brands", {"id": f"eq.{store_id}"})
+                            brand_rows = await asyncio.to_thread(supabase_select, "brands", {"id": f"eq.{store_id}"})
                             if brand_rows and brand_rows[0].get("tenant_id"):
                                 tenant_id = brand_rows[0]["tenant_id"]
                                 logger.info(f"[PROCESSOR] Tenant found via brand: {tenant_id}")
@@ -254,7 +262,7 @@ class UnifiedMessageProcessor:
                     if not tenant_id:
                         to_email = message.get("to_email", "").lower().strip()
                         if to_email:
-                            tenants = supabase_select("tenants", {"support_email": f"eq.{to_email}"})
+                            tenants = await asyncio.to_thread(supabase_select, "tenants", {"support_email": f"eq.{to_email}"})
                             if tenants:
                                 tenant_id = tenants[0].get("id")
                                 logger.info(f"[PROCESSOR] Tenant found by to_email: {tenant_id}")
@@ -263,7 +271,7 @@ class UnifiedMessageProcessor:
                     if not tenant_id:
                         support_email = os.getenv("SUPPORT_EMAIL_ADDRESS", "").lower()
                         if support_email:
-                            tenants = supabase_select("tenants", {"support_email": f"eq.{support_email}"})
+                            tenants = await asyncio.to_thread(supabase_select, "tenants", {"support_email": f"eq.{support_email}"})
                             if tenants:
                                 tenant_id = tenants[0].get("id")
                                 logger.info(f"[PROCESSOR] Tenant found by env support email: {tenant_id}")
@@ -279,7 +287,7 @@ class UnifiedMessageProcessor:
                     # skips the tenant-scoped entitlement/quota/action-creation
                     # steps for this message rather than guessing.
                     if not tenant_id and store_id == "00000000-0000-0000-0000-000000000000":
-                        tenants = supabase_select("tenants", {"is_active": "eq.true"})
+                        tenants = await asyncio.to_thread(supabase_select, "tenants", {"is_active": "eq.true"})
                         if tenants:
                             tenant_id = tenants[0].get("id")
                     elif not tenant_id and store_id:
@@ -313,11 +321,11 @@ class UnifiedMessageProcessor:
                         if entitlement["reason"] == "trial_expired"
                         else "No active AI plan on this account. Upgrade to enable AI-powered replies."
                     )
-                    supabase_update("tickets", {"id": f"eq.{early_ticket_id}"}, {
+                    await asyncio.to_thread(supabase_update, "tickets", {"id": f"eq.{early_ticket_id}"}, {
                         "status": "requires_human",
                         "escalation_reason": escalation_reason,
                     })
-                    _log_ticket_event(early_ticket_id, store_id, "requires_human", escalation_reason)
+                    await _log_ticket_event(early_ticket_id, store_id, "requires_human", escalation_reason)
                 return {
                     "ticket_id": early_ticket_id,
                     "status": "trial_expired",
@@ -333,11 +341,11 @@ class UnifiedMessageProcessor:
                     f"(plan={limit_check['plan']} used={limit_check['used']}/{limit_check['limit']}) — queuing without AI reply"
                 )
                 if early_ticket_id:
-                    supabase_update("tickets", {"id": f"eq.{early_ticket_id}"}, {
+                    await asyncio.to_thread(supabase_update, "tickets", {"id": f"eq.{early_ticket_id}"}, {
                         "status": "requires_human",
                         "escalation_reason": "Daily ticket limit reached. Upgrade to Pro for unlimited AI support.",
                     })
-                    _log_ticket_event(early_ticket_id, store_id, "requires_human", "Daily ticket limit reached")
+                    await _log_ticket_event(early_ticket_id, store_id, "requires_human", "Daily ticket limit reached")
                     return {
                         "ticket_id": early_ticket_id,
                         "status": "daily_limit_reached",
@@ -361,9 +369,9 @@ class UnifiedMessageProcessor:
             if ai_mode == "manual":
                 logger.info(f"[PROCESSOR] AI Mode is MANUAL. Updating ticket to requires_human.")
                 if early_ticket_id:
-                    supabase_update("tickets", {"id": f"eq.{early_ticket_id}"},
+                    await asyncio.to_thread(supabase_update, "tickets", {"id": f"eq.{early_ticket_id}"},
                                     {"status": "requires_human"})
-                    _log_ticket_event(early_ticket_id, store_id, "requires_human", "Routed to your team (AI is in manual mode)")
+                    await _log_ticket_event(early_ticket_id, store_id, "requires_human", "Routed to your team (AI is in manual mode)")
                     return {"ticket_id": early_ticket_id, "status": "requires_human"}
                 ticket = await supabase_service.create_ticket({
                     "store_id": store_id,
@@ -398,11 +406,11 @@ class UnifiedMessageProcessor:
                         if is_trial_quota
                         else "AI reply limit reached for your plan. Upgrade to continue automating support with unlimited replies."
                     )
-                    supabase_update("tickets", {"id": f"eq.{early_ticket_id}"}, {
+                    await asyncio.to_thread(supabase_update, "tickets", {"id": f"eq.{early_ticket_id}"}, {
                         "status": "requires_human",
                         "escalation_reason": escalation_reason,
                     })
-                    _log_ticket_event(early_ticket_id, store_id, "requires_human", escalation_reason)
+                    await _log_ticket_event(early_ticket_id, store_id, "requires_human", escalation_reason)
                     return {
                         "ticket_id": early_ticket_id,
                         "status": "ai_reply_limit_reached",
@@ -433,7 +441,7 @@ class UnifiedMessageProcessor:
             # never persisted or connected to the email pipeline. Each real
             # dispatch-point call becomes one ticket_events row here.
             async def _on_progress(stage: str, label: str) -> None:
-                _log_ticket_event(early_ticket_id, store_id, stage, label)
+                await _log_ticket_event(early_ticket_id, store_id, stage, label)
 
             ai_result = await customer_success_agent.generate_channel_appropriate_response(
                 query=content, customer_info=customer, channel=channel, tenant_id=tenant_id, store_id=store_id,
@@ -454,7 +462,7 @@ class UnifiedMessageProcessor:
             if ai_result.get("provider_outage") and early_ticket_id:
                 from src.services import provider_retry_service
                 attempts = ai_result.get("provider_attempts") or []
-                supabase_update("tickets", {"id": f"eq.{early_ticket_id}"}, {
+                await asyncio.to_thread(supabase_update, "tickets", {"id": f"eq.{early_ticket_id}"}, {
                     "status": "ai_retry_pending",
                     "escalation_reason": ai_result.get("escalation_reason"),
                     "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -462,7 +470,7 @@ class UnifiedMessageProcessor:
                 queued = provider_retry_service.enqueue_retry(
                     early_ticket_id, store_id, attempts, ai_result.get("escalation_reason") or "",
                 )
-                _log_ticket_event(
+                await _log_ticket_event(
                     early_ticket_id, store_id, "provider_outage",
                     "AI provider temporarily unavailable — retry scheduled" if queued
                     else "AI provider temporarily unavailable — retry already scheduled",
@@ -513,7 +521,7 @@ class UnifiedMessageProcessor:
             logger.info(f"[PROCESSOR] AI Result - Intent: {intent}, Confidence: {confidence:.0%}, Risk: {risk_level}")
             logger.info(f"[PROCESSOR] AI Reply Preview: {reply_body[:100]}..." if reply_body else "[PROCESSOR] No reply generated")
             if reply_body:
-                _log_ticket_event(early_ticket_id, store_id, "draft_ready", "Draft ready")
+                await _log_ticket_event(early_ticket_id, store_id, "draft_ready", "Draft ready")
 
             # ========== STAGE 6: PREPARE TICKET ==========
             ticket_payload = {
@@ -608,7 +616,7 @@ class UnifiedMessageProcessor:
                     # preserve-by-omission principle as "messages" above.
                     update_fields.pop("detected_order_id", None)
                 update_fields["updated_at"] = datetime.now(timezone.utc).isoformat()
-                supabase_update("tickets", {"id": f"eq.{early_ticket_id}"}, update_fields)
+                await asyncio.to_thread(supabase_update, "tickets", {"id": f"eq.{early_ticket_id}"}, update_fields)
                 ticket_id = early_ticket_id
                 logger.info(f"[PROCESSOR] ✓ Ticket updated: {ticket_id} → {ticket_payload.get('status')}")
             else:
@@ -654,26 +662,26 @@ class UnifiedMessageProcessor:
                 await self._send_email_with_logging(customer_email, subject, ai_result, ticket_id, store_id=store_id)
                 logger.info(f"[TIMING] Email send: {time.monotonic() - t_send_start:.2f}s")
                 email_actually_sent = True
-                _log_ticket_event(ticket_id, store_id, "sent", "Email sent")
+                await _log_ticket_event(ticket_id, store_id, "sent", "Email sent")
             else:
                 logger.info(f"[PROCESSOR] Email NOT sent - should_auto_reply={should_auto_reply}, has_reply={bool(reply_body)}, auto_reply_enabled={auto_reply_enabled}")
                 _final_status = ticket_payload.get("status")
                 if _final_status in ("escalated", "requires_human"):
-                    _log_ticket_event(ticket_id, store_id, "escalated", ticket_payload.get("escalation_reason") or "Escalated for human review")
+                    await _log_ticket_event(ticket_id, store_id, "escalated", ticket_payload.get("escalation_reason") or "Escalated for human review")
                 elif _final_status == "human_managing":
-                    _log_ticket_event(ticket_id, store_id, "human_managing", "A team member is already handling this conversation")
+                    await _log_ticket_event(ticket_id, store_id, "human_managing", "A team member is already handling this conversation")
                 elif _final_status in ("ai_suggested", "auto_resolved_review"):
-                    _log_ticket_event(ticket_id, store_id, "needs_review", "Draft ready for your team to review")
+                    await _log_ticket_event(ticket_id, store_id, "needs_review", "Draft ready for your team to review")
 
             # Always append AI reply to messages so conversation replay is complete,
             # whether or not the email was actually sent.
             # direction="outbound" = sent; direction="draft" = generated but not emailed.
             if reply_body and ticket_id:
                 try:
-                    ticket_rows = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
-                    settings_rows = supabase_select("system_settings", {"store_id": f"eq.{store_id}"})
+                    ticket_rows = await asyncio.to_thread(supabase_select, "tickets", {"id": f"eq.{ticket_id}"})
+                    settings_rows = await asyncio.to_thread(supabase_select, "system_settings", {"store_id": f"eq.{store_id}"})
                     if not settings_rows:
-                        settings_rows = supabase_select("system_settings", {"store_id": "eq.00000000-0000-0000-0000-000000000000"})
+                        settings_rows = await asyncio.to_thread(supabase_select, "system_settings", {"store_id": "eq.00000000-0000-0000-0000-000000000000"})
                     max_replies = 2
                     if settings_rows and settings_rows[0].get("max_auto_replies") is not None:
                         max_replies = settings_rows[0]["max_auto_replies"]
@@ -703,7 +711,7 @@ class UnifiedMessageProcessor:
                         update["auto_reply_count"] = new_count
                         update["loop_risk"] = new_count >= max_replies
                         logger.info(f"[PROCESSOR] auto_reply_count={new_count}, loop_risk={new_count >= max_replies}")
-                    supabase_update("tickets", {"id": f"eq.{ticket_id}"}, update)
+                    await asyncio.to_thread(supabase_update, "tickets", {"id": f"eq.{ticket_id}"}, update)
                 except Exception as loop_err:
                     logger.warning(f"[PROCESSOR] messages append failed (non-blocking): {loop_err}")
 
@@ -733,11 +741,11 @@ class UnifiedMessageProcessor:
             # instead of leaving it invisible.
             if early_ticket_id:
                 try:
-                    supabase_update("tickets", {"id": f"eq.{early_ticket_id}"}, {
+                    await asyncio.to_thread(supabase_update, "tickets", {"id": f"eq.{early_ticket_id}"}, {
                         "status": "escalated",
                         "escalation_reason": f"System error while generating a response: {str(e)[:300]}",
                     })
-                    _log_ticket_event(early_ticket_id, store_id, "escalated", "Escalated after an unexpected processing error", status="failed")
+                    await _log_ticket_event(early_ticket_id, store_id, "escalated", "Escalated after an unexpected processing error", status="failed")
                 except Exception as update_err:
                     logger.error(f"[PROCESSOR] Could not mark ticket {early_ticket_id} escalated after crash: {update_err}")
             return {"ticket_id": early_ticket_id, "status": "error", "error": str(e)}
@@ -761,7 +769,7 @@ class UnifiedMessageProcessor:
         from src.services import provider_retry_service, plan_service
 
         ticket_id = retry_row["ticket_id"]
-        ticket_rows = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
+        ticket_rows = await asyncio.to_thread(supabase_select, "tickets", {"id": f"eq.{ticket_id}"})
         if not ticket_rows:
             provider_retry_service.mark_cancelled(retry_row["id"], "ticket_no_longer_exists")
             return {"outcome": "cancelled", "reason": "ticket_no_longer_exists"}
@@ -796,22 +804,22 @@ class UnifiedMessageProcessor:
         auto_reply_enabled = settings.get("auto_reply_enabled", True)
 
         if ai_mode == "manual":
-            supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {"status": "requires_human"})
-            _log_ticket_event(ticket_id, store_id, "requires_human", "Routed to your team (AI is in manual mode)")
+            await asyncio.to_thread(supabase_update, "tickets", {"id": f"eq.{ticket_id}"}, {"status": "requires_human"})
+            await _log_ticket_event(ticket_id, store_id, "requires_human", "Routed to your team (AI is in manual mode)")
             provider_retry_service.mark_cancelled(retry_row["id"], "ai_mode_manual")
             return {"outcome": "cancelled", "reason": "ai_mode_manual"}
 
         tenant_id = None
         if store_id:
-            brand_rows = supabase_select("brands", {"id": f"eq.{store_id}"})
+            brand_rows = await asyncio.to_thread(supabase_select, "brands", {"id": f"eq.{store_id}"})
             if brand_rows:
                 tenant_id = brand_rows[0].get("tenant_id")
 
         if tenant_id:
             ai_limit_check = plan_service.check_limit(tenant_id, "ai_replies")
             if not ai_limit_check["allowed"]:
-                supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {"status": "requires_human"})
-                _log_ticket_event(ticket_id, store_id, "requires_human", "AI reply limit reached for your plan")
+                await asyncio.to_thread(supabase_update, "tickets", {"id": f"eq.{ticket_id}"}, {"status": "requires_human"})
+                await _log_ticket_event(ticket_id, store_id, "requires_human", "AI reply limit reached for your plan")
                 provider_retry_service.mark_cancelled(retry_row["id"], "ai_reply_limit_reached")
                 return {"outcome": "cancelled", "reason": "ai_reply_limit_reached"}
 
@@ -821,10 +829,10 @@ class UnifiedMessageProcessor:
             customer["history"] = history
 
         async def _on_progress(stage: str, label: str) -> None:
-            _log_ticket_event(ticket_id, store_id, stage, label)
+            await _log_ticket_event(ticket_id, store_id, stage, label)
 
         attempt_n = (retry_row.get("retry_count") or 0) + 1
-        _log_ticket_event(ticket_id, store_id, "provider_retry", f"Retrying AI response (attempt {attempt_n})")
+        await _log_ticket_event(ticket_id, store_id, "provider_retry", f"Retrying AI response (attempt {attempt_n})")
 
         ai_result = await customer_success_agent.generate_channel_appropriate_response(
             query=content, customer_info=customer, channel=channel, tenant_id=tenant_id,
@@ -878,11 +886,11 @@ class UnifiedMessageProcessor:
             update_fields["ai_reply"] = routing["ai_reply"]
         if routing.get("ai_draft") is not None:
             update_fields["ai_draft"] = routing["ai_draft"]
-        supabase_update("tickets", {"id": f"eq.{ticket_id}"}, update_fields)
+        await asyncio.to_thread(supabase_update, "tickets", {"id": f"eq.{ticket_id}"}, update_fields)
 
         # One more idempotency check right before sending — a human could
         # have replied in the seconds it took to regenerate above.
-        fresh_rows = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
+        fresh_rows = await asyncio.to_thread(supabase_select, "tickets", {"id": f"eq.{ticket_id}"})
         fresh = fresh_rows[0] if fresh_rows else {}
         if provider_retry_service.already_responded(fresh):
             provider_retry_service.mark_succeeded(retry_row["id"])
@@ -892,11 +900,11 @@ class UnifiedMessageProcessor:
         if should_auto_reply and reply_body and auto_reply_enabled and channel == "email":
             await self._send_email_with_logging(customer_email, subject, ai_result, ticket_id, store_id=store_id)
             email_actually_sent = True
-            _log_ticket_event(ticket_id, store_id, "sent", "Email sent")
+            await _log_ticket_event(ticket_id, store_id, "sent", "Email sent")
         elif routing["status"] in ("escalated", "requires_human"):
-            _log_ticket_event(ticket_id, store_id, "escalated", update_fields.get("escalation_reason") or "Escalated for human review")
+            await _log_ticket_event(ticket_id, store_id, "escalated", update_fields.get("escalation_reason") or "Escalated for human review")
         elif routing["status"] in ("ai_suggested", "auto_resolved_review"):
-            _log_ticket_event(ticket_id, store_id, "needs_review", "Draft ready for your team to review")
+            await _log_ticket_event(ticket_id, store_id, "needs_review", "Draft ready for your team to review")
 
         if reply_body:
             try:
@@ -911,13 +919,13 @@ class UnifiedMessageProcessor:
                 })
                 msg_update = {"messages": current_msgs, "updated_at": now_iso}
                 if email_actually_sent:
-                    settings_rows = (supabase_select("system_settings", {"store_id": f"eq.{store_id}"})
-                                      or supabase_select("system_settings", {"store_id": "eq.00000000-0000-0000-0000-000000000000"}))
+                    settings_rows = (await asyncio.to_thread(supabase_select, "system_settings", {"store_id": f"eq.{store_id}"})
+                                      or await asyncio.to_thread(supabase_select, "system_settings", {"store_id": "eq.00000000-0000-0000-0000-000000000000"}))
                     max_replies = settings_rows[0].get("max_auto_replies", 2) if settings_rows else 2
                     new_count = current_count + 1
                     msg_update["auto_reply_count"] = new_count
                     msg_update["loop_risk"] = new_count >= max_replies
-                supabase_update("tickets", {"id": f"eq.{ticket_id}"}, msg_update)
+                await asyncio.to_thread(supabase_update, "tickets", {"id": f"eq.{ticket_id}"}, msg_update)
             except Exception as e:
                 logger.warning(f"[ProviderRetry] messages append failed (non-blocking): {e}")
 
@@ -1035,9 +1043,15 @@ class UnifiedMessageProcessor:
     _HISTORY_MAX_TOTAL_CHARS = 1500
 
     def _format_history_messages(self, messages: list, limit: int) -> List[str]:
+        # Internal notes (direction="internal_note", added by the CS "Add
+        # internal note" feature) are team-only and must never reach the
+        # customer or the AI's own context - excluded before the [-limit:]
+        # slice so they don't even count against the window, and never fall
+        # into the "else -> Support" bucket below.
+        visible = [m for m in (messages or []) if m.get("direction") != "internal_note"]
         return [
             f"{'Customer' if m.get('direction') == 'inbound' else 'Support'}: {(m.get('body') or '')[:self._HISTORY_MAX_CHARS_PER_MESSAGE]}"
-            for m in (messages or [])[-limit:]
+            for m in visible[-limit:]
         ]
 
     async def _build_customer_history(
@@ -1063,7 +1077,7 @@ class UnifiedMessageProcessor:
 
         if customer_email and store_id:
             try:
-                prior = supabase_select("tickets", {
+                prior = await asyncio.to_thread(supabase_select, "tickets", {
                     "customer_email": f"eq.{customer_email}",
                     "store_id": f"eq.{store_id}",
                     "order": "updated_at.desc",
@@ -1095,7 +1109,7 @@ class UnifiedMessageProcessor:
         without this check a human takeover on Brand A's ticket would
         incorrectly suppress Brand B's unrelated AI auto-reply."""
         try:
-            overrides = supabase_select("conversation_overrides", {"active": "eq.true"})
+            overrides = await asyncio.to_thread(supabase_select, "conversation_overrides", {"active": "eq.true"})
             if not overrides:
                 return False
 
@@ -1228,7 +1242,7 @@ class UnifiedMessageProcessor:
                 try:
                     from src.services.brand_gmail_service import brand_gmail_service
                     from src.lib.supabase_client import supabase_select
-                    brands = supabase_select("brands", {"id": f"eq.{store_id}", "gmail_connected": "is.true"})
+                    brands = await asyncio.to_thread(supabase_select, "brands", {"id": f"eq.{store_id}", "gmail_connected": "is.true"})
                     if brands:
                         brand = brands[0]
                         # Keep the reply in the customer's existing Gmail thread - without
@@ -1237,7 +1251,7 @@ class UnifiedMessageProcessor:
                         # conversation (see send_email()'s docstring).
                         _thread_id = None
                         if ticket_id:
-                            _t_rows = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
+                            _t_rows = await asyncio.to_thread(supabase_select, "tickets", {"id": f"eq.{ticket_id}"})
                             _thread_id = _t_rows[0].get("gmail_thread_id") if _t_rows else None
                         logger.info(f"[EMAIL] Sending via brand Gmail: {brand.get('gmail_email')} (thread_id={_thread_id})")
                         result = await brand_gmail_service.send_email(brand, email, reply_subject, reply_body, thread_id=_thread_id)
@@ -1258,7 +1272,7 @@ class UnifiedMessageProcessor:
             if result.get('status') == 'sent':
                 logger.info(f"[EMAIL] ✓ SUCCESS - Email sent to {email}, ID: {result.get('id')}")
                 try:
-                    supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {
+                    await asyncio.to_thread(supabase_update, "tickets", {"id": f"eq.{ticket_id}"}, {
                         "email_sent": True,
                         "email_sent_at": datetime.now(timezone.utc).isoformat()
                     })
@@ -1266,9 +1280,9 @@ class UnifiedMessageProcessor:
                     logger.warning(f"[EMAIL] Could not update ticket email_sent flag: {update_err}")
                 # Set first_response_at if this is the first reply
                 try:
-                    t_rows = supabase_select("tickets", {"id": f"eq.{ticket_id}"})
+                    t_rows = await asyncio.to_thread(supabase_select, "tickets", {"id": f"eq.{ticket_id}"})
                     if t_rows and not t_rows[0].get("first_response_at"):
-                        supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {
+                        await asyncio.to_thread(supabase_update, "tickets", {"id": f"eq.{ticket_id}"}, {
                             "first_response_at": datetime.now(timezone.utc).isoformat()
                         })
                 except Exception:

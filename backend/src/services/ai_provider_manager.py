@@ -337,7 +337,7 @@ class AIProviderManager:
                 # attempts failed THIS request) so a genuinely recovered
                 # outage - the very next request after it clears - still
                 # closes out the incident promptly.
-                notify_provider_recovered(service="chat_completion")
+                await asyncio.to_thread(notify_provider_recovered, service="chat_completion")
                 return response, provider.label, provider.model, usage
 
             is_last = i == len(self._providers) - 1
@@ -356,7 +356,7 @@ class AIProviderManager:
         # alert-spam fix). Individual attempt failures above are logged only
         # and never alert on their own; a request that recovers via fallback
         # returns above and never reaches this line.
-        notify_provider_exhausted(attempts=attempts, model=self._providers[0].model, elapsed_seconds=elapsed_total, service="chat_completion")
+        await asyncio.to_thread(notify_provider_exhausted, attempts=attempts, model=self._providers[0].model, elapsed_seconds=elapsed_total, service="chat_completion")
         raise AllProvidersFailedError(attempts)
 
 

@@ -4,6 +4,7 @@ Brand Knowledge Base Service
 Per-brand RAG knowledge base management.
 """
 
+import asyncio
 import logging
 import uuid
 import re
@@ -60,8 +61,8 @@ class BrandKnowledgeService:
         self.chunk_size = 1000  # Characters per chunk
         self.chunk_overlap = 200  # Overlap between chunks
 
-    def _get_tenant_id(self, brand_id: str) -> Optional[str]:
-        rows = supabase_select("brands", {"id": f"eq.{brand_id}"})
+    async def _get_tenant_id(self, brand_id: str) -> Optional[str]:
+        rows = await asyncio.to_thread(supabase_select, "brands", {"id": f"eq.{brand_id}"})
         return rows[0].get("tenant_id") if rows else None
 
     def _chunk_text(self, text: str, source_name: str) -> List[Dict[str, Any]]:
@@ -147,7 +148,7 @@ class BrandKnowledgeService:
             # tenant_id is still NOT NULL on knowledge_base_sources/rag_chunks
             # (the live schema never actually migrated off it onto brand_id
             # alone), so every insert needs both.
-            tenant_id = self._get_tenant_id(brand_id)
+            tenant_id = await self._get_tenant_id(brand_id)
             if not tenant_id:
                 return {"success": False, "error": "Could not resolve tenant for this brand"}
 
@@ -163,13 +164,13 @@ class BrandKnowledgeService:
                 "created_by": user_id,
                 "metadata": metadata or {}
             }
-            supabase_insert("knowledge_base_sources", source_record)
+            await asyncio.to_thread(supabase_insert, "knowledge_base_sources", source_record)
             logger.info(f"[KB] Created source: {source_id} for brand {brand_id}")
 
             # Chunk the text
             chunks = self._chunk_text(content, name)
             if not chunks:
-                supabase_update("knowledge_base_sources", {"id": f"eq.{source_id}"}, {
+                await asyncio.to_thread(supabase_update, "knowledge_base_sources", {"id": f"eq.{source_id}"}, {
                     "status": "failed",
                     "error_message": "No content to process"
                 })
@@ -202,13 +203,13 @@ class BrandKnowledgeService:
                     "token_count": len(chunk["content"].split()),  # Rough estimate
                     "metadata": metadata or {"type": "brand_knowledge"}
                 }
-                supabase_insert("rag_chunks", chunk_record)
+                await asyncio.to_thread(supabase_insert, "rag_chunks", chunk_record)
                 successful_chunks += 1
                 total_tokens += chunk_record["token_count"]
 
             # Update source status
             if successful_chunks > 0:
-                supabase_update("knowledge_base_sources", {"id": f"eq.{source_id}"}, {
+                await asyncio.to_thread(supabase_update, "knowledge_base_sources", {"id": f"eq.{source_id}"}, {
                     "status": "completed",
                     "chunk_count": successful_chunks,
                     "total_tokens": total_tokens
@@ -222,7 +223,7 @@ class BrandKnowledgeService:
                     "status": "completed"
                 }
             else:
-                supabase_update("knowledge_base_sources", {"id": f"eq.{source_id}"}, {
+                await asyncio.to_thread(supabase_update, "knowledge_base_sources", {"id": f"eq.{source_id}"}, {
                     "status": "failed",
                     "error_message": "Failed to generate embeddings"
                 })
@@ -248,7 +249,7 @@ class BrandKnowledgeService:
         (_clear_previous_import) knows to leave it alone instead of
         silently wiping the edit."""
         try:
-            sources = supabase_select("knowledge_base_sources", {
+            sources = await asyncio.to_thread(supabase_select, "knowledge_base_sources", {
                 "id": f"eq.{source_id}",
                 "brand_id": f"eq.{brand_id}",
             })
@@ -256,7 +257,7 @@ class BrandKnowledgeService:
                 return {"success": False, "error": "Source not found"}
             source = sources[0]
 
-            tenant_id = source.get("tenant_id") or self._get_tenant_id(brand_id)
+            tenant_id = source.get("tenant_id") or await self._get_tenant_id(brand_id)
             if not tenant_id:
                 return {"success": False, "error": "Could not resolve tenant for this brand"}
 
@@ -265,10 +266,10 @@ class BrandKnowledgeService:
             if not chunks:
                 return {"success": False, "error": "No content to process"}
 
-            supabase_update("knowledge_base_sources", {"id": f"eq.{source_id}"}, {"status": "processing"})
+            await asyncio.to_thread(supabase_update, "knowledge_base_sources", {"id": f"eq.{source_id}"}, {"status": "processing"})
             # Old chunks are replaced wholesale by the edited content - never
             # left mixed with the new version.
-            supabase_delete("rag_chunks", {"source_id": f"eq.{source_id}"})
+            await asyncio.to_thread(supabase_delete, "rag_chunks", {"source_id": f"eq.{source_id}"})
 
             source_metadata = {**(source.get("metadata") or {}), "merchant_edited": True}
             successful_chunks = 0
@@ -291,7 +292,7 @@ class BrandKnowledgeService:
                     "token_count": len(chunk["content"].split()),
                     "metadata": source_metadata,
                 }
-                supabase_insert("rag_chunks", chunk_record)
+                await asyncio.to_thread(supabase_insert, "rag_chunks", chunk_record)
                 successful_chunks += 1
                 total_tokens += chunk_record["token_count"]
 
@@ -306,12 +307,12 @@ class BrandKnowledgeService:
             if successful_chunks == 0:
                 update_fields["status"] = "failed"
                 update_fields["error_message"] = "Failed to generate embeddings"
-                supabase_update("knowledge_base_sources", {"id": f"eq.{source_id}"}, update_fields)
+                await asyncio.to_thread(supabase_update, "knowledge_base_sources", {"id": f"eq.{source_id}"}, update_fields)
                 return {"success": False, "error": "Failed to generate embeddings"}
 
             update_fields["status"] = "completed"
             update_fields["error_message"] = None
-            supabase_update("knowledge_base_sources", {"id": f"eq.{source_id}"}, update_fields)
+            await asyncio.to_thread(supabase_update, "knowledge_base_sources", {"id": f"eq.{source_id}"}, update_fields)
             logger.info(f"[KB] Updated source {source_id}: {successful_chunks} chunks")
             return {
                 "success": True,
@@ -331,7 +332,7 @@ class BrandKnowledgeService:
         chunks overlap slightly by design (see _chunk_text), so this is a
         readable approximation of the original for viewing/editing, not a
         byte-exact reproduction."""
-        chunks = supabase_select("rag_chunks", {
+        chunks = await asyncio.to_thread(supabase_select, "rag_chunks", {
             "source_id": f"eq.{source_id}",
             "brand_id": f"eq.{brand_id}",
             "select": "content,chunk_index",
@@ -344,7 +345,8 @@ class BrandKnowledgeService:
     async def get_sources(self, brand_id: str) -> List[Dict[str, Any]]:
         """Get all knowledge base sources for a brand."""
         try:
-            sources = supabase_select(
+            sources = await asyncio.to_thread(
+                supabase_select,
                 "knowledge_base_sources",
                 {
                     "brand_id": f"eq.{brand_id}",
@@ -360,7 +362,7 @@ class BrandKnowledgeService:
         """Delete a knowledge base source and its chunks."""
         try:
             # Verify ownership
-            sources = supabase_select("knowledge_base_sources", {
+            sources = await asyncio.to_thread(supabase_select, "knowledge_base_sources", {
                 "id": f"eq.{source_id}",
                 "brand_id": f"eq.{brand_id}"
             })
@@ -369,12 +371,12 @@ class BrandKnowledgeService:
                 return {"success": False, "error": "Source not found"}
 
             # Delete chunks first
-            supabase_delete("rag_chunks", {
+            await asyncio.to_thread(supabase_delete, "rag_chunks", {
                 "source_id": f"eq.{source_id}"
             })
 
             # Delete source record
-            supabase_delete("knowledge_base_sources", {"id": f"eq.{source_id}"})
+            await asyncio.to_thread(supabase_delete, "knowledge_base_sources", {"id": f"eq.{source_id}"})
 
             logger.info(f"[KB] Deleted source {source_id}")
             return {"success": True}
@@ -408,7 +410,7 @@ class BrandKnowledgeService:
         couldn't run" - same distinction already made for the vector path.
         """
         try:
-            raw_results = supabase_rpc("match_brand_rag_chunks_fts", {
+            raw_results = await asyncio.to_thread(supabase_rpc, "match_brand_rag_chunks_fts", {
                 "p_brand_id": brand_id,
                 "query_text": query,
                 "match_count": max(top_k * 10, 100),
@@ -478,7 +480,7 @@ class BrandKnowledgeService:
             # shrink the result set on a store whose Privacy Policy already
             # fills every slot, not surface the relevant chunks underneath it.
             try:
-                raw_results = supabase_rpc("match_brand_rag_chunks", {
+                raw_results = await asyncio.to_thread(supabase_rpc, "match_brand_rag_chunks", {
                     "p_brand_id": brand_id,
                     "query_embedding": embedding,
                     "match_threshold": 0.5,
@@ -541,7 +543,7 @@ class BrandKnowledgeService:
             if not embedding:
                 return []
 
-            results = supabase_rpc("match_brand_rag_chunks", {
+            results = await asyncio.to_thread(supabase_rpc, "match_brand_rag_chunks", {
                 "p_brand_id": brand_id,
                 "query_embedding": embedding,
                 "match_threshold": 0.3,

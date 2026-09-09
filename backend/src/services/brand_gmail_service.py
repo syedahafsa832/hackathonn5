@@ -448,6 +448,12 @@ class BrandGmailService:
         return msg
 
     async def send_email(self, brand: dict, to_email: str, subject: str, body: str, thread_id: str = None) -> Dict[str, Any]:
+        """Async boundary for _send_email_sync — mirrors get_new_emails'
+        own _get_new_emails_sync + asyncio.to_thread pattern, since the
+        Google API client is fully synchronous (same rationale as there)."""
+        return await asyncio.to_thread(self._send_email_sync, brand, to_email, subject, body, thread_id)
+
+    def _send_email_sync(self, brand: dict, to_email: str, subject: str, body: str, thread_id: str = None) -> Dict[str, Any]:
         """Send an email from a brand's connected Gmail account.
 
         thread_id, when given, keeps the reply in Gmail's existing
@@ -476,6 +482,11 @@ class BrandGmailService:
             return {"success": False, "error": str(e)}
 
     async def send_html_reply_in_thread(self, brand: dict, to_email: str, subject: str, html_body: str, plain_text_body: str, thread_id: str) -> Dict[str, Any]:
+        """Async boundary for _send_html_reply_in_thread_sync — see send_email's
+        own docstring for why (fully synchronous Google API client)."""
+        return await asyncio.to_thread(self._send_html_reply_in_thread_sync, brand, to_email, subject, html_body, plain_text_body, thread_id)
+
+    def _send_html_reply_in_thread_sync(self, brand: dict, to_email: str, subject: str, html_body: str, plain_text_body: str, thread_id: str) -> Dict[str, Any]:
         """Like send_reply_in_thread, but with a caller-supplied HTML part
         instead of the shared auto-styled-from-plain-text layout
         (email_layout.py escapes text into <p> blocks with no linkified
@@ -503,6 +514,11 @@ class BrandGmailService:
             return {"success": False, "error": str(e)}
 
     async def send_reply_in_thread(self, brand: dict, to_email: str, subject: str, body: str, thread_id: str) -> Dict[str, Any]:
+        """Async boundary for _send_reply_in_thread_sync — see send_email's
+        own docstring for why (fully synchronous Google API client)."""
+        return await asyncio.to_thread(self._send_reply_in_thread_sync, brand, to_email, subject, body, thread_id)
+
+    def _send_reply_in_thread_sync(self, brand: dict, to_email: str, subject: str, body: str, thread_id: str) -> Dict[str, Any]:
         """Send a reply in an existing Gmail thread (e.g. CSAT follow-up)."""
         svc = self._build_service(brand)
         if not svc:

@@ -93,7 +93,7 @@ def test_403_is_never_retried():
 
     with patch("src.services.shopify_service.requests.post", return_value=resp) as mock_post:
         with pytest.raises(ShopifyError) as exc_info:
-            client._request("POST", "orders/1/cancel.json", data={})
+            run(client._request("POST", "orders/1/cancel.json", data={}))
 
     assert exc_info.value.error_code == ShopifyErrorCode.MISSING_SCOPE
     mock_post.assert_called_once()
