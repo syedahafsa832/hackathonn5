@@ -276,8 +276,13 @@ class BrandGmailService:
                             f"({brand.get('gmail_email')}) — marked gmail_connected=False, user must reconnect"
                         )
                     else:
-                        # Network error, quota, or transient failure — do NOT disconnect, skip this poll cycle
+                        # Network error, quota, or transient failure — do NOT disconnect,
+                        # but never build a service from creds we know are stale: that
+                        # just guarantees a second, later failure on the actual API call
+                        # instead of failing fast here. Caller (get_new_emails) already
+                        # treats a None service as "skip this poll cycle, retry next time".
                         logger.warning(f"[BrandGmail] Token refresh warning for brand {brand.get('id')}: {e}")
+                        return None
 
             return build("gmail", "v1", credentials=creds)
         except Exception as e:
