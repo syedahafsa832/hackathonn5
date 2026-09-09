@@ -5,6 +5,7 @@ import StatCard from '../components/StatCard';
 import Alert from '../components/Alert';
 import { useEscalations, useStats, useActions, useApproveAction, useRejectAction, useCompleteManualAction } from '../hooks/useApi';
 import api from '../api/services';
+import { classifyEscalationPriority, buildEscalationBrief } from '../utils/escalationTriage';
 
 function formatDate(iso) {
   if (!iso) return '-';
@@ -414,9 +415,86 @@ function ActionCard({ action, onApprove, onReject }) {
   );
 }
 
+const PRIORITY_STYLE = {
+  urgent: { dot: '🔴', label: 'Urgent', color: '#EF4444', bg: '#FEF2F2', border: '#FECACA' },
+  needs_attention: { dot: '🟠', label: 'Needs attention', color: '#B45309', bg: '#FFFBEB', border: '#FDE68A' },
+};
+
+// One triage card = everything a human needs to decide whether/why to open
+// this conversation, without opening it first. Every field comes straight
+// from the ticket row already returned by GET /api/tickets - no extra
+// request, nothing invented.
+function EscalationTriageCard({ ticket, classification, onOpen }) {
+  const style = PRIORITY_STYLE[classification.level] || PRIORITY_STYLE.needs_attention;
+  const brief = buildEscalationBrief(ticket);
+  const orderNumber = ticket.detected_order_number || ticket.detected_order_id || ticket.order_id;
+  const excerpt = brief.customerLine
+    ? `${brief.customerLine.slice(0, 100)}${brief.customerLine.length > 100 ? '…' : ''}`
+    : null;
+
+  return (
+    <div
+      onClick={() => onOpen(ticket.id)}
+      style={{
+        background: 'white',
+        border: '1px solid #E4E4E7',
+        borderLeft: `4px solid ${style.color}`,
+        borderRadius: '8px',
+        padding: '16px 20px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '8px',
+        cursor: 'pointer',
+      }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px' }}>
+        <div>
+          <div style={{ fontSize: '14px', fontWeight: '600', color: '#0F172A' }}>
+            {ticket.customer_name || ticket.customer_email || 'Unknown customer'}
+          </div>
+          {ticket.customer_name && ticket.customer_email && (
+            <div style={{ fontSize: '12px', color: '#94A3B8' }}>{ticket.customer_email}</div>
+          )}
+        </div>
+        <span style={{ flexShrink: 0, fontSize: '11px', fontWeight: '600', color: style.color, background: style.bg, border: `1px solid ${style.border}`, borderRadius: '999px', padding: '3px 10px', whiteSpace: 'nowrap' }}>
+          {style.dot} {style.label}
+        </span>
+      </div>
+
+      <div style={{ fontSize: '13px', fontWeight: '600', color: style.color }}>{classification.reasonLabel}</div>
+
+      <div style={{ fontSize: '12.5px', color: '#64748B', display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+        {orderNumber && (
+          <span style={{ background: '#F8FAFC', padding: '2px 8px', borderRadius: '4px', color: '#475569', flexShrink: 0 }}>Order #{orderNumber}</span>
+        )}
+        {excerpt && <span style={{ fontStyle: 'italic' }}>"{excerpt}"</span>}
+      </div>
+
+      <div style={{ fontSize: '12px', color: '#64748B' }}>
+        {classification.aiResponded ? 'AI already responded' : 'No AI response sent yet'} · Human decision required
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '2px' }}>
+        <span style={{ fontSize: '11px', color: '#94A3B8', fontFamily: 'DM Mono, monospace' }}>{formatDate(ticket.updated_at)}</span>
+        <span style={{ fontSize: '12.5px', fontWeight: '600', color: '#06B6D4' }}>Take over →</span>
+      </div>
+    </div>
+  );
+}
+
 export default function Actions() {
   const navigate = useNavigate();
   const { data: escalations = [], isLoading: loadingEscalations, refetch: refetchEscalations } = useEscalations();
+  // Deterministic triage split — see utils/escalationTriage.js. Urgent and
+  // needs-attention both land in the actionable "needs your attention"
+  // queue (urgent sorted first); everything else stays in the compact,
+  // visually subordinate table below, unchanged from before this queue
+  // existed.
+  const escalationsClassified = escalations.map(ticket => ({ ticket, classification: classifyEscalationPriority(ticket) }));
+  const needsAttentionList = escalationsClassified
+    .filter(e => e.classification.level !== 'other')
+    .sort((a, b) => (a.classification.level === 'urgent' ? 0 : 1) - (b.classification.level === 'urgent' ? 0 : 1));
+  const otherEscalations = escalationsClassified.filter(e => e.classification.level === 'other').map(e => e.ticket);
   const { data: actions = [], isLoading: loadingActions, refetch: refetchActions } = useActions('pending');
   const { data: history = [], isLoading: loadingHistory } = useActions('history');
   const rejectedActions = history.filter(a => a.status === 'rejected');
@@ -536,8 +614,8 @@ export default function Actions() {
   };
 
   const toggleAllEscalations = () => {
-    if (selectedEscalationIds.size === escalations.length) setSelectedEscalationIds(new Set());
-    else setSelectedEscalationIds(new Set(escalations.map(e => e.id)));
+    if (selectedEscalationIds.size === otherEscalations.length) setSelectedEscalationIds(new Set());
+    else setSelectedEscalationIds(new Set(otherEscalations.map(e => e.id)));
   };
 
   const handleBulkCloseEscalations = async () => {
@@ -855,43 +933,23 @@ export default function Actions() {
         </section>
       )}
 
-      {/* Escalated Conversations */}
+      {/* Escalated Conversations — split into an actionable triage queue
+          (urgent + needs-attention, see utils/escalationTriage.js) and a
+          compact table for everything else, so an escalation that genuinely
+          needs a human doesn't look identical to one that's just here for
+          visibility. */}
       <section>
-        <div className="header-row" style={{ marginBottom: '12px' }}>
+        <div className="header-row" style={{ marginBottom: escalations.length > 0 ? '4px' : '12px' }}>
           <h2 style={{ fontSize: '14px', fontWeight: '600', color: '#0F172A' }}>Escalated Conversations</h2>
-          {escalations.length > 0 && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '13px', color: '#64748B', cursor: 'pointer' }}
-                     onMouseEnter={e => e.target.style.color = '#0F172A'}
-                     onMouseLeave={e => e.target.style.color = '#64748B'}>
-                <input
-                  type="checkbox"
-                  checked={selectedEscalationIds.size === escalations.length && escalations.length > 0}
-                  onChange={toggleAllEscalations}
-                />
-                Select all
-              </label>
-              {selectedEscalationIds.size > 0 && (
-                <button
-                  onClick={handleBulkCloseEscalations}
-                  disabled={bulkEscalWorking}
-                  style={{ padding: '4px 10px', fontSize: '12px', borderRadius: '4px', background: '#ECFDF5', color: '#10B981', border: '1px solid #10B981', cursor: 'pointer' }}
-                >
-                  {bulkEscalWorking ? 'Closing...' : `Mark ${selectedEscalationIds.size} resolved`}
-                </button>
-              )}
-              <button
-                onClick={handleCloseAllEscalations}
-                disabled={bulkEscalWorking}
-                style={{ padding: '4px 10px', fontSize: '13px', borderRadius: '4px', background: 'transparent', color: '#64748B', border: '1px solid transparent', cursor: 'pointer', transition: 'color 0.15s' }}
-                onMouseEnter={e => e.target.style.color = '#0F172A'}
-                onMouseLeave={e => e.target.style.color = '#64748B'}
-              >
-                Clear all
-              </button>
-            </div>
-          )}
         </div>
+
+        {!loadingEscalations && escalations.length > 0 && (
+          <div style={{ fontSize: '13px', color: '#64748B', marginBottom: '16px' }}>
+            <strong style={{ color: '#0F172A' }}>{needsAttentionList.length}</strong> need your attention
+            {' · '}
+            {otherEscalations.length} other escalation{otherEscalations.length === 1 ? '' : 's'}
+          </div>
+        )}
 
         {loadingEscalations ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -905,66 +963,122 @@ export default function Actions() {
           </div>
         ) : (
           <>
-            {/* Mobile card list */}
-            <div className="table-mobile-cards">
-              {escalations.map(c => (
-                <div key={c.id} className="mobile-card" onClick={() => navigate(`/tickets/${c.id}`)}>
-                  <div className="mobile-card-row">
-                    <span style={{ fontFamily: 'DM Mono, monospace', fontSize: '12px', color: '#64748B' }}>#{String(c.id).slice(0, 8)}</span>
-                    <span style={{ color: '#64748B' }}>{formatDate(c.updated_at)}</span>
-                  </div>
-                  <div style={{ fontWeight: '500', color: '#0F172A' }}>{c.customer_email || c.sender_id || '-'}</div>
-                  <div className="mobile-card-row">
-                    <span style={{ textTransform: 'capitalize' }}>{c.channel || 'email'}</span>
-                    <Badge status={c.status} />
-                  </div>
+            {needsAttentionList.length > 0 && (
+              <div style={{ marginBottom: otherEscalations.length > 0 ? '28px' : '0' }}>
+                <div style={{ fontSize: '12.5px', fontWeight: '700', color: '#B91C1C', marginBottom: '10px' }}>
+                  🔴 Needs Your Attention
                 </div>
-              ))}
-            </div>
-
-          <div className="table-desktop-wrap" style={{ background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', overflow: 'hidden' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ background: '#F8FAFC' }}>
-                  <th style={{ padding: '10px 8px 10px 16px', width: '36px', borderBottom: '1px solid #E4E4E7' }} />
-                  {['ID', 'Channel', 'Sender', 'Status', 'Updated'].map(h => (
-                    <th key={h} style={{ padding: '10px 16px', textAlign: 'left', fontSize: '11px', fontWeight: '600', color: '#64748B', borderBottom: '1px solid #E4E4E7', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{h}</th>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {needsAttentionList.map(({ ticket, classification }) => (
+                    <EscalationTriageCard
+                      key={ticket.id}
+                      ticket={ticket}
+                      classification={classification}
+                      onOpen={id => navigate(`/tickets/${id}`)}
+                    />
                   ))}
-                </tr>
-              </thead>
-              <tbody>
-                {escalations.map((c, i) => (
-                  <tr
-                    key={c.id}
-                    style={{ background: selectedEscalationIds.has(c.id) ? '#F0FAFE' : 'transparent', borderBottom: '1px solid #F1F5F9', height: '48px' }}
-                    onMouseEnter={e => { if (!selectedEscalationIds.has(c.id)) e.currentTarget.style.background = '#F8FAFC'; }}
-                    onMouseLeave={e => { if (!selectedEscalationIds.has(c.id)) e.currentTarget.style.background = 'transparent'; }}
-                  >
-                    <td style={{ padding: '0 8px 0 16px' }}>
+                </div>
+              </div>
+            )}
+
+            {otherEscalations.length > 0 && (
+              <div>
+                <div className="header-row" style={{ marginBottom: '10px' }}>
+                  <span style={{ fontSize: '12.5px', fontWeight: '700', color: '#64748B' }}>Other Escalations</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '13px', color: '#64748B', cursor: 'pointer' }}
+                           onMouseEnter={e => e.target.style.color = '#0F172A'}
+                           onMouseLeave={e => e.target.style.color = '#64748B'}>
                       <input
                         type="checkbox"
-                        checked={selectedEscalationIds.has(c.id)}
-                        onChange={() => toggleEscalation(c.id)}
+                        checked={selectedEscalationIds.size === otherEscalations.length && otherEscalations.length > 0}
+                        onChange={toggleAllEscalations}
                       />
-                    </td>
-                    <td style={{ padding: '0 16px', fontFamily: 'DM Mono, monospace', fontSize: '12px', color: '#64748B' }}>
-                      #{String(c.id).slice(0, 8)}
+                      Select all
+                    </label>
+                    {selectedEscalationIds.size > 0 && (
                       <button
-                        onClick={() => navigate(`/tickets/${c.id}`)}
-                        style={{ marginLeft: '8px', fontSize: '11px', color: '#06B6D4', background: 'none', border: 'none', cursor: 'pointer', padding: '0', fontFamily: 'inherit' }}
+                        onClick={handleBulkCloseEscalations}
+                        disabled={bulkEscalWorking}
+                        style={{ padding: '4px 10px', fontSize: '12px', borderRadius: '4px', background: '#ECFDF5', color: '#10B981', border: '1px solid #10B981', cursor: 'pointer' }}
                       >
-                        View →
+                        {bulkEscalWorking ? 'Closing...' : `Mark ${selectedEscalationIds.size} resolved`}
                       </button>
-                    </td>
-                    <td style={{ padding: '0 16px', textTransform: 'capitalize', color: '#1E293B' }}>{c.channel || 'email'}</td>
-                    <td style={{ padding: '0 16px', color: '#1E293B' }}>{c.customer_email || c.sender_id || '-'}</td>
-                    <td style={{ padding: '0 16px' }}><Badge status={c.status} /></td>
-                    <td style={{ padding: '0 16px', color: '#64748B', fontSize: '12px', fontFamily: 'DM Mono, monospace' }}>{formatDate(c.updated_at)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                    )}
+                    <button
+                      onClick={handleCloseAllEscalations}
+                      disabled={bulkEscalWorking}
+                      style={{ padding: '4px 10px', fontSize: '13px', borderRadius: '4px', background: 'transparent', color: '#64748B', border: '1px solid transparent', cursor: 'pointer', transition: 'color 0.15s' }}
+                      onMouseEnter={e => e.target.style.color = '#0F172A'}
+                      onMouseLeave={e => e.target.style.color = '#64748B'}
+                    >
+                      Clear all
+                    </button>
+                  </div>
+                </div>
+
+                {/* Mobile card list */}
+                <div className="table-mobile-cards">
+                  {otherEscalations.map(c => (
+                    <div key={c.id} className="mobile-card" onClick={() => navigate(`/tickets/${c.id}`)}>
+                      <div className="mobile-card-row">
+                        <span style={{ fontFamily: 'DM Mono, monospace', fontSize: '12px', color: '#64748B' }}>#{String(c.id).slice(0, 8)}</span>
+                        <span style={{ color: '#64748B' }}>{formatDate(c.updated_at)}</span>
+                      </div>
+                      <div style={{ fontWeight: '500', color: '#0F172A' }}>{c.customer_email || c.sender_id || '-'}</div>
+                      <div className="mobile-card-row">
+                        <span style={{ textTransform: 'capitalize' }}>{c.channel || 'email'}</span>
+                        <Badge status={c.status} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="table-desktop-wrap" style={{ background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', overflow: 'hidden' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr style={{ background: '#F8FAFC' }}>
+                        <th style={{ padding: '10px 8px 10px 16px', width: '36px', borderBottom: '1px solid #E4E4E7' }} />
+                        {['ID', 'Channel', 'Sender', 'Status', 'Updated'].map(h => (
+                          <th key={h} style={{ padding: '10px 16px', textAlign: 'left', fontSize: '11px', fontWeight: '600', color: '#64748B', borderBottom: '1px solid #E4E4E7', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {otherEscalations.map((c, i) => (
+                        <tr
+                          key={c.id}
+                          style={{ background: selectedEscalationIds.has(c.id) ? '#F0FAFE' : 'transparent', borderBottom: '1px solid #F1F5F9', height: '48px' }}
+                          onMouseEnter={e => { if (!selectedEscalationIds.has(c.id)) e.currentTarget.style.background = '#F8FAFC'; }}
+                          onMouseLeave={e => { if (!selectedEscalationIds.has(c.id)) e.currentTarget.style.background = 'transparent'; }}
+                        >
+                          <td style={{ padding: '0 8px 0 16px' }}>
+                            <input
+                              type="checkbox"
+                              checked={selectedEscalationIds.has(c.id)}
+                              onChange={() => toggleEscalation(c.id)}
+                            />
+                          </td>
+                          <td style={{ padding: '0 16px', fontFamily: 'DM Mono, monospace', fontSize: '12px', color: '#64748B' }}>
+                            #{String(c.id).slice(0, 8)}
+                            <button
+                              onClick={() => navigate(`/tickets/${c.id}`)}
+                              style={{ marginLeft: '8px', fontSize: '11px', color: '#06B6D4', background: 'none', border: 'none', cursor: 'pointer', padding: '0', fontFamily: 'inherit' }}
+                            >
+                              View →
+                            </button>
+                          </td>
+                          <td style={{ padding: '0 16px', textTransform: 'capitalize', color: '#1E293B' }}>{c.channel || 'email'}</td>
+                          <td style={{ padding: '0 16px', color: '#1E293B' }}>{c.customer_email || c.sender_id || '-'}</td>
+                          <td style={{ padding: '0 16px' }}><Badge status={c.status} /></td>
+                          <td style={{ padding: '0 16px', color: '#64748B', fontSize: '12px', fontFamily: 'DM Mono, monospace' }}>{formatDate(c.updated_at)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </>
         )}
       </section>

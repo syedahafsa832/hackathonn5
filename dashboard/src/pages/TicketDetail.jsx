@@ -5,6 +5,7 @@ import Badge from '../components/Badge';
 import ActionCard from '../components/ActionCard';
 import Alert from '../components/Alert';
 import { useSendMessage, useTakeover, useRelease, useTicket, useMarkRead } from '../hooks/useApi';
+import { buildEscalationBrief } from '../utils/escalationTriage';
 
 // Mirrors api.getConversationMessages()'s merge logic, but runs on a ticket
 // object we already have in memory instead of firing a second network
@@ -552,44 +553,6 @@ const RISK_COPY = {
   medium: { label: 'Medium risk', color: 'var(--warning, #F59E0B)' },
   low: { label: 'Low risk', color: 'var(--success, #10B981)' },
 };
-
-// Turns the raw fields already stored on the ticket into a plain-English brief for
-// a human agent, without changing how escalation is decided or stored.
-function buildEscalationBrief(ticket) {
-  const customerLine = (ticket.message || '').trim().slice(0, 220);
-  const sentiment = ticket.customer_sentiment;
-
-  const whyStopped = ticket.escalation_reason
-    || (ticket.risk_level === 'high' && 'The request carries financial/policy risk (e.g. refund, cancellation, or a legal/pricing concern) that needs a human decision.')
-    || (sentiment === 'angry' && 'The customer sounds angry or frustrated. Routed to a human to avoid a scripted reply landing badly.')
-    || 'The AI was not confident enough in its answer to reply automatically.';
-
-  const orderContext = ticket.detected_order_id
-    ? `Order #${ticket.detected_order_id}`
-    : 'No order number detected in this conversation.';
-
-  const tags = ticket.tags || [];
-  const isProviderOutage = (ticket.escalation_reason || '').startsWith('AI reply limit reached');
-  let recommendedAction = 'Read the conversation below and reply manually.';
-  if (isProviderOutage) {
-    recommendedAction = 'Review conversation and reply manually.';
-  } else if (tags.includes('cancel') && ticket.detected_order_id) {
-    recommendedAction = `Check order #${ticket.detected_order_id} in Shopify. Cancel/restock if it hasn't shipped, otherwise explain why it can't be cancelled.`;
-  } else if (tags.includes('refund') && ticket.detected_order_id) {
-    recommendedAction = `Verify order #${ticket.detected_order_id} qualifies for a refund, then use the Refund action or explain the policy if it doesn't.`;
-  } else if (tags.includes('damaged') || tags.includes('exchange')) {
-    recommendedAction = 'Confirm the issue with the customer and arrange a replacement/exchange or refund as appropriate.';
-  } else if (ticket.ai_draft) {
-    recommendedAction = "Review the AI's suggested draft below. Edit and send it, or write your own reply.";
-  }
-
-  let confidencePct = null;
-  if (typeof ticket.confidence_score === 'number') {
-    confidencePct = ticket.confidence_score <= 1 ? ticket.confidence_score * 100 : ticket.confidence_score;
-  }
-
-  return { customerLine, whyStopped, orderContext, recommendedAction, confidencePct };
-}
 
 export default function TicketDetail() {
   const { ticket_id } = useParams();
