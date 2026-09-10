@@ -266,6 +266,7 @@ class AIProviderManager:
         messages: List[Dict[str, str]],
         temperature: float = 0.1,
         response_format: Optional[dict] = None,
+        max_tokens: int = 1200,
     ):
         """
         Tries each configured provider in order (same messages/temperature/RAG
@@ -290,7 +291,16 @@ class AIProviderManager:
 
         for i, provider in enumerate(self._providers):
             client = self._client_for(provider)
-            kwargs = {"model": provider.model, "messages": messages, "temperature": temperature}
+            # Explicit max_tokens on every provider - previously omitted, so
+            # each API's own default applied. That default can be small
+            # (notably Cloudflare Workers AI), and the JSON response schema
+            # writes intent/sentiment/risk_level/escalate/action_detected/
+            # confidence_score BEFORE reply_body - a tight budget can get
+            # cut off right around reply_body, producing valid-looking but
+            # empty/truncated output (confirmed live: tickets #ec3daa7f and
+            # #dcd01e64 both got a real Shopify product match but an empty
+            # reply_body from Cloudflare, tokens_used ~2900-2950 each).
+            kwargs = {"model": provider.model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
             if response_format is not None:
                 kwargs["response_format"] = response_format
 
