@@ -59,7 +59,12 @@ def _known_customer_name(raw_name: Optional[str]) -> Optional[str]:
 # "Thanks for reaching out", etc. Matched at the very start of the reply
 # (post-formatting), case-insensitively.
 _GREETING_OPENER_RE = re.compile(
-    r"^\s*(hi|hey|hello|dear|greetings|good\s+(?:morning|afternoon|evening)|thanks?(?:\s+you)?(?:\s+for)?)\b",
+    # hi+/hey+/hello+ (not just "hi"/"hey"/"hello") - a casual, elongated
+    # opener like "Heyyy"/"Hiiii"/"Hellooo" (common when mirroring a
+    # customer's own casual tone) is still a real greeting; the plain
+    # exact-word version previously missed it entirely, causing a second,
+    # duplicate deterministic "Hey {name}," to be prepended on top.
+    r"^\s*(hi+|hey+|hello+|dear|greetings|good\s+(?:morning|afternoon|evening)|thanks?(?:\s+you)?(?:\s+for)?)\b",
     re.IGNORECASE,
 )
 
@@ -1290,6 +1295,23 @@ class CustomerSuccessAgent:
                         if len(candidate) >= 2:
                             product = candidate
                             break
+                if product and product in ("it", "this", "that", "one"):
+                    # The pattern matched a bare pronoun standing in for a
+                    # product actually named earlier in this SAME message
+                    # ("...black maxi dress... do you have it in stock?") -
+                    # never search inventory for the literal pronoun. Reuse
+                    # the existing product-mention pattern (normally used
+                    # for chat-HISTORY anchoring) against the current
+                    # message first; only keep the pronoun if genuinely
+                    # nothing else is found.
+                    _pronoun = product
+                    _mention = _HISTORY_PRODUCT_MENTION_RE.search(query_lower)
+                    if _mention:
+                        _real_candidate = " ".join(
+                            g.strip() for g in (_mention.group(1) or "", _mention.group(2), _mention.group(3) or "")
+                            if g and g.strip()
+                        )
+                        product = _real_candidate or _pronoun
                 if not product:
                     # Fallback for phrasing the patterns above don't cover.
                     fallback_match = re.search(r'(hoodie|jacket|pants|shirt|tshirt|coat|dress|skirt)', query_lower)
@@ -2033,7 +2055,9 @@ class CustomerSuccessAgent:
             # 6. Signature Enforcement - Make it natural, not robotic. Falls
             # back to the neutral idiom "there" ("Hey there,") - never a
             # placeholder treated as a real name - when none is known.
-            name = (_known_customer_name(customer_info.get("name")) or "there").split()[0]
+            # Full name, not just its first word - a two-word display name
+            # like "AI CODERS" must never be truncated to "AI".
+            name = _known_customer_name(customer_info.get("name")) or "there"
             reply = _strip_em_dash(structured.get("reply_body", ""))
             structured["reply_body"] = reply
 
@@ -2246,6 +2270,11 @@ class CustomerSuccessAgent:
         10. Only greet the customer by name if CUSTOMER Name above gives you a real one. If it says
            "Not known", use a neutral opening instead - never write "Dear There" or greet them by
            any placeholder word as if it were their real name.
+        11. If ORDER INFO above includes a "Product link", share it naturally when relevant to what
+           the customer asked - never invent a link that isn't given. If the customer explicitly asks
+           for a photo/image/picture of a product, do NOT silently ignore that - say plainly that you
+           can't attach product images over email yet, and share the product link instead if one is
+           available. Only mention this limitation when the customer actually asked for an image.
 
         COMMON SENSE — READ ORDER STATUS BEFORE RESPONDING:
         - If ORDER DATA says "CANCELLED" — do NOT offer cancellation. Tell them plainly it's already cancelled and can't be cancelled again, using the real order data (not a one-line brush-off) so they know their request was actually handled.
