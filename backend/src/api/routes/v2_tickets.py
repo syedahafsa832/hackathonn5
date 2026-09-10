@@ -611,6 +611,10 @@ async def respond_to_ticket(
             "human_approved_at": now_iso,
             "status": "human_responded",
             "updated_at": now_iso,
+            # Genuine human takeover resets the automatic-reply budget - see
+            # tickets.py's send_reply for the matching rationale.
+            "auto_reply_count": 0,
+            "loop_risk": False,
         }
 
         # If sending to customer
@@ -720,6 +724,11 @@ async def approve_ai_response(
             "human_approved_at": now_iso,
             "status": "human_responded",
             "updated_at": now_iso,
+            # Genuine human takeover (approved/edited by a real user, recorded
+            # above) resets the automatic-reply budget - see tickets.py's
+            # send_reply for the matching rationale.
+            "auto_reply_count": 0,
+            "loop_risk": False,
         }
 
         # Send via per-brand Gmail

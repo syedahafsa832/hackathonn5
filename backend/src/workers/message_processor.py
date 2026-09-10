@@ -28,6 +28,31 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _normalize_reply_text(text: Optional[str]) -> str:
+    """lowercase, trim, collapse whitespace - cheap and deterministic, no
+    fuzzy matching/embeddings. Used only to compare a candidate AI reply
+    against the ticket's own recently-SENT AI replies to catch the AI
+    generating the exact same answer again (a real loop signal, distinct
+    from a legitimately long but progressing conversation)."""
+    return re.sub(r'\s+', ' ', (text or '').strip().lower())
+
+
+def _is_repeat_ai_reply(reply_body: str, messages: list) -> bool:
+    """True when reply_body normalizes identically to one of the last 2
+    AI replies that were actually SENT (direction='outbound', not a draft
+    or internal note) on this ticket. A short-but-different reply like
+    "Thanks!" never matches unless the exact same text was already sent -
+    no length heuristic, no partial/fuzzy match."""
+    new_norm = _normalize_reply_text(reply_body)
+    if not new_norm:
+        return False
+    sent_ai_replies = [
+        m for m in (messages or [])
+        if m.get("direction") == "outbound" and m.get("from") == "AI Agent"
+    ]
+    return any(_normalize_reply_text(m.get("body")) == new_norm for m in sent_ai_replies[-2:])
+
+
 async def _log_ticket_event(ticket_id: Optional[str], brand_id: Optional[str], stage: str, label: str, status: str = "done", detail: Optional[str] = None) -> None:
     """Persists one real processing milestone so the dashboard can show what
     Luna actually did, as it actually happens - never a fabricated/animated
@@ -585,6 +610,15 @@ class UnifiedMessageProcessor:
             if early_ticket and early_ticket.get("loop_risk") and should_auto_reply:
                 logger.info(f"[PROCESSOR] loop_risk=true on ticket {early_ticket_id} - suppressing AI auto-reply send (message already saved)")
                 should_auto_reply = False
+            # Repeated-reply guard: the AI generating the exact same answer
+            # again (normalized) is a real loop signal on its own, distinct
+            # from the turn-count ceiling below - catches a stuck AI well
+            # before 5 turns, without waiting for the count to trip. Cheap
+            # deterministic string comparison only, no embeddings/LLM call.
+            if early_ticket and should_auto_reply and _is_repeat_ai_reply(reply_body, early_ticket.get("messages")):
+                logger.info(f"[PROCESSOR] Repeated AI reply detected on ticket {early_ticket_id} - suppressing send, marking loop_risk")
+                should_auto_reply = False
+                ticket_payload["loop_risk"] = True
             if routing["status"] is not None:
                 ticket_payload["status"] = routing["status"]
                 # Deterministic "genuinely resolved" signal for the CSAT
@@ -692,7 +726,7 @@ class UnifiedMessageProcessor:
                     settings_rows = await asyncio.to_thread(supabase_select, "system_settings", {"store_id": f"eq.{store_id}"})
                     if not settings_rows:
                         settings_rows = await asyncio.to_thread(supabase_select, "system_settings", {"store_id": "eq.00000000-0000-0000-0000-000000000000"})
-                    max_replies = 2
+                    max_replies = 5
                     if settings_rows and settings_rows[0].get("max_auto_replies") is not None:
                         max_replies = settings_rows[0]["max_auto_replies"]
                     current_count = 0
@@ -910,6 +944,11 @@ class UnifiedMessageProcessor:
             logger.info(f"[ProviderRetry] loop_risk=true on ticket {ticket_id} - suppressing AI auto-reply send")
             should_auto_reply = False
 
+        repeat_detected = should_auto_reply and _is_repeat_ai_reply(reply_body, fresh.get("messages"))
+        if repeat_detected:
+            logger.info(f"[ProviderRetry] Repeated AI reply detected on ticket {ticket_id} - suppressing send, marking loop_risk")
+            should_auto_reply = False
+
         email_actually_sent = False
         if should_auto_reply and reply_body and auto_reply_enabled and channel == "email":
             await self._send_email_with_logging(customer_email, subject, ai_result, ticket_id, store_id=store_id)
@@ -932,10 +971,12 @@ class UnifiedMessageProcessor:
                     **({"needs_email_verification": True} if ai_result.get("needs_identity_verification") else {}),
                 })
                 msg_update = {"messages": current_msgs, "updated_at": now_iso}
-                if email_actually_sent:
+                if repeat_detected:
+                    msg_update["loop_risk"] = True
+                elif email_actually_sent:
                     settings_rows = (await asyncio.to_thread(supabase_select, "system_settings", {"store_id": f"eq.{store_id}"})
                                       or await asyncio.to_thread(supabase_select, "system_settings", {"store_id": "eq.00000000-0000-0000-0000-000000000000"}))
-                    max_replies = settings_rows[0].get("max_auto_replies", 2) if settings_rows else 2
+                    max_replies = settings_rows[0].get("max_auto_replies", 5) if settings_rows else 5
                     new_count = current_count + 1
                     msg_update["auto_reply_count"] = new_count
                     msg_update["loop_risk"] = new_count >= max_replies

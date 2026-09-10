@@ -27,7 +27,7 @@ from src.lib.supabase_client import supabase_select, supabase_insert
 logger = logging.getLogger(__name__)
 
 DEFAULT_STORE = "00000000-0000-0000-0000-000000000000"
-DEFAULT_MAX_AUTO_REPLIES = 2
+DEFAULT_MAX_AUTO_REPLIES = 5
 
 BLOCKED_SENDER_PREFIXES = [
     "noreply", "no-reply", "notifications", "newsletter",

@@ -55,7 +55,7 @@ def _get_filter_settings(store_id: str) -> dict:
     defaults = {
         "blocked_domains": [],
         "whitelisted_domains": [],
-        "max_auto_replies": 2,
+        "max_auto_replies": 5,
         "promotion_filter_enabled": True,
         "loop_protection_enabled": True,
         # Guardian fields (feature 006)
@@ -79,7 +79,7 @@ def _get_filter_settings(store_id: str) -> dict:
 class EmailFilterSettingsResponse(BaseModel):
     blocked_domains: List[str] = []
     whitelisted_domains: List[str] = []
-    max_auto_replies: int = 2
+    max_auto_replies: int = 5
     promotion_filter_enabled: bool = True
     loop_protection_enabled: bool = True
     # Guardian fields (feature 006)
@@ -133,7 +133,7 @@ async def patch_email_filter_settings(
             "ai_mode": "active",
             "blocked_domains": [],
             "whitelisted_domains": [],
-            "max_auto_replies": 2,
+            "max_auto_replies": 5,
             "promotion_filter_enabled": True,
             "loop_protection_enabled": True,
             # Guardian defaults (feature 006)

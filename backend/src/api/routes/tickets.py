@@ -426,6 +426,14 @@ async def send_reply(
             "email_sent": True,
             "email_sent_at": now_iso,
             "human_approved": True,
+            # A human sent this (typed it, or clicked Approve on Luna's draft) -
+            # genuine human takeover resets the automatic-reply budget so a
+            # thread that hit loop_risk isn't stuck silent forever once a
+            # person is actively involved. Only turn-count/loop_risk are
+            # reset here - escalation state, status, and messages are
+            # untouched by this reset.
+            "auto_reply_count": 0,
+            "loop_risk": False,
             **({"human_response": reply_body} if is_manual else {"ai_reply": reply_body}),
         })
 
