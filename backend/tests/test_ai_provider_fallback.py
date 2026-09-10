@@ -426,10 +426,11 @@ async def test_usage_reflects_the_successful_attempt_after_failover_not_the_fail
     assert usage["total_tokens"] == 380
 
 
-def test_load_providers_appends_cloudflare_last_after_groq():
-    """Cloudflare Workers AI is the final tier, after every Mistral/
-    OpenRouter/Groq key - a fourth independent provider/account for the rare
-    case every other configured key is exhausted at once. Requires BOTH
+def test_load_providers_tries_cloudflare_first():
+    """Cloudflare Workers AI is tried FIRST, ahead of Mistral/OpenRouter/
+    Groq - those were failing account-wide (403/404/429 seen live on every
+    request), so every message burned ~25-30s working through each of them
+    before ever reaching a provider that actually works. Requires BOTH
     CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID."""
     env = {
         "MISTRAL_API_KEY": "mistral-primary-key",
@@ -442,8 +443,8 @@ def test_load_providers_appends_cloudflare_last_after_groq():
         providers = mgr._load_providers()
 
     labels = [p.label for p in providers]
-    assert labels == ["primary", "groq_fallback_1", "cloudflare_fallback_1"]
-    cf = providers[-1]
+    assert labels == ["cloudflare_fallback_1", "primary", "groq_fallback_1"]
+    cf = providers[0]
     assert cf.api_key == "cfut_test_token"
     assert cf.base_url == "https://api.cloudflare.com/client/v4/accounts/acct-123/ai/v1"
     assert cf.model == "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
@@ -489,7 +490,7 @@ def test_cloudflare_model_and_base_url_are_overridable():
         mgr = AIProviderManager.__new__(AIProviderManager)
         providers = mgr._load_providers()
 
-    cf = providers[-1]
+    cf = providers[0]
     assert cf.model == "@cf/mistral/mistral-7b-instruct-v0.1"
 
 

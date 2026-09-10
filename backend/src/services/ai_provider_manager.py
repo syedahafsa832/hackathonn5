@@ -113,6 +113,31 @@ class AIProviderManager:
 
     def _load_providers(self) -> List[_Provider]:
         providers = []
+
+        # Tried FIRST, ahead of Mistral/OpenRouter/Groq: those three are
+        # currently failing account-wide (403/404/429 seen live on every
+        # request), so every message was burning ~25-30s working through
+        # each of them before ever reaching a provider that actually works.
+        # Cloudflare Workers AI, a fourth independent provider/account,
+        # requires BOTH CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID (the
+        # token alone can't build the account-scoped base_url); silently
+        # omitted if either is missing, same as every other optional tier
+        # below. Reuses the exact same OpenAI() client / chat.completions.
+        # create() path as every other tier via its OpenAI-compatible
+        # /ai/v1 endpoint - no special-casing needed elsewhere.
+        cloudflare_token = os.getenv("CLOUDFLARE_API_TOKEN")
+        cloudflare_account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID")
+        if cloudflare_token and cloudflare_account_id:
+            providers.append(_Provider(
+                "cloudflare_fallback_1",
+                cloudflare_token,
+                os.getenv("CLOUDFLARE_MODEL", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"),
+                base_url=os.getenv(
+                    "CLOUDFLARE_API_BASE_URL",
+                    f"https://api.cloudflare.com/client/v4/accounts/{cloudflare_account_id}/ai/v1",
+                ),
+            ))
+
         primary_key = (
             os.getenv("MISTRAL_API_KEY_PRIMARY")
             or os.getenv("MISTRAL_API_KEY")
@@ -162,27 +187,6 @@ class AIProviderManager:
                     base_url=os.getenv(f"GROQ_API_BASE_URL_FALLBACK_{i}", groq_default_base_url),
                 ))
 
-        # Final last-resort tier, after Groq: Cloudflare Workers AI, a fourth
-        # independent provider/account for the rare case every Mistral/
-        # OpenRouter/Groq key is exhausted at once. Cloudflare exposes an
-        # OpenAI-compatible /ai/v1 endpoint under the account, so this reuses
-        # the exact same OpenAI() client / chat.completions.create() path as
-        # every other tier - no special-casing needed elsewhere. Requires
-        # BOTH CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID (the token
-        # alone can't build the account-scoped base_url); silently omitted
-        # if either is missing, same as every other optional tier above.
-        cloudflare_token = os.getenv("CLOUDFLARE_API_TOKEN")
-        cloudflare_account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID")
-        if cloudflare_token and cloudflare_account_id:
-            providers.append(_Provider(
-                "cloudflare_fallback_1",
-                cloudflare_token,
-                os.getenv("CLOUDFLARE_MODEL", "@cf/meta/llama-3.3-70b-instruct-fp8-fast"),
-                base_url=os.getenv(
-                    "CLOUDFLARE_API_BASE_URL",
-                    f"https://api.cloudflare.com/client/v4/accounts/{cloudflare_account_id}/ai/v1",
-                ),
-            ))
         return providers
 
     def _client_for(self, provider: _Provider) -> OpenAI:
