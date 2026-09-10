@@ -2063,11 +2063,14 @@ class CustomerSuccessAgent:
 
             # Safety backstop: never send/save a customer-facing reply with an
             # empty body (e.g. the model returned reply_body="" for a trivial
-            # message like "hello") - a blank AI message in the dashboard is
-            # worse than a generic one. Skipped when escalating - an empty
-            # draft there legitimately means "no auto-reply, a human will
-            # write one", which this must not override.
-            if not reply.strip() and not structured.get("escalate"):
+            # message like "hello", or for a low-confidence product question
+            # that still gets escalated-and-emailed) - a blank AI message is
+            # worse than a generic one. Unconditional: confirmed live that an
+            # escalated ticket's reply_body is still the one actually emailed
+            # to the customer (escalation does not by itself suppress the
+            # send), so excluding escalate=True here previously let a real,
+            # sent customer email go out with just the signature.
+            if not reply.strip():
                 reply = f"Hi {name}! Thanks for reaching out - how can I help you today?"
                 structured["reply_body"] = reply
 
