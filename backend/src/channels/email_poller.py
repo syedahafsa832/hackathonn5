@@ -378,27 +378,17 @@ class EmailPoller:
 
                 auto_reply_enabled = guardian_result.auto_reply_enabled
 
-                # ── Thread-risk check only — the actual thread-match/append
-                # decision now lives entirely in message_processor.py's own
-                # STAGE 1.5, which (unlike this poller previously) continues
-                # on into AI generation instead of silently appending the
-                # message and stopping. A same-thread customer reply used to
-                # never receive any AI response at all because of that early
-                # stop — this poller and message_processor.py each did their
-                # own separate thread-match check, and only the poller's
-                # (append-then-continue-the-loop, no AI call) actually ran.
-                if thread_id:
-                    try:
-                        results = await asyncio.to_thread(
-                            supabase_select, "tickets", {"gmail_thread_id": f"eq.{thread_id}"}
-                        )
-                        if results and results[0].get("loop_risk"):
-                            logger.info(
-                                f"[Poller] Loop-risk thread {thread_id} — suppressing further processing"
-                            )
-                            return
-                    except Exception as te:
-                        logger.warning(f"[Poller] Thread risk lookup failed (continuing): {te}")
+                # loop_risk is intentionally NOT checked here anymore — it used
+                # to hard-drop the inbound message before it ever reached
+                # message_processor.py, so a genuine customer reply on a
+                # loop-risk thread (2+ auto-replies already sent) vanished
+                # with zero trace: never appended to messages, never marked
+                # in processed_gmail_message_ids, no ticket update at all.
+                # The message must always be ingested; loop_risk now only
+                # suppresses the AI's own auto-reply SEND, inside
+                # message_processor.py (both the main path and the
+                # provider-retry path), right before should_auto_reply is
+                # acted on — never before ingestion.
 
                 # ── New ticket, or thread continuation (message_processor.py
                 # appends to the existing ticket and generates a real reply

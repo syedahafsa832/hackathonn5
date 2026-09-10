@@ -575,6 +575,16 @@ class UnifiedMessageProcessor:
                 identity_mismatch=ai_result.get("identity_mismatch", False),
             )
             should_auto_reply = routing["should_auto_reply"]
+            # loop_risk (2+ auto-replies already sent on this thread, see
+            # STAGE 1.5's early_ticket) only ever suppresses the AI's own
+            # automatic SEND - the customer's message is already saved
+            # above regardless, auto_reply_count/max_auto_replies are
+            # untouched, and escalation status below still applies
+            # normally (a genuine human-request/escalation is a status
+            # change and/or draft, not an auto-sent reply).
+            if early_ticket and early_ticket.get("loop_risk") and should_auto_reply:
+                logger.info(f"[PROCESSOR] loop_risk=true on ticket {early_ticket_id} - suppressing AI auto-reply send (message already saved)")
+                should_auto_reply = False
             if routing["status"] is not None:
                 ticket_payload["status"] = routing["status"]
                 # Deterministic "genuinely resolved" signal for the CSAT
@@ -895,6 +905,10 @@ class UnifiedMessageProcessor:
         if provider_retry_service.already_responded(fresh):
             provider_retry_service.mark_succeeded(retry_row["id"])
             return {"outcome": "cancelled", "reason": "already_responded_during_retry"}
+
+        if fresh.get("loop_risk") and should_auto_reply:
+            logger.info(f"[ProviderRetry] loop_risk=true on ticket {ticket_id} - suppressing AI auto-reply send")
+            should_auto_reply = False
 
         email_actually_sent = False
         if should_auto_reply and reply_body and auto_reply_enabled and channel == "email":
