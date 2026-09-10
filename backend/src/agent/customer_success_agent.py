@@ -1959,6 +1959,14 @@ class CustomerSuccessAgent:
                 clean_content = clean_content.strip()
 
                 structured = json.loads(clean_content)
+                # Diagnostic only: the max_tokens fix didn't change tokens_used
+                # at all on a repeat of the same "black maxi dress" test
+                # (~2950 both times), so this isn't truncation - the model is
+                # producing VALID JSON with reply_body genuinely empty/missing.
+                # Log the full raw content so the next occurrence shows what
+                # every other field actually contained.
+                if not (structured.get("reply_body") or "").strip():
+                    logger.error(f"[Agent] Empty reply_body in otherwise-valid JSON. Raw content: {raw_content}")
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse JSON response: {e}. Raw content: {raw_content[:500]}")
                 return self._get_fallback_response(f"JSON parse error: {str(e)}", brand_name=_brand_name, agent_name=_agent_name, email_signature=_email_signature)
