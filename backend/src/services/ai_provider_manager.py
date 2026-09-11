@@ -22,7 +22,7 @@ import time
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from openai import OpenAI
 
@@ -267,6 +267,8 @@ class AIProviderManager:
         temperature: float = 0.1,
         response_format: Optional[dict] = None,
         max_tokens: int = 1200,
+        validate_response: Optional[Callable[[Any], Optional[str]]] = None,
+        log_context: str = "",
     ):
         """
         Tries each configured provider in order (same messages/temperature/RAG
@@ -274,6 +276,22 @@ class AIProviderManager:
         Returns (response, provider_label, model, usage). Raises
         AllProvidersFailedError if every provider fails. Never retries more
         than len(providers) times.
+
+        validate_response, when given, is called on every HTTP-200 response
+        BEFORE it's accepted as a success. It returns None if the response is
+        acceptable, or a short failure-reason string if it should instead be
+        treated exactly like a network/auth failure - failed provider,
+        logged, and the loop moves on to the next configured provider (same
+        bounded pass-through-all-providers behavior as any other failure,
+        never a new retry mechanism). This module stays schema-agnostic on
+        purpose - callers with a specific response shape (e.g. a JSON
+        "reply_body" field) pass their own validator; callers that don't
+        (e.g. intent_detector.py's plain-text completions) are completely
+        unaffected by leaving this None.
+
+        log_context, when given (e.g. a ticket id), is appended to the
+        validation-failure log line only, to correlate it with the request
+        that triggered it - optional, never required.
 
         usage is a dict: {prompt_tokens, completion_tokens, total_tokens}
         (each None if the provider's response didn't include a `.usage`
@@ -326,6 +344,18 @@ class AIProviderManager:
                 attempts.append({"label": provider.label, "reason": reason})
                 logger.warning(f"[AI_PROVIDER] {provider.label} failed reason={reason} after {time.monotonic() - t_start:.2f}s")
                 response = None
+
+            if response is not None and validate_response is not None:
+                validation_failure = validate_response(response)
+                if validation_failure:
+                    attempts.append({"label": provider.label, "reason": validation_failure})
+                    logger.error(
+                        f"[AI_PROVIDER] validation_failed provider={provider.label} model={provider.model} "
+                        f"failure_type={validation_failure}"
+                        + (f" context={log_context}" if log_context else "")
+                        + f" after {time.monotonic() - t_start:.2f}s - treating as failed attempt, trying next provider"
+                    )
+                    response = None
 
             if response is not None:
                 elapsed = time.monotonic() - t_start

@@ -88,6 +88,55 @@ def _reply_already_has_greeting(reply: str) -> bool:
     return bool(_GREETING_OPENER_RE.match(reply or ""))
 
 
+def _validate_ai_json_reply(response) -> Optional[str]:
+    """Passed into ai_provider_manager.create_chat_completion() as
+    validate_response - runs on the RAW API response, before ANY of this
+    module's own post-processing (greeting/signature handling, the
+    empty-reply safety net, etc.). A failure caught here proves the
+    emptiness came from the model/provider itself, not from something this
+    module did to the text afterward - confirmed live: Cloudflare Workers
+    AI (@cf/meta/llama-3.3-70b-instruct-fp8-fast) returning HTTP 200 with
+    syntactically valid JSON (all other fields populated) but
+    reply_body="", on unrelated messages ("hey tell me about your brand"
+    and a product question alike), not a truncation/token-budget issue.
+
+    A provider whose response fails this check is treated exactly like a
+    network/auth failure by create_chat_completion() - logged, and the
+    loop moves to the next configured provider - so a working fallback
+    provider/model still answers the customer instead of an empty reply
+    silently being accepted as a "successful" completion.
+
+    Deliberately narrow: only flags (a) completely empty/whitespace-only
+    raw content and (b) syntactically valid JSON with an empty, missing,
+    or non-string reply_body. Malformed JSON is intentionally NOT flagged
+    here - the existing json.JSONDecodeError -> _get_fallback_response()
+    path below is unchanged, exactly as it was before this function
+    existed, and still runs for that case."""
+    try:
+        raw_content = response.choices[0].message.content
+    except Exception:
+        return None  # unexpected response shape - not this validator's concern
+    if not raw_content or not raw_content.strip():
+        return "empty_reply_body"
+    clean = raw_content.strip()
+    if clean.startswith("```json"):
+        clean = clean[7:]
+    if clean.startswith("```"):
+        clean = clean[3:]
+    if clean.endswith("```"):
+        clean = clean[:-3]
+    clean = clean.strip()
+    try:
+        parsed = json.loads(clean)
+    except Exception:
+        return None  # malformed JSON - leave to the existing downstream handler
+    if isinstance(parsed, dict) and "reply_body" in parsed:
+        reply_body = parsed.get("reply_body")
+        if not isinstance(reply_body, str) or not reply_body.strip():
+            return "empty_reply_body"
+    return None
+
+
 # A candidate store name the customer typed, e.g. "hasha clothing store
 # order #1002" -> "hasha clothing". Deliberately generic (no hardcoded
 # brand name) - matches "<Name> store" / "<Name> shop" / "<Name> clothing
@@ -1933,6 +1982,8 @@ class CustomerSuccessAgent:
                     messages=same_prompt_messages,
                     temperature=0.1,
                     response_format={"type": "json_object"},
+                    validate_response=_validate_ai_json_reply,
+                    log_context=ticket_id or "",
                 )
             except AllProvidersFailedError as api_error:
                 logger.error(f"[Agent] All AI providers failed: {api_error}")
