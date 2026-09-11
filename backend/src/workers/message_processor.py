@@ -598,6 +598,7 @@ class UnifiedMessageProcessor:
                 reply_body=reply_body,
                 has_new_pending_action=not ai_result.get("duplicate_action_notice", False),
                 identity_mismatch=ai_result.get("identity_mismatch", False),
+                intent=intent,
             )
             should_auto_reply = routing["should_auto_reply"]
             # loop_risk (2+ auto-replies already sent on this thread, see
@@ -913,6 +914,7 @@ class UnifiedMessageProcessor:
             risk_level=risk_level, reply_body=reply_body,
             has_new_pending_action=not ai_result.get("duplicate_action_notice", False),
             identity_mismatch=ai_result.get("identity_mismatch", False),
+            intent=intent,
         )
         should_auto_reply = routing["should_auto_reply"]
 
@@ -987,11 +989,20 @@ class UnifiedMessageProcessor:
         provider_retry_service.mark_succeeded(retry_row["id"])
         return {"outcome": "sent" if email_actually_sent else "no_action", "status": routing["status"]}
 
+    # Ordinary informational/support questions ("what does your brand sell?",
+    # "tell me about your brand", "what products do you have?") - never a
+    # refund/return/exchange/cancellation/address-change or other action
+    # topic, which keep escalating on risk_level exactly as before.
+    _SAFE_INFORMATIONAL_INTENTS = {
+        "product_inquiry", "general_inquiry", "shipping_inquiry",
+        "sizing_inquiry", "order_status_inquiry",
+    }
+
     def _decide_ticket_routing(
         self, ai_mode: str, is_overridden: bool, confidence: float,
         confidence_threshold: float, ai_flagged_escalate: bool,
         risk_level: str, reply_body: str, has_new_pending_action: bool = True,
-        identity_mismatch: bool = False,
+        identity_mismatch: bool = False, intent: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Pure decision logic for STAGE 8 (unsupported/ambiguous/failed/sensitive
         requests must escalate, not auto-reply as if resolved). Extracted from
@@ -1026,6 +1037,23 @@ class UnifiedMessageProcessor:
         was staged and nothing is pending, so "escalated" would be a fake
         escalation regardless of what risk_level the model assigned."""
         if not has_new_pending_action and not ai_flagged_escalate and risk_level != "high":
+            risk_level = "low"
+
+        # A brand/product/support question can land on risk_level="medium"
+        # purely from the model's own caution around brand/product claims
+        # (see the COMPANY/BRAND IDENTITY QUESTIONS prompt rule) even when
+        # it's confident and never asked to escalate - that medium rating
+        # otherwise unconditionally forces "escalated" below regardless of
+        # confidence, abandoning the customer over a routine question
+        # (confirmed live: "what does your brand sell?", confidence=80%,
+        # escalate=false, risk_level="medium" -> escalated anyway). Only
+        # ever relaxes "medium" (never "high") for this fixed, non-action
+        # intent whitelist and only when nothing else already flagged a
+        # real concern - a refund/return/exchange/cancellation/address-
+        # change (or any intent not on this list, including "unknown")
+        # keeps escalating on risk_level exactly as before.
+        if (risk_level == "medium" and not ai_flagged_escalate and not identity_mismatch
+                and intent in self._SAFE_INFORMATIONAL_INTENTS):
             risk_level = "low"
 
         if ai_mode in ("paused", "supervised"):
