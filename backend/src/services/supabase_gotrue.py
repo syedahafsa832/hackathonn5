@@ -140,14 +140,13 @@ def sign_out(access_token: str) -> None:
         logger.warning(f"[GoTrue] Logout returned {resp.status_code}: {_extract_error(resp)}")
 
 
-def generate_recovery_link(email: str, redirect_to: Optional[str] = None) -> Optional[str]:
+def _generate_admin_link(link_type: str, email: str, password: Optional[str] = None, redirect_to: Optional[str] = None) -> Optional[str]:
     """
-    Generate a password-reset action_link via Supabase's Admin API,
-    without Supabase sending any email itself or involving the Send Email
-    Hook at all — this is Supabase's own documented mechanism for custom
-    email delivery ("Generates email links and OTPs to be sent via a
-    custom email provider"). The caller is responsible for emailing the
-    returned link.
+    Generate an action_link via Supabase's Admin API, without Supabase
+    sending any email itself or involving the Send Email Hook at all —
+    this is Supabase's own documented mechanism for custom email delivery
+    ("Generates email links and OTPs to be sent via a custom email
+    provider"). The caller is responsible for emailing the returned link.
 
     Deliberately synchronous and hook-free: the Send Email Hook approach
     this replaced was tied to Supabase's own hard 5-second webhook
@@ -156,15 +155,15 @@ def generate_recovery_link(email: str, redirect_to: Optional[str] = None) -> Opt
     the link here happens inside our own request, under our own timeout
     budget, with no external deadline imposed on us.
 
-    Requires the service-role key — the one call in this module that does,
+    Requires the service-role key — the only calls in this module that do,
     since /admin/* GoTrue endpoints are privileged and every other
     function here deliberately uses only the anon key. Never raises;
     returns None on any failure (including "no such account") since
-    request_password_reset() must not reveal whether the email exists
-    either way.
+    callers like request_password_reset() must not reveal whether the
+    email exists either way.
     """
     if not SUPABASE_SERVICE_ROLE_KEY:
-        logger.error("[GoTrue] SUPABASE_SERVICE_ROLE_KEY not configured — cannot generate recovery link")
+        logger.error(f"[GoTrue] SUPABASE_SERVICE_ROLE_KEY not configured — cannot generate {link_type} link")
         return None
 
     headers = {
@@ -172,21 +171,43 @@ def generate_recovery_link(email: str, redirect_to: Optional[str] = None) -> Opt
         "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
         "Content-Type": "application/json",
     }
-    body: Dict[str, Any] = {"type": "recovery", "email": email}
+    body: Dict[str, Any] = {"type": link_type, "email": email}
+    if password:
+        body["password"] = password
     if redirect_to:
         body["redirect_to"] = redirect_to
 
     try:
         resp = _session.post(_url("admin/generate_link"), headers=headers, json=body, timeout=_TIMEOUT)
     except requests.RequestException as e:
-        logger.warning(f"[GoTrue] Recovery link generation request failed: {e}")
+        logger.warning(f"[GoTrue] {link_type} link generation request failed: {e}")
         return None
 
     if resp.status_code >= 400:
-        logger.warning(f"[GoTrue] Recovery link generation returned {resp.status_code}: {_extract_error(resp)}")
+        logger.warning(f"[GoTrue] {link_type} link generation returned {resp.status_code}: {_extract_error(resp)}")
         return None
 
     return resp.json().get("action_link")
+
+
+def generate_recovery_link(email: str, redirect_to: Optional[str] = None) -> Optional[str]:
+    """Generate a password-reset action_link. See _generate_admin_link for
+    why this bypasses Supabase's own mailer/Send Email Hook entirely."""
+    return _generate_admin_link("recovery", email, redirect_to=redirect_to)
+
+
+def generate_signup_confirmation_link(email: str, password: str, redirect_to: Optional[str] = None) -> Optional[str]:
+    """Generate a signup-confirmation action_link the same hook-free way
+    generate_recovery_link does, for the same underlying problem: the
+    confirmation email Supabase's own signup call was supposed to send
+    (via its default mailer or the Send Email Hook) was never reliably
+    reaching new signups.
+
+    Requires the password the user already chose — Supabase's admin
+    generate_link with type=signup upserts the (already-existing, from the
+    earlier public /signup call) user record, so passing the same password
+    back keeps it unchanged rather than resetting it to something new."""
+    return _generate_admin_link("signup", email, password=password, redirect_to=redirect_to)
 
 
 def update_user_password(access_token: str, new_password: str) -> Dict[str, Any]:

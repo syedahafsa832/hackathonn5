@@ -331,6 +331,26 @@ class AuthService:
 
         session = signup.get("session")
         if not session:
+            # Supabase's own signup call was supposed to send the
+            # confirmation email itself (via its default mailer or the
+            # Send Email Hook), but that path is unreliable in production
+            # the same way the password-reset email was before it got the
+            # same fix below — generate the link ourselves via the Admin
+            # API and deliver it directly through Resend instead of
+            # trusting Supabase to have actually sent anything.
+            action_link = supabase_gotrue.generate_signup_confirmation_link(
+                email, password, redirect_to=f"{FRONTEND_URL}/login"
+            )
+            if action_link:
+                system_email_service.send_generic_auth_email(
+                    email,
+                    subject="Confirm your tResolv account",
+                    action_label="Confirm email",
+                    action_url=action_link,
+                )
+            else:
+                logger.error(f"[Auth] Could not generate signup confirmation link for {email}")
+
             return {
                 "success": True,
                 "tenant_id": tenant["id"],
