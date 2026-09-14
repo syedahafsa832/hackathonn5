@@ -498,11 +498,22 @@ class ActionsManager:
 
         except Exception as e:
             logger.error(f"Error checking return eligibility: {e}")
+            # Fail closed: a genuine Shopify/lookup failure (as opposed to a
+            # confirmed-not-found order, handled above) must not be treated
+            # as plain "not eligible" - that path only offers escalation at
+            # the LLM's discretion ("if frustrated"), never guaranteed. Same
+            # requires_manual_review/staging_required flags as the "order
+            # not found" branch above route this into the existing
+            # human-review staging path deterministically - status here is
+            # genuinely unknown, not confirmed ineligible.
             return {
                 "eligible": False,
-                "reason": "We couldn't verify your return eligibility at this time. Please try again or contact support.",
+                "eligibility_verified": False,
+                "reason": "We couldn't verify your order status with Shopify right now. Our team will check and process your request manually.",
                 "order": None,
                 "items": [],
+                "requires_manual_review": True,
+                "staging_required": True,
                 "error": str(e)
             }
 

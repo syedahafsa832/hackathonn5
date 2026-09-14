@@ -524,6 +524,24 @@ export default function Actions() {
   const [showCompleted, setShowCompleted] = useState(false);
   const [retryingId, setRetryingId] = useState(null);
   const [pageError, setPageError] = useState('');
+  // Approve-action success toast — reuses the exact same Alert component +
+  // pattern as pageError above (and TicketDetail.jsx's escalation toast):
+  // no new notification system. Set exactly once, from the resolved
+  // response of a single approve click - never from query refetch/polling,
+  // so it can't repeat on rerenders. Gated on the response body's own
+  // `success` field, not merely "the request didn't throw" - v2_actions.py's
+  // /approve route returns HTTP 200 with success:false when the action was
+  // approved but the real Shopify mutation failed, which resolves (does not
+  // reject) the axios promise. Trusting a resolved promise alone here would
+  // show "completed successfully" on a real Shopify failure.
+  const [actionSuccess, setActionSuccess] = useState('');
+  const handleApproveAction = async (payload, action) => {
+    const result = await approveAction(payload);
+    if (result?.success) {
+      setActionSuccess(`${getActionMeta(action).label} approved — completed successfully.`);
+    }
+    return result;
+  };
 
   // ActionCard's own onReject already awaits this and shows its own working
   // state — but the card optimistically disappears from the pending list the
@@ -648,6 +666,7 @@ export default function Actions() {
     <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
 
       <Alert variant="error" onDismiss={() => setPageError('')} autoDismissMs={5000}>{pageError}</Alert>
+      <Alert variant="success" onDismiss={() => setActionSuccess('')} autoDismissMs={4000}>{actionSuccess}</Alert>
 
       {/* Stats */}
       <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
@@ -708,7 +727,7 @@ export default function Actions() {
                 <div style={{ flex: 1 }}>
                   <ActionCard
                     action={action}
-                    onApprove={approveAction}
+                    onApprove={(payload) => handleApproveAction(payload, action)}
                     onReject={handleReject}
                   />
                 </div>
