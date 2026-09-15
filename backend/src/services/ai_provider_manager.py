@@ -225,10 +225,13 @@ class AIProviderManager:
     @property
     def mistral_providers(self) -> List[_Provider]:
         """Subset of configured providers safe to use for embeddings — every
-        Mistral key (primary + fallback_N), excluding Groq and OpenRouter
-        entries, neither of which shares an embeddings-compatible model with
-        the vector(1024) schema."""
-        return [p for p in self._providers if not p.label.startswith("groq") and not p.label.startswith("openrouter")]
+        Mistral key (primary + fallback_N), excluding Groq, OpenRouter and
+        Cloudflare entries, none of which share an embeddings-compatible
+        model with the vector(1024) schema."""
+        return [
+            p for p in self._providers
+            if not p.label.startswith("groq") and not p.label.startswith("openrouter") and not p.label.startswith("cloudflare")
+        ]
 
     async def create_embedding(self, *, text: str) -> Optional[List[float]]:
         """
