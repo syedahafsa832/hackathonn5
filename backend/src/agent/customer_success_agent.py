@@ -1931,17 +1931,30 @@ class CustomerSuccessAgent:
             # here without first fixing that RPC/table mismatch.
             # Runs only when nothing else already answered this question:
             # skipped for a detected catalog question (Shopify is already the
-            # authoritative structured answer), and skipped whenever any
+            # authoritative structured answer), and skipped whenever a
             # Shopify/order/inventory/recommendation tool above already
-            # produced a result (tool_results non-empty) - product, price,
-            # inventory, variant, order-status, and order-action questions
-            # never depend on an embedding call at all. Deterministic action
+            # produced a SUCCESSFUL result - product, price, inventory,
+            # variant, order-status, and order-action questions never depend
+            # on an embedding call at all once Shopify has actually answered.
+            # Checking success (not just "tool_results is non-empty") matters
+            # for a merchant like SLY MODE whose real catalog lives in the
+            # Knowledge Base, not Shopify: a live inventory lookup that came
+            # back empty/not-found still populates tool_results, and the old
+            # "any tool ran" check treated that as "already answered" and
+            # skipped RAG entirely, even though the KB had the exact product
+            # (confirmed live: "nike air max1" - Shopify lookup found
+            # nothing, KB had full pricing/size/stock detail, customer got
+            # "I don't have any information about it"). Deterministic action
             # decisions (cancel/refund/exchange eligibility) have their own,
             # separate policy-evidence lookup in return_actions_integration.py
             # via actions_manager.get_custom_policy_text() - completely
-            # independent of this rag_context, so skipping it here never
-            # weakens those decisions.
-            _needs_rag = bool(store_id) and not _is_catalog_query and not tool_results
+            # independent of this rag_context, so this never weakens those
+            # decisions.
+            _any_tool_succeeded = any(
+                isinstance(result, dict) and result.get("success")
+                for result in tool_results.values()
+            )
+            _needs_rag = bool(store_id) and not _is_catalog_query and not _any_tool_succeeded
             if _needs_rag:
                 await _emit("kb_check", "Checking knowledge base…")
             # Isolation: a 429/timeout/exception anywhere in retrieval must
