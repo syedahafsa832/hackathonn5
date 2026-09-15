@@ -414,9 +414,9 @@
     '#resolv-email-bar p{margin:0;color:rgba(255,255,255,.55)}' +
     '#resolv-email-row{display:flex;gap:6px}' +
     '#resolv-email-input{' +
-      'flex:1;padding:6px 10px;background:rgba(255,255,255,.06);' +
+      'flex:1;padding:6px 10px;background:rgba(255,255,255,.06)!important;' +
       'border:1px solid rgba(255,255,255,.12);border-radius:8px;' +
-      'color:rgba(255,255,255,.9);font-size:12px;outline:none;' +
+      'color:rgba(255,255,255,.9)!important;font-size:12px;outline:none;' +
       'font-family:\'Sora\',-apple-system,sans-serif' +
     '}' +
     '#resolv-email-input:focus{border-color:' + ACCENT + '88}' +
@@ -435,15 +435,20 @@
       'position:relative;z-index:1' +
     '}' +
     '#resolv-input{' +
-      'flex:1;background:rgba(255,255,255,.06);' +
+      'flex:1;background:rgba(255,255,255,.06)!important;' +
       'border:1px solid rgba(255,255,255,.1);border-radius:14px;' +
       'padding:10px 14px;font-size:13.5px;font-weight:400;' +
-      'color:rgba(255,255,255,.9);' +
+      'color:rgba(255,255,255,.9)!important;' +
       'font-family:\'Sora\',-apple-system,sans-serif;' +
       'outline:none;transition:border-color .2s,background .2s;' +
       'resize:none;min-height:40px;max-height:96px;line-height:1.4' +
     '}' +
-    '#resolv-input::placeholder{color:rgba(255,255,255,.25)}' +
+    /* !important above: this widget has no Shadow DOM isolation, so a host
+       theme's own global input/textarea color rule (common on Shopify
+       themes, often !important itself) can otherwise win the cascade and
+       make typed text unreadable against this dark panel - confirmed live
+       on slymode1.bumpa.shop. */
+    '#resolv-input::placeholder{color:rgba(255,255,255,.25)!important}' +
     '#resolv-input:focus{border-color:' + ACCENT + '88;background:rgba(255,255,255,.09)}' +
     '#resolv-send{' +
       'width:38px;height:38px;flex-shrink:0;border-radius:50%;' +
@@ -650,7 +655,14 @@
       step.subEl = sub;
     }
     step.dotEl.className = 'resolv-resolution-dot ' + step.status;
-    step.dotEl.textContent = step.status === 'complete' ? '✓' : '';
+    // An SVG check (not the '✓' glyph) - text-character checkmarks render
+    // visibly off-center in flex-centered circles because most fonts give
+    // the glyph asymmetric side-bearings (confirmed live: noticeably
+    // right/low-shifted in Sora). A stroke-based SVG has no such bias and
+    // centers exactly regardless of font/browser.
+    step.dotEl.innerHTML = step.status === 'complete'
+      ? '<svg width="8" height="8" viewBox="0 0 16 16" fill="none"><path d="M13.5 4.5L6.5 12L2.5 8.2" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+      : '';
     step.labelEl.textContent = step.label;
     if (step.subLabel) {
       step.subEl.textContent = step.subLabel;
