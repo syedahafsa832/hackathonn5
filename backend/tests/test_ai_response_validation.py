@@ -98,11 +98,14 @@ async def test_empty_reply_body_triggers_fallback_to_next_provider():
             validate_response=_validate_ai_json_reply,
         )
 
-    # The bad provider was tried and rejected; the customer gets the
-    # WORKING fallback's real answer, not the empty one.
+    # The bad provider was tried, retried once on the same key (a validation
+    # failure is often transient model flakiness, not a real outage - see
+    # create_chat_completion's own docstring), rejected again, and only then
+    # does the loop move on; the customer gets the WORKING fallback's real
+    # answer, not the empty one.
     assert label == "primary"
     assert json.loads(response.choices[0].message.content)["reply_body"] == "Yes, it's $49.99!"
-    bad_client.chat.completions.create.assert_called_once()
+    assert bad_client.chat.completions.create.call_count == 2
     good_client.chat.completions.create.assert_called_once()
 
 

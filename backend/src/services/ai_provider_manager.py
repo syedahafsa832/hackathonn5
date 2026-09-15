@@ -326,39 +326,62 @@ class AIProviderManager:
                 kwargs["response_format"] = response_format
 
             kind = "fallback attempt" if i > 0 else "attempt"
-            logger.info(f"[AI_PROVIDER] {kind} start provider={provider.label} model={provider.model}")
+            # A validation failure (e.g. empty reply_body) is often transient
+            # model flakiness, not a real provider outage - and in practice
+            # this chain frequently has only ONE actually-reachable provider
+            # (confirmed live: Mistral/OpenRouter/Groq failing account-wide,
+            # only Cloudflare answering), so "move to the next provider" does
+            # nothing useful when that one provider itself returns empty.
+            # Retry the SAME provider once more before giving up on it - a
+            # hard exception (auth/network/rate-limit) is NOT retried here,
+            # since those fail identically on an immediate retry and this
+            # would just waste the request's latency budget.
+            max_sub_attempts = 2 if validate_response is not None else 1
+            response = None
+            final_reason = None
             t_start = time.monotonic()
-            try:
-                response = await call_with_limit(lambda kw=kwargs, c=client: c.chat.completions.create(**kw))
-            except TypeError:
-                # Some models/providers don't support response_format — retry once
-                # without it on the same key before counting this provider as failed.
-                logger.warning(f"[AI_PROVIDER] {provider.label} rejected response_format param, retrying without it")
+            for sub_attempt in range(max_sub_attempts):
+                suffix = " (retry, same provider)" if sub_attempt else ""
+                logger.info(f"[AI_PROVIDER] {kind} start provider={provider.label} model={provider.model}{suffix}")
+                t_start = time.monotonic()
                 try:
-                    kwargs.pop("response_format", None)
                     response = await call_with_limit(lambda kw=kwargs, c=client: c.chat.completions.create(**kw))
-                except Exception as e2:
-                    reason = _describe(e2)
-                    attempts.append({"label": provider.label, "reason": reason})
-                    logger.warning(f"[AI_PROVIDER] {provider.label} failed reason={reason}")
+                except TypeError:
+                    # Some models/providers don't support response_format — retry once
+                    # without it on the same key before counting this provider as failed.
+                    logger.warning(f"[AI_PROVIDER] {provider.label} rejected response_format param, retrying without it")
+                    try:
+                        kwargs.pop("response_format", None)
+                        response = await call_with_limit(lambda kw=kwargs, c=client: c.chat.completions.create(**kw))
+                    except Exception as e2:
+                        final_reason = _describe(e2)
+                        logger.warning(f"[AI_PROVIDER] {provider.label} failed reason={final_reason}")
+                        response = None
+                        break
+                except Exception as e:
+                    final_reason = _describe(e)
+                    logger.warning(f"[AI_PROVIDER] {provider.label} failed reason={final_reason} after {time.monotonic() - t_start:.2f}s")
                     response = None
-            except Exception as e:
-                reason = _describe(e)
-                attempts.append({"label": provider.label, "reason": reason})
-                logger.warning(f"[AI_PROVIDER] {provider.label} failed reason={reason} after {time.monotonic() - t_start:.2f}s")
-                response = None
+                    break
 
-            if response is not None and validate_response is not None:
-                validation_failure = validate_response(response)
-                if validation_failure:
-                    attempts.append({"label": provider.label, "reason": validation_failure})
-                    logger.error(
-                        f"[AI_PROVIDER] validation_failed provider={provider.label} model={provider.model} "
-                        f"failure_type={validation_failure}"
-                        + (f" context={log_context}" if log_context else "")
-                        + f" after {time.monotonic() - t_start:.2f}s - treating as failed attempt, trying next provider"
-                    )
-                    response = None
+                if response is not None and validate_response is not None:
+                    validation_failure = validate_response(response)
+                    if validation_failure:
+                        final_reason = validation_failure
+                        will_retry = sub_attempt + 1 < max_sub_attempts
+                        logger.error(
+                            f"[AI_PROVIDER] validation_failed provider={provider.label} model={provider.model} "
+                            f"failure_type={validation_failure}"
+                            + (f" context={log_context}" if log_context else "")
+                            + f" after {time.monotonic() - t_start:.2f}s"
+                            + (" - retrying same provider once" if will_retry else " - treating as failed attempt, trying next provider")
+                        )
+                        response = None
+                        continue
+                break
+
+            if response is None and final_reason is not None:
+                attempts.append({"label": provider.label, "reason": final_reason})
 
             if response is not None:
                 elapsed = time.monotonic() - t_start
