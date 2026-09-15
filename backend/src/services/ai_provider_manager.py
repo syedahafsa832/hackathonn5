@@ -377,6 +377,17 @@ class AIProviderManager:
                             + (" - retrying same provider once" if will_retry else " - treating as failed attempt, trying next provider")
                         )
                         response = None
+                        if will_retry:
+                            # A serverless inference model (e.g. Cloudflare
+                            # Workers AI) can be mid-cold-start on the very
+                            # first call after idle time, returning a fast
+                            # but empty/truncated completion while it warms
+                            # up - an immediate retry can land in that same
+                            # still-warming window and fail identically. A
+                            # short real gap gives it a moment to finish
+                            # coming up, closer to what happens anyway when
+                            # a customer manually re-sends the same message.
+                            await asyncio.sleep(1.5)
                         continue
                 break
 
