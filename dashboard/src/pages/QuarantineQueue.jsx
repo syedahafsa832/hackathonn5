@@ -27,8 +27,15 @@ const CLASSIFICATION_LABELS = {
 };
 
 export default function QuarantineQueue() {
+  // 'pending' = awaiting merchant review (existing behavior, unchanged).
+  // 'auto_blocked' = a confident noise verdict the guardian normally never
+  // surfaces at all (see email_guardian_service.py's _create_quarantine_record
+  // docstring) - this tab is the merchant's only way to spot and release a
+  // false positive.
+  const [tab, setTab] = useState('pending');
   const [items, setItems] = useState([]);
   const [pending, setPending] = useState(0);
+  const [blocked, setBlocked] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [acting, setActing] = useState({});
@@ -56,15 +63,16 @@ export default function QuarantineQueue() {
     setLoading(true);
     setError(null);
     try {
-      const res = await client.get('/api/v1/quarantine?status=pending&limit=50');
+      const res = await client.get(`/api/v1/quarantine?status=${tab}&limit=50`);
       setItems(res.data.items || []);
       setPending(res.data.pending || 0);
+      setBlocked(res.data.blocked || 0);
     } catch (e) {
       setError(e.response?.data?.detail || 'Failed to load quarantine queue');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [tab]);
 
   useEffect(() => { fetchQueue(); }, [fetchQueue]);
 
@@ -82,7 +90,11 @@ export default function QuarantineQueue() {
     try {
       await client.post(`/api/v1/quarantine/${id}/promote`);
       setSucceeded((s) => ({ ...s, [id]: 'promoted' }));
-      setPending((p) => Math.max(0, p - 1));
+      if (tab === 'auto_blocked') {
+        setBlocked((b) => Math.max(0, b - 1));
+      } else {
+        setPending((p) => Math.max(0, p - 1));
+      }
       removeAfterSuccess(id);
     } catch (e) {
       setActionError(e.response?.data?.detail || 'Failed to promote email');
@@ -111,24 +123,58 @@ export default function QuarantineQueue() {
     <div style={{ padding: '28px 32px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
         <h2 style={{ margin: 0, fontSize: '18px', fontWeight: '600', color: '#0F172A' }}>Quarantine Queue</h2>
-        {pending > 0 && (
-          <span style={{
-            background: '#F59E0B',
-            color: '#fff',
-            borderRadius: '10px',
-            padding: '2px 10px',
-            fontSize: '12px',
-            fontWeight: '700',
-            fontFamily: 'DM Mono, monospace',
-          }}>
-            {pending} pending
-          </span>
-        )}
       </div>
+
+      <div style={{ display: 'flex', gap: '4px', borderBottom: '1px solid #E4E4E7' }}>
+        {[
+          { key: 'pending', label: 'Pending review', count: pending },
+          { key: 'auto_blocked', label: 'Blocked', count: blocked },
+        ].map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            style={{
+              padding: '8px 14px',
+              border: 'none',
+              borderBottom: tab === t.key ? '2px solid #06B6D4' : '2px solid transparent',
+              background: 'transparent',
+              color: tab === t.key ? '#0F172A' : '#64748B',
+              fontSize: '13px',
+              fontWeight: tab === t.key ? '600' : '500',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+            }}
+          >
+            {t.label}
+            {t.count > 0 && (
+              <span style={{
+                background: t.key === 'pending' ? '#F59E0B' : '#94A3B8',
+                color: '#fff',
+                borderRadius: '10px',
+                padding: '1px 8px',
+                fontSize: '11px',
+                fontWeight: '700',
+                fontFamily: 'DM Mono, monospace',
+              }}>
+                {t.count}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
       <p style={{ color: '#64748B', fontSize: '13px', margin: 0, maxWidth: '640px' }}>
-        Emails the AI wasn't confident were obvious marketing, newsletters, or automated
-        notifications — so they might still be a real person. Review each one and
-        either promote it to a ticket or discard it.
+        {tab === 'pending' ? (
+          <>Emails the AI wasn't confident were obvious marketing, newsletters, or automated
+          notifications — so they might still be a real person. Review each one and
+          either promote it to a ticket or discard it.</>
+        ) : (
+          <>Emails the AI was confident enough to auto-block (marketing/outreach/automated
+          content) — these never reached the review queue above. Check here if a real
+          customer email seems to be missing, and release it to a ticket if so.</>
+        )}
       </p>
 
       {loading && (
@@ -146,8 +192,12 @@ export default function QuarantineQueue() {
           padding: '60px 24px', border: '1px solid #E4E4E7', borderRadius: '8px', background: 'white', gap: '12px',
         }}>
           <div style={{ width: '48px', height: '48px', borderRadius: '50%', background: '#ECFEFF', color: '#06B6D4', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px' }}>✓</div>
-          <div style={{ fontSize: '16px', fontWeight: '600', color: '#1E293B' }}>No emails in quarantine</div>
-          <div style={{ fontSize: '13px', color: '#94A3B8', textAlign: 'center' }}>All inbound emails have been reviewed or cleared.</div>
+          <div style={{ fontSize: '16px', fontWeight: '600', color: '#1E293B' }}>
+            {tab === 'pending' ? 'No emails in quarantine' : 'No auto-blocked emails'}
+          </div>
+          <div style={{ fontSize: '13px', color: '#94A3B8', textAlign: 'center' }}>
+            {tab === 'pending' ? 'All inbound emails have been reviewed or cleared.' : 'Nothing has been auto-blocked recently.'}
+          </div>
         </div>
       )}
 
@@ -232,25 +282,27 @@ export default function QuarantineQueue() {
                         opacity: busy ? 0.6 : 1,
                       }}
                     >
-                      {busy === 'promoting' ? 'Promoting…' : '✓ Promote to Ticket'}
+                      {busy === 'promoting' ? 'Promoting…' : (tab === 'pending' ? '✓ Promote to Ticket' : '✓ Release to Ticket')}
                     </button>
-                    <button
-                      disabled={!!busy}
-                      onClick={() => discard(item.id)}
-                      style={{
-                        padding: '7px 16px',
-                        borderRadius: '4px',
-                        background: 'white',
-                        color: '#EF4444',
-                        border: '1px solid #FECACA',
-                        fontSize: '13px',
-                        fontWeight: '600',
-                        cursor: busy ? 'not-allowed' : 'pointer',
-                        opacity: busy ? 0.6 : 1,
-                      }}
-                    >
-                      {busy === 'discarding' ? 'Discarding…' : '✕ Discard'}
-                    </button>
+                    {tab === 'pending' && (
+                      <button
+                        disabled={!!busy}
+                        onClick={() => discard(item.id)}
+                        style={{
+                          padding: '7px 16px',
+                          borderRadius: '4px',
+                          background: 'white',
+                          color: '#EF4444',
+                          border: '1px solid #FECACA',
+                          fontSize: '13px',
+                          fontWeight: '600',
+                          cursor: busy ? 'not-allowed' : 'pointer',
+                          opacity: busy ? 0.6 : 1,
+                        }}
+                      >
+                        {busy === 'discarding' ? 'Discarding…' : '✕ Discard'}
+                      </button>
+                    )}
                   </div>
                 )}
               </div>

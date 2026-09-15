@@ -46,7 +46,7 @@ def _get_brand_for_tenant(tenant_id: str) -> Optional[dict]:
 @router.get("")
 async def list_quarantine(
     tenant: TenantContext = Depends(get_current_tenant),
-    status: str = Query("pending", description="Filter by status: pending|promoted|discarded|expired"),
+    status: str = Query("pending", description="Filter by status: pending|auto_blocked|promoted|discarded|expired"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
@@ -78,14 +78,17 @@ async def list_quarantine(
         }
         items = supabase_select("email_quarantine", params)
 
-        # Count total pending for the badge
+        # Counts for the tab badges
         pending_items = supabase_select("email_quarantine", {"brand_id": f"eq.{brand_id}", "status": "eq.pending"})
         pending_count = len(pending_items)
+        blocked_items = supabase_select("email_quarantine", {"brand_id": f"eq.{brand_id}", "status": "eq.auto_blocked"})
+        blocked_count = len(blocked_items)
 
         return {
             "items":   items,
             "total":   len(items),
             "pending": pending_count,
+            "blocked": blocked_count,
         }
     except HTTPException:
         raise
@@ -127,7 +130,14 @@ async def promote_quarantine(
 ):
     """Promote a quarantined email to a support ticket. Claims the record
     and hands off to background processing immediately - see _run_promotion
-    for why the AI/email work doesn't block this response."""
+    for why the AI/email work doesn't block this response.
+
+    Also accepts status="auto_blocked" (a confident noise verdict the
+    merchant never normally sees - see _create_quarantine_record's
+    docstring) so a merchant who finds a false positive via the Quarantine
+    page's Blocked tab has a way to release it into a real ticket. Every
+    other guarantee here (idempotency, atomic single-claim) is unchanged
+    and applies identically to both starting statuses."""
     brand = _get_brand_for_tenant(tenant.tenant_id)
     if not brand:
         raise HTTPException(status_code=404, detail="No brand found for this tenant")
@@ -138,7 +148,7 @@ async def promote_quarantine(
         raise HTTPException(status_code=404, detail="Quarantine record not found")
 
     q = rows[0]
-    if q.get("status") != "pending":
+    if q.get("status") not in ("pending", "auto_blocked"):
         raise HTTPException(status_code=404, detail="Email already actioned")
 
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -160,7 +170,7 @@ async def promote_quarantine(
             existing_ticket_id = existing_tickets[0]["id"]
             supabase_update(
                 "email_quarantine",
-                {"id": f"eq.{quarantine_id}", "status": "eq.pending"},
+                {"id": f"eq.{quarantine_id}", "status": "in.(pending,auto_blocked)"},
                 {"status": "promoted", "actioned_by": tenant.email, "actioned_at": now_iso},
             )
             logger.info(
@@ -175,7 +185,7 @@ async def promote_quarantine(
     # separate ticket for the same quarantined email.
     claimed = supabase_update(
         "email_quarantine",
-        {"id": f"eq.{quarantine_id}", "status": "eq.pending"},
+        {"id": f"eq.{quarantine_id}", "status": "in.(pending,auto_blocked)"},
         {"status": "promoted", "actioned_by": tenant.email, "actioned_at": now_iso},
     )
     if not claimed:
