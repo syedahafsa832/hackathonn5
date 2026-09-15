@@ -2345,15 +2345,18 @@ class CustomerSuccessAgent:
         - If ORDER DATA says "fulfilled" (shipped) — do NOT offer cancellation or address change. Offer reship/refund if relevant.
         - Never suggest an action that the order state makes impossible.
 
-        RESPONSE (JSON only):
+        RESPONSE (JSON only). Write "reply_body" FIRST, before every other
+        field below it - if you run long on the other fields, the field
+        that actually reaches the customer must never be the one left
+        unwritten:
         {{
+            "reply_body": "your friendly response - NEVER confirm actions are done, only say they're being reviewed",
             "intent": "what they want (refund_request|return_request|exchange_request|cancellation_request|address_change|order_status_inquiry|shipping_inquiry|sizing_inquiry|product_inquiry|general_inquiry)",
             "sentiment": "positive|neutral|negative",
             "risk_level": "low|medium|high",
             "escalate": false,
             "action_detected": "refund|return|exchange|cancel_order|change_address|none",
             "confidence_score": 80,
-            "reply_body": "your friendly response - NEVER confirm actions are done, only say they're being reviewed",
             "suggested_actions": []
         }}
 
