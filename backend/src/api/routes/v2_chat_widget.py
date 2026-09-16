@@ -241,8 +241,20 @@ async def _generate_reply(
     # chat never had). Only a default: if this new message itself warrants
     # escalation, the block below still overwrites ticket_status_update with
     # "escalated" regardless of the ticket's prior status.
-    if ticket.get("status") in ("closed", "resolved"):
+    original_status = ticket.get("status")
+    if original_status in ("closed", "resolved"):
         ticket_status_update = "open"
+
+    # Mark the ticket as actively generating, matching message_processor.py's
+    # identical pre-call write for the email channel (its only purpose:
+    # making this ticket visible to the existing find_and_recover_stale_
+    # tickets() watchdog if the process dies mid-generation - a deploy/
+    # crash/OOM kill is not a Python exception, so nothing below can catch
+    # it or clean up after it). Every code path past this point (success,
+    # the agent-error except block, or never returning at all) must leave
+    # the ticket somewhere other than 'processing' - the fallback right
+    # before the final write below guarantees the success path does too.
+    supabase_update("tickets", {"id": f"eq.{ticket_id}"}, {"status": "processing"})
 
     # Call the agent
     try:
@@ -349,6 +361,21 @@ async def _generate_reply(
             "role": "ai",
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
+
+    # The 'processing' marker set before the agent call must never be the
+    # ticket's resting status on a normal completion - only the exception
+    # handler above and the three branches earlier (escalated/auto_resolved/
+    # auto_resolved_review/reopen-from-closed) explicitly set
+    # ticket_status_update; any other real agent outcome (e.g. status=
+    # "ai_suggested") falls through with it still None, which used to mean
+    # "leave status untouched" but would now silently strand the ticket at
+    # 'processing' forever. Restoring the ticket's own pre-call status is
+    # the same effective behavior "leave it untouched" always had - just
+    # explicit now that something is always written where a genuine
+    # crash/kill (never reaching this line at all) leaves 'processing' to
+    # be picked up by the existing watchdog.
+    if ticket_status_update is None:
+        ticket_status_update = original_status or "open"
 
     # Update ticket
     ticket_update: dict = {
