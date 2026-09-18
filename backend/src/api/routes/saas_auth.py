@@ -4,7 +4,9 @@ SaaS Authentication Routes
 Handles user registration, login, token refresh, and account management.
 """
 import logging
+import urllib.parse
 from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
@@ -137,6 +139,47 @@ async def google_auth(request: Request, payload: GoogleAuthRequest):
         raise HTTPException(status_code=401, detail=result.get("error", "Google sign-in failed"))
 
     return AuthResponse(**result)
+
+
+@router.get("/google/start")
+@limiter.limit("20/minute")
+async def google_oauth_start(request: Request, return_to: Optional[str] = None):
+    """Begin the redirect-based Google sign-in flow (account auth only —
+    not the Gmail inbox connection). Frontend navigates the browser here
+    directly (not an XHR/fetch) with its own origin as return_to; see
+    auth_service.build_google_oauth_url for why this replaces the old
+    origin-restricted Google Identity Services button."""
+    url = auth_service.build_google_oauth_url(return_to)
+    return RedirectResponse(url, status_code=302)
+
+
+@router.get("/google/callback")
+@limiter.limit("20/minute")
+async def google_oauth_callback(request: Request, code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None):
+    """Google redirects here after consent. Always ends in a redirect back
+    to the frontend (never a JSON error page — the user is mid-browser-
+    navigation, not making an API call): tokens go in the URL *hash*
+    fragment (never sent to any server, matching ResetPassword.jsx's
+    existing convention for the same reason), errors as a query param the
+    frontend can show."""
+    from src.api.middleware.cors import _PRODUCTION_ORIGIN
+
+    if error or not code or not state:
+        return RedirectResponse(f"{_PRODUCTION_ORIGIN}/login?google_error=access_denied", status_code=302)
+
+    result = await auth_service.handle_google_oauth_callback(code, state)
+    return_to = result.get("return_to") or _PRODUCTION_ORIGIN
+
+    if not result.get("success"):
+        err = urllib.parse.quote(str(result.get("error") or "google_signin_failed"))
+        return RedirectResponse(f"{return_to}/login?google_error={err}", status_code=302)
+
+    frag = urllib.parse.urlencode({
+        "access_token": result.get("access_token") or "",
+        "refresh_token": result.get("refresh_token") or "",
+        "expires_in": result.get("expires_in") or "",
+    })
+    return RedirectResponse(f"{return_to}/auth/google/callback#{frag}", status_code=302)
 
 
 @router.post("/refresh")

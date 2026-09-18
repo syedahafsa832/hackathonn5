@@ -33,6 +33,16 @@ logger = logging.getLogger(__name__)
 # password-reset links use the correct domain per environment automatically.
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
+
+def _google_callback_uri() -> str:
+    """The ONE fixed URI Google redirects back to for account sign-in
+    (registered once in Google Cloud Console's "Authorized redirect URIs" —
+    never the frontend origin the user started from). Deliberately its own
+    function, not shared with brand_gmail_service.py's _callback_uri() —
+    that one is for the separate Gmail-inbox-connection OAuth client."""
+    base = os.getenv("API_BASE_URL", "http://localhost:8001")
+    return f"{base}/api/v1/auth/google/callback"
+
 # --- Legacy custom-JWT config (deprecated) ---------------------------------
 # Kept only so tenant_auth can still verify access tokens issued before the
 # Supabase Auth migration, until they naturally expire (ACCESS_TOKEN_EXPIRE_
@@ -419,6 +429,92 @@ class AuthService:
 
         logger.info(f"[Auth] Tenant authenticated via Google: {email}")
         return self._session_response(session, tenant)
+
+    def build_google_oauth_url(self, return_to: Optional[str]) -> str:
+        """Start the redirect-based Google sign-in flow (account auth only —
+        never confuse with the separate Gmail-inbox-connection OAuth in
+        brand_gmail_service.py, which has its own client id/secret/state).
+
+        This exists because the previous flow (Google Identity Services'
+        client-side google.accounts.id.initialize/renderButton in
+        GoogleAuthButton.jsx) requires the CALLING PAGE's exact origin to be
+        pre-registered in Google Cloud Console's "Authorized JavaScript
+        origins" - a hard Google requirement, not a bug in this app - so it
+        breaks (Google's own "400: malformed request" page) from any origin
+        not on that list, e.g. a misconfigured/unexpected custom domain.
+        The redirect flow below only ever needs ONE Google-registered
+        redirect URI - this backend's own fixed callback - regardless of
+        which frontend origin the user started from, so it works from any
+        origin this backend already trusts (see cors.py's
+        _get_allowed_origins - the same allowlist protecting the dashboard
+        API from CORS is reused here as the return-address allowlist,
+        closing the open-redirect risk of trusting a caller-supplied URL).
+        """
+        from src.api.middleware.cors import _get_allowed_origins, _PRODUCTION_ORIGIN
+
+        origin = (return_to or "").rstrip("/")
+        if origin not in _get_allowed_origins():
+            origin = _PRODUCTION_ORIGIN
+
+        client_id = os.getenv("GOOGLE_CLIENT_ID") or os.getenv("VITE_GOOGLE_CLIENT_ID")
+        if not client_id:
+            raise ValueError("GOOGLE_CLIENT_ID is not configured")
+
+        state = jwt.encode(
+            {"return_to": origin, "nonce": secrets.token_urlsafe(16), "exp": datetime.now(timezone.utc) + timedelta(minutes=10)},
+            JWT_SECRET, algorithm="HS256",
+        )
+
+        import urllib.parse
+        params = {
+            "client_id": client_id,
+            "redirect_uri": _google_callback_uri(),
+            "response_type": "code",
+            "scope": "openid email profile",
+            "state": state,
+            "prompt": "select_account",
+        }
+        return "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
+
+    async def handle_google_oauth_callback(self, code: str, state: str) -> Dict[str, Any]:
+        """Exchange the authorization code for tokens, sign the user in via
+        the existing google_auth() path, and return where to send them back.
+        Never raises for an expected failure - always returns a dict the
+        route can turn into a safe redirect."""
+        from src.api.middleware.cors import _PRODUCTION_ORIGIN
+        try:
+            payload = jwt.decode(state, JWT_SECRET, algorithms=["HS256"])
+            return_to = payload["return_to"]
+        except Exception:
+            logger.warning("[Auth] Google OAuth callback: invalid/expired state")
+            return {"success": False, "return_to": _PRODUCTION_ORIGIN, "error": "invalid_state"}
+
+        client_id = os.getenv("GOOGLE_CLIENT_ID") or os.getenv("VITE_GOOGLE_CLIENT_ID")
+        client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
+        if not client_id or not client_secret:
+            logger.error("[Auth] Google OAuth callback: GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET not configured")
+            return {"success": False, "return_to": return_to, "error": "server_not_configured"}
+
+        try:
+            import requests as _requests
+            token_res = _requests.post("https://oauth2.googleapis.com/token", data={
+                "code": code,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uri": _google_callback_uri(),
+                "grant_type": "authorization_code",
+            }, timeout=10)
+            token_res.raise_for_status()
+            id_token = token_res.json().get("id_token")
+            if not id_token:
+                return {"success": False, "return_to": return_to, "error": "no_id_token"}
+        except Exception as e:
+            logger.warning(f"[Auth] Google token exchange failed: {e}")
+            return {"success": False, "return_to": return_to, "error": "token_exchange_failed"}
+
+        result = await self.google_auth(id_token)
+        result["return_to"] = return_to
+        return result
 
     async def refresh_access_token(self, refresh_token: str) -> Dict[str, Any]:
         """Exchange a Supabase refresh token for a new access/refresh token pair."""

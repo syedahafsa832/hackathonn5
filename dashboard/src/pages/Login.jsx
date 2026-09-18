@@ -14,15 +14,15 @@ export default function Login() {
 
   useEffect(() => {
     document.title = "Sign in: tResolv";
+    // Google's redirect-based flow lands the user back here (never a JS
+    // callback in this same page load) when it fails - see
+    // GoogleAuthCallback.jsx for the success path.
+    const err = new URLSearchParams(window.location.search).get('google_error');
+    if (err) {
+      setError('Google sign-in failed. Please try again.');
+      window.history.replaceState(null, '', window.location.pathname);
+    }
   }, []);
-
-  const handleGoogleSuccess = (data) => {
-    if (!data.access_token) return;
-    localStorage.setItem('resolv_token', data.access_token);
-    if (data.refresh_token) localStorage.setItem('resolv_refresh_token', data.refresh_token);
-    setLoggedInCookie(data.expires_in);
-    navigate('/dashboard');
-  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -75,7 +75,7 @@ export default function Login() {
           </div>
         </div>
 
-        <GoogleAuthButton onSuccess={handleGoogleSuccess} onError={setError} />
+        <GoogleAuthButton />
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', margin: '20px 0' }}>
           <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
