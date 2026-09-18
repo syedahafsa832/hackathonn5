@@ -39,13 +39,18 @@ def _base_order(**overrides):
 
 
 def test_single_shipment_uses_the_plain_shipping_info_block():
+    """A single fulfillment with a KNOWN Shopify shipment_status now hits the
+    Shopify-native branch (WISMO fallback priority fix) instead of the old
+    generic "SHIPPING INFO:" block - see test_shopify_wismo_fallback_priority.py
+    for the full precedence coverage this bug fix needs."""
     order = _base_order(
         tracking_number="TRACK1", tracking_company="UPS", shipment_status="in_transit",
         fulfillments=[{"tracking_number": "TRACK1", "tracking_company": "UPS",
                        "shipment_status": "in_transit", "tracking_url": None, "shipped_at": None}],
     )
     context = _build_order_context(order)
-    assert "SHIPPING INFO:" in context
+    assert "Shopify's own native shipment status" in context
+    assert "in transit" in context
     assert "SEPARATE SHIPMENTS" not in context
     assert "TRACK1" in context
 

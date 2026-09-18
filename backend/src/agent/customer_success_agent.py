@@ -245,6 +245,20 @@ def _format_address(addr: dict) -> str:
     return ", ".join(p for p in parts if p)
 
 
+# WISMO fallback priority (Shopify-native > live tracking provider >
+# tracking-only > honest-unavailable): the exact, fixed set of Shopify
+# fulfillment.shipment_status values treated as a real, reportable status.
+# Deliberately narrow - an unrecognized/other value is never guessed at,
+# it just falls through to the next priority tier untouched.
+_SHOPIFY_NATIVE_SHIPMENT_STATUSES = {
+    "in_transit":         "in transit",
+    "out_for_delivery":   "out for delivery",
+    "delivered":          "delivered",
+    "attempted_delivery": "delivery was attempted",
+    "failure":            "the shipment encountered a delivery issue",
+}
+
+
 def _build_order_context(order: dict, tracking_context: str = "") -> str:
     """Build an explicit order context block that the LLM cannot ignore."""
     if not order or not order.get("success"):
@@ -353,29 +367,64 @@ def _build_order_context(order: dict, tracking_context: str = "") -> str:
             # tracking numbers even when live status is unavailable.
             lines.append("")
             lines.append(tracking_context)
-    elif tracking_context:
-        # Live Aftership data or fallback instructions — injected by caller
-        lines.append(tracking_context)
-    elif tracking or shipment_status:
-        readable_status = status_phrases.get(shipment_status, "recently shipped, tracking should update within 24 hours")
-
+    elif shipment_status in _SHOPIFY_NATIVE_SHIPMENT_STATUSES:
+        # Case 1 (highest priority): Shopify's OWN native shipment_status -
+        # WISMO fallback priority is Shopify-native > live tracking provider
+        # > tracking-only > honest-unavailable, so this must be checked
+        # BEFORE tracking_context below. tracking_context is built by
+        # build_tracking_context()/build_shipment_context() and is NEVER
+        # empty - even its "no live status available" branch returns real
+        # instruction text - so the old `elif tracking_context:` unconditionally
+        # won this branch every time a tracking number existed, even when
+        # Shopify already had a real, known shipment_status sitting right
+        # there unused (confirmed live: shipment_status="delivered" still
+        # got "live status unavailable"). Only the 5 known values below are
+        # ever treated as a real status - an unrecognized/other Shopify
+        # value falls through to tracking_context or the tracking-only
+        # branch, never guessed at.
+        readable_status = _SHOPIFY_NATIVE_SHIPMENT_STATUSES[shipment_status]
         lines.append("")
-        lines.append("SHIPPING INFO:")
+        lines.append("SHIPPING INFO (Shopify's own native shipment status - current status only; "
+                      "no delivery date, ETA, or location is available from this source):")
         if tracking_company:
             lines.append(f"  Carrier: {tracking_company}")
         if tracking:
             lines.append(f"  Tracking Number: {tracking}")
         if tracking_url:
             lines.append(f"  Tracking URL: {tracking_url}")
+        lines.append(f"  Current status: {readable_status}")
+        lines.append("")
+        lines.append(
+            f"Tell the customer their order is {readable_status} (per Shopify's own shipment tracking). "
+            "Do NOT invent a delivery date, ETA, or location - none is available from this source. "
+            "Do NOT say 'check your email for tracking'. Do NOT paste the raw tracking URL as your main answer; "
+            "you may offer it as a secondary option after the plain-English status."
+        )
+    elif tracking_context:
+        # Case 2/3 (no Shopify-native status) - Live Aftership data or
+        # fallback instructions, injected by caller. Untouched.
+        lines.append(tracking_context)
+    elif tracking:
+        # Case 2 fallback for the rare shape with no tracking_context at all
+        # (e.g. the tracking module import itself failed) - tracking-only,
+        # never claims a status. shipment_status is deliberately not
+        # referenced here: any KNOWN value was already handled above, and an
+        # unrecognized one must never be surfaced as if it meant something.
+        lines.append("")
+        lines.append("SHIPPING INFO:")
+        if tracking_company:
+            lines.append(f"  Carrier: {tracking_company}")
+        lines.append(f"  Tracking Number: {tracking}")
+        if tracking_url:
+            lines.append(f"  Tracking URL: {tracking_url}")
         shipped_day = _shipped_day(shipped_at)
         if shipped_day:
             lines.append(f"  Shipped: {shipped_day}")
-        lines.append(f"  Current status: {readable_status}")
         lines.append("")
-        lines.append("IF CUSTOMER ASKS WHERE THEIR ORDER IS:")
-        lines.append("  Answer in plain English using the shipped day + current status above (e.g. 'shipped Tuesday and it's in transit').")
-        lines.append("  Do NOT say 'check your email for tracking'. Do NOT paste the raw tracking URL as your main answer.")
-        lines.append("  You may offer the tracking URL as a secondary option AFTER the plain-English status.")
+        lines.append(
+            "Tell the customer their order has shipped and share the tracking number/link. "
+            "Do NOT claim a live status (in transit/out for delivery/delivered/etc.) - none is confirmed here."
+        )
     elif status == "unfulfilled":
         lines.append("")
         lines.append("Order has not shipped yet — if customer asks, tell them it's being prepared and hasn't shipped.")
