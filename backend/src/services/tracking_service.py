@@ -192,6 +192,7 @@ async def _fetch_tracking(url: str, headers: dict) -> httpx.Response:
 # ── Carrier slug mapping ──────────────────────────────────────────────────────
 
 _CARRIER_MAP = {
+    "testing-courier":   "testing-courier",  # AfterShip's own test carrier
     "tcs":               "tcs-express",
     "tcs express":       "tcs-express",
     "leopards":          "leopards-courier",
