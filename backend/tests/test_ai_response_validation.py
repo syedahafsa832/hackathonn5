@@ -51,6 +51,12 @@ VALID_JSON = json.dumps({"intent": "product_inquiry", "reply_body": "Yes, it's $
 EMPTY_REPLY_JSON = json.dumps({"thought_process": "...", "reply_body": "", "actions": []})
 WHITESPACE_REPLY_JSON = json.dumps({"reply_body": "   \n  "})
 MALFORMED_JSON = '{"reply_body": "Yes, in stock!"'  # missing closing brace
+MISSING_REPLY_BODY_JSON = json.dumps({
+    "_KEYS": "reply_body", "intent": "order_status_inquiry", "sentiment": "neutral",
+    "risk_level": "low", "escalate": False, "action_detected": "none",
+    "confidence_score": 90, "suggested_actions": [],
+})  # confirmed live production failure - ticket b35dc9b8, no reply_body key at all
+NON_STRING_REPLY_BODY_JSON = json.dumps({"reply_body": 12345})
 
 
 # ── 1/2/3: _validate_ai_json_reply unit behavior ─────────────────────────
@@ -77,6 +83,19 @@ def test_completely_empty_raw_content_is_flagged():
 
 def test_malformed_json_is_not_flagged_by_the_validator():
     assert _validate_ai_json_reply(_fake_response(MALFORMED_JSON)) is None
+
+
+# ── missing reply_body key entirely (the actual root cause of ticket
+#    b35dc9b8's "Hi AI CODERS! Thanks for reaching out" fallback - valid
+#    JSON, no reply_body field at all, previously slipped past this
+#    validator since the old check only looked at a key that was PRESENT) ──
+
+def test_missing_reply_body_key_is_flagged():
+    assert _validate_ai_json_reply(_fake_response(MISSING_REPLY_BODY_JSON)) == "empty_reply_body"
+
+
+def test_non_string_reply_body_is_flagged():
+    assert _validate_ai_json_reply(_fake_response(NON_STRING_REPLY_BODY_JSON)) == "empty_reply_body"
 
 
 # ── 5/6: provider-level integration - empty reply_body triggers fallback,

@@ -130,7 +130,14 @@ def _validate_ai_json_reply(response) -> Optional[str]:
         parsed = json.loads(clean)
     except Exception:
         return None  # malformed JSON - leave to the existing downstream handler
-    if isinstance(parsed, dict) and "reply_body" in parsed:
+    if isinstance(parsed, dict):
+        # reply_body is REQUIRED - a response missing the key entirely
+        # (confirmed live: a malformed {"_KEYS": "reply_body", ...} object
+        # with no real reply_body field at all) previously slipped past this
+        # check silently, since the old `"reply_body" in parsed` gate only
+        # ever looked at a key that was PRESENT. .get() returns None for a
+        # missing key, which already fails the isinstance(str) check below -
+        # removing the gate is the only change needed.
         reply_body = parsed.get("reply_body")
         if not isinstance(reply_body, str) or not reply_body.strip():
             return "empty_reply_body"
