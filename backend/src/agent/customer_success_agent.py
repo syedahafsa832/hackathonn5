@@ -2192,6 +2192,18 @@ class CustomerSuccessAgent:
             # send), so excluding escalate=True here previously let a real,
             # sent customer email go out with just the signature.
             if not reply.strip():
+                # TEMP DIAGNOSTIC (remove after root-causing the empty-reply_body
+                # fallback pattern - see ticket 4f86f049). Never logs keys/tokens/
+                # PII - provider/model labels, booleans, ticket id, and truncated
+                # non-customer-identifying text only.
+                logger.error(
+                    "[Agent][DIAG] Empty reply_body before fallback substitution | "
+                    f"ticket_id={ticket_id!r} provider={provider_label!r} model={_model!r} "
+                    f"provider_attempts={(_ai_usage or {}).get('attempts')!r} "
+                    f"history_present={bool(customer_info.get('history'))} "
+                    f"structured={structured!r} "
+                    f"raw_content={(raw_content or '')[:2000]!r}"
+                )
                 reply = f"Hi {name}! Thanks for reaching out - how can I help you today?"
                 structured["reply_body"] = reply
 
