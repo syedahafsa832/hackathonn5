@@ -76,12 +76,20 @@ export default function Dashboard() {
       } else {
         const brand = brands[0];
         setActiveBrand(brand);
-        const isShopifyConnected = !!brand?.shopify_connected || !!brand?.shopify_domain;
-        if (isShopifyConnected) {
-          client.get(`/api/v2/brands/${brand.id}/shopify/import-status`)
-            .then(r => setKnowledgeImported((r.data?.sources || []).some(s => s.status === 'completed')))
-            .catch(() => {});
-        }
+        // Any ready knowledge base source counts - not just ones the Shopify
+        // import pipeline created. shopify/import-status only ever lists
+        // source_type="shopify_sync" rows, so a merchant who manually
+        // uploaded/pasted a policy doc (source_type="text", the Knowledge
+        // Base page's own "Uploaded"/"Ready" source) never tripped this step
+        // even though real, usable knowledge already existed - and gating
+        // the check on Shopify being connected at all meant a manual-only
+        // knowledge base (no Shopify import ever run) could never check this
+        // step either. /knowledge/sources lists every source regardless of
+        // type or how it got there, so this now matches what the Knowledge
+        // Base page itself shows as "Ready".
+        client.get(`/api/v2/brands/${brand.id}/knowledge/sources`)
+          .then(r => setKnowledgeImported((r.data?.sources || []).some(s => s.status === 'completed')))
+          .catch(() => {});
         client.get('/api/ai-mode', { params: { store_id: brand.id } })
           .then(r => setIsLive(r.data?.mode === 'autopilot'))
           .catch(() => setIsLive(false));
