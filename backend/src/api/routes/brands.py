@@ -273,8 +273,12 @@ async def test_brand_connection(brand_id: str, tenant: TenantContext = Depends(g
     except HTTPException:
         raise
     except Exception as e:
+        # brand_manager.test_connection() already handles every expected
+        # Shopify failure mode with a merchant-safe message - reaching here
+        # means something unexpected broke (e.g. our own DB), so the detail
+        # sent to the browser must stay generic rather than leaking str(e).
         logger.error(f"[Brands API] Error testing connection: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="We couldn't check your Shopify connection right now. Please try again in a moment.")
 
 
 @router.post("/{brand_id}/sync-products", response_model=dict)

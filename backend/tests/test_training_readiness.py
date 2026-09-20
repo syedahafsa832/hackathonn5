@@ -241,6 +241,66 @@ def test_training_readiness_never_leaks_customer_pii():
     assert "a very private customer message" not in body
 
 
+# ── Store Policies: must reflect real merchant configuration, not the DB's
+# own placeholder defaults (return_policy_days DEFAULT 30, final_sale_tags
+# DEFAULT ARRAY[...] — migrations 002/024) which exist on every brand row
+# from creation regardless of whether the merchant ever touched anything ──
+
+def test_store_policies_not_configured_when_only_db_defaults_present():
+    # Exactly what a brand new, never-configured brand row actually looks
+    # like in Postgres - NOT all-None like the fixture above, which masked
+    # this bug in every other test in this file.
+    brand_with_defaults = {**BRAND, "return_policy_days": 30, "final_sale_tags": ["final sale", "non-returnable", "no returns", "all sales final"]}
+    fake = _fake_select_factory(brand_with_defaults, kb_sources=[], tickets=[])
+    with patch("src.api.routes.v2_brands.supabase_select", side_effect=fake), \
+         patch("src.services.reply_style_service.supabase_select", side_effect=fake):
+        resp = _with_tenant(lambda: client.get(f"/api/v2/brands/{BRAND_ID}/training-readiness"))
+
+    assert resp.status_code == 200, resp.text
+    policies = resp.json()["train"]["policies"]
+    assert policies["has_any"] is False, "GAP: DB defaults alone must never read as merchant-configured"
+    assert policies["source"] is None
+
+
+def test_store_policies_configured_from_shopify():
+    brand_with_defaults = {**BRAND, "return_policy_days": 30, "final_sale_tags": ["final sale"]}
+    kb_sources = [{"id": "k1", "status": "completed", "metadata": {"type": "shopify_policy", "policy_title": "Refund policy"}}]
+    fake = _fake_select_factory(brand_with_defaults, kb_sources=kb_sources, tickets=[])
+    with patch("src.api.routes.v2_brands.supabase_select", side_effect=fake), \
+         patch("src.services.reply_style_service.supabase_select", side_effect=fake):
+        resp = _with_tenant(lambda: client.get(f"/api/v2/brands/{BRAND_ID}/training-readiness"))
+
+    policies = resp.json()["train"]["policies"]
+    assert policies["has_any"] is True
+    assert policies["source"] == "shopify"
+
+
+def test_store_policies_configured_manually_via_refund_notes():
+    brand_with_notes = {**BRAND, "return_policy_days": 30, "refund_notes": "Approve refunds for damaged items even outside the window."}
+    fake = _fake_select_factory(brand_with_notes, kb_sources=[], tickets=[])
+    with patch("src.api.routes.v2_brands.supabase_select", side_effect=fake), \
+         patch("src.services.reply_style_service.supabase_select", side_effect=fake):
+        resp = _with_tenant(lambda: client.get(f"/api/v2/brands/{BRAND_ID}/training-readiness"))
+
+    policies = resp.json()["train"]["policies"]
+    assert policies["has_any"] is True
+    assert policies["source"] == "manual"
+
+
+def test_store_policies_ignores_incomplete_shopify_policy_import():
+    # A shopify_policy source that failed/hasn't finished indexing yet is
+    # not "usable policy data" - same bar as Knowledge Base's own has_any.
+    brand_with_defaults = {**BRAND, "return_policy_days": 30}
+    kb_sources = [{"id": "k1", "status": "failed", "metadata": {"type": "shopify_policy"}}]
+    fake = _fake_select_factory(brand_with_defaults, kb_sources=kb_sources, tickets=[])
+    with patch("src.api.routes.v2_brands.supabase_select", side_effect=fake), \
+         patch("src.services.reply_style_service.supabase_select", side_effect=fake):
+        resp = _with_tenant(lambda: client.get(f"/api/v2/brands/{BRAND_ID}/training-readiness"))
+
+    policies = resp.json()["train"]["policies"]
+    assert policies["has_any"] is False
+
+
 # 8. Category readiness reuses the existing readiness calculation/thresholds
 def test_generic_category_readiness_reuses_existing_thresholds():
     actions_exchange = [{"action_type": "exchange", "status": "executed"} for _ in range(_AUTOPILOT_MIN_SAMPLE)]

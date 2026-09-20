@@ -483,9 +483,21 @@ async def get_training_readiness(
         approved_count = reply_style_service.count_eligible_approved_replies(brand_id)
         reply_style_mode = brand.get("reply_style_mode") or "preset"
         reply_style_learned = reply_style_mode == "learned" and bool(brand.get("reply_style_profile"))
-        has_policies = bool(
-            brand.get("return_policy_days") or brand.get("refund_notes") or brand.get("final_sale_tags")
+        # return_policy_days (DEFAULT 30) and final_sale_tags (DEFAULT ARRAY[...])
+        # are both non-null on every brand row from creation (migrations
+        # 002/024) - reading either as "the merchant configured this" made
+        # "Store Policies: Configured" show up for brands that never touched
+        # Shopify or the refund-policy form at all. refund_notes has no
+        # default (only ever set via the merchant's own free-text input on
+        # the Store page), and a completed Shopify-imported policy page is
+        # real, so those two are the only genuine signals.
+        has_shopify_policies = any(
+            (s.get("metadata") or {}).get("type") == "shopify_policy" and s.get("status") == "completed"
+            for s in kb_sources
         )
+        has_manual_policy_notes = bool(brand.get("refund_notes"))
+        has_policies = has_shopify_policies or has_manual_policy_notes
+        policy_source = "shopify" if has_shopify_policies else ("manual" if has_manual_policy_notes else None)
 
         train = {
             "knowledge": {
@@ -493,7 +505,11 @@ async def get_training_readiness(
                 "completed_count": kb_completed,
                 "has_any": kb_completed > 0,
             },
-            "policies": {"has_any": has_policies, "return_policy_days": brand.get("return_policy_days")},
+            "policies": {
+                "has_any": has_policies,
+                "source": policy_source,  # "shopify" | "manual" | None
+                "return_policy_days": brand.get("return_policy_days"),
+            },
             "examples": {"count": len(examples)},
             "reply_style": {
                 "mode": reply_style_mode,
