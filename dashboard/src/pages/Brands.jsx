@@ -155,7 +155,11 @@ function StoreCard({ brand, highlightGmail }) {
     setGmailLoading(false);
   };
 
-  const connected = brand.is_active;
+  // "Connected" here must mean a real Shopify connection, not merely that
+  // the brand row is active (every brand is is_active by default from
+  // creation, Shopify or not) - same signal Onboarding.jsx already uses,
+  // so the Store page and onboarding checklist can't contradict each other.
+  const connected = !!(brand.shopify_connected || brand.shopify_domain);
 
   return (
     <div style={{ border: '1px solid var(--border)', borderRadius: '6px', background: 'var(--bg-primary)', overflow: 'hidden' }}>

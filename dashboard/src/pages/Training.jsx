@@ -110,7 +110,32 @@ export default function Training() {
   }
 
   if (isError || !data) {
-    return <div style={{ padding: '28px 32px', fontSize: '13px', color: '#94A3B8' }}>Training data isn't available yet.</div>;
+    // Was a bare "Training data isn't available yet." with no explanation
+    // and no way back - the most common cause is simply that setup isn't
+    // finished yet (useTrainingReadiness never even queries without a
+    // brand.id), which reads as a dead end rather than "finish onboarding
+    // first, then come back here."
+    const noBrandYet = !brand?.id;
+    return (
+      <div style={{ padding: '28px 32px', maxWidth: '480px' }}>
+        <div style={card}>
+          <div style={{ fontSize: '15px', fontWeight: '700', color: '#0F172A', marginBottom: '6px' }}>
+            {noBrandYet ? 'Finish setup to start training Luna' : "Training data isn't available right now"}
+          </div>
+          <p style={{ margin: '0 0 16px', fontSize: '13px', color: '#64748B', lineHeight: 1.5 }}>
+            {noBrandYet
+              ? "Luna learns from real conversations once your store is connected and she's handling tickets. Finish setup first, then this page will fill in as she works."
+              : "We couldn't load Luna's training readiness. This usually clears up once setup is complete, or on a quick retry."}
+          </p>
+          <button
+            onClick={() => navigate(noBrandYet ? '/onboarding' : '/dashboard')}
+            style={{ fontSize: '13px', fontWeight: '600', color: 'white', background: '#0E7490', border: 'none', borderRadius: '6px', padding: '8px 16px', cursor: 'pointer' }}
+          >
+            {noBrandYet ? 'Go to setup' : 'Back to dashboard'}
+          </button>
+        </div>
+      </div>
+    );
   }
 
   const { train, verify, automate } = data;

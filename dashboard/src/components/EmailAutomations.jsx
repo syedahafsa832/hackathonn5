@@ -166,7 +166,18 @@ function EditorForm({ trigger, existing, brandId, onDone }) {
       )}
 
       <div style={{ display: 'flex', gap: '10px' }}>
-        <button type="button" onClick={handlePreview} style={{ padding: '9px 16px', borderRadius: '6px', border: '1px solid #E4E4E7', background: 'white', color: 'var(--text-primary)', fontSize: '13px', fontWeight: '600', cursor: 'pointer' }}>
+        <button
+          type="button"
+          onClick={handlePreview}
+          disabled={!subject.trim() || !body.trim()}
+          title={!subject.trim() || !body.trim() ? 'Write a subject and body first' : undefined}
+          style={{
+            padding: '9px 16px', borderRadius: '6px', border: '1px solid #E4E4E7',
+            background: 'white', color: (!subject.trim() || !body.trim()) ? '#CBD5E1' : 'var(--text-primary)',
+            fontSize: '13px', fontWeight: '600',
+            cursor: (!subject.trim() || !body.trim()) ? 'not-allowed' : 'pointer',
+          }}
+        >
           Preview
         </button>
         <button type="submit" disabled={saving} style={{ padding: '9px 16px', borderRadius: '6px', border: 'none', background: '#06B6D4', color: 'white', fontSize: '13px', fontWeight: '600', cursor: saving ? 'not-allowed' : 'pointer' }}>
