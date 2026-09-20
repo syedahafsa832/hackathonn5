@@ -155,6 +155,16 @@ export default function Dashboard() {
         <OnboardingChecklistCard steps={onboardingSteps} onDismiss={dismissChecklist} />
       )}
 
+      {/* Luna Sandbox entry point - works with no Shopify/Gmail connected */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap', padding: '14px 18px', background: '#ECFEFF', border: '1px solid #A5F3FC', borderRadius: '8px' }}>
+        <div style={{ fontSize: '13.5px', color: '#0F172A', lineHeight: 1.45, maxWidth: '640px' }}>
+          <strong>See Luna in action.</strong> Watch how Luna handles real support requests using a sample Shopify store. No Shopify or Gmail connection required.
+        </div>
+        <Link to="/sandbox" style={{ padding: '9px 20px', background: '#06B6D4', color: 'white', borderRadius: '6px', textDecoration: 'none', fontSize: '13px', fontWeight: '600', whiteSpace: 'nowrap' }}>
+          Test Luna
+        </Link>
+      </div>
+
       {/* Cold-start notice */}
       {loading && slowLoad && (
         <div style={{ textAlign: 'center', fontSize: '13px', color: '#94A3B8', padding: '8px' }}>

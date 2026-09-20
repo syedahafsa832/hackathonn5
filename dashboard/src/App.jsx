@@ -21,6 +21,7 @@ import QuarantineQueue from './pages/QuarantineQueue';
 import Admin from './pages/Admin';
 import Profile from './pages/Profile';
 import Upgrade from './pages/Upgrade';
+import Sandbox from './pages/Sandbox';
 
 function ProtectedRoute({ children }) {
   const token = localStorage.getItem('resolv_token');
@@ -65,6 +66,7 @@ export default function App() {
         <Route path="/admin" element={<ProtectedRoute><Admin /></ProtectedRoute>} />
         <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
         <Route path="/upgrade" element={<ProtectedRoute><Upgrade /></ProtectedRoute>} />
+        <Route path="/sandbox/:scenarioId?" element={<ProtectedRoute><Sandbox /></ProtectedRoute>} />
         <Route path="/onboarding" element={<OnboardingRoute><Onboarding /></OnboardingRoute>} />
       </Routes>
     </BrowserRouter>

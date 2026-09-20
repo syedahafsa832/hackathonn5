@@ -1587,7 +1587,13 @@ async def delete_reply_example(
         raise HTTPException(status_code=500, detail="Failed to delete example")
 
 
-# ==================== Test Luna (onboarding activation) ====================
+# ==================== Test Luna (DEPRECATED onboarding activation) ====================
+# The onboarding "Test Luna" step now opens the Luna Sandbox (/sandbox, see
+# v2_sandbox.py) instead of calling this endpoint - the dashboard no longer
+# has any caller for it. Kept (not deleted) only because it's a thin wrapper
+# over the real agent that existing regression tests
+# (test_rag_product_retrieval.py, test_provider_alert_deduplication.py)
+# still exercise as a production-path check. Do not add new callers.
 
 @router.post("/{brand_id}/test-reply")
 async def test_reply(

@@ -458,162 +458,53 @@ function StepStyle({ brandId, onNext }) {
 
 // ─────────────────────────────────────────────── Step 5: Test Luna ──
 
-// Picks ONE question Luna can actually answer from what's already been
-// imported — never a fixed list a merchant is invited to click through.
-// Deterministic, no extra AI call just to choose a question: policy
-// questions first (most concretely verifiable against real store content),
-// then products, then a generic fallback that works with anything indexed.
-// Returns null when nothing has finished importing yet, which the caller
-// uses to keep the test disabled (see StepTestLuna's `ready`).
-function pickTestQuestion(sources) {
-  const completed = (sources || []).filter(s => s.status === 'completed');
-  if (completed.length === 0) return null;
-  const hasNamed = (fragment) => completed.some(s => (s.name || '').toLowerCase().includes(fragment));
-  const hasType = (type) => completed.some(s => s.metadata?.type === type);
-  if (hasNamed('return')) return "What's your return policy?";
-  if (hasNamed('shipping')) return 'What are your shipping rules?';
-  if (hasType('shopify_product_batch')) return 'What products do you sell?';
-  return 'What can you tell me about your store?';
-}
-
-function StepTestLuna({ brandId, shopifyConnected, onNext }) {
-  const [knowledge, setKnowledge] = useState(null); // GET .../shopify/import-status response
-  const [loadingStatus, setLoadingStatus] = useState(true);
-  const [asking, setAsking] = useState(false);
-  const [reply, setReply] = useState(null);
-  const [passed, setPassed] = useState(null); // true | false | null (not tested yet)
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    if (!brandId || !shopifyConnected) { setLoadingStatus(false); return; }
-    // Reuses the exact same endpoint StepImport polls and Dashboard's
-    // checklist reads — one source of truth for "is store knowledge
-    // ready", never a second one computed here.
-    client.get(`/api/v2/brands/${brandId}/shopify/import-status`)
-      .then(res => setKnowledge(res.data))
-      .catch(() => setKnowledge(null))
-      .finally(() => setLoadingStatus(false));
-  }, [brandId, shopifyConnected]);
-
-  const question = pickTestQuestion(knowledge?.sources);
-  const ready = shopifyConnected && !!knowledge?.ready && !!question;
-
-  const runTest = async () => {
-    setAsking(true);
-    setError('');
-    setReply(null);
-    setPassed(null);
-    try {
-      // Exactly one model call, only ever from this explicit click.
-      const res = await client.post(`/api/v2/brands/${brandId}/test-reply`, { message: question });
-      if (res.data?.provider_outage) {
-        setPassed(false);
-        setError("Luna's AI models are all at capacity right now. This is temporary. Try again in a few minutes.");
-      } else if (res.data?.escalate) {
-        // Luna's own low-confidence/escalate signal fired (typically an
-        // empty or unhelpful knowledge-base match) - a reply came back, but
-        // it isn't grounded enough to call this a passed test. Show the
-        // reply so the merchant can see what Luna said, without the false
-        // "Test passed" checkmark.
-        setReply(res.data?.reply || '');
-        setPassed(false);
-      } else {
-        setReply(res.data?.reply || '');
-        setPassed(true);
-        localStorage.setItem('resolv_test_reply_done', 'true');
-      }
-    } catch (err) {
-      setPassed(false);
-      setError(extractErrorMessage(err, 'Could not run the test right now.'));
-    } finally {
-      setAsking(false);
-    }
-  };
+// Test Luna now lives in the Luna Sandbox (/sandbox): a sample store with
+// deterministic demos, so it works before Shopify/Gmail are connected and
+// never spends a merchant's own store data or AI quota. This step is only a
+// doorway to it - there is intentionally no second, separate test flow here
+// (the old in-onboarding real-agent test call was removed). Opens in a new tab so
+// the merchant's place in onboarding is never lost.
+function StepTestLuna({ onNext }) {
+  const tested = localStorage.getItem('resolv_test_reply_done') === 'true';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div>
         <h2 style={{ fontSize: '22px', fontWeight: '700', marginBottom: '8px' }}>Test Luna</h2>
         <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: '1.5' }}>
-          Let's make sure Luna can answer questions about your store. One real question, run through the actual support agent.
+          See how Luna handles real support requests using a sample Shopify store. No Shopify or Gmail connection required.
         </p>
       </div>
 
-      {!shopifyConnected ? (
-        <div style={{ padding: '16px 20px', background: 'var(--bg-secondary)', borderRadius: '6px', fontSize: '14px', color: 'var(--text-secondary)' }}>
-          Luna needs your store connected first. You skipped Shopify earlier, so there's nothing to test against yet.
-          You can connect it later in Settings.
+      <div style={{ border: '1px solid var(--border)', borderRadius: '6px', padding: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        <div style={{ fontSize: '14px', fontWeight: '600' }}>Northstar Apparel (sample store) · Sandbox mode</div>
+        <div style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
+          Watch Luna read an order, check policy, and ask for your approval before acting. Everything uses sample data, so no real customer or store is affected.
         </div>
-      ) : loadingStatus ? (
-        <div className="skeleton" style={{ height: '90px', borderRadius: '6px' }} />
-      ) : !ready ? (
-        <div style={{ padding: '16px 20px', background: 'var(--bg-secondary)', borderRadius: '6px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          <div style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)' }}>Luna is still learning your store.</div>
-          <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Try the test when your store knowledge is ready.</div>
-          {(knowledge?.report || []).length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '4px' }}>
-              {knowledge.report.map(r => (
-                <div key={r.resource} style={{ fontSize: '12.5px', color: 'var(--text-muted)' }}>
-                  {r.status === 'imported' ? '✓' : r.status === 'skipped' ? '⚠' : '○'} {r.resource} {r.status === 'imported' ? 'imported' : r.status === 'skipped' ? 'skipped' : 'importing…'}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      ) : (
-        <div style={{ border: '1px solid var(--border)', borderRadius: '6px', padding: '16px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
-            <div style={{ fontSize: '14px', fontWeight: '500' }}>"{question}"</div>
-            <button
-              onClick={runTest}
-              disabled={asking}
-              style={{ padding: '7px 16px', borderRadius: '4px', fontSize: '12px', fontWeight: '600', background: 'var(--accent)', color: 'white', cursor: asking ? 'not-allowed' : 'pointer', flexShrink: 0 }}
-            >
-              {asking ? 'Asking...' : passed === null ? 'Test Luna' : 'Run again'}
-            </button>
-          </div>
-
-          {passed === true && (
-            <div style={{ marginTop: '12px' }}>
-              <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--success)', marginBottom: '8px' }}>
-                ✓ Test passed. Luna can use your store knowledge.
-              </div>
-              {reply && (
-                <div style={{ padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px', fontSize: '13px', color: 'var(--text-primary)', whiteSpace: 'pre-line' }}>
-                  {reply}
-                </div>
-              )}
-            </div>
-          )}
-          {passed === false && !error && (
-            <div style={{ marginTop: '12px' }}>
-              <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: reply ? '8px' : 0 }}>
-                Couldn't answer this confidently yet. Your store knowledge may still be importing.
-              </div>
-              {reply && (
-                <div style={{ padding: '12px', background: 'var(--bg-secondary)', borderRadius: '6px', fontSize: '13px', color: 'var(--text-primary)', whiteSpace: 'pre-line' }}>
-                  {reply}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      <Alert variant="error">{error}</Alert>
+        <a
+          href="/sandbox"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ ...primaryBtn(false), textDecoration: 'none', display: 'inline-block' }}
+        >
+          Test Luna in the sandbox →
+        </a>
+        {tested && (
+          <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--success)' }}>✓ You've tried the sandbox.</div>
+        )}
+      </div>
 
       <button
         onClick={() => {
-          // Passing through without a real test (skipped, or knowledge
-          // wasn't ready) must not leave Dashboard's onboarding checklist
-          // nagging "Run your first AI conversation" forever — the
-          // merchant made a deliberate choice to move on.
-          if (passed !== true) localStorage.setItem('resolv_test_reply_skipped', 'true');
+          // Moving on without trying the sandbox must not leave Dashboard's
+          // onboarding checklist nagging "Run your first AI conversation"
+          // forever - the merchant made a deliberate choice.
+          if (localStorage.getItem('resolv_test_reply_done') !== 'true') localStorage.setItem('resolv_test_reply_skipped', 'true');
           onNext();
         }}
         style={{ ...primaryBtn(false), padding: '13px 32px', fontSize: '15px' }}
       >
-        {passed === true ? 'Continue →' : 'Skip →'}
+        {tested ? 'Continue →' : 'Skip →'}
       </button>
     </div>
   );
@@ -858,7 +749,7 @@ export default function Onboarding() {
         {step === 2 && <StepImport brandId={brandId} shopifyConnected={shopifyConnected} onNext={() => setStep(3)} />}
         {step === 3 && <StepGmail brandId={brandId} onNext={() => { setGmailConnected(true); setStep(4); }} />}
         {step === 4 && <StepStyle brandId={brandId} onNext={() => setStep(5)} />}
-        {step === 5 && <StepTestLuna brandId={brandId} shopifyConnected={shopifyConnected} onNext={() => setStep(6)} />}
+        {step === 5 && <StepTestLuna onNext={() => setStep(6)} />}
         {step === 6 && <StepGoLive brandId={brandId} shopifyConnected={shopifyConnected} gmailConnected={gmailConnected} onFinish={handleFinish} />}
       </div>
     </div>

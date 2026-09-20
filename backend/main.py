@@ -408,6 +408,15 @@ try:
     except Exception as e:
       logger.warning(f"Failed to register V2 knowledge router: {e}")
 
+    # Luna Sandbox: static sample-store demos + budgeted "Ask Luna" (no
+    # Shopify/Gmail/DB access - see src/api/routes/v2_sandbox.py)
+    try:
+      from src.api.routes.v2_sandbox import router as v2_sandbox_router
+      register_router(v2_sandbox_router, prefix="/api/v2")
+      logger.info("✓ Sandbox router registered")
+    except Exception as e:
+      logger.warning(f"Failed to register sandbox router: {e}")
+
     # Unified Events API for frontend dashboard
     try:
       from src.api.routes.events import router as events_router

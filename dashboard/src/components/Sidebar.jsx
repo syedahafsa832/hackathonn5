@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Inbox, ShieldAlert, Store, Settings, ShieldQuestion, ShieldCheck, ChevronLeft, ChevronRight, Zap, Star, Sparkles, GraduationCap, ClipboardCheck } from 'lucide-react';
+import { LayoutDashboard, Inbox, ShieldAlert, Store, Settings, ShieldQuestion, ShieldCheck, ChevronLeft, ChevronRight, Zap, Star, Sparkles, GraduationCap, ClipboardCheck, FlaskConical } from 'lucide-react';
 import { useEscalations, useActions, useQuarantineCount, useMe } from '../hooks/useApi';
 
 // Simplified information architecture: Home / Inbox / Luna / Automation /
@@ -16,6 +16,7 @@ const PRIMARY_NAV = [
   { path: '/dashboard', label: 'Home', icon: LayoutDashboard },
   { path: '/tickets', label: 'Inbox', icon: Inbox, badge: true },
   { path: '/training', label: 'Luna', icon: GraduationCap },
+  { path: '/sandbox', label: 'Test Luna', icon: FlaskConical },
   { path: '/automation', label: 'Automation', icon: Sparkles },
   { path: '/brands', label: 'Store', icon: Store },
 ];
