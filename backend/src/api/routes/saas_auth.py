@@ -165,6 +165,18 @@ async def google_oauth_callback(request: Request, code: Optional[str] = None, st
     from src.api.middleware.cors import _PRODUCTION_ORIGIN
 
     if error or not code or not state:
+        # `error` is a short Google-defined code (e.g. "access_denied") -
+        # safe to log. `code`/`state` are one-time-use credentials, so only
+        # their presence is logged, never the values themselves. Added
+        # because every prior failure was indistinguishable from the
+        # outside: this branch returns before any of the warnings/errors
+        # below ever run, so the logs gave no way to tell "user declined
+        # consent" apart from "Google never sent code/state back" apart
+        # from "our own redirect_uri/client config is wrong".
+        logger.warning(
+            f"[Auth] Google OAuth callback rejected before token exchange: "
+            f"google_error={error!r} code_present={bool(code)} state_present={bool(state)}"
+        )
         return RedirectResponse(f"{_PRODUCTION_ORIGIN}/login?google_error=access_denied", status_code=302)
 
     result = await auth_service.handle_google_oauth_callback(code, state)
