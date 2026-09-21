@@ -189,6 +189,53 @@ def generate_recovery_link(email: str, redirect_to: Optional[str] = None) -> Opt
     return resp.json().get("action_link")
 
 
+def generate_signup_confirmation_link(email: str, password: str, redirect_to: Optional[str] = None) -> Optional[str]:
+    """
+    Generate a signup-confirmation action_link via Supabase's Admin API —
+    the same custom-email mechanism generate_recovery_link uses above (see
+    its docstring for why this bypasses Supabase's own mailer entirely).
+
+    Used by AuthService.register()'s fallback path: when a fresh signup's
+    own /signup response comes back without a session and an immediate
+    sign-in still fails, the account genuinely needs a confirmation click,
+    so this generates that link so it can be emailed ourselves via Resend
+    instead of relying on Supabase's mailer (which this project doesn't
+    have set up to actually send one — see AuthService.register()).
+
+    `password` is required by this admin endpoint's "signup" link type
+    even though the account already exists at this point — Supabase
+    treats the call as reissuing a confirmation token for a still-
+    unconfirmed user, not as a duplicate registration.
+
+    Never raises; returns None on any failure so the caller can fall back
+    without exposing why.
+    """
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        logger.error("[GoTrue] SUPABASE_SERVICE_ROLE_KEY not configured — cannot generate signup confirmation link")
+        return None
+
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+        "Content-Type": "application/json",
+    }
+    body: Dict[str, Any] = {"type": "signup", "email": email, "password": password}
+    if redirect_to:
+        body["redirect_to"] = redirect_to
+
+    try:
+        resp = _session.post(_url("admin/generate_link"), headers=headers, json=body, timeout=_TIMEOUT)
+    except requests.RequestException as e:
+        logger.warning(f"[GoTrue] Signup confirmation link generation request failed: {e}")
+        return None
+
+    if resp.status_code >= 400:
+        logger.warning(f"[GoTrue] Signup confirmation link generation returned {resp.status_code}: {_extract_error(resp)}")
+        return None
+
+    return resp.json().get("action_link")
+
+
 def update_user_password(access_token: str, new_password: str) -> Dict[str, Any]:
     """Set a new password for the user identified by `access_token` (a normal session or a recovery session)."""
     resp = _session.put(_url("user"), headers=_headers(access_token), json={"password": new_password}, timeout=_TIMEOUT)

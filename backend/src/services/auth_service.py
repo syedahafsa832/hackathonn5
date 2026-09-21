@@ -390,8 +390,26 @@ class AuthService:
                 # A genuine "email not confirmed" (or other) rejection -
                 # this is the one case where the check-your-email message
                 # is actually correct, e.g. if this project's auto-confirm
-                # setting is ever turned off in the future.
+                # setting is ever turned off in the future. Whenever the
+                # user is shown that message, an email must actually go
+                # out - generate the confirmation link via the Admin API
+                # (same mechanism request_password_reset() already uses)
+                # and send it ourselves via Resend, since this project's
+                # own Supabase mailer isn't set up to send one (confirmed
+                # empirically - see the docstring above).
                 logger.info(f"[Auth] Post-signup sign-in not yet possible for {email}: {e.message}")
+                action_link = supabase_gotrue.generate_signup_confirmation_link(
+                    email, password, redirect_to=f"{FRONTEND_URL}/login"
+                )
+                if action_link:
+                    system_email_service.send_generic_auth_email(
+                        email, "Confirm your tResolv account", "Confirm email", action_link,
+                    )
+                else:
+                    logger.error(
+                        f"[Auth] Could not generate a confirmation link for {email} - "
+                        f"they'll see 'check your email' but nothing was sent"
+                    )
                 return {
                     "success": True,
                     "tenant_id": tenant["id"],

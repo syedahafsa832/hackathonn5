@@ -243,6 +243,10 @@ def test_register_signs_straight_in_when_signup_has_no_session_but_account_is_us
 
 
 def test_register_reports_email_confirmation_required_when_account_genuinely_isnt_usable_yet():
+    """When the user is shown 'check your email', a real one must actually
+    be sent — via the same generate-link-then-email-it-ourselves mechanism
+    request_password_reset() uses, since this project's Supabase mailer
+    isn't set up to send one on its own (see register()'s docstring)."""
     def fake_signup(email, password):
         return {"user": {"id": "sb-unconfirmed", "email": email}, "session": None}
 
@@ -256,6 +260,10 @@ def test_register_reports_email_confirmation_required_when_account_genuinely_isn
 
     with patch("src.services.auth_service.supabase_gotrue.sign_up", side_effect=fake_signup), \
          patch("src.services.auth_service.supabase_gotrue.sign_in_with_password", side_effect=fake_signin), \
+         patch("src.services.auth_service.supabase_gotrue.generate_signup_confirmation_link",
+               return_value="https://backend.tresolv.online/verify?token=abc") as mock_gen_link, \
+         patch("src.services.auth_service.system_email_service.send_generic_auth_email",
+               return_value=True) as mock_send_email, \
          patch("src.services.auth_service.supabase_select", return_value=[]), \
          patch("src.services.auth_service.supabase_insert", side_effect=fake_insert), \
          patch("src.services.auth_service.supabase_update", return_value={}):
@@ -265,6 +273,47 @@ def test_register_reports_email_confirmation_required_when_account_genuinely_isn
     assert result["success"] is True
     assert result.get("email_confirmation_required") is True
     assert result.get("access_token") is None
+
+    mock_gen_link.assert_called_once()
+    assert mock_gen_link.call_args[0][0] == "new@example.com"
+    mock_send_email.assert_called_once()
+    sent_to, sent_subject = mock_send_email.call_args[0][0], mock_send_email.call_args[0][1]
+    sent_link = mock_send_email.call_args[0][3]
+    assert sent_to == "new@example.com"
+    assert "confirm" in sent_subject.lower()
+    assert sent_link == "https://backend.tresolv.online/verify?token=abc"
+
+
+def test_register_confirmation_link_generation_failure_does_not_crash_registration():
+    """If the Admin API call itself fails, registration must still report
+    success (the account genuinely exists) rather than raising past the
+    user - generate_signup_confirmation_link already returns None on any
+    failure instead of raising, so this just confirms register() doesn't
+    assume a link always comes back."""
+    def fake_signup(email, password):
+        return {"user": {"id": "sb-unconfirmed", "email": email}, "session": None}
+
+    def fake_signin(email, password):
+        raise GoTrueError("Email not confirmed", 400)
+
+    def fake_insert(table, data):
+        if table == "tenants":
+            return {"id": "tenant-1", **data}
+        return {"id": "brand-1", **data}
+
+    with patch("src.services.auth_service.supabase_gotrue.sign_up", side_effect=fake_signup), \
+         patch("src.services.auth_service.supabase_gotrue.sign_in_with_password", side_effect=fake_signin), \
+         patch("src.services.auth_service.supabase_gotrue.generate_signup_confirmation_link", return_value=None), \
+         patch("src.services.auth_service.system_email_service.send_generic_auth_email") as mock_send_email, \
+         patch("src.services.auth_service.supabase_select", return_value=[]), \
+         patch("src.services.auth_service.supabase_insert", side_effect=fake_insert), \
+         patch("src.services.auth_service.supabase_update", return_value={}):
+        auth_service = AuthService()
+        result = _run(auth_service.register("new@example.com", "supersecret123"))
+
+    assert result["success"] is True
+    assert result.get("email_confirmation_required") is True
+    mock_send_email.assert_not_called()
 
 
 # ─── 7. login() never leaks account-existence detail for a bad password ────
