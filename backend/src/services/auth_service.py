@@ -179,8 +179,12 @@ class AuthService:
         3. Otherwise create a brand-new tenant + default brand, exactly like
            the old register() used to.
 
-        Raises FoundingCohortFullError instead of creating a tenant past the
-        Founding 20 cap.
+        Never blocks a signup: the first FOUNDING_COHORT_CAP tenants get
+        founding_cohort=True (their pricing perk), everyone after still
+        gets a full account on the regular plan/trial - just without that
+        badge. FoundingCohortFullError is kept only for existing callers'
+        try/except (dead now that this never raises it), so removing it
+        isn't required to allow signups past the cap.
         """
         email = email.strip().lower()
 
@@ -200,15 +204,14 @@ class AuthService:
                 logger.info(f"[Auth] Linked pre-existing tenant {tenant['id']} to Supabase user {supabase_user_id}")
             return tenant
 
-        # Founding 20 hard cap — first 20 orgs get the free founding cohort
-        # plan, everyone after gets sent to the waitlist instead of silently
-        # overloading the free Mistral/Render tier.
+        # Founding 20 — first 20 orgs get the founding-cohort pricing perk.
+        # Signups are never blocked once it's full: everyone after just
+        # doesn't get founding_cohort=True (see docstring above).
         founding_count = supabase_select("tenants", {
             "founding_cohort": "eq.true",
             "select": "id",
         })
-        if len(founding_count or []) >= FOUNDING_COHORT_CAP:
-            raise FoundingCohortFullError()
+        is_founding = len(founding_count or []) < FOUNDING_COHORT_CAP
 
         now = datetime.now(timezone.utc)
         tenant_data = {
@@ -221,7 +224,7 @@ class AuthService:
             "plan": "trial",
             "trial_start_at": now.isoformat(),
             "trial_end_at": (now + timedelta(days=TRIAL_DAYS)).isoformat(),
-            "founding_cohort": True,
+            "founding_cohort": is_founding,
             "created_at": now.isoformat(),
             "updated_at": now.isoformat(),
         }

@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("SUPABASE_URL", "http://localhost")
 os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test")
 
-from src.services.auth_service import AuthService, FoundingCohortFullError  # noqa: E402
+from src.services.auth_service import AuthService  # noqa: E402
 from src.services.supabase_gotrue import GoTrueError  # noqa: E402
 
 
@@ -161,22 +161,53 @@ def test_pre_migration_tenant_links_by_email_on_first_supabase_login():
     assert updated["supabase_user_id"] == "sb-id-1"
 
 
-# ─── 5. Founding cohort cap is enforced for brand-new tenants ──────────────
+# ─── 5. Founding cohort cap never blocks signup, only the perk flag ────────
 
-def test_founding_cohort_cap_blocks_new_tenant_creation():
+def test_founding_cohort_cap_full_still_creates_tenant_without_the_perk():
     def fake_select(table, params=None):
         params = params or {}
         if table == "tenants" and params.get("founding_cohort") == "eq.true":
             return [{"id": f"t{i}"} for i in range(20)]
         return []
 
-    with patch("src.services.auth_service.supabase_select", side_effect=fake_select), \
-         patch("src.services.auth_service.supabase_insert") as mock_insert:
-        auth_service = AuthService()
-        with pytest.raises(FoundingCohortFullError):
-            _run(auth_service.resolve_or_create_tenant_for_supabase_user("sb-new", "new@example.com"))
+    inserted = {}
 
-    mock_insert.assert_not_called()
+    def fake_insert(table, data):
+        if table == "tenants":
+            inserted["tenant"] = {"id": "tenant-new", **data}
+            return inserted["tenant"]
+        return {"id": "brand-1", **data}
+
+    with patch("src.services.auth_service.supabase_select", side_effect=fake_select), \
+         patch("src.services.auth_service.supabase_insert", side_effect=fake_insert):
+        auth_service = AuthService()
+        tenant = _run(auth_service.resolve_or_create_tenant_for_supabase_user("sb-new", "new@example.com"))
+
+    assert tenant["id"] == "tenant-new"
+    assert inserted["tenant"]["founding_cohort"] is False
+
+
+def test_founding_cohort_still_under_cap_gets_the_perk():
+    def fake_select(table, params=None):
+        params = params or {}
+        if table == "tenants" and params.get("founding_cohort") == "eq.true":
+            return [{"id": f"t{i}"} for i in range(19)]
+        return []
+
+    inserted = {}
+
+    def fake_insert(table, data):
+        if table == "tenants":
+            inserted["tenant"] = {"id": "tenant-new", **data}
+            return inserted["tenant"]
+        return {"id": "brand-1", **data}
+
+    with patch("src.services.auth_service.supabase_select", side_effect=fake_select), \
+         patch("src.services.auth_service.supabase_insert", side_effect=fake_insert):
+        auth_service = AuthService()
+        _run(auth_service.resolve_or_create_tenant_for_supabase_user("sb-new-2", "new2@example.com"))
+
+    assert inserted["tenant"]["founding_cohort"] is True
 
 
 # ─── 6. register() surfaces "check your email" instead of a session when Supabase requires confirmation ───
