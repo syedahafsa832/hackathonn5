@@ -2057,10 +2057,17 @@ function CannedResponsesTab() {
 
 // ──────────────────────────────────────────────────── Chat Widget Tab ──
 
+// '#000000' is brands.primary_color's own DB default (migration 002) -
+// every brand row has it from creation whether or not a merchant ever
+// picked a real color, so it reads as "not actually configured" here
+// rather than as a legitimate black brand color.
+const UNSET_PRIMARY_COLOR = '#000000';
+const DEFAULT_WIDGET_ACCENT = '#06B6D4';
+
 function ChatWidgetTab() {
   const [brand, setBrand] = useState(null);
   const [copied, setCopied] = useState(false);
-  const [accentColor, setAccentColor] = useState('#06B6D4');
+  const [accentColor, setAccentColor] = useState(DEFAULT_WIDGET_ACCENT);
 
   useEffect(() => {
     client.get('/api/brands').then(res => {
@@ -2069,6 +2076,15 @@ function ChatWidgetTab() {
     }).catch(() => {});
   }, []);
 
+  // Once the real brand loads, default the widget's accent to its actual
+  // configured primary_color instead of the generic fallback - the
+  // merchant can still override it below (the color input stays editable).
+  useEffect(() => {
+    if (brand?.primary_color && brand.primary_color !== UNSET_PRIMARY_COLOR) {
+      setAccentColor(brand.primary_color);
+    }
+  }, [brand]);
+
   const backendUrl = import.meta.env.VITE_API_BASE_URL ||
     window.location.origin.replace(':5173', ':8001').replace(':3000', ':8001');
   const embedCode = brand
@@ -2076,7 +2092,7 @@ function ChatWidgetTab() {
   window.tResolvConfig = {
     brandId:    "${brand.id}",
     botName:    "Luna",
-    color:      "#FFFFFF",
+    color:      "${accentColor}",
     brandLabel: "AI Support"
   };
 </script>
