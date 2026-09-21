@@ -15,6 +15,7 @@ Required env (Careers project): CAREERS_SUPABASE_URL, CAREERS_SUPABASE_ANON_KEY,
 CAREERS_SUPABASE_SERVICE_KEY (server-only), CAREERS_PORTAL_URL (e.g. https://www.tresolv.online).
 The careers site origin must be listed in CORS_ALLOWED_ORIGINS.
 """
+import asyncio
 import logging
 import os
 import re
@@ -46,7 +47,10 @@ def _cfg():
 
 
 def _svc(anon: str, service: str, **extra) -> dict:
-    return {"apikey": service, "Authorization": f"Bearer {service}", "Content-Type": "application/json", **extra}
+    h = {"apikey": service, "Content-Type": "application/json", **extra}
+    if service.startswith("eyJ"):  # legacy service_role JWT; new sb_secret_ keys go in `apikey` only
+        h["Authorization"] = f"Bearer {service}"
+    return h
 
 
 def _iso(dt: datetime) -> str:
@@ -106,6 +110,69 @@ def _welcome_email(name: str, role: str, link: str, portal: str):
     return subject, html, text
 
 
+class TeamLoginRequest(BaseModel):
+    email: str
+
+
+_last_login_request: dict = {}
+_LOGIN_COOLDOWN_SECONDS = 60
+
+
+@router.post("/team-login")
+async def team_login(req: TeamLoginRequest):
+    """Public "email me a sign-in link" for the team portal.
+
+    Sends an email ONLY if the address belongs to an ACTIVE team member; otherwise it says so
+    (status: not_on_team) and sends nothing. (Supabase's own OTP endpoint would email any existing
+    auth user, including the admin, which is why the site no longer calls it.)"""
+    generic = {"status": "ok"}
+    url, anon, service, portal = _cfg()
+    email = (req.email or "").strip().lower()
+    if not email or len(email) > 254 or "@" not in email:
+        return generic
+
+    import time
+    now = time.monotonic()
+    last = _last_login_request.get(email)
+    if last is not None and now - last < _LOGIN_COOLDOWN_SECONDS:
+        return generic
+    _last_login_request[email] = now
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as c:
+            g = await c.get(f"{url}/rest/v1/team_members", headers=_svc(anon, service),
+                            params={"email": f"eq.{email}", "status": "eq.active", "select": "id,name,auth_user_id"})
+            rows = g.json() if g.status_code == 200 else []
+            if not rows:
+                return {"status": "not_on_team"}  # not an active team member: no email is sent
+            tm = rows[0]
+            await c.post(f"{url}/auth/v1/admin/users", headers=_svc(anon, service), json={"email": email, "email_confirm": True})
+            gl = await c.post(f"{url}/auth/v1/admin/generate_link", headers=_svc(anon, service),
+                              json={"type": "magiclink", "email": email})
+            body = gl.json() if gl.status_code == 200 else {}
+            token_hash = body.get("hashed_token") or (body.get("properties") or {}).get("hashed_token")
+            auth_id = body.get("id") or (body.get("user") or {}).get("id")
+            if not token_hash or not auth_id or (tm.get("auth_user_id") and tm["auth_user_id"] != auth_id):
+                logger.error("[Careers] team-login link failed (%s)", gl.status_code)
+                return {"status": "error"}
+            if not tm.get("auth_user_id"):
+                await c.patch(f"{url}/rest/v1/team_members?id=eq.{tm['id']}&auth_user_id=is.null",
+                              headers=_svc(anon, service), json={"auth_user_id": auth_id})
+            link = f"{portal}/team/auth?token_hash={token_hash}"
+            html = system_email_service._shell(
+                preheader="your tResolv team sign-in link", heading="your sign-in link",
+                body_html="Tap the button to get into your private team portal.",
+                action_label="ENTER YOUR TEAM PORTAL →", action_url=link,
+                footnote="This link is private to you and works once. If you didn't ask for it, you can ignore this email.")
+            text = f"Your tResolv team sign-in link (works once):\n{link}\n\nIf you didn't ask for it, ignore this email."
+            sent_ok = await asyncio.wait_for(asyncio.to_thread(
+                system_email_service._send, email, "your tResolv team sign-in link", html, text), 25)
+            return generic if sent_ok else {"status": "error"}
+    except Exception:
+        logger.exception("[Careers] team-login failed")
+        return {"status": "error"}
+
+
 @router.post("/selection")
 async def handle_selection(req: SelectionRequest, authorization: Optional[str] = Header(None)):
     url, anon, service, portal = _cfg()
@@ -163,7 +230,11 @@ async def handle_selection(req: SelectionRequest, authorization: Optional[str] =
         try:
             # 3b. auth user (create if missing; "already exists" is fine)
             email = tm["email"]
-            await c.post(f"{url}/auth/v1/admin/users", headers=_svc(anon, service), json={"email": email, "email_confirm": True})
+            cu = await c.post(f"{url}/auth/v1/admin/users", headers=_svc(anon, service), json={"email": email, "email_confirm": True})
+            if cu.status_code not in (200, 201, 422):  # 422 = account already exists, which is fine
+                logger.error("[Careers] auth admin create-user failed (%s)", cu.status_code)
+                await release()
+                raise HTTPException(502, "could not create the login account (check CAREERS_SUPABASE_SERVICE_KEY)")
             # 5. single-use magic-link token (returned to us, never to the browser)
             gl = await c.post(f"{url}/auth/v1/admin/generate_link", headers=_svc(anon, service),
                               json={"type": "magiclink", "email": email})
@@ -185,7 +256,11 @@ async def handle_selection(req: SelectionRequest, authorization: Optional[str] =
 
             link = f"{portal}/team/auth?token_hash={token_hash}"
             subject, html, text = _welcome_email(tm["name"], tm["role"], link, portal)
-            if not system_email_service._send(email, subject, html, text):
+            try:
+                sent_ok = await asyncio.wait_for(asyncio.to_thread(system_email_service._send, email, subject, html, text), 25)
+            except asyncio.TimeoutError:
+                sent_ok = False
+            if not sent_ok:
                 await release()
                 raise HTTPException(502, "email could not be sent")
 
