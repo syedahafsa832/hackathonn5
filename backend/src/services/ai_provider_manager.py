@@ -28,12 +28,62 @@ from openai import OpenAI
 
 from .mistral_limiter import call_with_limit
 from .admin_alert_service import notify_provider_exhausted, notify_provider_recovered
+from src.lib.supabase_client import supabase_get_setting, supabase_set_setting
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = os.getenv("MISTRAL_MODEL", "mistral-small-latest")
 DEFAULT_BASE_URL = os.getenv("MISTRAL_API_BASE_URL", "https://api.mistral.ai/v1")
 MAX_BACKOFF_SECONDS = 4
+
+# ─── DeepSeek emergency fallback (one tenant only) ──────────────────────────
+# Paid for out of the founder's own small personal credit balance. Must
+# never become a general provider: it's deliberately NOT part of
+# self._providers (the chain every tenant's call falls back through — see
+# _load_providers() below) and is only ever tried from the tail of
+# create_chat_completion(), gated on every one of:
+#   1. a real tenants.id was passed in AND matches DEEPSEEK_FALLBACK_TENANT_ID
+#      exactly (a stable id, not a brand name/label — those can be renamed)
+#   2. every provider in self._providers has already failed THIS request
+#   3. the invocation cap below hasn't been reached yet
+# Unset DEEPSEEK_FALLBACK_TENANT_ID (the default) disables the feature
+# entirely for everyone, regardless of whether an API key is configured.
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-flash")
+DEEPSEEK_API_BASE_URL = os.getenv("DEEPSEEK_API_BASE_URL", "https://api.deepseek.com")
+DEEPSEEK_FALLBACK_TENANT_ID = os.getenv("DEEPSEEK_FALLBACK_TENANT_ID")
+# Conservative hard cap on actual DeepSeek invocations (not every message
+# that merely reaches the fallback chain — only real DeepSeek API calls).
+# Configurable; 25 is the safe default protecting a small credit balance.
+DEEPSEEK_MAX_INVOCATIONS = int(os.getenv("DEEPSEEK_MAX_INVOCATIONS", "25"))
+# One small persisted counter via the existing generic settings table/
+# helpers — deliberately not a new table or usage/billing system. Best-
+# effort, not transactionally atomic (a read-then-write race is possible
+# under truly concurrent requests), which is an accepted tradeoff given
+# this only ever fires after every other provider has already failed, for
+# one tenant, bounded at DEEPSEEK_MAX_INVOCATIONS either way.
+DEEPSEEK_USAGE_SETTING_KEY = "deepseek_emergency_fallback_invocation_count"
+
+
+def _deepseek_invocation_count() -> int:
+    try:
+        value = supabase_get_setting(DEEPSEEK_USAGE_SETTING_KEY)
+        return int(value.get("count", 0)) if value else 0
+    except Exception as e:
+        logger.error(f"[AI_PROVIDER][DeepSeek] Failed to read invocation count, treating as 0: {e}")
+        return 0
+
+
+def _record_deepseek_invocation() -> int:
+    """Counts an actual DeepSeek request being made — called once per
+    attempt regardless of whether that attempt succeeds, since a failed
+    DeepSeek call still spends against the credit balance."""
+    count = _deepseek_invocation_count() + 1
+    try:
+        supabase_set_setting(DEEPSEEK_USAGE_SETTING_KEY, {"count": count})
+    except Exception as e:
+        logger.error(f"[AI_PROVIDER][DeepSeek] Failed to persist invocation count: {e}")
+    return count
 
 # OpenRouter free-tier models, used as a distinct exhaustion tier between
 # Mistral and Groq: unlike the Mistral/Groq schemes above, these two share
@@ -272,6 +322,7 @@ class AIProviderManager:
         max_tokens: int = 1200,
         validate_response: Optional[Callable[[Any], Optional[str]]] = None,
         log_context: str = "",
+        tenant_id: Optional[str] = None,
     ):
         """
         Tries each configured provider in order (same messages/temperature/RAG
@@ -279,6 +330,13 @@ class AIProviderManager:
         Returns (response, provider_label, model, usage). Raises
         AllProvidersFailedError if every provider fails. Never retries more
         than len(providers) times.
+
+        tenant_id, when given, is ONLY used to check eligibility for the
+        DeepSeek emergency fallback at the very end of this call (see the
+        module-level DeepSeek constants above) — it plays no role in the
+        normal provider chain, which is identical for every tenant. Omitting
+        it (the default for every existing caller) simply means this call
+        can never reach DeepSeek, regardless of how it fails.
 
         validate_response, when given, is called on every HTTP-200 response
         BEFORE it's accepted as a success. It returns None if the response is
@@ -426,6 +484,77 @@ class AIProviderManager:
                 backoff = min(2 ** i, MAX_BACKOFF_SECONDS)
                 logger.info(f"[AI_PROVIDER] switching to next provider in {backoff}s")
                 await asyncio.sleep(backoff)
+
+        # ── DeepSeek emergency fallback — one tenant, last resort only ──────
+        # Only reachable here, after every provider in self._providers above
+        # has already failed this exact request. Never tried speculatively,
+        # never for any other tenant_id, never a substitute for a provider
+        # that would have succeeded on its own.
+        if DEEPSEEK_API_KEY and DEEPSEEK_FALLBACK_TENANT_ID and tenant_id == DEEPSEEK_FALLBACK_TENANT_ID:
+            used = _deepseek_invocation_count()
+            if used >= DEEPSEEK_MAX_INVOCATIONS:
+                logger.error(
+                    f"[AI_PROVIDER][DeepSeek] Emergency allowance exhausted ({used}/{DEEPSEEK_MAX_INVOCATIONS}) "
+                    f"— not calling DeepSeek, falling through to standard provider-exhausted handling"
+                    + (f" context={log_context}" if log_context else "")
+                )
+            else:
+                deepseek_provider = _Provider("deepseek_emergency", DEEPSEEK_API_KEY, DEEPSEEK_MODEL, base_url=DEEPSEEK_API_BASE_URL)
+                client = self._client_for(deepseek_provider)
+                kwargs = {"model": deepseek_provider.model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+                if response_format is not None:
+                    kwargs["response_format"] = response_format
+
+                logger.warning(
+                    f"[AI_PROVIDER][DeepSeek] Emergency fallback attempt {used + 1}/{DEEPSEEK_MAX_INVOCATIONS} "
+                    f"for tenant={tenant_id}" + (f" context={log_context}" if log_context else "")
+                )
+                t_start = time.monotonic()
+                response = None
+                try:
+                    response = await call_with_limit(lambda kw=kwargs, c=client: c.chat.completions.create(**kw))
+                except TypeError:
+                    try:
+                        kwargs.pop("response_format", None)
+                        response = await call_with_limit(lambda kw=kwargs, c=client: c.chat.completions.create(**kw))
+                    except Exception as e2:
+                        attempts.append({"label": "deepseek_emergency", "reason": _describe(e2)})
+                        response = None
+                except Exception as e:
+                    attempts.append({"label": "deepseek_emergency", "reason": _describe(e)})
+                    response = None
+
+                if response is not None and validate_response is not None:
+                    validation_failure = validate_response(response)
+                    if validation_failure:
+                        attempts.append({"label": "deepseek_emergency", "reason": validation_failure})
+                        response = None
+
+                # An actual DeepSeek request was made above regardless of
+                # outcome — a failed call still spends against the credit
+                # balance, so it counts too. This is what must be capped,
+                # not every message that merely reached this point.
+                new_count = _record_deepseek_invocation()
+
+                if response is not None:
+                    elapsed = time.monotonic() - t_start
+                    total = time.monotonic() - call_start
+                    logger.info(
+                        f"[AI_PROVIDER][DeepSeek] success ({new_count}/{DEEPSEEK_MAX_INVOCATIONS} used) "
+                        f"response_time={elapsed:.2f}s total_time={total:.2f}s"
+                    )
+                    raw_usage = getattr(response, "usage", None)
+                    usage = {
+                        "prompt_tokens": getattr(raw_usage, "prompt_tokens", None) if raw_usage else None,
+                        "completion_tokens": getattr(raw_usage, "completion_tokens", None) if raw_usage else None,
+                        "total_tokens": getattr(raw_usage, "total_tokens", None) if raw_usage else None,
+                        "latency_ms": round(total * 1000),
+                        "attempts": len(self._providers) + 1,
+                        "provider": deepseek_provider.label,
+                        "model": deepseek_provider.model,
+                    }
+                    await asyncio.to_thread(notify_provider_recovered, service="chat_completion")
+                    return response, deepseek_provider.label, deepseek_provider.model, usage
 
         elapsed_total = time.monotonic() - call_start
         logger.error(

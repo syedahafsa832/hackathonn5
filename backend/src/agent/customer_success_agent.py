@@ -2053,6 +2053,7 @@ class CustomerSuccessAgent:
                     response_format={"type": "json_object"},
                     validate_response=_validate_ai_json_reply,
                     log_context=ticket_id or "",
+                    tenant_id=tenant_id,
                 )
             except AllProvidersFailedError as api_error:
                 logger.error(f"[Agent] All AI providers failed: {api_error}")
