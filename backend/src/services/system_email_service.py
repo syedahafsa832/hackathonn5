@@ -31,10 +31,20 @@ import requests
 logger = logging.getLogger(__name__)
 
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
-# onboarding@resend.dev works without verifying a domain in Resend, but
-# only for sending to the Resend account's own email — verify a real
-# domain (e.g. tresolv.online) in the Resend dashboard for production use.
-SYSTEM_EMAIL_FROM_EMAIL = os.getenv("SYSTEM_EMAIL_FROM_EMAIL", "onboarding@resend.dev")
+
+# onboarding@resend.dev works without verifying a domain in Resend, but only
+# for sending to the Resend account's own email - it's a shared test sender,
+# never something a real customer-facing password reset should appear to
+# come from. Same production-detection convention as admin_alert_service.py
+# (defaults to "production" when unset, so an unconfigured deploy fails
+# safe rather than assuming it's just someone's local dev box). Only a
+# confirmed non-production environment gets the test-sender fallback; in
+# production, a missing SYSTEM_EMAIL_FROM_EMAIL leaves this None, which
+# _is_configured() below treats as "not configured" - a loud, logged
+# failure to send, never a silent switch to the Resend sandbox address.
+_ENVIRONMENT = os.getenv("ENVIRONMENT") or os.getenv("ENV") or "production"
+_DEV_ONLY_FALLBACK_FROM_EMAIL = "onboarding@resend.dev" if _ENVIRONMENT != "production" else None
+SYSTEM_EMAIL_FROM_EMAIL = os.getenv("SYSTEM_EMAIL_FROM_EMAIL") or _DEV_ONLY_FALLBACK_FROM_EMAIL
 SYSTEM_EMAIL_FROM_NAME = os.getenv("SYSTEM_EMAIL_FROM_NAME", "tResolv")
 
 _RESEND_API_URL = "https://api.resend.com/emails"

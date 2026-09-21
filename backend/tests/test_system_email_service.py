@@ -101,6 +101,44 @@ def test_send_logs_http_status_and_exception_class_but_not_api_key(caplog):
     assert "re_test_super_secret_api_key" not in all_log_text
 
 
+# ── Production must never silently fall back to Resend's shared test
+# sender (onboarding@resend.dev) - a real customer-facing password reset
+# email appearing to come from that domain would look broken/spammy. An
+# unconfigured production deploy must fail loudly (logged, no send) instead. ──
+
+def test_production_never_falls_back_to_resend_test_sender_when_unset():
+    import importlib
+    with patch.dict(os.environ, {"ENVIRONMENT": "production"}, clear=False):
+        for key in ("SYSTEM_EMAIL_FROM_EMAIL",):
+            os.environ.pop(key, None)
+        reloaded = importlib.reload(system_email_service)
+    try:
+        assert reloaded.SYSTEM_EMAIL_FROM_EMAIL is None
+        assert reloaded.SYSTEM_EMAIL_FROM_EMAIL != "onboarding@resend.dev"
+    finally:
+        importlib.reload(system_email_service)  # restore real module state for later tests
+
+
+def test_unconfigured_production_fails_the_send_instead_of_using_test_sender():
+    with patch.multiple("src.services.system_email_service", RESEND_API_KEY="re_real_key", SYSTEM_EMAIL_FROM_EMAIL=None), \
+         patch("requests.post") as mock_post:
+        result = system_email_service.send_password_reset_email("merchant@example.com", "https://example.com/reset")
+
+    assert result is False
+    mock_post.assert_not_called()  # never attempts a send with no real sender configured
+
+
+def test_non_production_environment_still_gets_the_dev_fallback_sender():
+    import importlib
+    with patch.dict(os.environ, {"ENVIRONMENT": "development"}, clear=False):
+        os.environ.pop("SYSTEM_EMAIL_FROM_EMAIL", None)
+        reloaded = importlib.reload(system_email_service)
+    try:
+        assert reloaded.SYSTEM_EMAIL_FROM_EMAIL == "onboarding@resend.dev"
+    finally:
+        importlib.reload(system_email_service)  # restore real module state for later tests
+
+
 def test_generic_auth_email_used_for_non_recovery_action_types():
     with patch.multiple("src.services.system_email_service", **_configured()), \
          patch("requests.post", return_value=_mock_response(200)) as mock_post:
