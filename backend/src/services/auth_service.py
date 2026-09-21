@@ -436,6 +436,10 @@ class AuthService:
         supabase_user_id = user.get("id")
         email = (user.get("email") or "").strip().lower()
         if not supabase_user_id or not email:
+            logger.warning(
+                f"[Auth] Google sign-in: Supabase session had no usable user "
+                f"(id_present={bool(supabase_user_id)} email_present={bool(email)})"
+            )
             return {"success": False, "error": "Google sign-in failed"}
 
         metadata = user.get("user_metadata") or {}
@@ -444,12 +448,20 @@ class AuthService:
         try:
             tenant = await self.resolve_or_create_tenant_for_supabase_user(supabase_user_id, email, full_name)
         except FoundingCohortFullError:
+            # Only reachable when this Google email matched no existing
+            # tenant (by supabase_user_id or email) and a brand-new signup
+            # would exceed the cap - i.e. it looks like a first-time signup
+            # even for an account that expects to already exist. Logging
+            # the email here is what would reveal that mismatch.
+            logger.warning(f"[Auth] Google sign-in: founding cohort full, rejected new signup for {email}")
             return self._founding_cohort_full_response()
 
         if not tenant:
+            logger.warning(f"[Auth] Google sign-in: resolve_or_create_tenant returned nothing for {email}")
             return {"success": False, "error": "Failed to create account"}
 
         if not tenant.get("is_active"):
+            logger.warning(f"[Auth] Google sign-in: tenant {tenant.get('id')} ({email}) is disabled")
             return {"success": False, "error": "Account is disabled"}
 
         supabase_update("tenants", {"id": f"eq.{tenant['id']}"}, {
@@ -534,8 +546,19 @@ class AuthService:
                 "grant_type": "authorization_code",
             }, timeout=10)
             token_res.raise_for_status()
-            id_token = token_res.json().get("id_token")
+            token_json = token_res.json()
+            id_token = token_json.get("id_token")
             if not id_token:
+                # Google's token endpoint returned 200 with no id_token -
+                # every other rejection path here logs why; this is the one
+                # that previously didn't. Logs which fields DID come back
+                # (never their values - access/refresh tokens are live
+                # credentials) since that's what actually narrows this down
+                # (e.g. "scope" missing "openid" would explain it exactly).
+                logger.warning(
+                    f"[Auth] Google token exchange returned no id_token; "
+                    f"response keys={sorted(token_json.keys())}"
+                )
                 return {"success": False, "return_to": return_to, "error": "no_id_token"}
         except Exception as e:
             logger.warning(f"[Auth] Google token exchange failed: {e}")
