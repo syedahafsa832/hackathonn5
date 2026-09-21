@@ -258,6 +258,12 @@ try:
     except: pass
 
     try:
+      from src.api.routes.careers_selection import router as careers_selection_router
+      register_router(careers_selection_router)
+    except Exception as e:
+      logger.error(f"careers selection router not loaded: {e}")
+
+    try:
       from src.api.routes.admin import router as api_admin_router
       register_router(api_admin_router, prefix="/api")
     except: pass
