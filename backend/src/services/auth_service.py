@@ -373,13 +373,32 @@ class AuthService:
 
         session = signup.get("session")
         if not session:
-            return {
-                "success": True,
-                "tenant_id": tenant["id"],
-                "email": email,
-                "company_name": tenant.get("company_name"),
-                "email_confirmation_required": True,
-            }
+            # This project's Supabase Auth is configured to auto-confirm
+            # signups (confirmed directly against auth.users: every email
+            # has confirmation_sent_at=null and email_confirmed_at within
+            # ~50ms of created_at, going back weeks - no confirmation email
+            # is ever queued or sent), but GoTrue's own /signup response
+            # doesn't reliably carry the session back on the same call that
+            # creates the account. Sign in immediately with the same
+            # credentials instead of telling the user to wait on a
+            # confirmation email that both isn't required and was never
+            # sent - that's the "email wasn't received" report this fixes.
+            try:
+                login_session = supabase_gotrue.sign_in_with_password(email, password)
+                return self._session_response(login_session, tenant)
+            except GoTrueError as e:
+                # A genuine "email not confirmed" (or other) rejection -
+                # this is the one case where the check-your-email message
+                # is actually correct, e.g. if this project's auto-confirm
+                # setting is ever turned off in the future.
+                logger.info(f"[Auth] Post-signup sign-in not yet possible for {email}: {e.message}")
+                return {
+                    "success": True,
+                    "tenant_id": tenant["id"],
+                    "email": email,
+                    "company_name": tenant.get("company_name"),
+                    "email_confirmation_required": True,
+                }
 
         return self._session_response(session, tenant)
 

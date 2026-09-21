@@ -212,9 +212,42 @@ def test_founding_cohort_still_under_cap_gets_the_perk():
 
 # ─── 6. register() surfaces "check your email" instead of a session when Supabase requires confirmation ───
 
-def test_register_reports_email_confirmation_required_without_a_session():
+def test_register_signs_straight_in_when_signup_has_no_session_but_account_is_usable():
+    """Covers the project's actual observed Supabase config: signup's own
+    response can come back with session=None even though the account is
+    already usable (auto-confirmed) - a follow-up sign-in with the same
+    credentials should succeed, and the caller must get a real session
+    back, not be told to wait on a confirmation email that isn't coming."""
+    def fake_signup(email, password):
+        return {"user": {"id": "sb-new", "email": email}, "session": None}
+
+    def fake_signin(email, password):
+        return {"access_token": "tok-1", "refresh_token": "rtok-1", "token_type": "bearer", "expires_in": 3600}
+
+    def fake_insert(table, data):
+        if table == "tenants":
+            return {"id": "tenant-1", "email": "new@example.com", **data}
+        return {"id": "brand-1", **data}
+
+    with patch("src.services.auth_service.supabase_gotrue.sign_up", side_effect=fake_signup), \
+         patch("src.services.auth_service.supabase_gotrue.sign_in_with_password", side_effect=fake_signin), \
+         patch("src.services.auth_service.supabase_select", return_value=[]), \
+         patch("src.services.auth_service.supabase_insert", side_effect=fake_insert), \
+         patch("src.services.auth_service.supabase_update", return_value={}):
+        auth_service = AuthService()
+        result = _run(auth_service.register("new@example.com", "supersecret123"))
+
+    assert result["success"] is True
+    assert result["access_token"] == "tok-1"
+    assert result.get("email_confirmation_required") is None
+
+
+def test_register_reports_email_confirmation_required_when_account_genuinely_isnt_usable_yet():
     def fake_signup(email, password):
         return {"user": {"id": "sb-unconfirmed", "email": email}, "session": None}
+
+    def fake_signin(email, password):
+        raise GoTrueError("Email not confirmed", 400)
 
     def fake_insert(table, data):
         if table == "tenants":
@@ -222,6 +255,7 @@ def test_register_reports_email_confirmation_required_without_a_session():
         return {"id": "brand-1", **data}
 
     with patch("src.services.auth_service.supabase_gotrue.sign_up", side_effect=fake_signup), \
+         patch("src.services.auth_service.supabase_gotrue.sign_in_with_password", side_effect=fake_signin), \
          patch("src.services.auth_service.supabase_select", return_value=[]), \
          patch("src.services.auth_service.supabase_insert", side_effect=fake_insert), \
          patch("src.services.auth_service.supabase_update", return_value={}):
