@@ -54,7 +54,8 @@ def _svc(anon: str, service: str, **extra) -> dict:
 
 
 def _iso(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).isoformat()
+    # UTC with a trailing Z (never '+00:00': a raw '+' in a URL query is decoded as a space)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 class SelectionRequest(BaseModel):
@@ -220,7 +221,10 @@ async def handle_selection(req: SelectionRequest, authorization: Optional[str] =
             f"{url}/rest/v1/team_members?id=eq.{tm['id']}{sent_filter}"
             f"&or=(welcome_email_claimed_at.is.null,welcome_email_claimed_at.lt.{_iso(now - ttl)})",
             headers=_svc(anon, service, Prefer="return=representation"), json={"welcome_email_claimed_at": _iso(now)})
-        if claim.status_code != 200 or not claim.json():
+        if claim.status_code != 200:
+            logger.error("[Careers] claim failed (%s)", claim.status_code)
+            raise HTTPException(502, "could not start the send (database error)")
+        if not claim.json():
             return {"status": "in_progress", "team_member_id": tm["id"]}
 
         async def release():
