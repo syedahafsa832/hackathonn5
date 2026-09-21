@@ -274,6 +274,32 @@ async def test_no_custom_automation_falls_back_to_existing_default_copy():
     assert "successfully cancelled" in captured["body"]  # unchanged existing default behavior
 
 
+@pytest.mark.asyncio
+async def test_action_for_one_brand_never_uses_another_brands_automation():
+    """get_enabled_automation() is queried with an exact brand_id filter -
+    an action belonging to BRAND_ID must never pick up an automation row
+    that only exists for a different brand, even with the same trigger."""
+    captured = {}
+
+    async def fake_send_email(brand, to, subject, body):
+        captured["subject"], captured["body"] = subject, body
+        return {"success": True}
+
+    other_brands_automation = {**AUTOMATION_ROW, "id": "auto-OTHER", "brand_id": "brand-OTHER"}
+    with patch("src.services.actions_service.supabase_select", return_value=[BRAND]), \
+         patch("src.services.actions_service.supabase_update"), \
+         patch("src.services.email_automation_service.supabase_select", side_effect=_fake_select_factory(automations=[other_brands_automation])), \
+         patch("src.services.brand_gmail_service.brand_gmail_service.send_email", new=fake_send_email):
+        await actions_service._post_execution_notify(
+            _action(status="executed"), "cancel_order", {"order_name": "#1013"},
+        )
+
+    # No automation matched for THIS brand, so the existing hardcoded
+    # default fired instead - never brand-OTHER's configured template.
+    assert "successfully cancelled" in captured["body"]
+    assert "{{order_number}}" not in captured["body"]
+
+
 @pytest.fixture(autouse=True)
 def _reset_rate_buckets():
     financial_audit._rate_buckets.clear()

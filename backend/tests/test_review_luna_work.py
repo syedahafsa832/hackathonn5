@@ -301,5 +301,32 @@ def test_review_queue_is_brand_scoped():
 
     # store_id (brand-1) not in tenant B's own brands (brand-B) -> empty, no cross-brand leak
     assert resp.status_code == 200
-    assert resp.json() == {"items": [], "count": 0}
+    assert resp.json() == {"items": [], "count": 0, "total_reviewable": 0}
     mock_get_tickets.assert_not_called()
+
+
+# ── total_reviewable: distinguishes "nothing to review at all" from "this
+# filter has nothing" for the empty-state copy on the dashboard ───────────
+
+def test_review_queue_total_reviewable_reflects_unfiltered_count_not_filtered():
+    tickets = [_ticket(id="t-approved", human_approved=True), _ticket(id="t-needs")]
+    with patch("src.api.routes.tickets._get_tenant_brand_ids", new=AsyncMock(return_value=[BRAND_ID])), \
+         patch("src.services.supabase_service.supabase_service.get_tickets", new=AsyncMock(return_value=tickets)), \
+         patch("src.api.routes.tickets.supabase_select", return_value=[]):
+        resp = _with_tenant(lambda: client.get("/api/tickets/review/queue", params={"review_status": "rejected"}))
+
+    body = resp.json()
+    assert body["items"] == []  # nothing rejected
+    assert body["total_reviewable"] == 2  # but Luna HAS replied to 2 reviewable tickets overall
+
+
+def test_review_queue_total_reviewable_zero_when_luna_has_never_replied():
+    tickets = [_ticket(id="t-no-ai", ai_reply=None, ai_draft=None)]
+    with patch("src.api.routes.tickets._get_tenant_brand_ids", new=AsyncMock(return_value=[BRAND_ID])), \
+         patch("src.services.supabase_service.supabase_service.get_tickets", new=AsyncMock(return_value=tickets)), \
+         patch("src.api.routes.tickets.supabase_select", return_value=[]):
+        resp = _with_tenant(lambda: client.get("/api/tickets/review/queue"))
+
+    body = resp.json()
+    assert body["items"] == []
+    assert body["total_reviewable"] == 0

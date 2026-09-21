@@ -211,10 +211,10 @@ async def list_review_queue(
     try:
         brand_ids = await _get_tenant_brand_ids(tenant)
         if not brand_ids:
-            return {"items": [], "count": 0}
+            return {"items": [], "count": 0, "total_reviewable": 0}
         if store_id:
             if store_id not in brand_ids:
-                return {"items": [], "count": 0}
+                return {"items": [], "count": 0, "total_reviewable": 0}
             brand_ids = [store_id]
 
         all_tickets: list = []
@@ -236,10 +236,12 @@ async def list_review_queue(
                 })
 
         items = []
+        total_reviewable = 0
         for t in all_tickets:
             status = _compute_review_status(t)
             if status is None:
                 continue
+            total_reviewable += 1
             if review_status and status != review_status:
                 continue
             items.append({
@@ -262,7 +264,15 @@ async def list_review_queue(
             if len(items) >= limit:
                 break
 
-        return {"items": items, "count": len(items)}
+        return {
+            "items": items,
+            "count": len(items),
+            # Lets the frontend tell "nothing here because Luna hasn't
+            # handled any reviewable conversation yet" apart from "this
+            # specific filter has none but other tabs do" - both render as
+            # an empty items list otherwise.
+            "total_reviewable": total_reviewable,
+        }
     except HTTPException:
         raise
     except Exception as e:

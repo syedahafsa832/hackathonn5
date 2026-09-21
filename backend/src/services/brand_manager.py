@@ -17,6 +17,23 @@ from src.config import SHOPIFY_API_VERSION
 logger = logging.getLogger(__name__)
 
 
+def _shopify_connection_error_message(status_code: Optional[int]) -> str:
+    """Maps a Shopify API failure to a plain-language message a non-technical
+    merchant can act on. Never surfaces the raw status code, response body,
+    or exception text - those are for our own logs only (see the callers,
+    which log the real detail before calling this)."""
+    if status_code in (401,):
+        return "Your Shopify connection needs to be reconnected. Reconnect your store, then try again."
+    if status_code in (403,):
+        return "tResolv can't access your Shopify store with the current connection. Please reconnect your store and grant the requested permissions."
+    if status_code is not None and 500 <= status_code < 600:
+        return "We couldn't check your Shopify connection right now. Please try again in a moment."
+    # 404 (bad/renamed store domain), network errors (status_code=None), and
+    # anything else unrecognized all land here - genuinely unknown to the
+    # merchant, so the message points at the two things they can actually do.
+    return "We couldn't connect to your Shopify store. Please reconnect your store or try again."
+
+
 class BrandManager:
     """
     Manages multiple Shopify brands with isolated credentials and settings.
@@ -185,10 +202,22 @@ class BrandManager:
         """Test Shopify API connection for a brand."""
         brand = await self.get_brand(brand_id)
         if not brand:
-            return {"success": False, "error": "Brand not found"}
+            return {"success": False, "error": "We couldn't find your store. Try refreshing the page."}
+
+        shop_name = brand.get("shopify_shop_name")
+        if not shop_name:
+            # Nothing to test against - a request would just fail on a
+            # bogus "https://None.myshopify.com" URL and surface a raw
+            # exception message (see _validate_shopify_credentials' own
+            # except branch). Catching this up front is a real behavior
+            # fix, not just cleanup: this case can never succeed.
+            return {
+                "success": False,
+                "error": "Your Shopify store isn't connected yet. Connect your store first, then test the connection.",
+            }
 
         return await self._validate_shopify_credentials(
-            brand.get("shopify_shop_name"),
+            shop_name,
             brand.get("_decrypted_token"),
             return_details=True
         )
@@ -230,15 +259,19 @@ class BrandManager:
                     }
                 return True
             else:
+                # Full status/body still goes to our own logs for debugging -
+                # only the merchant-facing message below is sanitized. A
+                # non-technical merchant seeing "API error: 401" (the old
+                # behavior) has no idea what to do about it.
                 logger.error(f"[BrandManager] Shopify validation failed: {resp.status_code} - {resp.text}")
                 if return_details:
-                    return {"success": False, "error": f"API error: {resp.status_code}"}
+                    return {"success": False, "error": _shopify_connection_error_message(resp.status_code)}
                 return False
 
         except Exception as e:
             logger.error(f"[BrandManager] Shopify validation error: {e}")
             if return_details:
-                return {"success": False, "error": str(e)}
+                return {"success": False, "error": _shopify_connection_error_message(None)}
             return False
 
     def get_shopify_client(self, brand: Dict[str, Any]) -> "BrandShopifyClient":

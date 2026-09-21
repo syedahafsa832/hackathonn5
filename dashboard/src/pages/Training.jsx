@@ -164,7 +164,17 @@ export default function Training() {
         <div style={sectionLabel}>Train</div>
         <div style={{ ...bigTitle, marginBottom: '10px' }}>What has Luna learned?</div>
         <CheckRow ok={train.knowledge.has_any} label="Brand knowledge" detail={`${train.knowledge.completed_count} of ${train.knowledge.sources_count} sources indexed`} />
-        <CheckRow ok={train.policies.has_any} label="Store policies" detail={train.policies.has_any ? 'Configured' : 'Not set yet'} />
+        <CheckRow
+          ok={train.policies.has_any}
+          label="Store policies"
+          detail={
+            train.policies.source === 'shopify'
+              ? 'Configured from Shopify'
+              : train.policies.source === 'manual'
+                ? 'Added manually'
+                : 'Not added yet — add your return, refund, cancellation, or shipping policies so Luna knows how your store handles customer requests.'
+          }
+        />
         <CheckRow ok={train.examples.count > 0} label="Uploaded examples" detail={`${train.examples.count} added`} />
         <CheckRow
           ok={train.reply_style.learned}

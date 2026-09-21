@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useReviewQueue, useSubmitTicketReview } from '../hooks/useApi';
+import { useBrand } from '../context/BrandContext';
 
 const TABS = [
   { key: '', label: 'All' },
@@ -199,10 +200,59 @@ function ReviewItem({ item, onOpen }) {
   );
 }
 
+// Three distinct reasons this page can look empty - conflating them into a
+// single "Nothing here yet." left a first-time merchant with no idea
+// whether that meant "you haven't set up Luna" or "Luna's working but
+// nothing needs your attention yet".
+function EmptyState({ hasIntegrations, hasAnyReviewable, isFiltered, navigate }) {
+  if (!hasIntegrations) {
+    return (
+      <div style={{ padding: '32px', textAlign: 'center' }}>
+        <div style={{ fontSize: '14px', fontWeight: '600', color: '#0F172A', marginBottom: '6px' }}>
+          Luna hasn't handled any customer conversations yet
+        </div>
+        <p style={{ fontSize: '13px', color: '#94A3B8', margin: '0 0 14px', maxWidth: '440px', marginLeft: 'auto', marginRight: 'auto' }}>
+          Once your store and support channel are connected, Luna's replies will appear here for you to review.
+          You can approve, edit, or reject them, and your approved decisions help Luna learn your preferred reply style.
+        </p>
+        <button
+          onClick={() => navigate('/onboarding')}
+          style={{ padding: '8px 18px', background: '#06B6D4', color: 'white', border: 'none', borderRadius: '6px', fontSize: '13px', fontWeight: '600', cursor: 'pointer' }}
+        >
+          Finish setup →
+        </button>
+      </div>
+    );
+  }
+  if (!hasAnyReviewable) {
+    return (
+      <div style={{ padding: '32px', textAlign: 'center', fontSize: '13px', color: '#94A3B8', maxWidth: '440px', marginLeft: 'auto', marginRight: 'auto' }}>
+        Luna hasn't replied to any conversations yet. This page will fill in as soon as she handles one.
+      </div>
+    );
+  }
+  if (isFiltered) {
+    return (
+      <div style={{ padding: '32px', textAlign: 'center', fontSize: '13px', color: '#94A3B8' }}>
+        No conversations match this filter. Try "All" to see everything Luna has replied to.
+      </div>
+    );
+  }
+  return (
+    <div style={{ padding: '32px', textAlign: 'center', fontSize: '13px', color: '#94A3B8' }}>
+      Nothing here yet.
+    </div>
+  );
+}
+
 export default function ReviewQueue() {
+  const navigate = useNavigate();
+  const { brand } = useBrand();
   const [tab, setTab] = useState('needs_review');
   const { data, isLoading } = useReviewQueue(tab || undefined);
   const items = data?.items || [];
+  const hasIntegrations = !!(brand?.gmail_connected || brand?.shopify_connected || brand?.shopify_domain);
+  const hasAnyReviewable = (data?.total_reviewable ?? 0) > 0;
 
   return (
     <div style={{ padding: '28px 32px', display: 'flex', flexDirection: 'column', gap: '20px', maxWidth: '920px' }}>
@@ -235,9 +285,12 @@ export default function ReviewQueue() {
           {[1, 2, 3].map(i => <div key={i} className="skeleton" style={{ height: '140px', borderRadius: '8px' }} />)}
         </div>
       ) : items.length === 0 ? (
-        <div style={{ padding: '32px', textAlign: 'center', fontSize: '13px', color: '#94A3B8' }}>
-          Nothing here yet.
-        </div>
+        <EmptyState
+          hasIntegrations={hasIntegrations}
+          hasAnyReviewable={hasAnyReviewable}
+          isFiltered={!!tab}
+          navigate={navigate}
+        />
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
           {items.map(item => <ReviewItem key={item.ticket_id} item={item} />)}
