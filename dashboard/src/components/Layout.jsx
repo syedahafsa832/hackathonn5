@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import Avatar from './Avatar';
 import HelpContactLink from './HelpContactLink';
+import ImpersonationBanner from './ImpersonationBanner';
 import { useAuth } from '../hooks/useAuth';
 import { useMe } from '../hooks/useApi';
 import { LogOut, ChevronDown, Store, Menu } from 'lucide-react';
@@ -56,6 +57,7 @@ export default function Layout({ children }) {
         minHeight: 0,
         minWidth: 0,
       }}>
+        <ImpersonationBanner />
         <header style={{
           height: 'var(--topbar-height)',
           borderBottom: '1px solid var(--border)',

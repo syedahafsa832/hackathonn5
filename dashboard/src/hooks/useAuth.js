@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import client from '../api/client';
 import { clearLoggedInCookie } from '../api/sessionCookie';
+import { clearImpersonationMarkers } from '../utils/impersonation';
 
 export function useAuth() {
   const token = localStorage.getItem('resolv_token');
@@ -13,6 +14,7 @@ export function useAuth() {
     localStorage.removeItem('resolv_token');
     localStorage.removeItem('resolv_refresh_token');
     clearLoggedInCookie();
+    clearImpersonationMarkers();
     // Hard reload clears all React state and cached API responses
     window.location.href = '/login';
   }, []);

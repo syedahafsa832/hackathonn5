@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { Crown } from 'lucide-react';
 import api from '../api/services';
 import Alert from '../components/Alert';
+import { startImpersonation } from '../utils/impersonation';
 
 const PAID_PLANS = ['starter', 'growth', 'enterprise'];
 
@@ -27,6 +28,8 @@ export default function Admin() {
   const [error, setError] = useState(null);
   const [activating, setActivating] = useState(null);
   const [activateError, setActivateError] = useState('');
+  const [accessing, setAccessing] = useState(null);
+  const [accessError, setAccessError] = useState('');
 
   useEffect(() => {
     document.title = 'Admin: tResolv';
@@ -66,6 +69,21 @@ export default function Admin() {
     }
   };
 
+  // Swaps the admin's own session for a short-lived one scoped to this
+  // tenant (platform_admin.py's impersonate endpoint) — startImpersonation
+  // navigates to /dashboard on success, so nothing else to do here then.
+  const accessAccount = async (t) => {
+    setAccessing(t.id);
+    setAccessError('');
+    try {
+      const res = await api.impersonateTenant(t.id);
+      startImpersonation(res.tenant, res.access_token);
+    } catch (e) {
+      setAccessError(e.response?.data?.detail || `Failed to access ${t.company_name || t.email}'s account`);
+      setAccessing(null);
+    }
+  };
+
   if (loading) {
     return (
       <div style={{ padding: '24px' }}>
@@ -101,14 +119,17 @@ export default function Admin() {
           Tenants ({tenants.length})
         </h2>
         <p style={{ fontSize: '13px', color: '#64748B', marginBottom: '16px' }}>
-          Read-only overview: plan, signup date, connection status, ticket volume.
+          Plan, signup date, connection status, ticket volume — and one-click account access for support.
         </p>
+        <div style={{ marginBottom: accessError ? '16px' : 0 }}>
+          <Alert variant="error" onDismiss={() => setAccessError('')} autoDismissMs={5000}>{accessError}</Alert>
+        </div>
 
         <div style={{ background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', overflow: 'hidden' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ background: '#F8FAFC' }}>
-                {['Company / Email', 'Plan', 'Signed Up', 'Last Login', 'Gmail', 'Shopify', 'Tickets'].map(h => (
+                {['Company / Email', 'Plan', 'Signed Up', 'Last Login', 'Gmail', 'Shopify', 'Tickets', ''].map(h => (
                   <th key={h} style={{ padding: '10px 16px', textAlign: 'left', fontSize: '11px', fontWeight: '600', color: '#64748B', borderBottom: '1px solid #E4E4E7', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                     {h}
                   </th>
@@ -131,6 +152,20 @@ export default function Admin() {
                   <td style={{ padding: '0 16px' }}><Dot ok={t.brands?.some(b => b.gmail_connected)} /></td>
                   <td style={{ padding: '0 16px' }}><Dot ok={t.brands?.some(b => b.shopify_connected)} /></td>
                   <td style={{ padding: '0 16px', fontSize: '13px', color: '#1E293B' }}>{t.ticket_count}</td>
+                  <td style={{ padding: '0 16px' }}>
+                    <button
+                      onClick={() => accessAccount(t)}
+                      disabled={accessing === t.id}
+                      title="View the dashboard as this customer, e.g. to review their setup or fix something on their behalf"
+                      style={{
+                        fontSize: '12px', fontWeight: '600', color: '#0F172A', background: 'white',
+                        border: '1px solid #E4E4E7', borderRadius: '4px', padding: '5px 10px', cursor: 'pointer',
+                        opacity: accessing === t.id ? 0.6 : 1, whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {accessing === t.id ? 'Opening…' : 'Access account'}
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>

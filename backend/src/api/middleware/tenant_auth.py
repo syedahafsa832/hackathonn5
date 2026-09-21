@@ -71,12 +71,22 @@ async def get_current_tenant(
             headers={"WWW-Authenticate": "Bearer"}
         )
 
-    if payload.get("type") == "access":
-        # Legacy pre-migration token — sub is already the tenant_id.
+    if payload.get("type") in ("access", "impersonation"):
+        # "access": legacy pre-migration token — sub is already the tenant_id.
+        # "impersonation": admin-minted, short-lived token scoped to another
+        # tenant (see platform_admin.impersonate_tenant) — same shape, same
+        # signing secret, verified by the exact same path; kept as a
+        # distinct type only so it's never confused with a real legacy
+        # session, and so every request made under it gets logged below.
         tenant_id = payload.get("sub")
         email = payload.get("email")
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid token payload")
+        if payload.get("type") == "impersonation":
+            logger.info(
+                f"[Impersonation] admin={payload.get('admin_email')} "
+                f"acting_as_tenant={tenant_id} ({email}) {request.method} {request.url.path}"
+            )
     else:
         supabase_user_id = payload.get("sub")
         email = payload.get("email")

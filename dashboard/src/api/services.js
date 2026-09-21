@@ -397,6 +397,11 @@ const api = {
     return res.data;
   },
 
+  impersonateTenant: async (tenantId) => {
+    const res = await client.post(`/api/v2/admin/tenants/${tenantId}/impersonate`);
+    return res.data;
+  },
+
   // --- ACCOUNT / UPGRADE ---
 
   getMe: async () => {
