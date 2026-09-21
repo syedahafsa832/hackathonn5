@@ -45,6 +45,10 @@ JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 1440  # 24 hours — legacy token lifetime only
 REFRESH_TOKEN_EXPIRE_DAYS = 30
 
+# Deliberately short and non-refreshable (see create_impersonation_token) —
+# a founder needing longer just re-mints from the admin panel.
+IMPERSONATION_TOKEN_EXPIRE_MINUTES = 20
+
 FOUNDING_COHORT_CAP = 20
 FOUNDING_DAILY_TICKET_LIMIT = 5
 
@@ -105,6 +109,31 @@ class AuthService:
     def create_refresh_token(self) -> str:
         """Deprecated — no longer issued. Supabase Auth manages refresh tokens."""
         return secrets.token_urlsafe(64)
+
+    def create_impersonation_token(self, tenant_id: str, email: str, admin_email: str,
+                                    expire_minutes: int = IMPERSONATION_TOKEN_EXPIRE_MINUTES) -> str:
+        """Short-lived, non-refreshable token scoped to another tenant.
+
+        Only ever minted server-side by platform_admin.impersonate_tenant,
+        which gates on is_super_admin — never issued from a customer's
+        password or any Supabase Auth credential, so it can't weaken or
+        bypass their own login. Reuses the same "sub is the tenant_id
+        directly" shape and signing secret as the legacy "access" token
+        type below, so tenant_auth verifies it via the exact same trusted
+        path; the distinct "type" only stops it from ever being confused
+        with a real legacy session. admin_email is carried through for the
+        audit log line tenant_auth writes on every request while active.
+        """
+        expire = datetime.now(timezone.utc) + timedelta(minutes=expire_minutes)
+        payload = {
+            "sub": tenant_id,
+            "email": email,
+            "type": "impersonation",
+            "admin_email": admin_email,
+            "exp": expire,
+            "iat": datetime.now(timezone.utc),
+        }
+        return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
     def decode_token(self, token: str) -> Optional[Dict[str, Any]]:
         """Deprecated — tenant_auth verifies via supabase_auth_service.verify_jwt() instead, which

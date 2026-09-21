@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Depends
 
 from src.api.middleware.tenant_auth import get_current_tenant, TenantContext
 from src.lib.supabase_client import supabase_select, supabase_insert
+from src.services.auth_service import auth_service
 from src.services.plan_service import is_super_admin, PLAN_LIMITS, PAID_PLANS
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,64 @@ async def list_tenants(tenant: TenantContext = Depends(require_platform_admin)):
     except Exception as e:
         logger.error(f"[PlatformAdmin] list_tenants failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to load tenants")
+
+
+@router.post("/tenants/{tenant_id}/impersonate")
+async def impersonate_tenant(tenant_id: str, tenant: TenantContext = Depends(require_platform_admin)):
+    """Mint a short-lived, admin-only session scoped to another tenant, so
+    the founder can view/operate the dashboard exactly as that customer
+    sees it (review their setup, fix something on their behalf) without
+    ever touching the customer's own Supabase Auth password.
+
+    Reuses tenant_auth's existing legacy "sub is the tenant_id" verification
+    path (see create_impersonation_token) rather than adding new auth code.
+    Every mint is audit-logged here, and every request made under the
+    resulting token is additionally logged by tenant_auth itself — the
+    token expires on its own shortly after and cannot be refreshed, so a
+    leaked one has a small, fixed window rather than an open-ended one.
+    """
+    try:
+        rows = supabase_select("tenants", {
+            "id": f"eq.{tenant_id}",
+            "select": "id,email,company_name,is_active",
+        })
+        if not rows:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+        target = rows[0]
+        if not target.get("is_active", True):
+            raise HTTPException(status_code=403, detail="Tenant account is disabled")
+
+        token = auth_service.create_impersonation_token(
+            tenant_id=target["id"],
+            email=target.get("email", ""),
+            admin_email=tenant.email,
+        )
+
+        try:
+            from src.services.supabase_service import supabase_service
+            await supabase_service.log_audit(
+                store_id=target["id"], action="platform_admin.impersonate_start",
+                performer=tenant.email,
+                metadata={"tenant_email": target.get("email")},
+            )
+        except Exception as _audit_err:
+            logger.warning(f"[PlatformAdmin] Audit log write failed (non-blocking): {_audit_err}")
+
+        from src.services.auth_service import IMPERSONATION_TOKEN_EXPIRE_MINUTES
+        return {
+            "access_token": token,
+            "expires_in": IMPERSONATION_TOKEN_EXPIRE_MINUTES * 60,
+            "tenant": {
+                "id": target["id"],
+                "email": target.get("email"),
+                "company_name": target.get("company_name"),
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[PlatformAdmin] impersonate_tenant failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to start impersonation session")
 
 
 @router.get("/upgrade-requests")

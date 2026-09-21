@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { setLoggedInCookie, clearLoggedInCookie } from './sessionCookie';
+import { clearImpersonationMarkers } from '../utils/impersonation';
 
 const client = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || 'https://backend.tresolv.online',
@@ -77,6 +78,10 @@ client.interceptors.response.use(
         localStorage.removeItem('resolv_token');
         localStorage.removeItem('resolv_refresh_token');
         clearLoggedInCookie();
+        // An impersonation token has no refresh token, so its expiry lands
+        // here too — drop the stale "viewing as" markers so a later sign-in
+        // in this same tab doesn't inherit them.
+        clearImpersonationMarkers();
         window.location.href = '/login';
       }
     }
