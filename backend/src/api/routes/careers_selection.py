@@ -174,6 +174,85 @@ async def team_login(req: TeamLoginRequest):
         return {"status": "error"}
 
 
+def _setup_reminder_email(name: str, portal: str):
+    first = (name or "there").strip().split(" ")[0]
+    subject = "URGENT: please set up your tResolv team access today"
+    portal_url = f"{portal}/team"
+    body = (
+        f"Hey {first} 👋<br><br>quick important reminder.<br><br>"
+        "we're getting the tResolv team started today at <b>8 PM Pakistan time</b>, and we're currently "
+        "waiting for everyone to get set up.<br><br>"
+        "please make sure you do these <b>before 8 PM today</b>:<br><br>"
+        f"1. <b>Log into your team portal</b><br>{portal_url}<br><br>"
+        "2. <b>Join the WhatsApp group</b><br>you'll find the WhatsApp group link inside your team portal.<br><br>"
+        "3. <b>Check your onboarding + team resources</b><br>your portal has the onboarding, documents, tasks, "
+        "and other information you'll need to get started."
+    )
+    foot = (
+        "we'll be moving forward at 8 PM, so please don't leave this until later. if you haven't joined or "
+        "logged in by then, you may miss the initial team updates and start.<br><br>"
+        "see you inside :)<br>Hafsa<br>Founder, tResolv"
+    )
+    html = system_email_service._shell(
+        preheader=subject, heading="quick important reminder 👋", body_html=body,
+        action_label="log into your team portal →", action_url=portal_url, footnote=foot,
+    )
+    text = (
+        f"Hey {first},\n\nquick important reminder.\n\nwe're getting the tResolv team started today at "
+        f"8 PM Pakistan time, and we're currently waiting for everyone to get set up.\n\n"
+        f"please make sure you do these before 8 PM today:\n\n"
+        f"1. Log into your team portal\n{portal_url}\n\n"
+        "2. Join the WhatsApp group\nyou'll find the WhatsApp group link inside your team portal.\n\n"
+        "3. Check your onboarding + team resources\nyour portal has the onboarding, documents, tasks, and "
+        "other information you'll need to get started.\n\n"
+        "we'll be moving forward at 8 PM, so please don't leave this until later. if you haven't joined or "
+        "logged in by then, you may miss the initial team updates and start.\n\n"
+        "see you inside :)\nHafsa\nFounder, tResolv"
+    )
+    return subject, html, text
+
+
+@router.post("/setup-reminder")
+async def setup_reminder(authorization: Optional[str] = Header(None)):
+    """One-off, admin-triggered "please set up before 8pm" nudge.
+
+    Recipients: active, non-founder team members who have never logged in (last_login_at is null)
+    and have not already received this specific reminder (followup_email_sent_at is null) - both
+    read fresh from the database on every call, so re-running this is always safe: anyone who logs
+    in or was already emailed drops out of the list on the next run.
+    """
+    url, anon, service, portal = _cfg()
+    async with httpx.AsyncClient(timeout=20) as c:
+        await _require_admin(c, url, anon, authorization)
+
+        g = await c.get(f"{url}/rest/v1/team_members", headers=_svc(anon, service), params={
+            "status": "eq.active", "is_founder": "eq.false",
+            "last_login_at": "is.null", "followup_email_sent_at": "is.null",
+            "select": "id,name,email",
+        })
+        if g.status_code != 200:
+            raise HTTPException(502, "could not load recipients")
+        candidates = g.json()
+
+        sent, failed = [], []
+        for tm in candidates:
+            subject, html, text = _setup_reminder_email(tm["name"], portal)
+            try:
+                ok = await asyncio.wait_for(asyncio.to_thread(system_email_service._send, tm["email"], subject, html, text), 25)
+            except asyncio.TimeoutError:
+                ok = False
+            if not ok:
+                failed.append({"name": tm["name"], "email": tm["email"]})
+                continue
+            done = await c.patch(f"{url}/rest/v1/team_members?id=eq.{tm['id']}", headers=_svc(anon, service),
+                                 json={"followup_email_sent_at": _iso(datetime.now(timezone.utc))})
+            if done.status_code not in (200, 204):
+                logger.error("[Careers] setup-reminder sent but failed to mark team_member %s", tm["id"])
+            sent.append({"name": tm["name"], "email": tm["email"]})
+
+        return {"sent_count": len(sent), "sent": sent, "failed": failed}
+
+
 @router.post("/selection")
 async def handle_selection(req: SelectionRequest, authorization: Optional[str] = Header(None)):
     url, anon, service, portal = _cfg()
