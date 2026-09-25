@@ -375,14 +375,40 @@ class EmailFilterService:
         sender_email: str,
         thread_id: Optional[str],
         result: FilterResult,
+        gmail_message_id: Optional[str] = None,
     ) -> None:
-        """Insert one row into email_filter_log. Swallows all errors so a logging
+        """Insert one row into email_filter_log, unless this exact message was
+        already logged. Gmail's `after:` search keeps resurfacing the same
+        message for the rest of the calendar day, and unlike the guardian
+        layer this filter has no memory of its own - without this check it
+        re-logs an identical row every ~15s poll cycle for as long as the
+        message lingers (confirmed live: one brand alone, 1M+ rows across
+        791 threads).
+
+        The dedup lookup is scoped to `ai_classification is.null` because this
+        filter layer and the guardian layer both log to this same table for
+        the same message when the filter allows it through (filter logs
+        "allowed", then guardian logs its own verdict) - without that scope,
+        this filter's dedup check would see the guardian's row (which always
+        sets ai_classification) and wrongly skip logging the filter's own
+        "allowed" decision, and vice versa. Swallows all errors so a logging
         failure never crashes the email pipeline."""
         try:
+            if gmail_message_id:
+                existing = supabase_select("email_filter_log", {
+                    "brand_id": f"eq.{brand_id}",
+                    "gmail_message_id": f"eq.{gmail_message_id}",
+                    "ai_classification": "is.null",
+                    "select": "id",
+                    "limit": "1",
+                })
+                if existing:
+                    return
             supabase_insert("email_filter_log", {
                 "brand_id":      brand_id,
                 "sender_email":  sender_email,
                 "thread_id":     thread_id,
+                "gmail_message_id": gmail_message_id,
                 "decision":      result.decision,
                 "filter_reason": result.reason,
                 "email_category": result.email_category,

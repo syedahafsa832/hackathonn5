@@ -445,13 +445,35 @@ class EmailGuardianService:
         sender_email: str,
         thread_id: Optional[str],
         result: GuardianResult,
+        gmail_message_id: Optional[str] = None,
     ) -> None:
-        """Append guardian decision to email_filter_log (audit trail)."""
+        """Append guardian decision to email_filter_log (audit trail), unless
+        this exact message was already logged. evaluate() already avoids a
+        fresh AI call via _find_existing_decision, but it still returned a
+        result every poll cycle - without this check that reused result got
+        written to the audit log again and again for as long as Gmail's
+        `after:` search kept resurfacing the message.
+
+        Scoped to `ai_classification not.is.null` (this layer always sets it)
+        so this dedup check only ever sees this layer's own prior rows, never
+        the filter layer's "allowed" row for the same message - see the
+        matching comment in email_filter_service.log_decision."""
         try:
+            if gmail_message_id:
+                existing = supabase_select("email_filter_log", {
+                    "brand_id": f"eq.{brand_id}",
+                    "gmail_message_id": f"eq.{gmail_message_id}",
+                    "ai_classification": "not.is.null",
+                    "select": "id",
+                    "limit": "1",
+                })
+                if existing:
+                    return
             supabase_insert("email_filter_log", {
                 "brand_id":          brand_id,
                 "sender_email":      sender_email,
                 "thread_id":         thread_id,
+                "gmail_message_id":  gmail_message_id,
                 "decision":          result.decision,
                 "filter_reason":     result.reason,
                 "email_category":    "unknown",

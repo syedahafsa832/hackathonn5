@@ -343,7 +343,7 @@ class EmailPoller:
                 logger.info(f"[email_filter] evaluating gmail_message_id={gmail_msg_id} sender={sender} brand={brand.get('name')}")
                 email["brand_support_email"] = support_email
                 filter_result = await asyncio.to_thread(email_filter_service.evaluate, email, brand_id)
-                await asyncio.to_thread(email_filter_service.log_decision, brand_id, sender, thread_id, filter_result)
+                await asyncio.to_thread(email_filter_service.log_decision, brand_id, sender, thread_id, filter_result, gmail_msg_id)
 
                 if filter_result.decision == "blocked":
                     logger.info(
@@ -361,7 +361,7 @@ class EmailPoller:
                     email, brand_id, brand_name=brand.get("name"), agent_name=brand.get("agent_name") or "Luna"
                 )
                 await asyncio.to_thread(
-                    email_guardian_service.log_guardian_decision, brand_id, sender, thread_id, guardian_result
+                    email_guardian_service.log_guardian_decision, brand_id, sender, thread_id, guardian_result, gmail_msg_id
                 )
 
                 if guardian_result.decision in ("blocked", "quarantined"):
