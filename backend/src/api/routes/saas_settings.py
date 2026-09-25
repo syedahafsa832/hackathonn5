@@ -13,7 +13,7 @@ from typing import Optional, List
 from src.services.shopify_service import shopify_service
 from src.services.auth_service import auth_service
 from src.services.knowledge_base_service import knowledge_base_service
-from src.api.middleware.tenant_auth import get_current_tenant, TenantContext
+from src.api.middleware.tenant_auth import get_current_tenant, require_tenant_admin, TenantContext
 from src.lib.supabase_client import supabase_select, supabase_update
 
 logger = logging.getLogger(__name__)
@@ -105,7 +105,7 @@ async def get_shopify_status(tenant: TenantContext = Depends(get_current_tenant)
 @router.post("/shopify/connect")
 async def connect_shopify(
     request: ConnectShopifyRequest,
-    tenant: TenantContext = Depends(get_current_tenant)
+    tenant: TenantContext = Depends(require_tenant_admin)
 ):
     """
     Connect a Shopify store.
@@ -219,7 +219,7 @@ async def connect_shopify(
 
 
 @router.post("/shopify/test")
-async def test_shopify_connection(tenant: TenantContext = Depends(get_current_tenant)):
+async def test_shopify_connection(tenant: TenantContext = Depends(require_tenant_admin)):
     """
     Test the current Shopify connection.
 
@@ -246,7 +246,7 @@ async def test_shopify_connection(tenant: TenantContext = Depends(get_current_te
 
 
 @router.post("/shopify/disconnect")
-async def disconnect_shopify(tenant: TenantContext = Depends(get_current_tenant)):
+async def disconnect_shopify(tenant: TenantContext = Depends(require_tenant_admin)):
     """
     Disconnect the Shopify store.
 
@@ -288,7 +288,8 @@ async def get_account_settings(tenant: TenantContext = Depends(get_current_tenan
             "shopify_shop_name": tenant_data.get("shopify_shop_name"),
             "created_at": tenant_data.get("created_at"),
             "last_login_at": tenant_data.get("last_login_at")
-        }
+        },
+        "team_role": tenant.role,
     }
 
 
@@ -296,7 +297,7 @@ async def get_account_settings(tenant: TenantContext = Depends(get_current_tenan
 @router.put("/account")
 async def update_account_settings(
     request: UpdateSettingsRequest,
-    tenant: TenantContext = Depends(get_current_tenant)
+    tenant: TenantContext = Depends(require_tenant_admin)
 ):
     """
     Update account settings.
@@ -357,7 +358,7 @@ class KnowledgeSourceResponse(BaseModel):
 @router.post("/knowledge-base/upload")
 async def upload_knowledge(
     request: UploadKnowledgeRequest,
-    tenant: TenantContext = Depends(get_current_tenant)
+    tenant: TenantContext = Depends(require_tenant_admin)
 ):
     """
     Upload text content to the knowledge base.
@@ -408,7 +409,7 @@ async def get_knowledge_sources(tenant: TenantContext = Depends(get_current_tena
 @router.delete("/knowledge-base/sources/{source_id}")
 async def delete_knowledge_source(
     source_id: str,
-    tenant: TenantContext = Depends(get_current_tenant)
+    tenant: TenantContext = Depends(require_tenant_admin)
 ):
     """
     Delete a knowledge base source and all its chunks.
@@ -554,7 +555,7 @@ async def get_gmail_status(tenant: TenantContext = Depends(get_current_tenant)):
 
 
 @router.get("/gmail/connect")
-async def connect_gmail(tenant: TenantContext = Depends(get_current_tenant)):
+async def connect_gmail(tenant: TenantContext = Depends(require_tenant_admin)):
     """
     Return the Google OAuth URL for Gmail connection.
     Frontend navigates to this URL to start the consent flow.
@@ -579,7 +580,7 @@ async def connect_gmail(tenant: TenantContext = Depends(get_current_tenant)):
 
 
 @router.delete("/gmail/disconnect")
-async def disconnect_gmail(tenant: TenantContext = Depends(get_current_tenant)):
+async def disconnect_gmail(tenant: TenantContext = Depends(require_tenant_admin)):
     """Disconnect Gmail for this tenant's brand."""
     try:
         from src.services.brand_gmail_service import brand_gmail_service
@@ -668,7 +669,7 @@ async def get_aftership_status(tenant: TenantContext = Depends(get_current_tenan
 
 
 @router.post("/aftership")
-async def save_aftership_key(body: AftershipKeyRequest, tenant: TenantContext = Depends(get_current_tenant)):
+async def save_aftership_key(body: AftershipKeyRequest, tenant: TenantContext = Depends(require_tenant_admin)):
     """Save (or clear) the Aftership API key for this brand."""
     try:
         brand = await _get_tenant_brand_async(tenant.tenant_id)
@@ -687,7 +688,7 @@ async def save_aftership_key(body: AftershipKeyRequest, tenant: TenantContext = 
 
 
 @router.delete("/aftership")
-async def remove_aftership_key(tenant: TenantContext = Depends(get_current_tenant)):
+async def remove_aftership_key(tenant: TenantContext = Depends(require_tenant_admin)):
     """Remove the Aftership API key from this brand."""
     try:
         brand = await _get_tenant_brand_async(tenant.tenant_id)

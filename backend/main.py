@@ -370,6 +370,13 @@ try:
     except Exception as e:
       logger.warning(f"Failed to register SaaS settings router: {e}")
 
+    try:
+      from src.api.routes.team import router as team_router
+      register_router(team_router, prefix="/api/v1")
+      logger.info("✓ Team router registered")
+    except Exception as e:
+      logger.warning(f"Failed to register team router: {e}")
+
     # ==================== V2 Multi-Tenant Routes (Supabase Auth) ====================
     # New production-ready routes with organization/brand hierarchy
     try:

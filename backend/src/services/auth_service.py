@@ -300,6 +300,150 @@ class AuthService:
                 f"brand is created manually. Error: {brand_err}"
             )
 
+    # ==================== Team membership (RBAC) ====================
+    # A tenant is still 1 row == 1 owning Supabase user (role "admin"
+    # implicitly). tenant_members adds invited users on top, each mapped to
+    # the SAME tenant_id with their own role. Both auth entry points
+    # (TenantContext in tenant_auth.py and UserContext in
+    # supabase_auth_service.py) call resolve_membership_for_supabase_user()
+    # below instead of resolve_or_create_tenant_for_supabase_user() directly,
+    # so role resolution isn't duplicated across the two dependency chains.
+
+    async def resolve_membership_for_supabase_user(
+        self, supabase_user_id: str, email: str, full_name: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Resolve an authenticated Supabase user to {tenant_id, role, member_id, is_owner}.
+
+        An accepted team-membership row takes priority over owning a tenant:
+        it only exists after this exact user explicitly accepted an invite
+        (see accept_team_invite), so it reflects a deliberate action, not an
+        accident of email reuse.
+        """
+        members = supabase_select("tenant_members", {
+            "supabase_user_id": f"eq.{supabase_user_id}",
+            "status": "eq.active",
+        })
+        if members:
+            m = members[0]
+            return {"tenant_id": m["tenant_id"], "role": m["role"], "member_id": m["id"], "is_owner": False}
+
+        tenant = await self.resolve_or_create_tenant_for_supabase_user(supabase_user_id, email, full_name)
+        if not tenant:
+            return None
+        return {"tenant_id": tenant["id"], "role": "admin", "member_id": None, "is_owner": True}
+
+    def _generate_invite_token(self) -> str:
+        return secrets.token_urlsafe(32)
+
+    async def list_team_members(self, tenant_id: str) -> list:
+        members = supabase_select("tenant_members", {
+            "tenant_id": f"eq.{tenant_id}",
+            "status": "neq.revoked",
+            "order": "created_at.asc",
+        })
+        return members or []
+
+    async def invite_team_member(
+        self, tenant_id: str, invited_by_tenant_id: str, email: str, role: str,
+    ) -> Dict[str, Any]:
+        email = email.strip().lower()
+        if role not in ("admin", "agent", "read_only"):
+            return {"success": False, "error": "Invalid role"}
+
+        existing = supabase_select("tenant_members", {"tenant_id": f"eq.{tenant_id}", "email": f"eq.{email}"})
+        if existing:
+            row = existing[0]
+            if row["status"] == "active":
+                return {"success": False, "error": "This person is already a team member"}
+            if row["status"] == "pending":
+                return {"success": False, "error": "An invite is already pending for this email"}
+            # status == "revoked" — re-invite by reissuing token/role on the same row
+            token = self._generate_invite_token()
+            expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+            updated = supabase_update("tenant_members", {"id": f"eq.{row['id']}"}, {
+                "role": role, "status": "pending", "invite_token": token,
+                "invite_expires_at": expires_at.isoformat(), "invited_by": invited_by_tenant_id,
+                "accepted_at": None, "revoked_at": None,
+            })
+            member = updated or row
+        else:
+            token = self._generate_invite_token()
+            expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+            member = supabase_insert("tenant_members", {
+                "tenant_id": tenant_id, "email": email, "role": role, "status": "pending",
+                "invited_by": invited_by_tenant_id, "invite_token": token,
+                "invite_expires_at": expires_at.isoformat(),
+            })
+
+        tenant = await self.get_tenant(tenant_id)
+        company = (tenant or {}).get("company_name") or "tResolv"
+        invite_url = f"{FRONTEND_URL}/accept-invite?token={member['invite_token']}"
+        try:
+            system_email_service.send_generic_auth_email(
+                email, f"You've been invited to join {company} on tResolv",
+                "Accept invite", invite_url,
+            )
+        except Exception as e:
+            logger.error(f"[Team] Failed to send invite email to {email}: {e}")
+
+        return {"success": True, "member": member}
+
+    async def get_invite_by_token(self, token: str) -> Optional[Dict[str, Any]]:
+        rows = supabase_select("tenant_members", {"invite_token": f"eq.{token}"})
+        return rows[0] if rows else None
+
+    async def accept_team_invite(self, token: str, supabase_user_id: str, email: str) -> Dict[str, Any]:
+        invite = await self.get_invite_by_token(token)
+        if not invite or invite["status"] != "pending":
+            return {"success": False, "error": "Invalid or expired invite"}
+
+        expires_at_raw = invite.get("invite_expires_at")
+        if expires_at_raw:
+            expires_at = datetime.fromisoformat(expires_at_raw.replace("Z", "+00:00"))
+            if expires_at < datetime.now(timezone.utc):
+                return {"success": False, "error": "Invite expired"}
+
+        if invite["email"].strip().lower() != email.strip().lower():
+            return {"success": False, "error": "This invite was sent to a different email address"}
+
+        # A Supabase user can only be an active member of one tenant at a
+        # time (resolve_membership_for_supabase_user assumes at most one
+        # active row per supabase_user_id).
+        already = supabase_select("tenant_members", {"supabase_user_id": f"eq.{supabase_user_id}", "status": "eq.active"})
+        if already:
+            return {"success": False, "error": "This account is already a team member of another account"}
+
+        # Conditioned on status=eq.pending so the UPDATE itself is the
+        # compare-and-swap: Postgres serializes concurrent UPDATEs against
+        # the same row, so only the first of two racing accept calls (e.g.
+        # a legitimate invitee and an attacker who obtained the same link)
+        # can ever match and flip status to "active" — the second's filter
+        # no longer matches (status is already "active") and PostgREST
+        # returns zero rows instead of silently overwriting who's linked.
+        updated = supabase_update(
+            "tenant_members",
+            {"id": f"eq.{invite['id']}", "status": "eq.pending"},
+            {
+                "supabase_user_id": supabase_user_id,
+                "status": "active",
+                "accepted_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        if not updated:
+            return {"success": False, "error": "Invalid or expired invite"}
+        return {"success": True, "tenant_id": invite["tenant_id"], "role": invite["role"], "member": updated}
+
+    async def revoke_team_member(self, tenant_id: str, member_id: str) -> Dict[str, Any]:
+        rows = supabase_select("tenant_members", {"id": f"eq.{member_id}", "tenant_id": f"eq.{tenant_id}"})
+        if not rows:
+            return {"success": False, "error": "Team member not found"}
+
+        updated = supabase_update("tenant_members", {"id": f"eq.{member_id}"}, {
+            "status": "revoked", "revoked_at": datetime.now(timezone.utc).isoformat(),
+        })
+        return {"success": True, "member": updated}
+
     def _session_response(self, session: Dict[str, Any], tenant: Dict[str, Any]) -> Dict[str, Any]:
         """Build the AuthResponse-shaped dict the frontend expects, from a GoTrue session + tenant row."""
         return {

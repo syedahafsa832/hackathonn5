@@ -75,17 +75,19 @@ async def get_optional_auth(
                 user_context = await supabase_auth_service.get_tenant_by_id(supabase_auth_id)
             else:
                 # Real Supabase Auth token: sub is the Supabase user id —
-                # resolve/create the tenant it maps to, same as every other
-                # authenticated entry point since the auth migration.
+                # resolve the tenant/role it maps to (owner, or an accepted
+                # team-member row — see resolve_membership_for_supabase_user),
+                # same resolver TenantContext (tenant_auth.py) uses, so role
+                # is identical on both dependency chains.
                 from src.services.auth_service import auth_service, FoundingCohortFullError
                 email = payload.get("email")
                 if not email:
                     return None
                 try:
-                    tenant_row = await auth_service.resolve_or_create_tenant_for_supabase_user(supabase_auth_id, email)
+                    membership = await auth_service.resolve_membership_for_supabase_user(supabase_auth_id, email)
                 except FoundingCohortFullError:
                     return None
-                user_context = supabase_auth_service.tenant_row_to_user_context(tenant_row) if tenant_row else None
+                user_context = supabase_auth_service.membership_to_user_context(membership, supabase_auth_id, email) if membership else None
 
             if not user_context:
                 return None

@@ -2410,6 +2410,142 @@ function IntegrationsTab() {
   );
 }
 
+// ─────────────────────────────────────────────────────────── Team Tab ──
+
+const ROLE_LABELS = { admin: 'Admin', agent: 'Agent', viewer: 'Viewer' };
+
+function TeamTab() {
+  const [members, setMembers] = useState([]);
+  const [myRole, setMyRole] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [email, setEmail] = useState('');
+  const [role, setRole] = useState('agent');
+  const [inviting, setInviting] = useState(false);
+  const [error, setError] = useState('');
+  const [msg, setMsg] = useState('');
+
+  const load = () => {
+    setLoading(true);
+    Promise.all([
+      client.get('/api/v1/team/members'),
+      client.get('/api/v1/settings/account'),
+    ]).then(([membersRes, accountRes]) => {
+      setMembers(membersRes.data?.members || []);
+      setMyRole(accountRes.data?.team_role || null);
+    }).catch(() => {}).finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const isAdmin = myRole === 'admin';
+
+  const invite = async (e) => {
+    e.preventDefault();
+    setError('');
+    setMsg('');
+    setInviting(true);
+    try {
+      await client.post('/api/v1/team/invite', { email, role });
+      setEmail('');
+      setMsg('Invite sent.');
+      load();
+    } catch (err) {
+      setError(extractErrorMessage(err, 'Failed to send invite.'));
+    } finally {
+      setInviting(false);
+    }
+  };
+
+  const revoke = async (member) => {
+    if (!window.confirm(`Revoke access for ${member.email}?`)) return;
+    setError('');
+    try {
+      await client.post(`/api/v1/team/members/${member.id}/revoke`);
+      load();
+    } catch (err) {
+      setError(extractErrorMessage(err, 'Failed to revoke access.'));
+    }
+  };
+
+  if (loading) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', maxWidth: '600px' }}>
+        {[1, 2, 3].map(i => <div key={i} className="skeleton" style={{ height: '44px', borderRadius: '4px' }} />)}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ maxWidth: '600px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      {isAdmin && (
+        <form onSubmit={invite} style={{ display: 'flex', gap: '8px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 1 220px' }}>
+            <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', marginBottom: '5px' }}>Invite by email</label>
+            <input
+              type="email"
+              required
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              placeholder="teammate@company.com"
+              style={inputStyle}
+            />
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: '13px', fontWeight: '500', color: 'var(--text-secondary)', marginBottom: '5px' }}>Role</label>
+            <select value={role} onChange={e => setRole(e.target.value)} style={{ ...inputStyle, width: 'auto' }}>
+              <option value="admin">Admin</option>
+              <option value="agent">Agent</option>
+              <option value="viewer">Viewer</option>
+            </select>
+          </div>
+          <button
+            type="submit"
+            disabled={inviting}
+            style={{ padding: '9px 20px', borderRadius: '4px', background: 'var(--accent)', color: 'white', fontWeight: '500', fontSize: '14px', cursor: inviting ? 'not-allowed' : 'pointer' }}
+          >
+            {inviting ? 'Sending...' : 'Send invite'}
+          </button>
+        </form>
+      )}
+
+      <Alert variant="error">{error}</Alert>
+      <Alert variant="success">{msg}</Alert>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {members.length === 0 && (
+          <div style={{ fontSize: '13px', color: 'var(--text-muted)' }}>No team members yet.</div>
+        )}
+        {members.map(m => (
+          <div key={m.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', border: '1px solid var(--border)', borderRadius: '6px' }}>
+            <div>
+              <div style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-primary)' }}>{m.full_name || m.email}</div>
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{m.email}</div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-secondary)' }}>{ROLE_LABELS[m.role] || m.role}</span>
+              <span style={{
+                fontSize: '11px', fontWeight: '600', padding: '2px 8px', borderRadius: '10px',
+                background: m.status === 'active' ? '#DCFCE7' : '#FEF3C7',
+                color: m.status === 'active' ? '#166534' : '#92400E',
+              }}>
+                {m.status === 'active' ? 'Active' : 'Pending'}
+              </span>
+              {isAdmin && (
+                <button
+                  onClick={() => revoke(m)}
+                  style={{ fontSize: '12px', color: '#DC2626', background: 'none', border: 'none', cursor: 'pointer', fontWeight: '500' }}
+                >
+                  Revoke
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────── Main Settings Page ──
 
 const TABS = [
@@ -2418,6 +2554,7 @@ const TABS = [
   { id: 'kb', label: 'Knowledge Base' },
   { id: 'reply-style', label: 'Reply Style' },
   { id: 'widget', label: 'Chat Widget' },
+  { id: 'team', label: 'Team' },
   { id: 'account', label: 'Account' },
 ];
 
@@ -2504,6 +2641,7 @@ export default function Settings() {
         {activeTab === 'canned' && <CannedResponsesTab />}
         {activeTab === 'reply-style' && <ReplyStyleTab />}
         {activeTab === 'widget' && <ChatWidgetTab />}
+        {activeTab === 'team' && <TeamTab />}
         {activeTab === 'account' && <AccountTab />}
       </div>
     </div>

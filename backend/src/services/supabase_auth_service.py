@@ -453,6 +453,27 @@ class SupabaseAuthService:
             brands=brand_ids
         )
 
+    def membership_to_user_context(self, membership: Dict[str, Any], supabase_user_id: str, email: str) -> Optional[UserContext]:
+        """
+        Build a UserContext from auth_service.resolve_membership_for_supabase_user()'s
+        result — the shared resolver TenantContext (tenant_auth.py) also uses, so a
+        team member's role/tenant is identical on both dependency chains.
+        """
+        if not membership:
+            return None
+        tenant_id = membership["tenant_id"]
+        brands = supabase_select("brands", {"tenant_id": f"eq.{tenant_id}"})
+        brand_ids = [b["id"] for b in brands] if brands else []
+
+        return UserContext(
+            user_id=membership["member_id"] or tenant_id,
+            supabase_auth_id=supabase_user_id,
+            organization_id=tenant_id,
+            email=email,
+            role=membership["role"],
+            brands=brand_ids,
+        )
+
     async def get_tenant_by_id(self, tenant_id: str) -> Optional[UserContext]:
         """
         Look up a tenant by ID and return a UserContext.

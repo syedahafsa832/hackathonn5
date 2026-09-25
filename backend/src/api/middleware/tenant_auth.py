@@ -23,13 +23,21 @@ class TenantContext:
     """
     Holds the authenticated tenant's context.
     Attached to request.state for use in route handlers.
+
+    role is "admin" for the tenant owner and for every legacy/impersonation
+    token (preserves existing founder/impersonation behavior unchanged) —
+    otherwise it's the requester's tenant_members.role ("admin" | "agent" |
+    "read_only") when they're an accepted team member of someone else's
+    tenant. member_id is that tenant_members row's id, or None for the owner.
     """
-    def __init__(self, tenant_id: str, email: str):
+    def __init__(self, tenant_id: str, email: str, role: str = "admin", member_id: Optional[str] = None):
         self.tenant_id = tenant_id
         self.email = email
+        self.role = role
+        self.member_id = member_id
 
     def __repr__(self):
-        return f"TenantContext(tenant_id={self.tenant_id}, email={self.email})"
+        return f"TenantContext(tenant_id={self.tenant_id}, email={self.email}, role={self.role})"
 
 
 async def get_current_tenant(
@@ -71,6 +79,11 @@ async def get_current_tenant(
             headers={"WWW-Authenticate": "Bearer"}
         )
 
+    # Defaults for the legacy/impersonation branch below — both always act
+    # as the tenant owner, exactly as before this change.
+    role = "admin"
+    member_id = None
+
     if payload.get("type") in ("access", "impersonation"):
         # "access": legacy pre-migration token — sub is already the tenant_id.
         # "impersonation": admin-minted, short-lived token scoped to another
@@ -94,7 +107,7 @@ async def get_current_tenant(
             raise HTTPException(status_code=401, detail="Invalid token payload")
 
         try:
-            tenant_row = await auth_service.resolve_or_create_tenant_for_supabase_user(supabase_user_id, email)
+            membership = await auth_service.resolve_membership_for_supabase_user(supabase_user_id, email)
         except FoundingCohortFullError:
             raise HTTPException(status_code=403, detail={
                 "error": "founding_cohort_full",
@@ -102,16 +115,23 @@ async def get_current_tenant(
                 "waitlist_url": "https://tresolv.online/waitlist",
             })
 
-        if not tenant_row:
+        if not membership:
             raise HTTPException(status_code=401, detail="Account not found")
-        if not tenant_row.get("is_active"):
-            raise HTTPException(status_code=403, detail="Account is disabled")
 
-        tenant_id = tenant_row["id"]
-        email = tenant_row["email"]
+        role = membership["role"]
+        member_id = membership["member_id"]
+
+        if membership["is_owner"]:
+            tenant_row = await auth_service.get_tenant(membership["tenant_id"])
+            if not tenant_row:
+                raise HTTPException(status_code=401, detail="Account not found")
+            if not tenant_row.get("is_active"):
+                raise HTTPException(status_code=403, detail="Account is disabled")
+
+        tenant_id = membership["tenant_id"]
 
     # Create tenant context
-    tenant = TenantContext(tenant_id=tenant_id, email=email)
+    tenant = TenantContext(tenant_id=tenant_id, email=email, role=role, member_id=member_id)
 
     # Attach to request state for logging/middleware access
     request.state.tenant = tenant
@@ -134,6 +154,18 @@ async def get_optional_tenant(
         return await get_current_tenant(request, credentials)
     except HTTPException:
         return None
+
+
+async def require_tenant_admin(tenant: TenantContext = Depends(get_current_tenant)) -> TenantContext:
+    """
+    Gate for mutations non-admin team members must not perform: Shopify/
+    Gmail/integration/settings changes and team management itself. The
+    tenant owner is always role="admin" (see TenantContext), so this is a
+    no-op for every caller before team members existed.
+    """
+    if tenant.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return tenant
 
 
 def require_shopify_connected(tenant: TenantContext = Depends(get_current_tenant)):

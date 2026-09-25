@@ -15,6 +15,7 @@ import Actions from './pages/Actions';
 import Brands from './pages/Brands';
 import Settings from './pages/Settings';
 import Signup from './pages/Signup';
+import AcceptInvite from './pages/AcceptInvite';
 import GoogleAuthCallback from './pages/GoogleAuthCallback';
 import Onboarding from './pages/Onboarding';
 import QuarantineQueue from './pages/QuarantineQueue';
@@ -49,6 +50,7 @@ export default function App() {
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
+        <Route path="/accept-invite" element={<AcceptInvite />} />
         <Route path="/auth/google/callback" element={<GoogleAuthCallback />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />

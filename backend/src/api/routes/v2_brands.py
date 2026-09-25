@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel, Field
 from datetime import datetime, timezone, timedelta
 
-from src.api.middleware.tenant_auth import get_current_tenant, TenantContext
+from src.api.middleware.tenant_auth import get_current_tenant, require_tenant_admin, TenantContext
 from src.lib.supabase_client import supabase_select, supabase_insert, supabase_update, supabase_delete, supabase_rpc
 from src.services.shopify_service import encrypt_token
 from src.agent import reply_style_presets
@@ -720,7 +720,7 @@ async def get_brand_analytics(
 @router.post("/{brand_id}/automation/cancellation/enable")
 async def enable_cancellation_autopilot(
     brand_id: str,
-    tenant: TenantContext = Depends(get_current_tenant),
+    tenant: TenantContext = Depends(require_tenant_admin),
 ):
     """Dedicated, authenticated activation endpoint for Cancellation
     Autopilot — the ONLY way this flag can be turned on (never a generic
@@ -806,7 +806,7 @@ async def disable_cancellation_autopilot(
 @router.post("/{brand_id}/automation/refund/enable")
 async def enable_refund_autopilot(
     brand_id: str,
-    tenant: TenantContext = Depends(get_current_tenant),
+    tenant: TenantContext = Depends(require_tenant_admin),
 ):
     """Dedicated, authenticated activation endpoint for Refund Autopilot —
     a separate flag from Cancellation Autopilot, gated independently.
@@ -884,7 +884,7 @@ async def disable_refund_autopilot(
 async def update_brand(
     brand_id: str,
     request: UpdateBrandRequest,
-    tenant: TenantContext = Depends(get_current_tenant),
+    tenant: TenantContext = Depends(require_tenant_admin),
 ):
     """Update brand settings."""
     try:
@@ -989,7 +989,7 @@ async def replace_excluded_collections(
 @router.delete("/{brand_id}")
 async def delete_brand(
     brand_id: str,
-    tenant: TenantContext = Depends(get_current_tenant),
+    tenant: TenantContext = Depends(require_tenant_admin),
 ):
     """Soft-delete a brand (marks inactive)."""
     try:
@@ -1195,7 +1195,7 @@ async def shopify_oauth_start(
 async def connect_shopify(
     brand_id: str,
     request: ConnectShopifyRequest,
-    tenant: TenantContext = Depends(get_current_tenant),
+    tenant: TenantContext = Depends(require_tenant_admin),
 ):
     """Connect a Shopify store to a brand via a pasted Admin API access
     token (manual fallback — the primary path is the OAuth flow above)."""
@@ -1382,7 +1382,7 @@ async def get_shopify_health(
 @router.post("/{brand_id}/shopify/disconnect")
 async def disconnect_shopify(
     brand_id: str,
-    tenant: TenantContext = Depends(get_current_tenant),
+    tenant: TenantContext = Depends(require_tenant_admin),
 ):
     """Disconnect Shopify from a brand."""
     try:
@@ -1455,7 +1455,7 @@ async def get_reply_style(
 async def update_reply_style(
     brand_id: str,
     request: UpdateReplyStyleRequest,
-    tenant: TenantContext = Depends(get_current_tenant),
+    tenant: TenantContext = Depends(require_tenant_admin),
 ):
     """Update mode/preset/learning controls. Switching to 'learned' this way
     requires a profile to already exist — use switch-to-learned for the
@@ -1495,7 +1495,7 @@ async def update_reply_style(
 @router.post("/{brand_id}/reply-style/regenerate")
 async def regenerate_reply_style(
     brand_id: str,
-    tenant: TenantContext = Depends(get_current_tenant),
+    tenant: TenantContext = Depends(require_tenant_admin),
 ):
     """Manual regenerate — bypasses the 15-new-replies/7-day triggers but
     still requires the minimum approved-reply count."""
@@ -1515,7 +1515,7 @@ async def regenerate_reply_style(
 @router.post("/{brand_id}/reply-style/switch-to-learned")
 async def switch_reply_style_to_learned(
     brand_id: str,
-    tenant: TenantContext = Depends(get_current_tenant),
+    tenant: TenantContext = Depends(require_tenant_admin),
 ):
     """Full replacement of the active preset with the learned profile — no
     blending, no confidence comparison, per spec."""
@@ -1555,7 +1555,7 @@ async def list_reply_examples(
 async def add_reply_example(
     brand_id: str,
     request: AddReplyExampleRequest,
-    tenant: TenantContext = Depends(get_current_tenant),
+    tenant: TenantContext = Depends(require_tenant_admin),
 ):
     try:
         _get_owned_brand(brand_id, tenant.tenant_id)
@@ -1590,7 +1590,7 @@ async def add_reply_example(
 async def delete_reply_example(
     brand_id: str,
     example_id: str,
-    tenant: TenantContext = Depends(get_current_tenant),
+    tenant: TenantContext = Depends(require_tenant_admin),
 ):
     try:
         _get_owned_brand(brand_id, tenant.tenant_id)
@@ -1695,7 +1695,7 @@ async def list_email_automations(brand_id: str, tenant: TenantContext = Depends(
 async def create_email_automation(
     brand_id: str,
     payload: CreateEmailAutomationRequest,
-    tenant: TenantContext = Depends(get_current_tenant),
+    tenant: TenantContext = Depends(require_tenant_admin),
 ):
     _get_owned_brand(brand_id, tenant.tenant_id)
     existing = supabase_select("email_automations", {
@@ -1730,7 +1730,7 @@ async def update_email_automation(
     brand_id: str,
     automation_id: str,
     payload: UpdateEmailAutomationRequest,
-    tenant: TenantContext = Depends(get_current_tenant),
+    tenant: TenantContext = Depends(require_tenant_admin),
 ):
     _get_owned_brand(brand_id, tenant.tenant_id)
     _get_owned_automation(brand_id, automation_id)
