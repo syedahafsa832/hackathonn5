@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, List
 import logging
 
-from src.api.middleware.tenant_auth import get_current_tenant, TenantContext
+from src.api.middleware.tenant_auth import get_current_tenant, require_tenant_admin, TenantContext
 from src.lib.supabase_client import supabase_select
 
 router = APIRouter(prefix="/brands", tags=["brands"])
@@ -202,7 +202,7 @@ async def get_brand(brand_id: str, tenant: TenantContext = Depends(get_current_t
 
 
 @router.put("/{brand_id}", response_model=dict)
-async def update_brand(brand_id: str, request: UpdateBrandRequest, tenant: TenantContext = Depends(get_current_tenant)):
+async def update_brand(brand_id: str, request: UpdateBrandRequest, tenant: TenantContext = Depends(require_tenant_admin)):
     """
     Update brand settings.
     """
@@ -235,7 +235,7 @@ async def update_brand(brand_id: str, request: UpdateBrandRequest, tenant: Tenan
 async def delete_brand(
     brand_id: str,
     hard_delete: bool = Query(False, description="Permanently delete (vs deactivate)"),
-    tenant: TenantContext = Depends(get_current_tenant),
+    tenant: TenantContext = Depends(require_tenant_admin),
 ):
     """
     Delete or deactivate a brand.

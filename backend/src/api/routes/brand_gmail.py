@@ -13,7 +13,7 @@ from fastapi.responses import RedirectResponse
 
 from src.services.brand_gmail_service import brand_gmail_service
 from src.lib.supabase_client import supabase_select, supabase_update
-from src.api.middleware.tenant_auth import get_current_tenant, TenantContext
+from src.api.middleware.tenant_auth import get_current_tenant, require_tenant_admin, TenantContext
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/brands", tags=["Gmail"])
@@ -35,7 +35,7 @@ def _get_owned_brand(brand_id: str, tenant: TenantContext) -> dict:
 @router.get("/{brand_id}/gmail/auth-url")
 async def get_gmail_auth_url(
     brand_id: str,
-    tenant: TenantContext = Depends(get_current_tenant),
+    tenant: TenantContext = Depends(require_tenant_admin),
 ):
     """Return the Google OAuth consent URL for this brand (tenant-scoped)."""
     brand = _get_owned_brand(brand_id, tenant)
@@ -86,7 +86,7 @@ async def gmail_oauth_callback(code: str = None, state: str = None, error: str =
 @router.post("/{brand_id}/gmail/disconnect")
 async def disconnect_gmail(
     brand_id: str,
-    tenant: TenantContext = Depends(get_current_tenant),
+    tenant: TenantContext = Depends(require_tenant_admin),
 ):
     """Disconnect Gmail from a brand (tenant-scoped)."""
     _get_owned_brand(brand_id, tenant)

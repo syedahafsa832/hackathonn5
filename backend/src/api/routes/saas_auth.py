@@ -274,6 +274,11 @@ async def get_current_user(tenant: TenantContext = Depends(get_current_tenant)):
         "success": True,
         **tenant_data,
         "is_super_admin": is_super_admin(tenant_data.get("email")),
+        # The authenticated caller's own role/email — distinct from the
+        # spread tenant_data.email above, which is the account OWNER's email
+        # and unchanged for a team member (see TenantContext).
+        "team_role": tenant.role,
+        "authenticated_email": tenant.email,
     }
 
 
