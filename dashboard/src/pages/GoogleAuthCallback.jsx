@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import client, { extractErrorMessage } from '../api/client';
 import { setLoggedInCookie } from '../api/sessionCookie';
+
+// Matches AcceptInvite.jsx's PENDING_INVITE_KEY — set there just before the
+// Google redirect, read back here once the session tokens above are live.
+const PENDING_INVITE_KEY = 'resolv_pending_invite_token';
 
 /**
  * Lands here after the backend-mediated Google OAuth redirect flow
@@ -33,6 +38,23 @@ export default function GoogleAuthCallback() {
     localStorage.setItem('resolv_token', accessToken);
     if (refreshToken) localStorage.setItem('resolv_refresh_token', refreshToken);
     setLoggedInCookie(expiresIn ? Number(expiresIn) : undefined);
+
+    const inviteToken = sessionStorage.getItem(PENDING_INVITE_KEY);
+    if (inviteToken) {
+      sessionStorage.removeItem(PENDING_INVITE_KEY);
+      // Same accept endpoint the email/password invite flow uses (see
+      // AcceptInvite.jsx) — it verifies the invite's email against this
+      // token's own verified email claim, so a Google account that doesn't
+      // match the invite is rejected here without touching the invite.
+      client.post(`/api/v1/team/invites/${inviteToken}/accept`)
+        .then(() => navigate('/dashboard', { replace: true }))
+        .catch(err => {
+          const message = extractErrorMessage(err, 'Could not accept the invite with this Google account.');
+          navigate(`/accept-invite?token=${encodeURIComponent(inviteToken)}&oauth_error=${encodeURIComponent(message)}`, { replace: true });
+        });
+      return;
+    }
+
     // Dashboard/App already redirects a tenant who hasn't finished
     // onboarding to /onboarding — same target Login.jsx's own Google/email
     // success paths already navigate to for an existing session.

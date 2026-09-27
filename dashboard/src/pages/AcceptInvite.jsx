@@ -2,7 +2,15 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import client, { extractErrorMessage } from '../api/client';
 import Alert from '../components/Alert';
+import GoogleAuthButton from '../components/GoogleAuthButton';
 import { setLoggedInCookie } from '../api/sessionCookie';
+
+// GoogleAuthButton is a plain <a href> that navigates the whole page to the
+// backend's redirect-based OAuth flow (see its own docstring) — there's no
+// callback to hand the invite token to once Google redirects back. sessionStorage
+// is the handoff: set synchronously on click (before the browser's default
+// navigation runs), read back by GoogleAuthCallback.jsx after the round trip.
+const PENDING_INVITE_KEY = 'resolv_pending_invite_token';
 
 // Invited user's entry point: preview the invite, then sign up or log in
 // through the EXISTING auth endpoints (same as Signup/Login), then accept.
@@ -24,6 +32,21 @@ export default function AcceptInvite() {
       .then(res => setInvite(res.data))
       .catch(err => setPreviewError(extractErrorMessage(err, 'This invite is invalid or has expired.')));
   }, [token]);
+
+  // GoogleAuthCallback.jsx redirects back here with this set when the
+  // Google account it signed in couldn't be linked to this invite (e.g. a
+  // different email) — surfaced as a normal error, no invite was touched.
+  useEffect(() => {
+    const oauthError = params.get('oauth_error');
+    if (oauthError) {
+      setError(oauthError);
+      window.history.replaceState(null, '', window.location.pathname + window.location.search.replace(/[?&]oauth_error=[^&]*/, ''));
+    }
+  }, [params]);
+
+  const startGoogle = () => {
+    sessionStorage.setItem(PENDING_INVITE_KEY, token);
+  };
 
   const finishAccept = async () => {
     const res = await client.post(`/api/v1/team/invites/${token}/accept`);
@@ -83,11 +106,21 @@ export default function AcceptInvite() {
               <button type="button" onClick={() => setMode('login')} style={{ flex: 1, padding: '8px', borderRadius: '4px', border: '1px solid var(--border)', background: mode === 'login' ? 'var(--accent)' : 'transparent', color: mode === 'login' ? 'white' : 'var(--text-primary)', fontWeight: 600, cursor: 'pointer' }}>I have an account</button>
             </div>
 
+            <div onClick={startGoogle} style={{ marginBottom: '16px' }}>
+              <GoogleAuthButton text={mode === 'signup' ? 'signup_with' : 'continue_with'} />
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', margin: '4px 0 16px' }}>
+              <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
+              <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>OR</span>
+              <div style={{ flex: 1, height: '1px', background: 'var(--border)' }} />
+            </div>
+
             <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
               <input type="password" required minLength={mode === 'signup' ? 8 : undefined} placeholder={mode === 'signup' ? 'Create a password (min. 8 characters)' : 'Password'} value={password} onChange={e => setPassword(e.target.value)} style={inputStyle} />
               <Alert variant="error">{error}</Alert>
               <button type="submit" disabled={loading} style={{ padding: '11px', borderRadius: '4px', background: 'var(--accent)', color: 'white', fontWeight: 600, cursor: loading ? 'not-allowed' : 'pointer' }}>
-                {loading ? 'Working...' : mode === 'signup' ? 'Create account & join' : 'Log in & join'}
+                {loading ? 'Working...' : mode === 'signup' ? 'Sign up with email & join' : 'Log in with email & join'}
               </button>
             </form>
           </>

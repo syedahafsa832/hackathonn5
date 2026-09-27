@@ -80,6 +80,10 @@ def test_admin_can_invite_viewer():
 # ─── 3. Invited user accepts and joins the correct tenant ──────────────────
 
 def test_invited_user_accepts_and_joins_correct_tenant():
+    """Covers the existing email/password invite flow (item #3 of the Google
+    sign-in addition's focused tests) — accept_team_invite only ever looks at
+    the verified token's own email claim, never how that session was
+    authenticated, so this same path is exercised by both providers."""
     invite = {
         "id": "member-3", "tenant_id": "tenant-1", "email": "new@example.com",
         "role": "agent", "status": "pending", "invite_token": "tok-abc",
@@ -100,6 +104,112 @@ def test_invited_user_accepts_and_joins_correct_tenant():
     assert result["success"] is True
     assert result["tenant_id"] == "tenant-1"
     assert result["role"] == "agent"
+
+
+# ─── Google sign-in invite acceptance ───────────────────────────────────────
+# GoogleAuthCallback.jsx calls the SAME accept_team_invite/accept endpoint
+# after a Google OAuth round trip, passing whatever email Supabase's own
+# verified session token carries — there is no separate Google code path on
+# the backend, so these tests exercise accept_team_invite exactly as the
+# email/password ones do, just naming the Google scenarios explicitly.
+
+def test_google_auth_with_matching_invited_email_accepts_invite():
+    invite = {
+        "id": "member-g1", "tenant_id": "tenant-1", "email": "googleuser@example.com",
+        "role": "admin", "status": "pending", "invite_token": "tok-google-ok",
+        "invite_expires_at": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+    }
+
+    def fake_select(table, params=None):
+        params = params or {}
+        if table == "tenant_members" and params.get("invite_token") == "eq.tok-google-ok":
+            return [invite]
+        return []
+
+    with patch("src.services.auth_service.supabase_select", side_effect=fake_select), \
+         patch("src.services.auth_service.supabase_update", side_effect=lambda t, m, d: {**invite, **d}):
+        auth_service = AuthService()
+        # sb-google-uid / the Google account's own email, as it would arrive
+        # from the verified Supabase session token after Google OAuth.
+        result = _run(auth_service.accept_team_invite("tok-google-ok", "sb-google-uid", "googleuser@example.com"))
+
+    assert result["success"] is True
+    assert result["tenant_id"] == "tenant-1"
+    assert result["role"] == "admin"  # role assignment from the invite is preserved
+
+
+def test_google_auth_with_different_email_is_blocked():
+    """The invited email and the authenticated Google account's email don't
+    match — must be rejected, and the invite must stay untouched (still
+    pending, not attached to the wrong account)."""
+    invite = {
+        "id": "member-g2", "tenant_id": "tenant-1", "email": "intended@example.com",
+        "role": "agent", "status": "pending", "invite_token": "tok-google-mismatch",
+        "invite_expires_at": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+    }
+
+    with patch("src.services.auth_service.supabase_select", return_value=[invite]), \
+         patch("src.services.auth_service.supabase_update") as mock_update:
+        auth_service = AuthService()
+        result = _run(auth_service.accept_team_invite("tok-google-mismatch", "sb-other-google-uid", "someone-else@gmail.com"))
+
+    assert result["success"] is False
+    mock_update.assert_not_called()  # invite row never touched
+
+
+def test_expired_invite_cannot_be_accepted_regardless_of_auth_provider():
+    invite = {
+        "id": "member-g3", "tenant_id": "tenant-1", "email": "late@example.com", "role": "agent",
+        "status": "pending", "invite_token": "tok-google-expired",
+        "invite_expires_at": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+    }
+    with patch("src.services.auth_service.supabase_select", return_value=[invite]), \
+         patch("src.services.auth_service.supabase_update") as mock_update:
+        auth_service = AuthService()
+        result = _run(auth_service.accept_team_invite("tok-google-expired", "sb-google-uid", "late@example.com"))
+
+    assert result["success"] is False
+    mock_update.assert_not_called()
+
+
+def test_revoked_invite_cannot_be_accepted_regardless_of_auth_provider():
+    invite = {
+        "id": "member-g4", "tenant_id": "tenant-1", "email": "revoked@example.com", "role": "agent",
+        "status": "revoked", "invite_token": "tok-google-revoked",
+        "invite_expires_at": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+    }
+    with patch("src.services.auth_service.supabase_select", return_value=[invite]), \
+         patch("src.services.auth_service.supabase_update") as mock_update:
+        auth_service = AuthService()
+        result = _run(auth_service.accept_team_invite("tok-google-revoked", "sb-google-uid", "revoked@example.com"))
+
+    assert result["success"] is False
+    mock_update.assert_not_called()
+
+
+def test_existing_google_account_signing_in_again_does_not_create_a_duplicate_identity():
+    """A Google account that's already the active member of a tenant (e.g.
+    re-authenticating, or Supabase's own account-linking handing back the
+    same supabase_user_id) must resolve straight to that same membership —
+    never a second tenant/identity — exactly like the pre-existing
+    owner-tenant dedup this reuses (see resolve_or_create_tenant_for_supabase_user)."""
+    existing_membership = {
+        "id": "member-g5", "tenant_id": "tenant-1", "supabase_user_id": "sb-existing-google-uid",
+        "email": "existing@example.com", "role": "agent", "status": "active",
+    }
+
+    with patch("src.services.auth_service.supabase_select",
+               return_value=[existing_membership]) as mock_select, \
+         patch("src.services.auth_service.supabase_insert") as mock_insert:
+        auth_service = AuthService()
+        membership = _run(auth_service.resolve_membership_for_supabase_user(
+            "sb-existing-google-uid", "existing@example.com",
+        ))
+
+    assert membership["is_owner"] is False
+    assert membership["tenant_id"] == "tenant-1"
+    mock_insert.assert_not_called()  # no new tenant/identity created
+    mock_select.assert_called_once()  # resolved directly from tenant_members, no fallback needed
 
 
 # ─── 11. Duplicate / invalid / expired invite handled safely ───────────────
