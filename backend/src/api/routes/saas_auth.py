@@ -12,7 +12,7 @@ from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
 
 from src.services.auth_service import auth_service
-from src.api.middleware.tenant_auth import get_current_tenant, TenantContext, security
+from src.api.middleware.tenant_auth import get_current_tenant, TenantContext, security, PUBLIC_ROLE_NAMES
 # Security audit finding A3: these endpoints had no rate limiting at all,
 # despite being the primary brute-force/credential-stuffing surface. Reuses
 # the same slowapi Limiter + pattern already applied to other endpoints in
@@ -277,7 +277,7 @@ async def get_current_user(tenant: TenantContext = Depends(get_current_tenant)):
         # The authenticated caller's own role/email — distinct from the
         # spread tenant_data.email above, which is the account OWNER's email
         # and unchanged for a team member (see TenantContext).
-        "team_role": tenant.role,
+        "team_role": PUBLIC_ROLE_NAMES.get(tenant.role, tenant.role),
         "authenticated_email": tenant.email,
     }
 

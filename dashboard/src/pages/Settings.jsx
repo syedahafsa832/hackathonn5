@@ -55,6 +55,7 @@ function EmailTab() {
   const [threshold, setThreshold] = useState(80);
   const [savingMode, setSavingMode] = useState(false);
   const [msg, setMsg] = useState('');
+  const [isAdmin, setIsAdmin] = useState(true); // optimistic default until team_role loads, avoids a flash of the locked state for the common owner/admin case
   const thresholdTimer = useRef(null);
 
   const loadStatus = useCallback(async (currentBrandId) => {
@@ -66,6 +67,7 @@ function EmailTab() {
       ]);
       setGmailStatus(gmailRes.data);
       setThreshold(accountRes.data?.settings?.confidence_threshold ?? accountRes.data?.confidence_threshold ?? 80);
+      setIsAdmin((accountRes.data?.team_role ?? 'admin') === 'admin');
 
       if (!currentBrandId) {
         // No valid brand resolved — never call /api/ai-mode. Without an
@@ -243,15 +245,19 @@ function EmailTab() {
                 Inbox checked every 60 seconds
               </div>
             )}
-            <button
-              onClick={handleDisconnect}
-              disabled={disconnecting}
-              style={{ alignSelf: 'flex-start', padding: '7px 14px', borderRadius: '6px', border: '1px solid #FECACA', background: '#FEF2F2', color: '#EF4444', fontSize: '13px', fontWeight: '500', cursor: disconnecting ? 'not-allowed' : 'pointer' }}
-              onMouseEnter={e => { if(!disconnecting) e.target.style.background = '#FEE2E2'; }}
-              onMouseLeave={e => { if(!disconnecting) e.target.style.background = '#FEF2F2'; }}
-            >
-              {disconnecting ? 'Disconnecting...' : 'Disconnect'}
-            </button>
+            {isAdmin ? (
+              <button
+                onClick={handleDisconnect}
+                disabled={disconnecting}
+                style={{ alignSelf: 'flex-start', padding: '7px 14px', borderRadius: '6px', border: '1px solid #FECACA', background: '#FEF2F2', color: '#EF4444', fontSize: '13px', fontWeight: '500', cursor: disconnecting ? 'not-allowed' : 'pointer' }}
+                onMouseEnter={e => { if(!disconnecting) e.target.style.background = '#FEE2E2'; }}
+                onMouseLeave={e => { if(!disconnecting) e.target.style.background = '#FEF2F2'; }}
+              >
+                {disconnecting ? 'Disconnecting...' : 'Disconnect'}
+              </button>
+            ) : (
+              <div style={{ fontSize: '12px', color: '#94A3B8' }}>🔒 Only admins can manage this connection</div>
+            )}
           </div>
         )}
 
@@ -281,21 +287,27 @@ function EmailTab() {
             <div style={{ fontSize: '14px', color: '#475569', lineHeight: '1.5' }}>
               Resolv will monitor this inbox every 60 seconds for new customer emails and send replies from it, directly from your address.
             </div>
-            <div style={{ width: '100%' }}>
-              <GmailUnverifiedNotice />
-            </div>
-            <button
-              onClick={handleConnect}
-              disabled={connecting}
-              style={{ padding: '9px 18px', borderRadius: '6px', background: connecting ? '#94A3B8' : '#06B6D4', color: 'white', fontWeight: '600', fontSize: '14px', border: 'none', cursor: connecting ? 'not-allowed' : 'pointer', transition: 'background 0.15s' }}
-              onMouseEnter={e => { if (!connecting) e.target.style.background = '#0891B2'; }}
-              onMouseLeave={e => { if (!connecting) e.target.style.background = '#06B6D4'; }}
-            >
-              {connectButtonLabel}
-            </button>
-            <div style={{ fontSize: '12px', color: '#94A3B8' }}>
-              Google permissions required: read emails, send emails, mark as read
-            </div>
+            {isAdmin ? (
+              <>
+                <div style={{ width: '100%' }}>
+                  <GmailUnverifiedNotice />
+                </div>
+                <button
+                  onClick={handleConnect}
+                  disabled={connecting}
+                  style={{ padding: '9px 18px', borderRadius: '6px', background: connecting ? '#94A3B8' : '#06B6D4', color: 'white', fontWeight: '600', fontSize: '14px', border: 'none', cursor: connecting ? 'not-allowed' : 'pointer', transition: 'background 0.15s' }}
+                  onMouseEnter={e => { if (!connecting) e.target.style.background = '#0891B2'; }}
+                  onMouseLeave={e => { if (!connecting) e.target.style.background = '#06B6D4'; }}
+                >
+                  {connectButtonLabel}
+                </button>
+                <div style={{ fontSize: '12px', color: '#94A3B8' }}>
+                  Google permissions required: read emails, send emails, mark as read
+                </div>
+              </>
+            ) : (
+              <div style={{ fontSize: '12px', color: '#94A3B8' }}>🔒 Only admins can manage this connection</div>
+            )}
           </div>
         )}
       </div>

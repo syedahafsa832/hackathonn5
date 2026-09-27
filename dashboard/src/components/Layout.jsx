@@ -41,6 +41,11 @@ export default function Layout({ children }) {
   // isn't usable there.
   const pageLabel = matchedTitle || 'tResolv';
 
+  // Subtle, persistent reminder that this session is an invited team
+  // member's, not the account owner's — team_role is "admin" for the
+  // owner (the common case), so nothing renders for them.
+  const teamRoleLabel = { team_member: 'Team member', viewer: 'Viewer' }[me?.team_role];
+
   useEffect(() => {
     setMobileMenuOpen(false);
   }, [location.pathname]);
@@ -77,9 +82,16 @@ export default function Layout({ children }) {
             >
               <Menu size={18} />
             </button>
-            <h1 style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)' }}>
-              {title}
-            </h1>
+            <div>
+              <h1 style={{ fontSize: '16px', fontWeight: '600', color: 'var(--text-primary)', margin: 0 }}>
+                {title}
+              </h1>
+              {teamRoleLabel && (
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '1px' }}>
+                  {me?.company_name} · Team account · {teamRoleLabel}
+                </div>
+              )}
+            </div>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>

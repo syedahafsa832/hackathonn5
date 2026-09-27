@@ -10,6 +10,7 @@ const PAID_PLANS = ['starter', 'growth', 'enterprise'];
 export default function Profile() {
   const { logout } = useAuth();
   const [profile, setProfile] = useState({ full_name: '', email: '', created_at: null });
+  const [teamRole, setTeamRole] = useState('admin');
   const [plan, setPlan] = useState(null);
   const [planLabel, setPlanLabel] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -34,6 +35,7 @@ export default function Profile() {
         email: s.email || '',
         created_at: s.created_at || null,
       });
+      setTeamRole(res.data?.team_role || 'admin');
     }).catch(() => {}).finally(() => setLoading(false));
 
     // Same endpoint PlanUsageWidget already uses on the Dashboard — reusing it
@@ -120,6 +122,11 @@ export default function Profile() {
             )}
           </div>
           <div style={{ fontSize: '13px', color: '#64748B' }}>{profile.email}</div>
+          {teamRole !== 'admin' && (
+            <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px' }}>
+              {{ team_member: 'Team member', viewer: 'Viewer' }[teamRole] || teamRole} · {profile.full_name}
+            </div>
+          )}
         </div>
       </div>
 
@@ -132,11 +139,18 @@ export default function Profile() {
             value={profile.full_name}
             onChange={e => setProfile(p => ({ ...p, full_name: e.target.value }))}
             placeholder="Your name or company"
+            disabled={teamRole !== 'admin'}
             style={{
               width: '100%', padding: '9px 12px', border: '1px solid #E4E4E7', borderRadius: '6px',
-              fontSize: '14px', color: '#0F172A',
+              fontSize: '14px', color: teamRole !== 'admin' ? '#94A3B8' : '#0F172A',
+              background: teamRole !== 'admin' ? '#F8FAFC' : 'white',
             }}
           />
+          {teamRole !== 'admin' && (
+            <div style={{ fontSize: '12px', color: '#94A3B8', marginTop: '5px' }}>
+              🔒 Only admins can change account settings
+            </div>
+          )}
         </div>
 
         <div>
@@ -162,6 +176,7 @@ export default function Profile() {
           </p>
         </div>
 
+        {teamRole === 'admin' && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <button
             onClick={save}
@@ -182,6 +197,7 @@ export default function Profile() {
             {msg}
           </Alert>
         </div>
+        )}
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', padding: '20px', marginTop: '20px' }}>

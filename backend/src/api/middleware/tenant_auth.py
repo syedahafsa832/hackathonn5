@@ -19,6 +19,14 @@ logger = logging.getLogger(__name__)
 security = HTTPBearer(auto_error=False)
 
 
+# Public/UI-facing names for TenantContext.role's internal DB values (kept
+# in sync with team.py's own _INTERNAL_TO_API_ROLE, which owns the same
+# mapping for /team/* responses — duplicated as one 3-entry dict rather than
+# imported both places, since /me and /settings/account only need the single
+# internal->public direction team.py's bidirectional dict doesn't expose).
+PUBLIC_ROLE_NAMES = {"admin": "admin", "agent": "team_member", "read_only": "viewer"}
+
+
 class TenantContext:
     """
     Holds the authenticated tenant's context.

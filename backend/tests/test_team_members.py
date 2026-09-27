@@ -516,6 +516,41 @@ def test_team_member_cannot_disconnect_gmail():
         app.dependency_overrides.clear()
 
 
+def test_team_member_cannot_connect_gmail():
+    _override("agent")
+    try:
+        resp = client.get("/api/v1/settings/gmail/connect")
+        assert resp.status_code == 403
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_viewer_cannot_connect_or_disconnect_gmail():
+    _override("read_only")
+    try:
+        assert client.get("/api/v1/settings/gmail/connect").status_code == 403
+        assert client.delete("/api/v1/settings/gmail/disconnect").status_code == 403
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_admin_can_still_connect_and_disconnect_gmail():
+    """Only proves the role gate passes for Admin (not the full OAuth/
+    disconnect flow) — a non-403 here means require_tenant_admin let an
+    Admin through, same as every other admin-only route. _get_tenant_brand_async
+    is mocked to avoid a real Supabase network call (this test's .env has
+    live project credentials, not a local stub)."""
+    _override("admin")
+    try:
+        with patch("src.api.routes.saas_settings._get_tenant_brand_async", new=AsyncMock(return_value=None)):
+            connect_resp = client.get("/api/v1/settings/gmail/connect")
+            assert connect_resp.status_code != 403
+            disconnect_resp = client.delete("/api/v1/settings/gmail/disconnect")
+            assert disconnect_resp.status_code != 403
+    finally:
+        app.dependency_overrides.clear()
+
+
 # ─── 9. Team member cannot change account/security/billing settings ───────
 
 def test_team_member_cannot_update_account_settings():

@@ -13,7 +13,7 @@ from typing import Optional, List
 from src.services.shopify_service import shopify_service
 from src.services.auth_service import auth_service
 from src.services.knowledge_base_service import knowledge_base_service
-from src.api.middleware.tenant_auth import get_current_tenant, require_tenant_admin, require_tenant_write, TenantContext
+from src.api.middleware.tenant_auth import get_current_tenant, require_tenant_admin, require_tenant_write, TenantContext, PUBLIC_ROLE_NAMES
 from src.lib.supabase_client import supabase_select, supabase_update
 
 logger = logging.getLogger(__name__)
@@ -289,7 +289,7 @@ async def get_account_settings(tenant: TenantContext = Depends(get_current_tenan
             "created_at": tenant_data.get("created_at"),
             "last_login_at": tenant_data.get("last_login_at")
         },
-        "team_role": tenant.role,
+        "team_role": PUBLIC_ROLE_NAMES.get(tenant.role, tenant.role),
     }
 
 
