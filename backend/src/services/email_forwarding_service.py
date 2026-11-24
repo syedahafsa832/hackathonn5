@@ -210,11 +210,11 @@ def _google_forwarding_confirmation_code(parsed: Dict[str, Any]) -> Optional[str
     """Recognize only the forwarding-address verification email from Google."""
     sender = (parsed.get("sender_email") or "").lower()
     subject = (parsed.get("subject") or "").lower()
-    if sender != "forwarding-noreply@google.com":
+    if sender not in {"forwarding-noreply@google.com", "mail-noreply@google.com"}:
         return None
     if "forwarding confirmation" not in subject:
         return None
-    match = re.search(r"\b(\d{6})\b", parsed.get("body") or "")
+    match = re.search(r"\b(\d{8,10})\b", parsed.get("body") or "")
     return match.group(1) if match else None
 
 async def process_forwarded_email(raw: bytes, envelope_to: str) -> Dict[str, Any]:
