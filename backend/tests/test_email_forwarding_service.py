@@ -112,14 +112,14 @@ def test_recipient_token_accepts_only_opaque_hex_aliases():
 
 def test_only_google_forwarding_confirmation_email_exposes_code():
     allowed = {
-        "sender_email": "forwarding-noreply@google.com",
+        "sender_email": "mail-noreply@google.com",
         "subject": "Gmail Forwarding Confirmation - Receive Mail from Your Other Accounts",
-        "body": "Your confirmation code is 123456. Enter it in Gmail.",
+        "body": "Your confirmation code is 12345678. Enter it in Gmail.",
     }
     lookalike = {**allowed, "sender_email": "attacker@example.com"}
     unrelated_google = {**allowed, "subject": "Security alert for your Google Account"}
 
-    assert _google_forwarding_confirmation_code(allowed) == "123456"
+    assert _google_forwarding_confirmation_code(allowed) == "12345678"
     assert _google_forwarding_confirmation_code(lookalike) is None
     assert _google_forwarding_confirmation_code(unrelated_google) is None
 
