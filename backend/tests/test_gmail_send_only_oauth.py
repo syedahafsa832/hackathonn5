@@ -4,7 +4,10 @@ from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("SUPABASE_URL", "http://localhost")
 os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test")
-os.environ.setdefault("GMAIL_CLIENT_ID", "client-id")
+os.environ.setdefault("GMAIL_CLIENT_ID", "legacy-client-id")
+os.environ.setdefault("GMAIL_CLIENT_SECRET", "legacy-client-secret")
+os.environ.setdefault("GMAIL_SEND_CLIENT_ID", "send-only-client-id")
+os.environ.setdefault("GMAIL_SEND_CLIENT_SECRET", "send-only-client-secret")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -27,8 +30,9 @@ def test_send_only_oauth_url_requests_gmail_send_not_mailbox_read():
         url = service.get_send_auth_url("brand-1")
 
     assert url.startswith("https://accounts.google.com/")
-    _, kwargs = mock_flow.from_client_config.call_args
+    config, kwargs = mock_flow.from_client_config.call_args
     assert kwargs["scopes"] == SEND_ONLY_SCOPES
+    assert config["web"]["client_id"] == "send-only-client-id"
 
     auth_kwargs = fake_flow.authorization_url.call_args.kwargs
     assert auth_kwargs["include_granted_scopes"] == "false"
