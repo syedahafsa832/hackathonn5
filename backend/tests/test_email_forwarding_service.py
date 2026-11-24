@@ -104,10 +104,11 @@ def test_forwarding_thread_id_uses_first_reference_as_thread_root():
 def test_recipient_token_accepts_only_opaque_hex_aliases():
     token = "a" * 40
 
-    assert _recipient_token(f"{token}@inbound.tresolv.online") == token
-    assert _recipient_token(f"<{token}@inbound.tresolv.online>") == token
-    assert _recipient_token("hello@inbound.tresolv.online") is None
-    assert _recipient_token("a" * 39 + "@inbound.tresolv.online") is None
+    assert _recipient_token(f"support+{token}@inbound.tresolv.online") == token
+    assert _recipient_token(f"<support+{token}@inbound.tresolv.online>") == token
+    assert _recipient_token(f"hello+{token}@inbound.tresolv.online") is None
+    assert _recipient_token(f"support@inbound.tresolv.online") is None
+    assert _recipient_token("support+" + "a" * 39 + "@inbound.tresolv.online") is None
 
 
 def test_only_google_forwarding_confirmation_email_exposes_code():
