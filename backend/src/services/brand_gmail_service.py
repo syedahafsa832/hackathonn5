@@ -62,7 +62,14 @@ from src.services.shopify_service import encrypt_token, decrypt_token
 
 logger = logging.getLogger(__name__)
 
+# Existing full-access Gmail mode remains unchanged for currently connected
+# brands. Forwarding-mode brands request only send access plus basic identity.
 SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
+SEND_ONLY_SCOPES = [
+    'https://www.googleapis.com/auth/gmail.send',
+    'openid',
+    'email',
+]
 _STATE_TTL = 600  # 10-minute OAuth window
 
 
@@ -83,10 +90,17 @@ def _state_key() -> bytes:
     return os.getenv("SECRET_KEY", os.getenv("JWT_SECRET", "change-me-in-production")).encode()
 
 
-def _sign_state(brand_id: str) -> str:
-    """Return HMAC-signed state token: base64(payload).signature
-    The payload encodes brand_id and an expiry, making tampering detectable."""
-    payload = json.dumps({"brand_id": brand_id, "exp": int(time.time()) + _STATE_TTL}).encode()
+def _sign_state(brand_id: str, scope_mode: str = "full") -> str:
+    """Return HMAC-signed state token: base64(payload).signature.
+
+    scope_mode is signed along with the brand id so the shared OAuth callback
+    can distinguish legacy full-mailbox OAuth from the new send-only flow.
+    """
+    payload = json.dumps({
+        "brand_id": brand_id,
+        "scope_mode": scope_mode,
+        "exp": int(time.time()) + _STATE_TTL,
+    }).encode()
     sig = hmac.new(_state_key(), payload, hashlib.sha256).hexdigest()[:24]
     b64 = base64.urlsafe_b64encode(payload).decode().rstrip("=")
     return f"{b64}.{sig}"
@@ -112,6 +126,17 @@ def _verify_state(state: str) -> Optional[str]:
     except Exception as e:
         logger.warning(f"[BrandGmail] State verification error: {e}")
         return None
+
+
+def _state_scope_mode(state: str) -> str:
+    """Read the signed scope mode after _verify_state has validated the token."""
+    try:
+        b64 = state.rsplit(".", 1)[0]
+        b64 += "=" * ((4 - len(b64) % 4) % 4)
+        data = json.loads(base64.urlsafe_b64decode(b64.encode()))
+        return "send_only" if data.get("scope_mode") == "send_only" else "full"
+    except Exception:
+        return "full"
 
 
 def _get_client_config() -> dict:
@@ -148,34 +173,72 @@ class BrandGmailService:
     # ── OAuth ──────────────────────────────────────────────────────────────
 
     def get_auth_url(self, brand_id: str) -> str:
-        """Return the Google consent-screen URL for a brand.
-        The state parameter is HMAC-signed so the callback can verify authenticity."""
+        """Return the legacy Gmail read/write consent URL for an existing brand."""
         flow = Flow.from_client_config(_get_client_config(), scopes=SCOPES)
         flow.redirect_uri = _callback_uri()
         auth_url, _ = flow.authorization_url(
             access_type="offline",
             include_granted_scopes="true",
-            state=_sign_state(brand_id),  # signed — not plain brand_id
+            state=_sign_state(brand_id),
+            prompt="consent",
+        )
+        return auth_url
+
+    def get_send_auth_url(self, brand_id: str) -> str:
+        """Return a Gmail send-only OAuth URL for forwarding-mode brands.
+
+        include_granted_scopes is deliberately false: do not silently carry
+        the previous gmail.modify grant into this lower-permission connection.
+        """
+        flow = Flow.from_client_config(_get_client_config(), scopes=SEND_ONLY_SCOPES)
+        flow.redirect_uri = _callback_uri()
+        auth_url, _ = flow.authorization_url(
+            access_type="offline",
+            include_granted_scopes="false",
+            state=_sign_state(brand_id, scope_mode="send_only"),
             prompt="consent",
         )
         return auth_url
 
     async def handle_callback(self, state: str, code: str) -> Dict[str, Any]:
-        """Exchange auth code → tokens, save to brand, return gmail address.
-        Verifies the signed state before trusting the brand_id it encodes."""
+        """Exchange auth code → tokens and persist either full or send-only access."""
         brand_id = _verify_state(state)
         if not brand_id:
             return {"success": False, "error": "invalid_or_expired_state"}
+        scope_mode = _state_scope_mode(state)
+        requested_scopes = SEND_ONLY_SCOPES if scope_mode == "send_only" else SCOPES
         try:
-            flow = Flow.from_client_config(_get_client_config(), scopes=SCOPES, state=state)
+            flow = Flow.from_client_config(_get_client_config(), scopes=requested_scopes, state=state)
             flow.redirect_uri = _callback_uri()
             flow.fetch_token(code=code)
             creds = flow.credentials
 
-            # Discover which Gmail address was granted
-            svc = build("gmail", "v1", credentials=creds)
-            profile = svc.users().getProfile(userId="me").execute()
-            email = profile.get("emailAddress", "")
+            if scope_mode == "send_only":
+                granted_scopes = set(creds.scopes or [])
+                gmail_send_scope = "https://www.googleapis.com/auth/gmail.send"
+                forbidden_scopes = {
+                    "https://www.googleapis.com/auth/gmail.modify",
+                    "https://mail.google.com/",
+                    "https://www.googleapis.com/auth/gmail.readonly",
+                }
+                if gmail_send_scope not in granted_scopes or granted_scopes.intersection(forbidden_scopes):
+                    raise ValueError("Send-only OAuth grant did not return the expected Gmail scope")
+
+                # gmail.send cannot call users.getProfile(). Use the verified
+                # OpenID ID token instead; this does not request mailbox access.
+                from google.oauth2 import id_token as google_id_token
+                client_id = creds.client_id or os.getenv("GMAIL_CLIENT_ID")
+                id_info = google_id_token.verify_oauth2_token(
+                    creds.id_token, Request(), audience=client_id
+                )
+                if not id_info.get("email") or not id_info.get("email_verified"):
+                    raise ValueError("Google did not return a verified account email")
+                email = id_info["email"]
+            else:
+                # Preserve the existing full-access integration exactly.
+                svc = build("gmail", "v1", credentials=creds)
+                profile = svc.users().getProfile(userId="me").execute()
+                email = profile.get("emailAddress", "")
 
             token_data = {
                 "token":         creds.token,
@@ -183,7 +246,8 @@ class BrandGmailService:
                 "token_uri":     creds.token_uri,
                 "client_id":     creds.client_id,
                 "client_secret": creds.client_secret,
-                "scopes":        list(creds.scopes or SCOPES),
+                "scopes":        list(creds.scopes or requested_scopes),
+                "scope_mode":     scope_mode,
                 "expiry":        creds.expiry.isoformat() if creds.expiry else None,
             }
 
@@ -191,6 +255,7 @@ class BrandGmailService:
                 "gmail_email":     email,
                 "gmail_token":     encrypt_token(json.dumps(token_data)),
                 "gmail_connected": True,
+                "gmail_scope_mode": scope_mode,
                 "is_active":       True,  # Reactivate if deactivated during onboarding 409 flow
                 "updated_at":      datetime.now(timezone.utc).isoformat(),
             })
