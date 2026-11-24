@@ -140,10 +140,23 @@ def _state_scope_mode(state: str) -> str:
         return "full"
 
 
-def _get_client_config() -> dict:
-    """Build OAuth client config from env vars."""
-    client_id = os.getenv("GMAIL_CLIENT_ID")
-    client_secret = os.getenv("GMAIL_CLIENT_SECRET")
+def _get_client_config(scope_mode: str = "full") -> dict:
+    """Build the OAuth client config for the selected Gmail permission tier.
+
+    Send-only uses a separate Google Cloud OAuth project. Keeping its consent
+    screen free of gmail.modify prevents the legacy restricted scope from
+    being pulled into the send-only app verification request.
+    """
+    if scope_mode == "send_only":
+        client_id = os.getenv("GMAIL_SEND_CLIENT_ID")
+        client_secret = os.getenv("GMAIL_SEND_CLIENT_SECRET")
+        raw = os.getenv("GMAIL_SEND_CREDENTIALS")
+        label = "GMAIL_SEND_CLIENT_ID + GMAIL_SEND_CLIENT_SECRET"
+    else:
+        client_id = os.getenv("GMAIL_CLIENT_ID")
+        client_secret = os.getenv("GMAIL_CLIENT_SECRET")
+        raw = os.getenv("GMAIL_CREDENTIALS")
+        label = "GMAIL_CLIENT_ID + GMAIL_CLIENT_SECRET"
 
     if client_id and client_secret:
         return {
@@ -156,12 +169,10 @@ def _get_client_config() -> dict:
             }
         }
 
-    # Fall back to full GMAIL_CREDENTIALS blob
-    raw = os.getenv("GMAIL_CREDENTIALS")
     if raw:
         return json.loads(raw)
 
-    raise ValueError("No Gmail OAuth credentials configured. Set GMAIL_CLIENT_ID + GMAIL_CLIENT_SECRET.")
+    raise ValueError(f"No {scope_mode} Gmail OAuth credentials configured. Set {label}.")
 
 
 def _callback_uri() -> str:
@@ -191,7 +202,7 @@ class BrandGmailService:
         include_granted_scopes is deliberately false: do not silently carry
         the previous gmail.modify grant into this lower-permission connection.
         """
-        flow = Flow.from_client_config(_get_client_config(), scopes=SEND_ONLY_SCOPES)
+        flow = Flow.from_client_config(_get_client_config("send_only"), scopes=SEND_ONLY_SCOPES)
         flow.redirect_uri = _callback_uri()
         auth_url, _ = flow.authorization_url(
             access_type="offline",
@@ -209,7 +220,7 @@ class BrandGmailService:
         scope_mode = _state_scope_mode(state)
         requested_scopes = SEND_ONLY_SCOPES if scope_mode == "send_only" else SCOPES
         try:
-            flow = Flow.from_client_config(_get_client_config(), scopes=requested_scopes, state=state)
+            flow = Flow.from_client_config(_get_client_config(scope_mode), scopes=requested_scopes, state=state)
             flow.redirect_uri = _callback_uri()
             flow.fetch_token(code=code)
             creds = flow.credentials
@@ -228,7 +239,7 @@ class BrandGmailService:
                 # gmail.send cannot call users.getProfile(). Use the verified
                 # OpenID ID token instead; this does not request mailbox access.
                 from google.oauth2 import id_token as google_id_token
-                client_id = creds.client_id or os.getenv("GMAIL_CLIENT_ID")
+                client_id = creds.client_id or os.getenv("GMAIL_SEND_CLIENT_ID")
                 id_info = google_id_token.verify_oauth2_token(
                     creds.id_token, Request(), audience=client_id
                 )
