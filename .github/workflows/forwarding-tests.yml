@@ -43,3 +43,33 @@ jobs:
           tests/test_gmail_send_only_oauth.py
           tests/test_gmail_service_refresh_failure.py
           tests/test_gmail_token_encryption.py
+
+  dashboard-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - name: Install dashboard dependencies
+        run: npm ci
+      - name: Build dashboard
+        run: npm run build
+
+  cloudflare-worker-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloudflare/email-inbound
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Validate Cloudflare Worker bundle and Wrangler config
+        run: npx --yes wrangler@4.113.0 deploy --dry-run
