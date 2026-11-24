@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import html
+import os
 import re
 from datetime import datetime, timezone
 from email import policy
@@ -208,7 +209,10 @@ def _recipient_token(recipient: str) -> Optional[str]:
     address = recipient.strip().strip("<>").lower()
     if "@" not in address:
         return None
-    local, _domain = address.rsplit("@", 1)
+    local, recipient_domain = address.rsplit("@", 1)
+    expected_domain = os.getenv("INBOUND_EMAIL_DOMAIN", "inbound.tresolv.online").strip().lower()
+    if recipient_domain != expected_domain:
+        return None
     expected_local = os.getenv("INBOUND_EMAIL_LOCAL_PART", "support").strip().lower()
     if "+" not in local:
         return None
