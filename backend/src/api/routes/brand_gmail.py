@@ -8,6 +8,8 @@ the signed state token is the proof of which tenant initiated the OAuth.
 """
 import os
 import logging
+import secrets
+from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import RedirectResponse
 
@@ -30,6 +32,60 @@ def _get_owned_brand(brand_id: str, tenant: TenantContext) -> dict:
     if not brand_tenant or brand_tenant != tenant.tenant_id:
         raise HTTPException(status_code=404, detail="Brand not found")
     return brand
+
+
+@router.post("/{brand_id}/email-forwarding/setup")
+async def setup_email_forwarding(
+    brand_id: str,
+    tenant: TenantContext = Depends(require_tenant_admin),
+):
+    """Create or reuse a private inbound address for this brand."""
+    brand = _get_owned_brand(brand_id, tenant)
+    domain = os.getenv("INBOUND_EMAIL_DOMAIN", "").strip().lower().lstrip("@")
+    if not domain or "@" in domain or " " in domain:
+        raise HTTPException(
+            status_code=503,
+            detail="Inbound email domain is not configured on the backend",
+        )
+
+    token = brand.get("inbound_email_token")
+    if not token:
+        token = secrets.token_hex(20)
+
+    supabase_update("brands", {"id": f"eq.{brand_id}"}, {
+        "inbound_email_token": token,
+        "inbound_email_enabled": True,
+        "email_ingestion_mode": "forwarding",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+    return {
+        "success": True,
+        "forwarding_address": f"{token}@{domain}",
+        "ingestion_mode": "forwarding",
+        "gmail_send_connected": bool(
+            brand.get("gmail_connected") and brand.get("gmail_scope_mode") == "send_only"
+        ),
+        "note": "This is a routing address, not a mailbox. Forward support emails to it from the merchant's inbox.",
+    }
+
+
+@router.get("/{brand_id}/gmail/send-auth-url")
+async def get_gmail_send_auth_url(
+    brand_id: str,
+    tenant: TenantContext = Depends(require_tenant_admin),
+):
+    """Start send-only Gmail OAuth for forwarding-mode brands."""
+    brand = _get_owned_brand(brand_id, tenant)
+    if brand.get("email_ingestion_mode") != "forwarding" or not brand.get("inbound_email_enabled"):
+        raise HTTPException(
+            status_code=409,
+            detail="Set up the forwarding address before connecting Gmail send access",
+        )
+    try:
+        return {"auth_url": brand_gmail_service.get_send_auth_url(brand_id)}
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/{brand_id}/gmail/auth-url")
