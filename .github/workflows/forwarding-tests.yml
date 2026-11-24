@@ -1,0 +1,45 @@
+name: Forwarding and Gmail send-only tests
+
+on:
+  push:
+    branches:
+      - feature/free-email-forwarding
+  pull_request:
+    paths:
+      - "backend/**"
+      - "dashboard/src/pages/Brands.jsx"
+      - "dashboard/src/components/EmailForwardingSetup.jsx"
+      - "cloudflare/email-inbound/**"
+      - ".github/workflows/forwarding-tests.yml"
+
+jobs:
+  targeted-backend-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      SUPABASE_URL: http://localhost
+      SUPABASE_SERVICE_ROLE_KEY: test-service-role-key
+      SECRET_KEY: test-secret-key
+      ENCRYPTION_SECRET: test-encryption-secret-for-ci-only
+      GMAIL_CLIENT_ID: legacy-client-id
+      GMAIL_CLIENT_SECRET: legacy-client-secret
+      GMAIL_SEND_CLIENT_ID: send-only-client-id
+      GMAIL_SEND_CLIENT_SECRET: send-only-client-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install backend dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run forwarding and Gmail regression tests
+        run: >
+          pytest -q
+          tests/test_email_forwarding_service.py
+          tests/test_gmail_send_only_oauth.py
+          tests/test_gmail_service_refresh_failure.py
+          tests/test_gmail_token_encryption.py
