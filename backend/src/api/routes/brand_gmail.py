@@ -125,6 +125,16 @@ async def confirm_email_forwarding(
     brand = _get_owned_brand(brand_id, tenant)
     if not brand.get("inbound_email_token") or not brand.get("inbound_email_enabled"):
         raise HTTPException(status_code=409, detail="Set up forwarding first")
+    code_at = brand.get("inbound_email_verification_code_at")
+    code = brand.get("inbound_email_verification_code")
+    if not code or not code_at:
+        raise HTTPException(status_code=409, detail="Waiting for Gmail to send its forwarding confirmation code")
+    try:
+        issued_at = datetime.fromisoformat(code_at.replace("Z", "+00:00"))
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(status_code=409, detail="Forwarding confirmation code is invalid")
+    if (datetime.now(timezone.utc) - issued_at).total_seconds() > 900:
+        raise HTTPException(status_code=409, detail="Forwarding confirmation code expired. Request a new one in Gmail.")
     supabase_update("brands", {"id": f"eq.{brand_id}"}, {
         "inbound_email_verified_at": datetime.now(timezone.utc).isoformat(),
         "inbound_email_verification_code": None,
