@@ -138,10 +138,18 @@ class EmailPoller:
         """
         try:
             from src.services.brand_gmail_service import brand_gmail_service
-            brands = brand_gmail_service.get_connected_brands()
+            connected_brands = brand_gmail_service.get_connected_brands()
         except Exception as e:
             logger.error(f"Could not load connected brands: {e}")
-            brands = []
+            connected_brands = []
+
+        # Forwarding-mode brands still have Gmail connected for outbound send,
+        # but their inbound messages arrive through Cloudflare. Never attempt
+        # Gmail list/get calls with their gmail.send-only tokens.
+        brands = [
+            brand for brand in connected_brands
+            if brand.get("email_ingestion_mode", "gmail_polling") != "forwarding"
+        ]
 
         if brands:
             # Build set of ALL brand Gmail addresses once per cycle.
@@ -162,9 +170,13 @@ class EmailPoller:
 
             await asyncio.gather(*[_poll_one(b) for b in brands])
             return len(brands)
-        else:
-            # No brands with Gmail connected — use legacy global handler
+        elif not connected_brands:
+            # No brands with Gmail connected — use legacy global handler.
             await self._poll_global_inbox()
+            return 0
+        else:
+            # Connected brands exist, but all use forwarding for inbound mail.
+            # Do not fall back to the legacy global Gmail mailbox.
             return 0
 
     # ── Per-brand polling ──────────────────────────────────────────────────
