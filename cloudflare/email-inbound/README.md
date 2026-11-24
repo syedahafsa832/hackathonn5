@@ -49,6 +49,8 @@ Official docs:
 
 ## Backend configuration
 
+Run backend/migrations/064_email_forwarding.sql once in the Supabase SQL Editor before using these routes.
+
 Set these environment variables on the deployed backend:
 
 - INBOUND_EMAIL_DOMAIN=inbound.tresolv.online
@@ -87,16 +89,17 @@ does not list the legacy gmail.modify scope.
 
 In the new Google project:
 
-1. Configure the OAuth consent screen and publish the app as In production.
-2. Configure the app's authorized domain, homepage, privacy policy and terms.
-3. In Data Access, request only:
+1. Enable the Gmail API in the new Google Cloud project.
+2. Configure the OAuth consent screen and publish the app as In production.
+3. Configure the app's authorized domain, homepage, privacy policy and terms.
+4. In Data Access, request only:
    - https://www.googleapis.com/auth/gmail.send
    - openid
    - email
-4. Create a Web application OAuth client.
-5. Add this exact authorized redirect URI:
+5. Create a Web application OAuth client.
+6. Add this exact authorized redirect URI:
    https://YOUR-API-HOST/api/brands/gmail/callback
-6. Complete Google's normal sensitive-scope OAuth verification for gmail.send.
+7. Complete Google's normal sensitive-scope OAuth verification for gmail.send.
    This path does not request gmail.modify, gmail.readonly, or
    https://mail.google.com/, so it does not require the restricted-scope
    CASA security assessment. Google may still require a standard OAuth
@@ -154,6 +157,7 @@ Use an inbox you control before enabling automatic replies:
   durable queue. Monitor Cloudflare Email Routing activity and backend logs.
   Do not claim production-grade delivery recovery until a queue/replay path
   has been implemented and tested.
-- The first version only recognizes Google's known forwarding-confirmation
-  sender and subject. If Google changes its template, the verification code
-  will not be surfaced until the parser is updated.
+- The first version recognizes Google's forwarding-noreply@google.com and
+  mail-noreply@google.com senders, a forwarding-confirmation subject, and an
+  8-10 digit code. If Google changes its template, the verification code may
+  not be surfaced until the parser is updated.
