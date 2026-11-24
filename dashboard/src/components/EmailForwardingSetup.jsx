@@ -146,7 +146,7 @@ export default function EmailForwardingSetup({ brandId }) {
                   Code expires from this screen after 15 minutes. Request a new confirmation email if it expires.
                 </div>
               )}
-              <button type="button" disabled={busy} onClick={confirmForwarding} style={{ ...buttonStyle, marginTop: '10px' }}>
+              <button type="button" disabled={busy || !codeReady} onClick={confirmForwarding} style={{ ...buttonStyle, marginTop: '10px', opacity: (busy || !codeReady) ? 0.55 : 1 }}>
                 I entered the code in Gmail
               </button>
             </div>
