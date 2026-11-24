@@ -69,7 +69,7 @@ async def setup_email_forwarding(
 
     return {
         "success": True,
-        "forwarding_address": f"{token}@{domain}",
+        "forwarding_address": f"{os.getenv('INBOUND_EMAIL_LOCAL_PART', 'support').strip().lower()}+{token}@{domain}",
         "ingestion_mode": "forwarding",
         "gmail_send_connected": bool(
             brand.get("gmail_connected") and brand.get("gmail_scope_mode") == "send_only"
