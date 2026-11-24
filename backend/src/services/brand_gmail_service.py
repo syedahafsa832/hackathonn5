@@ -254,8 +254,18 @@ class BrandGmailService:
                 expiry=expiry,
             )
 
-            # Always refresh if we have a refresh_token — token may have expired
-            if creds.refresh_token:
+            # Refresh only when needed. The poller builds a Gmail client on
+            # every inbox cycle; refreshing unconditionally would exchange a
+            # refresh token every cycle even though Google access tokens are
+            # normally valid for about an hour. Older stored tokens may not
+            # have an expiry value, so treat an unknown expiry as needing one
+            # refresh rather than assuming the access token is still valid.
+            needs_refresh = (
+                not creds.token
+                or creds.expiry is None
+                or creds.expired
+            )
+            if creds.refresh_token and needs_refresh:
                 try:
                     creds.refresh(Request())
                     data["token"] = creds.token
@@ -266,7 +276,10 @@ class BrandGmailService:
                 except Exception as e:
                     err_str = str(e).lower()
                     if "invalid_grant" in err_str or "token has been expired or revoked" in err_str:
-                        # Refresh token was revoked by the user — mark disconnected so we stop polling
+                        # Refresh token was revoked by the user — mark disconnected
+                        # and stop here. Building a client with the rejected,
+                        # expired access token only defers the same failure to the
+                        # next Gmail API request and makes connection state misleading.
                         supabase_update("brands", {"id": f"eq.{brand['id']}"}, {
                             "gmail_connected": False,
                             "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -275,6 +288,7 @@ class BrandGmailService:
                             f"[BrandGmail] Refresh token revoked for brand {brand.get('id')} "
                             f"({brand.get('gmail_email')}) — marked gmail_connected=False, user must reconnect"
                         )
+                        return None
                     else:
                         # Network error, quota, or transient failure — do NOT disconnect,
                         # but never build a service from creds we know are stale: that
