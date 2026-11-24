@@ -1,0 +1,8 @@
+name = "tresolv-email-inbound"
+main = "src/index.ts"
+compatibility_date = "2026-11-24"
+
+# Configure this to your deployed backend URL before deploying.
+# Example: https://api.tresolv.online/api/email/inbound
+[vars]
+BACKEND_EMAIL_INGEST_URL = "https://YOUR-API-HOST/api/email/inbound"
