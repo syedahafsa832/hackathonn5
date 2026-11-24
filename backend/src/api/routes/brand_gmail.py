@@ -88,26 +88,14 @@ async def email_forwarding_status(
     brand = _get_owned_brand(brand_id, tenant)
     domain = os.getenv("INBOUND_EMAIL_DOMAIN", "").strip().lower().lstrip("@")
     code = brand.get("inbound_email_verification_code")
-    code_at = brand.get("inbound_email_verification_code_at")
-    issued_at = None
-    code_is_fresh = False
-    if code and code_at:
-        try:
-            issued_at = datetime.fromisoformat(code_at.replace("Z", "+00:00"))
-            code_is_fresh = (datetime.now(timezone.utc) - issued_at).total_seconds() <= 900
-        except (ValueError, TypeError):
-            code_is_fresh = False
+    code_is_available = bool(code and brand.get("inbound_email_verification_code_at"))
     return {
         "forwarding_address": (
             f"{brand.get('inbound_email_token')}@{domain}"
             if brand.get("inbound_email_token") and domain else None
         ),
         "verified": bool(brand.get("inbound_email_verified_at")),
-        "verification_code": code if code_is_fresh else None,
-        "verification_code_expires_in_seconds": (
-            max(0, 900 - int((datetime.now(timezone.utc) - issued_at).total_seconds()))
-            if code_is_fresh and issued_at else 0
-        ),
+        "verification_code": code if code_is_available else None,
         "gmail_send_connected": bool(
             brand.get("gmail_connected") and brand.get("gmail_scope_mode") == "send_only"
         ),
@@ -129,12 +117,6 @@ async def confirm_email_forwarding(
     code = brand.get("inbound_email_verification_code")
     if not code or not code_at:
         raise HTTPException(status_code=409, detail="Waiting for Gmail to send its forwarding confirmation code")
-    try:
-        issued_at = datetime.fromisoformat(code_at.replace("Z", "+00:00"))
-    except (ValueError, TypeError, AttributeError):
-        raise HTTPException(status_code=409, detail="Forwarding confirmation code is invalid")
-    if (datetime.now(timezone.utc) - issued_at).total_seconds() > 900:
-        raise HTTPException(status_code=409, detail="Forwarding confirmation code expired. Request a new one in Gmail.")
     supabase_update("brands", {"id": f"eq.{brand_id}"}, {
         "inbound_email_verified_at": datetime.now(timezone.utc).isoformat(),
         "inbound_email_verification_code": None,
