@@ -108,6 +108,7 @@ def test_recipient_token_accepts_only_opaque_hex_aliases():
     assert _recipient_token(f"<support+{token}@inbound.tresolv.online>") == token
     assert _recipient_token(f"hello+{token}@inbound.tresolv.online") is None
     assert _recipient_token(f"support@inbound.tresolv.online") is None
+    assert _recipient_token(f"support+{token}@wrong.example") is None
     assert _recipient_token("support+" + "a" * 39 + "@inbound.tresolv.online") is None
 
 
