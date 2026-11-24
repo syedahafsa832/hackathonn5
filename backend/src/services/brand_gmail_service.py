@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.utils import make_msgid
 
 import tenacity
 from src.services.email_layout import render_plain_text_email_html
@@ -514,22 +515,63 @@ class BrandGmailService:
         return emails
 
     @staticmethod
-    def _build_message(body: str) -> MIMEMultipart:
-        """multipart/alternative: the plain-text part is the body untouched
-        (compatibility fallback), the html part is the same copy with a
-        spaced-out layout applied - see email_layout.py."""
+    def _build_message(
+        body: str,
+        in_reply_to: str = None,
+        references: List[str] = None,
+    ) -> MIMEMultipart:
+        """Build an email with optional RFC threading headers.
+
+        Forwarded messages do not contain Gmail's private threadId, so the
+        send-only path relies on Message-ID/In-Reply-To/References instead.
+        """
         msg = MIMEMultipart("alternative")
         msg.attach(MIMEText(body, "plain"))
         msg.attach(MIMEText(render_plain_text_email_html(body), "html"))
+        if in_reply_to or references:
+            msg["Message-ID"] = make_msgid(domain="tresolv.online")
+        if in_reply_to:
+            msg["In-Reply-To"] = in_reply_to
+        if references:
+            cleaned = [value.strip() for value in references if value and value.strip()]
+            if in_reply_to and in_reply_to not in cleaned:
+                cleaned.append(in_reply_to)
+            if cleaned:
+                msg["References"] = " ".join(cleaned[-100:])
         return msg
 
-    async def send_email(self, brand: dict, to_email: str, subject: str, body: str, thread_id: str = None) -> Dict[str, Any]:
-        """Async boundary for _send_email_sync — mirrors get_new_emails'
-        own _get_new_emails_sync + asyncio.to_thread pattern, since the
-        Google API client is fully synchronous (same rationale as there)."""
-        return await asyncio.to_thread(self._send_email_sync, brand, to_email, subject, body, thread_id)
+    async def send_email(
+        self,
+        brand: dict,
+        to_email: str,
+        subject: str,
+        body: str,
+        thread_id: str = None,
+        in_reply_to: str = None,
+        references: List[str] = None,
+    ) -> Dict[str, Any]:
+        """Async boundary for _send_email_sync — Gmail's API client is synchronous."""
+        return await asyncio.to_thread(
+            self._send_email_sync,
+            brand,
+            to_email,
+            subject,
+            body,
+            thread_id,
+            in_reply_to,
+            references,
+        )
 
-    def _send_email_sync(self, brand: dict, to_email: str, subject: str, body: str, thread_id: str = None) -> Dict[str, Any]:
+    def _send_email_sync(
+        self,
+        brand: dict,
+        to_email: str,
+        subject: str,
+        body: str,
+        thread_id: str = None,
+        in_reply_to: str = None,
+        references: List[str] = None,
+    ) -> Dict[str, Any]:
         """Send an email from a brand's connected Gmail account.
 
         thread_id, when given, keeps the reply in Gmail's existing
@@ -544,7 +586,7 @@ class BrandGmailService:
         if not svc:
             return {"success": False, "error": "Gmail not connected for this brand"}
         try:
-            msg = self._build_message(body)
+            msg = self._build_message(body, in_reply_to=in_reply_to, references=references)
             msg["to"]      = to_email
             msg["subject"] = subject
             raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
@@ -552,7 +594,11 @@ class BrandGmailService:
             if thread_id:
                 send_body["threadId"] = thread_id
             sent = svc.users().messages().send(userId="me", body=send_body).execute()
-            return {"success": True, "id": sent.get("id")}
+            return {
+                "success": True,
+                "id": sent.get("id"),
+                "message_id": msg.get("Message-ID"),
+            }
         except Exception as e:
             logger.error(f"[BrandGmail] Send error for brand {brand.get('name')}: {e}")
             return {"success": False, "error": str(e)}
