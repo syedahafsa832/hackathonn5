@@ -7,7 +7,9 @@ hands the normalized message to the existing UnifiedMessageProcessor.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import re
 import html
 import re
 from datetime import datetime, timezone
@@ -17,7 +19,7 @@ from email.utils import parsedate_to_datetime, parseaddr
 from html.parser import HTMLParser
 from typing import Any, Dict, Optional
 
-from src.lib.supabase_client import supabase_select
+from src.lib.supabase_client import supabase_select, supabase_update
 from src.workers.message_processor import message_processor
 
 _TOKEN_RE = re.compile(r"^[a-f0-9]{40}$")
@@ -205,13 +207,24 @@ def _recipient_token(recipient: str) -> Optional[str]:
     return local if _TOKEN_RE.fullmatch(local) else None
 
 
+def _google_forwarding_confirmation_code(parsed: Dict[str, Any]) -> Optional[str]:
+    """Recognize only the forwarding-address verification email from Google."""
+    sender = (parsed.get("sender_email") or "").lower()
+    subject = (parsed.get("subject") or "").lower()
+    if sender != "forwarding-noreply@google.com":
+        return None
+    if "forwarding confirmation" not in subject:
+        return None
+    match = re.search(r"\b(\d{6})\b", parsed.get("body") or "")
+    return match.group(1) if match else None
+
 async def process_forwarded_email(raw: bytes, envelope_to: str) -> Dict[str, Any]:
     """Resolve a Cloudflare catch-all address and run the standard email pipeline."""
     token = _recipient_token(envelope_to)
     if not token:
         return {"accepted": False, "status": "invalid_recipient"}
 
-    brands = await __import__("asyncio").to_thread(
+    brands = await asyncio.to_thread(
         supabase_select,
         "brands",
         {
@@ -227,12 +240,27 @@ async def process_forwarded_email(raw: bytes, envelope_to: str) -> Dict[str, Any
     brand = brands[0]
     brand_id = brand["id"]
     parsed = parse_forwarded_email(raw)
+
+    # Gmail requires the new forwarding address to be verified. Capture only
+    # its known forwarding-confirmation email and never create a customer ticket.
+    verification_code = _google_forwarding_confirmation_code(parsed)
+    if verification_code:
+        await asyncio.to_thread(
+            supabase_update,
+            "brands",
+            {"id": f"eq.{brand_id}"},
+            {
+                "inbound_email_verification_code": verification_code,
+                "inbound_email_verification_code_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return {"accepted": True, "status": "verification_code_captured"}
+
     gmail_message_id, gmail_thread_id = forwarding_message_ids(brand_id, parsed, raw)
 
     # A duplicate delivery should not trigger a second AI response.
-    from src.lib.supabase_client import supabase_select as select_rows
-    existing = await __import__("asyncio").to_thread(
-        select_rows,
+    existing = await asyncio.to_thread(
+        supabase_select,
         "tickets",
         {
             "store_id": f"eq.{brand_id}",
@@ -257,8 +285,6 @@ async def process_forwarded_email(raw: bytes, envelope_to: str) -> Dict[str, Any
 
     from src.services.email_filter_service import email_filter_service
     from src.services.email_guardian_service import email_guardian_service
-    import asyncio
-
     filter_result = await asyncio.to_thread(email_filter_service.evaluate, email_context, brand_id)
     await asyncio.to_thread(
         email_filter_service.log_decision,
@@ -295,7 +321,10 @@ async def process_forwarded_email(raw: bytes, envelope_to: str) -> Dict[str, Any
     # Never auto-send until this brand has completed the send-only Gmail OAuth
     # connection. Incoming messages can still become human-review tickets.
     auto_reply_enabled = bool(
-        guardian_result.auto_reply_enabled and brand.get("gmail_connected")
+        guardian_result.auto_reply_enabled
+        and brand.get("gmail_connected")
+        and brand.get("gmail_scope_mode") == "send_only"
+        and brand.get("inbound_email_verified_at")
     )
 
     payload = {
