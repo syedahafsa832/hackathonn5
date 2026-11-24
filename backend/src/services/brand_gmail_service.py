@@ -226,7 +226,7 @@ class BrandGmailService:
             creds = flow.credentials
 
             if scope_mode == "send_only":
-                granted_scopes = set(creds.scopes or [])
+                granted_scopes = set(getattr(creds, "granted_scopes", None) or creds.scopes or [])
                 gmail_send_scope = "https://www.googleapis.com/auth/gmail.send"
                 forbidden_scopes = {
                     "https://www.googleapis.com/auth/gmail.modify",
