@@ -91,7 +91,7 @@ async def email_forwarding_status(
     code_is_available = bool(code and brand.get("inbound_email_verification_code_at"))
     return {
         "forwarding_address": (
-            f"{brand.get('inbound_email_token')}@{domain}"
+            f"{os.getenv('INBOUND_EMAIL_LOCAL_PART', 'support').strip().lower()}+{brand.get('inbound_email_token')}@{domain}"
             if brand.get("inbound_email_token") and domain else None
         ),
         "verified": bool(brand.get("inbound_email_verified_at")),
