@@ -197,13 +197,25 @@ def forwarding_message_ids(brand_id: str, parsed: Dict[str, Any], raw: bytes) ->
 
 
 def _recipient_token(recipient: str) -> Optional[str]:
+    """Extract a per-brand token from Cloudflare plus-addressing.
+
+    One exact Cloudflare route handles support@inbound-domain. With
+    subaddressing enabled, support+<token>@inbound-domain reaches that same
+    route while Cloudflare preserves the plus suffix in message.to.
+    """
     if not recipient:
         return None
     address = recipient.strip().strip("<>").lower()
     if "@" not in address:
         return None
     local, _domain = address.rsplit("@", 1)
-    return local if _TOKEN_RE.fullmatch(local) else None
+    expected_local = os.getenv("INBOUND_EMAIL_LOCAL_PART", "support").strip().lower()
+    if "+" not in local:
+        return None
+    base_local, token = local.rsplit("+", 1)
+    if base_local != expected_local or not _TOKEN_RE.fullmatch(token):
+        return None
+    return token
 
 
 def _google_forwarding_confirmation_code(parsed: Dict[str, Any]) -> Optional[str]:
