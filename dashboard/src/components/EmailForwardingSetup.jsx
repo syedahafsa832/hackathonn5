@@ -143,7 +143,7 @@ export default function EmailForwardingSetup({ brandId }) {
               </div>
               {codeReady && (
                 <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px' }}>
-                  Code expires from this screen after 15 minutes. Request a new confirmation email if it expires.
+                  The code stays here until you confirm it or request a new one.
                 </div>
               )}
               <button type="button" disabled={busy || !codeReady} onClick={confirmForwarding} style={{ ...buttonStyle, marginTop: '10px', opacity: (busy || !codeReady) ? 0.55 : 1 }}>
