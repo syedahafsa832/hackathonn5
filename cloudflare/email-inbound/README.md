@@ -161,3 +161,7 @@ Use an inbox you control before enabling automatic replies:
   mail-noreply@google.com senders, a forwarding-confirmation subject, and an
   8-10 digit code. If Google changes its template, the verification code may
   not be surfaced until the parser is updated.
+
+Cloudflare routing references:
+- https://developers.cloudflare.com/email-service/configuration/email-routing-addresses/ (routing rules and plus-addressing)
+- https://developers.cloudflare.com/email-service/configuration/subdomains/
