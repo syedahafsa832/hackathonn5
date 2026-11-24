@@ -7,6 +7,9 @@ ALTER TABLE brands
   ADD COLUMN IF NOT EXISTS email_ingestion_mode TEXT NOT NULL DEFAULT 'gmail_polling',
   ADD COLUMN IF NOT EXISTS inbound_email_token TEXT,
   ADD COLUMN IF NOT EXISTS inbound_email_enabled BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS inbound_email_verified_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS inbound_email_verification_code TEXT,
+  ADD COLUMN IF NOT EXISTS inbound_email_verification_code_at TIMESTAMPTZ,
   ADD COLUMN IF NOT EXISTS gmail_scope_mode TEXT NOT NULL DEFAULT 'full';
 
 DO $$
