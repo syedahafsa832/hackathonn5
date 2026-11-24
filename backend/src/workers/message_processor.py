@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import re
@@ -131,6 +132,10 @@ class UnifiedMessageProcessor:
             email_category = message.get('email_category', 'unknown')
             sender_type = message.get('sender_type', 'unknown')
             auto_reply_enabled = message.get('auto_reply_enabled', True)
+            email_message_id = message.get("email_message_id")
+            email_in_reply_to = message.get("email_in_reply_to")
+            email_references = message.get("email_references") or []
+            email_ingestion_mode = message.get("email_ingestion_mode", "gmail_polling")
             # Preferred hierarchy: Gmail's own received timestamp (when the
             # caller could read it - see brand_gmail_service.py), then any
             # other trusted timestamp the caller already attached to this
@@ -138,6 +143,19 @@ class UnifiedMessageProcessor:
             # for last_customer_message_at and this message's own
             # messages[].received_at - never for anything AI-related.
             received_at = message.get('received_at') or datetime.now(timezone.utc).isoformat()
+
+            incoming_message_record = {
+                "from": customer_email,
+                "body": content,
+                "received_at": received_at,
+                "direction": "inbound",
+            }
+            if email_message_id:
+                incoming_message_record["email_message_id"] = email_message_id
+            if email_in_reply_to:
+                incoming_message_record["email_in_reply_to"] = email_in_reply_to
+            if email_references:
+                incoming_message_record["email_references"] = email_references
 
             logger.info(f"[PROCESSOR] ========== NEW MESSAGE ==========")
             logger.info(f"[PROCESSOR] Channel: {channel}")
@@ -182,10 +200,7 @@ class UnifiedMessageProcessor:
                         early_ticket_id = existing_ticket.get("id")
                         is_thread_continuation = True
                         current_msgs = existing_ticket.get("messages") or []
-                        current_msgs.append({
-                            "from": customer_email, "body": content,
-                            "received_at": received_at, "direction": "inbound",
-                        })
+                        current_msgs.append(incoming_message_record.copy())
                         # Record this reply's own gmail_message_id alongside
                         # the ticket's — the ticket's top-level
                         # gmail_message_id column only ever reflects the
@@ -237,8 +252,7 @@ class UnifiedMessageProcessor:
                         "customer_name": customer_name,
                         "subject": subject,
                         "message": content,
-                        "messages": [{"from": customer_email, "body": content,
-                                      "received_at": received_at, "direction": "inbound"}],
+                        "messages": [incoming_message_record.copy()],
                         "channel": channel,
                         "status": "processing",
                         "gmail_thread_id": gmail_thread_id,
@@ -404,8 +418,7 @@ class UnifiedMessageProcessor:
                     "customer_email": customer_email,
                     "subject": subject,
                     "message": content,
-                    "messages": [{"from": customer_email, "body": content,
-                                  "received_at": datetime.now(timezone.utc).isoformat(), "direction": "inbound"}],
+                    "messages": [incoming_message_record.copy()],
                     "status": "requires_human",
                     "channel": channel,
                     "email_category": email_category,
@@ -1328,16 +1341,47 @@ class UnifiedMessageProcessor:
                     brands = await asyncio.to_thread(supabase_select, "brands", {"id": f"eq.{store_id}", "gmail_connected": "is.true"})
                     if brands:
                         brand = brands[0]
-                        # Keep the reply in the customer's existing Gmail thread - without
-                        # this, their next "Reply" click lands in a thread our poller has
-                        # never seen and a duplicate ticket gets created for the same
-                        # conversation (see send_email()'s docstring).
+                        # Gmail-polled messages have a real Gmail thread ID.
+                        # Forwarded messages only have RFC Message-ID headers, so
+                        # never pass their synthetic tResolv thread key to Gmail API.
                         _thread_id = None
+                        in_reply_to = None
+                        references = None
+                        _ticket_messages = []
                         if ticket_id:
                             _t_rows = await asyncio.to_thread(supabase_select, "tickets", {"id": f"eq.{ticket_id}"})
-                            _thread_id = _t_rows[0].get("gmail_thread_id") if _t_rows else None
-                        logger.info(f"[EMAIL] Sending via brand Gmail: {brand.get('gmail_email')} (thread_id={_thread_id})")
-                        result = await brand_gmail_service.send_email(brand, email, reply_subject, reply_body, thread_id=_thread_id)
+                            _ticket = _t_rows[0] if _t_rows else {}
+                            _ticket_messages = _ticket.get("messages") or []
+                            if isinstance(_ticket_messages, str):
+                                try:
+                                    _ticket_messages = json.loads(_ticket_messages)
+                                except (ValueError, TypeError):
+                                    _ticket_messages = []
+                            if brand.get("email_ingestion_mode") == "forwarding":
+                                _latest_inbound = next(
+                                    (item for item in reversed(_ticket_messages)
+                                     if isinstance(item, dict) and item.get("direction") == "inbound"),
+                                    {},
+                                )
+                                in_reply_to = _latest_inbound.get("email_message_id")
+                                references = list(_latest_inbound.get("email_references") or [])
+                                if in_reply_to and in_reply_to not in references:
+                                    references.append(in_reply_to)
+                            else:
+                                _thread_id = _ticket.get("gmail_thread_id")
+                        logger.info(
+                            f"[EMAIL] Sending via brand Gmail: {brand.get('gmail_email')} "
+                            f"(mode={brand.get('email_ingestion_mode', 'gmail_polling')}, thread_id={_thread_id})"
+                        )
+                        result = await brand_gmail_service.send_email(
+                            brand,
+                            email,
+                            reply_subject,
+                            reply_body,
+                            thread_id=_thread_id,
+                            in_reply_to=in_reply_to,
+                            references=references,
+                        )
                         if result.get("success"):
                             result = {"status": "sent", "id": result.get("id")}
                         else:
