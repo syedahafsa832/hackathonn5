@@ -49,15 +49,23 @@ async def setup_email_forwarding(
         )
 
     token = brand.get("inbound_email_token")
-    if not token:
+    is_new_token = not bool(token)
+    if is_new_token:
         token = secrets.token_hex(20)
 
-    supabase_update("brands", {"id": f"eq.{brand_id}"}, {
+    updates = {
         "inbound_email_token": token,
         "inbound_email_enabled": True,
         "email_ingestion_mode": "forwarding",
         "updated_at": datetime.now(timezone.utc).isoformat(),
-    })
+    }
+    if is_new_token:
+        updates.update({
+            "inbound_email_verified_at": None,
+            "inbound_email_verification_code": None,
+            "inbound_email_verification_code_at": None,
+        })
+    supabase_update("brands", {"id": f"eq.{brand_id}"}, updates)
 
     return {
         "success": True,
@@ -68,6 +76,61 @@ async def setup_email_forwarding(
         ),
         "note": "This is a routing address, not a mailbox. Forward support emails to it from the merchant's inbox.",
     }
+
+
+
+@router.get("/{brand_id}/email-forwarding/status")
+async def email_forwarding_status(
+    brand_id: str,
+    tenant: TenantContext = Depends(require_tenant_admin),
+):
+    """Return the forwarding address and a short-lived Gmail verification code."""
+    brand = _get_owned_brand(brand_id, tenant)
+    domain = os.getenv("INBOUND_EMAIL_DOMAIN", "").strip().lower().lstrip("@")
+    code = brand.get("inbound_email_verification_code")
+    code_at = brand.get("inbound_email_verification_code_at")
+    issued_at = None
+    code_is_fresh = False
+    if code and code_at:
+        try:
+            issued_at = datetime.fromisoformat(code_at.replace("Z", "+00:00"))
+            code_is_fresh = (datetime.now(timezone.utc) - issued_at).total_seconds() <= 900
+        except (ValueError, TypeError):
+            code_is_fresh = False
+    return {
+        "forwarding_address": (
+            f"{brand.get('inbound_email_token')}@{domain}"
+            if brand.get("inbound_email_token") and domain else None
+        ),
+        "verified": bool(brand.get("inbound_email_verified_at")),
+        "verification_code": code if code_is_fresh else None,
+        "verification_code_expires_in_seconds": (
+            max(0, 900 - int((datetime.now(timezone.utc) - issued_at).total_seconds()))
+            if code_is_fresh and issued_at else 0
+        ),
+        "gmail_send_connected": bool(
+            brand.get("gmail_connected") and brand.get("gmail_scope_mode") == "send_only"
+        ),
+        "ingestion_mode": brand.get("email_ingestion_mode", "gmail_polling"),
+    }
+
+
+@router.post("/{brand_id}/email-forwarding/confirm")
+async def confirm_email_forwarding(
+    brand_id: str,
+    tenant: TenantContext = Depends(require_tenant_admin),
+):
+    """Confirm that the merchant completed Gmail's forwarding-address check."""
+    brand = _get_owned_brand(brand_id, tenant)
+    if not brand.get("inbound_email_token") or not brand.get("inbound_email_enabled"):
+        raise HTTPException(status_code=409, detail="Set up forwarding first")
+    supabase_update("brands", {"id": f"eq.{brand_id}"}, {
+        "inbound_email_verified_at": datetime.now(timezone.utc).isoformat(),
+        "inbound_email_verification_code": None,
+        "inbound_email_verification_code_at": None,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"success": True, "verified": True}
 
 
 @router.get("/{brand_id}/gmail/send-auth-url")
