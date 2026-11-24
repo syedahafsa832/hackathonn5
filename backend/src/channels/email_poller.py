@@ -655,6 +655,32 @@ class EmailPoller:
                 if not brands:
                     continue
                 brand = brands[0]
+                forwarding_mode = brand.get("email_ingestion_mode") == "forwarding"
+                if forwarding_mode and brand.get("gmail_scope_mode") != "send_only":
+                    logger.info(f"[CSAT] Skipping forwarding-mode ticket {ticket['id']} until send-only Gmail is connected")
+                    continue
+
+                # Forwarded mail has no Gmail-internal thread ID. Reconstruct
+                # RFC reply headers from the latest stored inbound message.
+                csat_in_reply_to = None
+                csat_references = None
+                if forwarding_mode:
+                    ticket_messages = ticket.get("messages") or []
+                    if isinstance(ticket_messages, str):
+                        try:
+                            ticket_messages = json.loads(ticket_messages)
+                        except (ValueError, TypeError):
+                            ticket_messages = []
+                    latest_inbound = next(
+                        (item for item in reversed(ticket_messages)
+                         if isinstance(item, dict) and item.get("direction") == "inbound"),
+                        {},
+                    )
+                    csat_in_reply_to = latest_inbound.get("email_message_id")
+                    csat_references = list(latest_inbound.get("email_references") or [])
+                    if csat_in_reply_to and csat_in_reply_to not in csat_references:
+                        csat_references.append(csat_in_reply_to)
+                    thread_id = None
 
                 # Claim before sending, not after - a send that fails after a
                 # successful claim just doesn't get retried this cycle (safe
@@ -674,6 +700,8 @@ class EmailPoller:
                         html_body=html_body,
                         plain_text_body=plain_body,
                         thread_id=thread_id,
+                        in_reply_to=csat_in_reply_to,
+                        references=csat_references,
                     )
                     logger.info(f"[CSAT] Sent survey for ticket {ticket['id']} to {customer_email}")
                 except Exception as e:
