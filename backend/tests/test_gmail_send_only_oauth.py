@@ -85,15 +85,15 @@ def test_send_only_callback_uses_identity_token_and_never_calls_gmail_profile():
         update_calls.append((table, match, data))
         return [data]
 
-    with patch("src.services.brand_gmail_service.Flow") as mock_flow, \\
-         patch("google.oauth2.id_token.verify_oauth2_token", return_value={
-             "email": "merchant@example.com", "email_verified": True,
-         }) as mock_verify_id_token, \\
-         patch("src.services.brand_gmail_service.supabase_update", side_effect=fake_update), \\
-         patch("src.services.brand_gmail_service.encrypt_token", return_value="encrypted-token"), \\
-         patch("src.services.brand_gmail_service.build", return_value=fake_gmail_service) as mock_build:
-        mock_flow.from_client_config.return_value = fake_flow
-        result = asyncio.run(service.handle_callback(state=state, code="auth-code"))
+    with patch("src.services.brand_gmail_service.Flow") as mock_flow:
+        with patch("google.oauth2.id_token.verify_oauth2_token", return_value={
+            "email": "merchant@example.com", "email_verified": True,
+        }) as mock_verify_id_token:
+            with patch("src.services.brand_gmail_service.supabase_update", side_effect=fake_update), patch(
+                "src.services.brand_gmail_service.encrypt_token", return_value="encrypted-token"
+            ), patch("src.services.brand_gmail_service.build", return_value=fake_gmail_service) as mock_build:
+                mock_flow.from_client_config.return_value = fake_flow
+                result = asyncio.run(service.handle_callback(state=state, code="auth-code"))
 
     assert result == {"success": True, "email": "merchant@example.com"}
     config, kwargs = mock_flow.from_client_config.call_args
