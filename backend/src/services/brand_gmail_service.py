@@ -543,12 +543,13 @@ class BrandGmailService:
             msg["Message-ID"] = make_msgid(domain="tresolv.online")
         if in_reply_to:
             msg["In-Reply-To"] = in_reply_to
-        if references:
-            cleaned = [value.strip() for value in references if value and value.strip()]
-            if in_reply_to and in_reply_to not in cleaned:
-                cleaned.append(in_reply_to)
-            if cleaned:
-                msg["References"] = " ".join(cleaned[-100:])
+        cleaned = [value.strip() for value in (references or []) if value and value.strip()]
+        if in_reply_to and in_reply_to not in cleaned:
+            cleaned.append(in_reply_to)
+        if cleaned:
+            # Always include the original inbound Message-ID on the first
+            # response too; later replies can then retain a stable RFC thread root.
+            msg["References"] = " ".join(cleaned[-100:])
         return msg
 
     async def send_email(
