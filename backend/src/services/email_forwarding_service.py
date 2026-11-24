@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import re
 import html
 import re
 from datetime import datetime, timezone
@@ -240,6 +239,11 @@ async def process_forwarded_email(raw: bytes, envelope_to: str) -> Dict[str, Any
     brand = brands[0]
     brand_id = brand["id"]
     parsed = parse_forwarded_email(raw)
+    if not parsed.get("message_id"):
+        # Some senders omit Message-ID. Mint a stable internal RFC-style id
+        # from the raw message so the first reply can carry a thread root.
+        fallback_id = hashlib.sha256(f"{brand_id}\\0{raw.hex()}".encode()).hexdigest()[:40]
+        parsed["message_id"] = f"<{fallback_id}@inbound.tresolv.online>"
 
     # Gmail requires the new forwarding address to be verified. Capture only
     # its known forwarding-confirmation email and never create a customer ticket.
