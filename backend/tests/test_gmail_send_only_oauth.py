@@ -32,7 +32,8 @@ def test_send_only_oauth_url_requests_gmail_send_not_mailbox_read():
         url = service.get_send_auth_url("brand-1")
 
     assert url.startswith("https://accounts.google.com/")
-    config, kwargs = mock_flow.from_client_config.call_args
+    args, kwargs = mock_flow.from_client_config.call_args
+    config = args[0]
     assert kwargs["scopes"] == SEND_ONLY_SCOPES
     assert config["web"]["client_id"] == "send-only-client-id"
 
@@ -96,7 +97,8 @@ def test_send_only_callback_uses_identity_token_and_never_calls_gmail_profile():
                 result = asyncio.run(service.handle_callback(state=state, code="auth-code"))
 
     assert result == {"success": True, "email": "merchant@example.com"}
-    config, kwargs = mock_flow.from_client_config.call_args
+    args, kwargs = mock_flow.from_client_config.call_args
+    config = args[0]
     assert config["web"]["client_id"] == "send-only-client-id"
     assert kwargs["scopes"] == SEND_ONLY_SCOPES
     fake_flow.fetch_token.assert_called_once_with(code="auth-code")
