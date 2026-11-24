@@ -111,6 +111,7 @@ async def email_forwarding_status(
         "gmail_send_connected": bool(
             brand.get("gmail_connected") and brand.get("gmail_scope_mode") == "send_only"
         ),
+        "gmail_email": brand.get("gmail_email"),
         "ingestion_mode": brand.get("email_ingestion_mode", "gmail_polling"),
     }
 
