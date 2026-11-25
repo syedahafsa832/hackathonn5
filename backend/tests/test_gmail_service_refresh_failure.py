@@ -17,8 +17,11 @@ from src.services.brand_gmail_service import BrandGmailService  # noqa: E402
 
 
 def test_transient_refresh_failure_returns_none_not_a_stale_service():
+    from datetime import datetime, timezone, timedelta
+
     brand = {"id": "brand-1", "gmail_token": "enc", "name": "Test", "gmail_email": "b@x.com"}
     svc = BrandGmailService()
+    expired_at = datetime.now(timezone.utc) - timedelta(minutes=1)
 
     with (
         patch("src.services.brand_gmail_service.decrypt_token", return_value=json.dumps({
