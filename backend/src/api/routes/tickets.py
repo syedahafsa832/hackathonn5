@@ -398,7 +398,7 @@ async def send_reply(
         if store_id and store_id != default_store:
             try:
                 from src.services.brand_gmail_service import brand_gmail_service
-                brands = supabase_select("brands", {"id": f"eq.{store_id}", "gmail_connected": "is.true"})
+                brands = supabase_select("brands", {"id": f"eq.{store_id}"})
                 if brands:
                     brand = brands[0]
                     forwarding_mode = brand.get("email_ingestion_mode") == "forwarding"
@@ -406,7 +406,7 @@ async def send_reply(
                     references = None
                     thread_id = ticket.get("gmail_thread_id")
                     if forwarding_mode:
-                        if brand.get("gmail_scope_mode") != "send_only":
+                        if not brand.get("gmail_send_connected"):
                             raise HTTPException(
                                 status_code=409,
                                 detail="Connect Gmail for sending only before sending replies in forwarding mode.",
@@ -439,6 +439,8 @@ async def send_reply(
                         logger.info(f"[Tickets] Reply sent via brand Gmail for ticket {ticket_id}")
                     else:
                         logger.warning(f"[Tickets] Brand Gmail send failed: {result.get('error')}")
+            except HTTPException:
+                raise
             except Exception as e:
                 logger.error(f"[Tickets] Brand Gmail error: {e}")
 
@@ -485,8 +487,6 @@ async def send_reply(
 
         return {"success": True, "message": "Reply sent successfully"}
 
-    except HTTPException:
-        raise
     except HTTPException:
         raise
     except Exception as e:

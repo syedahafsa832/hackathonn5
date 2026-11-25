@@ -245,7 +245,6 @@ async def process_forwarded_email(raw: bytes, envelope_to: str) -> Dict[str, Any
         {
             "inbound_email_token": f"eq.{token}",
             "inbound_email_enabled": "eq.true",
-            "email_ingestion_mode": "eq.forwarding",
             "limit": "1",
         },
     )
@@ -261,20 +260,21 @@ async def process_forwarded_email(raw: bytes, envelope_to: str) -> Dict[str, Any
         fallback_id = hashlib.sha256(f"{brand_id}\\0{raw.hex()}".encode()).hexdigest()[:40]
         parsed["message_id"] = f"<{fallback_id}@inbound.tresolv.online>"
 
-    # Gmail requires the new forwarding address to be verified. Capture only
-    # its known forwarding-confirmation email and never create a customer ticket.
+    # Capture Gmail's confirmation while polling remains active. Ignore all
+    # normal mail until the merchant explicitly activates forwarding.
     verification_code = _google_forwarding_confirmation_code(parsed)
     if verification_code:
         await asyncio.to_thread(
-            supabase_update,
-            "brands",
-            {"id": f"eq.{brand_id}"},
+            supabase_update, "brands", {"id": f"eq.{brand_id}"},
             {
                 "inbound_email_verification_code": verification_code,
                 "inbound_email_verification_code_at": datetime.now(timezone.utc).isoformat(),
             },
         )
         return {"accepted": True, "status": "verification_code_captured"}
+
+    if brand.get("email_ingestion_mode", "gmail_polling") != "forwarding":
+        return {"accepted": True, "status": "forwarding_not_activated"}
 
     gmail_message_id, gmail_thread_id = forwarding_message_ids(brand_id, parsed, raw)
 
@@ -342,8 +342,7 @@ async def process_forwarded_email(raw: bytes, envelope_to: str) -> Dict[str, Any
     # connection. Incoming messages can still become human-review tickets.
     auto_reply_enabled = bool(
         guardian_result.auto_reply_enabled
-        and brand.get("gmail_connected")
-        and brand.get("gmail_scope_mode") == "send_only"
+        and brand.get("gmail_send_connected")
         and brand.get("inbound_email_verified_at")
     )
 

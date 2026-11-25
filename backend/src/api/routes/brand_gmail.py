@@ -53,10 +53,10 @@ async def setup_email_forwarding(
     if is_new_token:
         token = secrets.token_hex(20)
 
+    # Keep legacy polling active until verification, send OAuth, and activation.
     updates = {
         "inbound_email_token": token,
         "inbound_email_enabled": True,
-        "email_ingestion_mode": "forwarding",
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     if is_new_token:
@@ -70,10 +70,9 @@ async def setup_email_forwarding(
     return {
         "success": True,
         "forwarding_address": f"{os.getenv('INBOUND_EMAIL_LOCAL_PART', 'support').strip().lower()}+{token}@{domain}",
-        "ingestion_mode": "forwarding",
-        "gmail_send_connected": bool(
-            brand.get("gmail_connected") and brand.get("gmail_scope_mode") == "send_only"
-        ),
+        "ingestion_mode": brand.get("email_ingestion_mode", "gmail_polling"),
+        "gmail_send_connected": bool(brand.get("gmail_send_connected")),
+        "gmail_email": brand.get("gmail_send_email"),
         "note": "This is a routing address, not a mailbox. Forward support emails to it from the merchant's inbox.",
     }
 
@@ -96,10 +95,8 @@ async def email_forwarding_status(
         ),
         "verified": bool(brand.get("inbound_email_verified_at")),
         "verification_code": code if code_is_available else None,
-        "gmail_send_connected": bool(
-            brand.get("gmail_connected") and brand.get("gmail_scope_mode") == "send_only"
-        ),
-        "gmail_email": brand.get("gmail_email"),
+        "gmail_send_connected": bool(brand.get("gmail_send_connected")),
+        "gmail_email": brand.get("gmail_send_email"),
         "ingestion_mode": brand.get("email_ingestion_mode", "gmail_polling"),
     }
 
@@ -124,6 +121,34 @@ async def confirm_email_forwarding(
         "updated_at": datetime.now(timezone.utc).isoformat(),
     })
     return {"success": True, "verified": True}
+
+
+@router.post("/{brand_id}/email-forwarding/activate")
+async def activate_email_forwarding(brand_id: str, tenant: TenantContext = Depends(require_tenant_admin)):
+    """Activate only after the forwarding address and send-only Gmail are ready."""
+    brand = _get_owned_brand(brand_id, tenant)
+    if not brand.get("inbound_email_enabled") or not brand.get("inbound_email_token"):
+        raise HTTPException(status_code=409, detail="Create the forwarding address first")
+    if not brand.get("inbound_email_verified_at"):
+        raise HTTPException(status_code=409, detail="Verify the forwarding address in Gmail first")
+    if not brand.get("gmail_send_connected") or not brand.get("gmail_send_token"):
+        raise HTTPException(status_code=409, detail="Connect Gmail for sending only first")
+    supabase_update("brands", {"id": f"eq.{brand_id}"}, {
+        "email_ingestion_mode": "forwarding",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"success": True, "ingestion_mode": "forwarding"}
+
+
+@router.post("/{brand_id}/email-forwarding/pause")
+async def pause_email_forwarding(brand_id: str, tenant: TenantContext = Depends(require_tenant_admin)):
+    """Restore legacy Gmail polling without disconnecting OAuth."""
+    _get_owned_brand(brand_id, tenant)
+    supabase_update("brands", {"id": f"eq.{brand_id}"}, {
+        "email_ingestion_mode": "gmail_polling",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"success": True, "ingestion_mode": "gmail_polling"}
 
 
 @router.get("/{brand_id}/gmail/send-auth-url")
@@ -215,6 +240,8 @@ async def gmail_status(
     brand = _get_owned_brand(brand_id, tenant)
     connected = bool(brand.get("gmail_connected"))
     email = brand.get("gmail_email")
+    send_connected = bool(brand.get("gmail_send_connected"))
+    send_email = brand.get("gmail_send_email")
     # A revoked/expired refresh token (see brand_gmail_service._build_service)
     # flips gmail_connected to False but deliberately leaves gmail_email in
     # place — the only signal that distinguishes "never connected" from "was
@@ -225,4 +252,6 @@ async def gmail_status(
         "connected": connected,
         "email": email,
         "needs_reconnect": (not connected) and bool(email),
+        "send_connected": send_connected,
+        "send_email": send_email,
     }

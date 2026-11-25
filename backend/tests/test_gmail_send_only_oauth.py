@@ -106,5 +106,7 @@ def test_send_only_callback_uses_identity_token_and_never_calls_gmail_profile():
     mock_build.assert_not_called()  # gmail.send cannot call users.getProfile
     assert len(update_calls) == 1
     persisted = update_calls[0][2]
-    assert persisted["gmail_scope_mode"] == "send_only"
-    assert persisted["gmail_connected"] is True
+    assert persisted["gmail_send_connected"] is True
+    assert persisted["gmail_send_email"] == "merchant@example.com"
+    assert "gmail_token" not in persisted
+    assert "gmail_connected" not in persisted

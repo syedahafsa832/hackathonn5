@@ -717,10 +717,23 @@ class UnifiedMessageProcessor:
             if should_auto_reply and reply_body and auto_reply_enabled:
                 logger.info(f"[PROCESSOR] Sending email to {customer_email}...")
                 t_send_start = time.monotonic()
-                await self._send_email_with_logging(customer_email, subject, ai_result, ticket_id, store_id=store_id)
+                email_actually_sent = await self._send_email_with_logging(
+                    customer_email, subject, ai_result, ticket_id, store_id=store_id
+                )
                 logger.info(f"[TIMING] Email send: {time.monotonic() - t_send_start:.2f}s")
-                email_actually_sent = True
-                await _log_ticket_event(ticket_id, store_id, "sent", "Email sent")
+                if email_actually_sent:
+                    await _log_ticket_event(ticket_id, store_id, "sent", "Email sent")
+                else:
+                    try:
+                        await asyncio.to_thread(supabase_update, "tickets", {"id": f"eq.{ticket_id}"}, {
+                            "status": "requires_human",
+                            "escalation_reason": "Email delivery failed; the generated reply remains a draft for human review.",
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                        })
+                    except Exception as status_err:
+                        logger.warning(f"[PROCESSOR] Could not route unsent draft to human review: {status_err}")
+                    await _log_ticket_event(ticket_id, store_id, "needs_review",
+                        "Email reply was not sent; draft requires human review", status="failed")
             else:
                 logger.info(f"[PROCESSOR] Email NOT sent - should_auto_reply={should_auto_reply}, has_reply={bool(reply_body)}, auto_reply_enabled={auto_reply_enabled}")
                 _final_status = ticket_payload.get("status")
@@ -777,7 +790,7 @@ class UnifiedMessageProcessor:
             result = {
                 "ticket_id": ticket_id,
                 "status": ticket_payload.get("status"),
-                "email_sent": should_auto_reply and bool(reply_body) and auto_reply_enabled
+                "email_sent": email_actually_sent
             }
             logger.info(f"[PROCESSOR] ========== COMPLETE: {result} ==========")
             logger.info(f"[TIMING] Total pipeline: {time.monotonic() - t_start:.2f}s")
@@ -1317,8 +1330,8 @@ class UnifiedMessageProcessor:
             return True
         return False
 
-    async def _send_email_with_logging(self, email: str, subject: str, ai_result: Dict[str, Any], ticket_id: str, store_id: str = None):
-        """Send email reply — uses brand Gmail if store_id has one, else falls back to global."""
+    async def _send_email_with_logging(self, email: str, subject: str, ai_result: Dict[str, Any], ticket_id: str, store_id: str = None) -> bool:
+        """Send email reply; True only when Gmail confirms the send."""
         try:
             logger.info(f"[EMAIL] ========== SENDING EMAIL ==========")
             logger.info(f"[EMAIL] To: {email}, Ticket: {ticket_id}, store_id: {store_id}")
@@ -1328,7 +1341,7 @@ class UnifiedMessageProcessor:
 
             if not reply_body:
                 logger.error(f"[EMAIL] FAILED - No reply body to send")
-                return
+                return False
 
             result = None
             default_store = "00000000-0000-0000-0000-000000000000"
@@ -1338,7 +1351,7 @@ class UnifiedMessageProcessor:
                 try:
                     from src.services.brand_gmail_service import brand_gmail_service
                     from src.lib.supabase_client import supabase_select
-                    brands = await asyncio.to_thread(supabase_select, "brands", {"id": f"eq.{store_id}", "gmail_connected": "is.true"})
+                    brands = await asyncio.to_thread(supabase_select, "brands", {"id": f"eq.{store_id}"})
                     if brands:
                         brand = brands[0]
                         # Gmail-polled messages have a real Gmail thread ID.
@@ -1385,16 +1398,16 @@ class UnifiedMessageProcessor:
                         if result.get("success"):
                             result = {"status": "sent", "id": result.get("id")}
                         else:
-                            logger.warning(f"[EMAIL] Brand Gmail send failed: {result.get('error')} — falling back to global")
-                            result = None
+                            logger.warning(f"[EMAIL] Brand Gmail send failed: {result.get('error')}")
+                            result = {"status": "failed"}
                 except Exception as brand_err:
                     logger.warning(f"[EMAIL] Brand Gmail error: {brand_err} — falling back to global")
                     result = None
 
             # No brand Gmail connected — skip sending
-            if result is None:
-                logger.warning(f"[EMAIL] No brand Gmail connected for store {store_id} — reply NOT sent. Connect Gmail in Brands settings.")
-                return
+            if result is None or result.get("status") != "sent":
+                logger.warning(f"[EMAIL] No successful brand Gmail send for store {store_id}; reply NOT sent.")
+                return False
 
             if result.get('status') == 'sent':
                 logger.info(f"[EMAIL] ✓ SUCCESS - Email sent to {email}, ID: {result.get('id')}")
@@ -1414,13 +1427,17 @@ class UnifiedMessageProcessor:
                         })
                 except Exception:
                     pass
+                return True
             else:
                 logger.error(f"[EMAIL] FAILED - {result.get('error', 'Unknown error')}")
+                return False
 
         except ImportError as e:
             logger.error(f"[EMAIL] FAILED - Gmail handler import error: {e}")
+            return False
         except Exception as e:
             logger.error(f"[EMAIL] FAILED - Exception: {e}", exc_info=True)
+            return False
 
     async def send_email_response(self, email: str, subject: str, ai_result: Dict[str, Any]):
         """Legacy method - redirects to new logging version."""

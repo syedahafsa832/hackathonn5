@@ -263,14 +263,24 @@ class BrandGmailService:
                 "expiry":        creds.expiry.isoformat() if creds.expiry else None,
             }
 
-            supabase_update("brands", {"id": f"eq.{brand_id}"}, {
-                "gmail_email":     email,
-                "gmail_token":     encrypt_token(json.dumps(token_data)),
-                "gmail_connected": True,
-                "gmail_scope_mode": scope_mode,
-                "is_active":       True,  # Reactivate if deactivated during onboarding 409 flow
-                "updated_at":      datetime.now(timezone.utc).isoformat(),
-            })
+            now_iso = datetime.now(timezone.utc).isoformat()
+            if scope_mode == "send_only":
+                supabase_update("brands", {"id": f"eq.{brand_id}"}, {
+                    "gmail_send_email": email,
+                    "gmail_send_token": encrypt_token(json.dumps(token_data)),
+                    "gmail_send_connected": True,
+                    "is_active": True,
+                    "updated_at": now_iso,
+                })
+            else:
+                supabase_update("brands", {"id": f"eq.{brand_id}"}, {
+                    "gmail_email": email,
+                    "gmail_token": encrypt_token(json.dumps(token_data)),
+                    "gmail_connected": True,
+                    "gmail_scope_mode": "full",
+                    "is_active": True,
+                    "updated_at": now_iso,
+                })
 
             logger.info(f"[BrandGmail] Connected {email} to brand {brand_id}")
             return {"success": True, "email": email}
@@ -297,79 +307,67 @@ class BrandGmailService:
             return {"success": False, "error": code}
 
     def disconnect(self, brand_id: str):
+        """Explicitly disconnect both Gmail capabilities for this brand."""
         supabase_update("brands", {"id": f"eq.{brand_id}"}, {
-            "gmail_connected": False,
-            "gmail_token":     None,
-            "gmail_email":     None,
-            "updated_at":      datetime.now(timezone.utc).isoformat(),
+            "gmail_connected": False, "gmail_token": None, "gmail_email": None,
+            "gmail_send_connected": False, "gmail_send_token": None, "gmail_send_email": None,
+            "gmail_scope_mode": "full",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         })
 
     # ── Gmail service ──────────────────────────────────────────────────────
 
     def _build_service(self, brand: dict):
-        """Build an authenticated Gmail API client from stored brand token."""
-        raw = brand.get("gmail_token")
+        """Build Gmail API client from the credential tier matching ingestion mode."""
+        send_only = brand.get("email_ingestion_mode") == "forwarding"
+        token_field = "gmail_send_token" if send_only else "gmail_token"
+        connected_field = "gmail_send_connected" if send_only else "gmail_connected"
+        email_field = "gmail_send_email" if send_only else "gmail_email"
+        raw = brand.get(token_field)
         if not raw:
             return None
         try:
             data = json.loads(decrypt_token(raw))
             expiry = None
             if data.get("expiry"):
-                from datetime import datetime
                 try:
                     expiry = datetime.fromisoformat(data["expiry"])
-                except Exception:
-                    pass
-
+                except (TypeError, ValueError):
+                    expiry = None
+            client_id_env = "GMAIL_SEND_CLIENT_ID" if send_only else "GMAIL_CLIENT_ID"
+            client_secret_env = "GMAIL_SEND_CLIENT_SECRET" if send_only else "GMAIL_CLIENT_SECRET"
             creds = Credentials(
                 token=data.get("token"),
                 refresh_token=data.get("refresh_token"),
                 token_uri=data.get("token_uri", "https://oauth2.googleapis.com/token"),
-                client_id=data.get("client_id") or os.getenv("GMAIL_CLIENT_ID"),
-                client_secret=data.get("client_secret") or os.getenv("GMAIL_CLIENT_SECRET"),
-                scopes=data.get("scopes", SCOPES),
+                client_id=data.get("client_id") or os.getenv(client_id_env),
+                client_secret=data.get("client_secret") or os.getenv(client_secret_env),
+                scopes=data.get("scopes", SEND_ONLY_SCOPES if send_only else SCOPES),
                 expiry=expiry,
             )
-
-            # Always refresh if we have a refresh_token — token may have expired
-            if creds.refresh_token:
+            needs_refresh = not creds.token or creds.expiry is None or creds.expired
+            if creds.refresh_token and needs_refresh:
                 try:
                     creds.refresh(Request())
                     data["token"] = creds.token
                     data["expiry"] = creds.expiry.isoformat() if creds.expiry else None
                     supabase_update("brands", {"id": f"eq.{brand['id']}"}, {
-                        "gmail_token": encrypt_token(json.dumps(data))
+                        token_field: encrypt_token(json.dumps(data))
                     })
                 except Exception as e:
-                    err_str = str(e).lower()
-                    if "invalid_grant" in err_str or "token has been expired or revoked" in err_str:
-                        # Refresh token was revoked by the user — mark disconnected so we stop polling
+                    err = str(e).lower()
+                    if "invalid_grant" in err or "token has been expired or revoked" in err:
                         supabase_update("brands", {"id": f"eq.{brand['id']}"}, {
-                            "gmail_connected": False,
+                            connected_field: False,
                             "updated_at": datetime.now(timezone.utc).isoformat(),
                         })
-                        logger.error(
-                            f"[BrandGmail] Refresh token revoked for brand {brand.get('id')} "
-                            f"({brand.get('gmail_email')}) — marked gmail_connected=False, user must reconnect"
-                        )
+                        logger.error(f"[BrandGmail] {connected_field} revoked for {brand.get('id')} ({brand.get(email_field)})")
                     else:
-                        # Network error, quota, or transient failure — do NOT disconnect,
-                        # but never build a service from creds we know are stale: that
-                        # just guarantees a second, later failure on the actual API call
-                        # instead of failing fast here. Caller (get_new_emails) already
-                        # treats a None service as "skip this poll cycle, retry next time".
-                        logger.warning(f"[BrandGmail] Token refresh warning for brand {brand.get('id')}: {e}")
-                        # Diagnostic only - exception type/message and brand id/name,
-                        # never the token/creds themselves.
-                        logger.error(
-                            f"[BrandGmail] Refresh failure detail for brand {brand.get('id')} "
-                            f"({brand.get('name')}): {type(e).__name__}: {e}"
-                        )
-                        return None
-
+                        logger.warning(f"[BrandGmail] Refresh failed for {brand.get('id')}: {type(e).__name__}: {e}")
+                    return None
             return build("gmail", "v1", credentials=creds)
-        except Exception as e:
-            logger.exception(f"[BrandGmail] Failed to build service for brand {brand.get('id')}" )
+        except Exception:
+            logger.exception(f"[BrandGmail] Failed to build Gmail service for {brand.get('id')}")
             return None
 
     @staticmethod
@@ -685,13 +683,22 @@ class BrandGmailService:
             return {"success": False, "error": str(e)}
 
     def get_connected_brands(self) -> List[dict]:
-        """Return all brands with Gmail connected (active or not — reactivation may lag)."""
+        """Return brands with either full inbox or send-only Gmail access."""
         try:
-            results = supabase_select("brands", {
-                "gmail_connected": "is.true",
-            }) or []
-            logger.info(f"[BrandGmail] Found {len(results)} brand(s) with Gmail connected")
-            return results
+            full = supabase_select("brands", {"gmail_connected": "is.true"}) or []
+            send = supabase_select("brands", {"gmail_send_connected": "is.true"}) or []
+            by_id = {b["id"]: b for b in full if b.get("id")}
+            for brand in send:
+                brand_id = brand.get("id")
+                if not brand_id:
+                    continue
+                if brand_id in by_id:
+                    for key in ("gmail_send_token", "gmail_send_connected", "gmail_send_email"):
+                        if key in brand:
+                            by_id[brand_id][key] = brand[key]
+                else:
+                    by_id[brand_id] = brand
+            return list(by_id.values())
         except Exception as e:
             logger.error(f"[BrandGmail] Error fetching connected brands: {e}")
             return []

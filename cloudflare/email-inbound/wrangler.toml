@@ -7,4 +7,4 @@ compatibility_date = "2026-11-24"
 addresses = ["support@inbound.tresolv.online"]
 
 [vars]
-BACKEND_EMAIL_INGEST_URL = "https://YOUR-API-HOST/api/email/inbound"
+BACKEND_EMAIL_INGEST_URL = "https://backend.tresolv.online/api/email/inbound"

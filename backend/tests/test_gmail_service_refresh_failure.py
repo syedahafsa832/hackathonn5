@@ -33,3 +33,51 @@ def test_transient_refresh_failure_returns_none_not_a_stale_service():
 
     assert result is None
     mock_build.assert_not_called()
+
+
+def test_valid_access_token_is_reused_without_refresh():
+    from datetime import datetime, timezone, timedelta
+    brand = {"id": "brand-1", "gmail_token": "enc"}
+    svc = BrandGmailService()
+    expiry = datetime.now(timezone.utc) + timedelta(minutes=45)
+    fake_service = MagicMock()
+    with patch("src.services.brand_gmail_service.decrypt_token", return_value=json.dumps({
+        "token": "valid", "refresh_token": "rt", "client_id": "cid",
+        "client_secret": "cs", "expiry": expiry.isoformat(),
+    })), patch("src.services.brand_gmail_service.Credentials") as MockCreds, \
+         patch("src.services.brand_gmail_service.build", return_value=fake_service), \
+         patch("src.services.brand_gmail_service.supabase_update") as mock_update:
+        creds = MagicMock(token="valid", refresh_token="rt", expiry=expiry, expired=False)
+        MockCreds.return_value = creds
+        assert svc._build_service(brand) is fake_service
+    creds.refresh.assert_not_called()
+    mock_update.assert_not_called()
+
+
+def test_send_only_refresh_writes_only_send_token_column():
+    from datetime import datetime, timezone, timedelta
+    brand = {"id": "brand-2", "email_ingestion_mode": "forwarding",
+             "gmail_send_token": "enc", "gmail_send_connected": True}
+    svc = BrandGmailService()
+    updates = []
+    def fake_update(table, match, data):
+        updates.append(data)
+        return [data]
+    expired_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    with patch("src.services.brand_gmail_service.decrypt_token", return_value=json.dumps({
+        "token": "old", "refresh_token": "rt", "client_id": "cid",
+        "client_secret": "cs", "expiry": expired_at.isoformat(),
+    })), patch("src.services.brand_gmail_service.Credentials") as MockCreds, \
+         patch("src.services.brand_gmail_service.Request"), \
+         patch("src.services.brand_gmail_service.supabase_update", side_effect=fake_update), \
+         patch("src.services.brand_gmail_service.build"):
+        creds = MagicMock(token="old", refresh_token="rt", expiry=expired_at, expired=True)
+        def refresh_token(_request):
+            creds.token = "new"
+            creds.expiry = datetime.now(timezone.utc) + timedelta(hours=1)
+        creds.refresh.side_effect = refresh_token
+        MockCreds.return_value = creds
+        svc._build_service(brand)
+    assert len(updates) == 1
+    assert "gmail_send_token" in updates[0]
+    assert "gmail_token" not in updates[0]

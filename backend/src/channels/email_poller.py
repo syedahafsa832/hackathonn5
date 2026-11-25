@@ -148,7 +148,8 @@ class EmailPoller:
         # Gmail list/get calls with their gmail.send-only tokens.
         brands = [
             brand for brand in connected_brands
-            if brand.get("email_ingestion_mode", "gmail_polling") != "forwarding"
+            if brand.get("gmail_connected")
+            and brand.get("email_ingestion_mode", "gmail_polling") != "forwarding"
         ]
 
         if brands:
@@ -650,13 +651,13 @@ class EmailPoller:
                     continue
 
                 brands = await asyncio.to_thread(
-                    supabase_select, "brands", {"id": f"eq.{brand_id}", "gmail_connected": "is.true"}
+                    supabase_select, "brands", {"id": f"eq.{brand_id}"}
                 )
                 if not brands:
                     continue
                 brand = brands[0]
                 forwarding_mode = brand.get("email_ingestion_mode") == "forwarding"
-                if forwarding_mode and brand.get("gmail_scope_mode") != "send_only":
+                if forwarding_mode and not brand.get("gmail_send_connected"):
                     logger.info(f"[CSAT] Skipping forwarding-mode ticket {ticket['id']} until send-only Gmail is connected")
                     continue
 
@@ -693,7 +694,7 @@ class EmailPoller:
                 plain_body, html_body = self._build_csat_email(ticket["id"], brand_name)
 
                 try:
-                    await brand_gmail_service.send_html_reply_in_thread(
+                    send_result = await brand_gmail_service.send_html_reply_in_thread(
                         brand=brand,
                         to_email=customer_email,
                         subject=f"Re: {subject}",
@@ -703,7 +704,10 @@ class EmailPoller:
                         in_reply_to=csat_in_reply_to,
                         references=csat_references,
                     )
-                    logger.info(f"[CSAT] Sent survey for ticket {ticket['id']} to {customer_email}")
+                    if send_result.get("success"):
+                        logger.info(f"[CSAT] Sent survey for ticket {ticket['id']} to {customer_email}")
+                    else:
+                        logger.warning(f"[CSAT] Survey send failed for ticket {ticket['id']}: {send_result.get('error')}")
                 except Exception as e:
                     logger.warning(f"[CSAT] Could not send survey for ticket {ticket['id']}: {e}")
         except Exception as e:

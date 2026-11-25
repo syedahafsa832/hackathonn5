@@ -64,6 +64,28 @@ export default function EmailForwardingSetup({ brandId }) {
     }
   };
 
+  const activateForwarding = async () => {
+    setBusy(true); setMessage(''); setError('');
+    try {
+      await client.post('/api/brands/' + brandId + '/email-forwarding/activate');
+      await refresh();
+      setMessage('Email forwarding is now active.');
+    } catch (err) {
+      setError(extractErrorMessage(err, 'Could not activate forwarding.'));
+    } finally { setBusy(false); }
+  };
+
+  const pauseForwarding = async () => {
+    setBusy(true); setMessage(''); setError('');
+    try {
+      await client.post('/api/brands/' + brandId + '/email-forwarding/pause');
+      await refresh();
+      setMessage('Gmail polling has been restored.');
+    } catch (err) {
+      setError(extractErrorMessage(err, 'Could not pause forwarding.'));
+    } finally { setBusy(false); }
+  };
+
   const confirmForwarding = async () => {
     setBusy(true);
     setMessage('');
@@ -168,6 +190,16 @@ export default function EmailForwardingSetup({ brandId }) {
               <p style={{ fontSize: '11px', lineHeight: 1.5, color: 'var(--text-muted)', margin: '8px 0 0' }}>
                 This uses a separate Gmail permission request for sending replies. It does not read your inbox.
               </p>
+              {status.verified && status.gmail_send_connected && status.ingestion_mode !== 'forwarding' && (
+                <button type="button" disabled={busy} onClick={activateForwarding} style={{ ...buttonStyle, marginTop: '10px' }}>
+                  {busy ? 'Activating…' : 'Activate email forwarding'}
+                </button>
+              )}
+              {status.ingestion_mode === 'forwarding' && (
+                <button type="button" disabled={busy} onClick={pauseForwarding} style={{ ...buttonStyle, marginTop: '10px' }}>
+                  {busy ? 'Switching…' : 'Pause forwarding and restore Gmail polling'}
+                </button>
+              )}
             </div>
           )}
         </>
