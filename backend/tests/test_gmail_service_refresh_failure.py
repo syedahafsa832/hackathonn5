@@ -96,16 +96,19 @@ def _assert_deleted_client_marks_credential_disconnected(brand, token_field, con
 
     expired_at = datetime.now(timezone.utc) - timedelta(minutes=1)
     svc = BrandGmailService()
-    with patch("src.services.brand_gmail_service.decrypt_token", return_value=json.dumps({
-        "token": "expired-access-token",
-        "refresh_token": "existing-refresh-token",
-        "client_id": "deleted-client-id",
-        "client_secret": "deleted-client-secret",
-        "expiry": expired_at.isoformat(),
-    })), patch("src.services.brand_gmail_service.Credentials") as MockCreds, \\
-         patch("src.services.brand_gmail_service.Request"), \\
-         patch("src.services.brand_gmail_service.supabase_update") as mock_update, \\
-         patch("src.services.brand_gmail_service.build") as mock_build:
+    with (
+        patch("src.services.brand_gmail_service.decrypt_token", return_value=json.dumps({
+            "token": "expired-access-token",
+            "refresh_token": "existing-refresh-token",
+            "client_id": "deleted-client-id",
+            "client_secret": "deleted-client-secret",
+            "expiry": expired_at.isoformat(),
+        })),
+        patch("src.services.brand_gmail_service.Credentials") as MockCreds,
+        patch("src.services.brand_gmail_service.Request"),
+        patch("src.services.brand_gmail_service.supabase_update") as mock_update,
+        patch("src.services.brand_gmail_service.build") as mock_build,
+    ):
         creds = MagicMock(
             token="expired-access-token",
             refresh_token="existing-refresh-token",
