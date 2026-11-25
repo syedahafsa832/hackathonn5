@@ -428,6 +428,11 @@ async def send_reply(
                         references = list(latest_inbound.get("email_references") or [])
                         if in_reply_to and in_reply_to not in references:
                             references.append(in_reply_to)
+                    elif not brand.get("gmail_connected"):
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Connect Gmail before sending replies for a Gmail-polling brand.",
+                        )
                     result = await brand_gmail_service.send_email(
                         brand, customer_email, reply_subject, reply_body,
                         thread_id=thread_id,

@@ -1386,22 +1386,34 @@ class UnifiedMessageProcessor:
                             f"[EMAIL] Sending via brand Gmail: {brand.get('gmail_email')} "
                             f"(mode={brand.get('email_ingestion_mode', 'gmail_polling')}, thread_id={_thread_id})"
                         )
-                        result = await brand_gmail_service.send_email(
-                            brand,
-                            email,
-                            reply_subject,
-                            reply_body,
-                            thread_id=_thread_id,
-                            in_reply_to=in_reply_to,
-                            references=references,
+                        forwarding_mode = brand.get("email_ingestion_mode") == "forwarding"
+                        has_send_access = (
+                            brand.get("gmail_send_connected") if forwarding_mode
+                            else brand.get("gmail_connected")
                         )
-                        if result.get("success"):
-                            result = {"status": "sent", "id": result.get("id")}
-                        else:
-                            logger.warning(f"[EMAIL] Brand Gmail send failed: {result.get('error')}")
+                        if not has_send_access:
+                            logger.warning(
+                                f"[EMAIL] Gmail send capability is not connected for brand {store_id}; "
+                                "reply remains a draft."
+                            )
                             result = {"status": "failed"}
+                        else:
+                            result = await brand_gmail_service.send_email(
+                                brand,
+                                email,
+                                reply_subject,
+                                reply_body,
+                                thread_id=_thread_id,
+                                in_reply_to=in_reply_to,
+                                references=references,
+                            )
+                            if result.get("success"):
+                                result = {"status": "sent", "id": result.get("id")}
+                            else:
+                                logger.warning(f"[EMAIL] Brand Gmail send failed: {result.get('error')}")
+                                result = {"status": "failed"}
                 except Exception as brand_err:
-                    logger.warning(f"[EMAIL] Brand Gmail error: {brand_err} — falling back to global")
+                    logger.warning(f"[EMAIL] Brand Gmail error: {brand_err} — no global fallback; keep reply as draft")
                     result = None
 
             # No brand Gmail connected — skip sending

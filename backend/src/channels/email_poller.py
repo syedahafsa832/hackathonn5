@@ -146,10 +146,10 @@ class EmailPoller:
         # Forwarding-mode brands still have Gmail connected for outbound send,
         # but their inbound messages arrive through Cloudflare. Never attempt
         # Gmail list/get calls with their gmail.send-only tokens.
+        full_access_brands = [brand for brand in connected_brands if brand.get("gmail_connected")]
         brands = [
-            brand for brand in connected_brands
-            if brand.get("gmail_connected")
-            and brand.get("email_ingestion_mode", "gmail_polling") != "forwarding"
+            brand for brand in full_access_brands
+            if brand.get("email_ingestion_mode", "gmail_polling") != "forwarding"
         ]
 
         if brands:
@@ -171,13 +171,15 @@ class EmailPoller:
 
             await asyncio.gather(*[_poll_one(b) for b in brands])
             return len(brands)
-        elif not connected_brands:
-            # No brands with Gmail connected — use legacy global handler.
+        elif not full_access_brands:
+            # Send-only OAuth alone does not provide inbox polling. Until a
+            # brand is activated for forwarding, preserve the legacy global
+            # inbox fallback exactly as before.
             await self._poll_global_inbox()
             return 0
         else:
-            # Connected brands exist, but all use forwarding for inbound mail.
-            # Do not fall back to the legacy global Gmail mailbox.
+            # Full-access brands exist, but all are forwarding-mode. Their
+            # inbound messages arrive through Cloudflare, not Gmail polling.
             return 0
 
     # ── Per-brand polling ──────────────────────────────────────────────────
@@ -659,6 +661,9 @@ class EmailPoller:
                 forwarding_mode = brand.get("email_ingestion_mode") == "forwarding"
                 if forwarding_mode and not brand.get("gmail_send_connected"):
                     logger.info(f"[CSAT] Skipping forwarding-mode ticket {ticket['id']} until send-only Gmail is connected")
+                    continue
+                if not forwarding_mode and not brand.get("gmail_connected"):
+                    logger.info(f"[CSAT] Skipping ticket {ticket['id']} because full-access Gmail is disconnected")
                     continue
 
                 # Forwarded mail has no Gmail-internal thread ID. Reconstruct

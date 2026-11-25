@@ -158,10 +158,10 @@ async def get_gmail_send_auth_url(
 ):
     """Start send-only Gmail OAuth for forwarding-mode brands."""
     brand = _get_owned_brand(brand_id, tenant)
-    if brand.get("email_ingestion_mode") != "forwarding" or not brand.get("inbound_email_enabled"):
+    if not brand.get("inbound_email_enabled") or not brand.get("inbound_email_token"):
         raise HTTPException(
             status_code=409,
-            detail="Set up the forwarding address before connecting Gmail send access",
+            detail="Create the forwarding address before connecting Gmail send access",
         )
     try:
         return {"auth_url": brand_gmail_service.get_send_auth_url(brand_id)}

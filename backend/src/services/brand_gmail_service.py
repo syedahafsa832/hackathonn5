@@ -176,7 +176,12 @@ def _get_client_config(scope_mode: str = "full") -> dict:
 
 
 def _callback_uri() -> str:
-    base = os.getenv("API_BASE_URL", "http://localhost:8001")
+    # Respect the exact callback URI already configured in Google OAuth
+    # and Render. API_BASE_URL remains the backward-compatible fallback.
+    configured_uri = os.getenv("GOOGLE_REDIRECT_URI", "").strip()
+    if configured_uri:
+        return configured_uri.rstrip("/")
+    base = os.getenv("API_BASE_URL", "http://localhost:8001").rstrip("/")
     return f"{base}/api/brands/gmail/callback"
 
 

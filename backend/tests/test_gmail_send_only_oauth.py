@@ -110,3 +110,24 @@ def test_send_only_callback_uses_identity_token_and_never_calls_gmail_profile():
     assert persisted["gmail_send_email"] == "merchant@example.com"
     assert "gmail_token" not in persisted
     assert "gmail_connected" not in persisted
+
+
+
+def test_callback_uri_prefers_explicit_google_redirect_uri():
+    from src.services.brand_gmail_service import _callback_uri
+
+    with patch.dict(os.environ, {
+        "GOOGLE_REDIRECT_URI": "https://backend.tresolv.online/api/brands/gmail/callback",
+        "API_BASE_URL": "http://localhost:8001",
+    }):
+        assert _callback_uri() == "https://backend.tresolv.online/api/brands/gmail/callback"
+
+
+def test_callback_uri_falls_back_to_api_base_url():
+    from src.services.brand_gmail_service import _callback_uri
+
+    with patch.dict(os.environ, {
+        "GOOGLE_REDIRECT_URI": "",
+        "API_BASE_URL": "https://backend.tresolv.online/",
+    }):
+        assert _callback_uri() == "https://backend.tresolv.online/api/brands/gmail/callback"
