@@ -361,12 +361,26 @@ class BrandGmailService:
                     })
                 except Exception as e:
                     err = str(e).lower()
-                    if "invalid_grant" in err or "token has been expired or revoked" in err:
+                    # A deleted OAuth client is a permanent credential failure,
+                    # not a transient refresh outage. Google rejects every
+                    # existing access/refresh token tied to that client, so leave
+                    # the account visibly disconnected until an admin reconnects
+                    # it using an active OAuth client.
+                    oauth_credentials_invalid = (
+                        "invalid_grant" in err
+                        or "token has been expired or revoked" in err
+                        or "deleted_client" in err
+                    )
+                    if oauth_credentials_invalid:
                         supabase_update("brands", {"id": f"eq.{brand['id']}"}, {
                             connected_field: False,
                             "updated_at": datetime.now(timezone.utc).isoformat(),
                         })
-                        logger.error(f"[BrandGmail] {connected_field} revoked for {brand.get('id')} ({brand.get(email_field)})")
+                        reason = "OAuth client deleted" if "deleted_client" in err else "refresh token revoked or expired"
+                        logger.error(
+                            f"[BrandGmail] {connected_field} requires reconnect for "
+                            f"{brand.get('id')} ({brand.get(email_field)}): {reason}"
+                        )
                     else:
                         logger.warning(f"[BrandGmail] Refresh failed for {brand.get('id')}: {type(e).__name__}: {e}")
                     return None
