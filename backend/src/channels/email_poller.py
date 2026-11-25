@@ -138,10 +138,19 @@ class EmailPoller:
         """
         try:
             from src.services.brand_gmail_service import brand_gmail_service
-            brands = brand_gmail_service.get_connected_brands()
+            connected_brands = brand_gmail_service.get_connected_brands()
         except Exception as e:
             logger.error(f"Could not load connected brands: {e}")
-            brands = []
+            connected_brands = []
+
+        # Forwarding-mode brands still have Gmail connected for outbound send,
+        # but their inbound messages arrive through Cloudflare. Never attempt
+        # Gmail list/get calls with their gmail.send-only tokens.
+        full_access_brands = [brand for brand in connected_brands if brand.get("gmail_connected")]
+        brands = [
+            brand for brand in full_access_brands
+            if brand.get("email_ingestion_mode", "gmail_polling") != "forwarding"
+        ]
 
         if brands:
             # Build set of ALL brand Gmail addresses once per cycle.
@@ -162,9 +171,15 @@ class EmailPoller:
 
             await asyncio.gather(*[_poll_one(b) for b in brands])
             return len(brands)
-        else:
-            # No brands with Gmail connected — use legacy global handler
+        elif not full_access_brands:
+            # Send-only OAuth alone does not provide inbox polling. Until a
+            # brand is activated for forwarding, preserve the legacy global
+            # inbox fallback exactly as before.
             await self._poll_global_inbox()
+            return 0
+        else:
+            # Full-access brands exist, but all are forwarding-mode. Their
+            # inbound messages arrive through Cloudflare, not Gmail polling.
             return 0
 
     # ── Per-brand polling ──────────────────────────────────────────────────
@@ -638,11 +653,40 @@ class EmailPoller:
                     continue
 
                 brands = await asyncio.to_thread(
-                    supabase_select, "brands", {"id": f"eq.{brand_id}", "gmail_connected": "is.true"}
+                    supabase_select, "brands", {"id": f"eq.{brand_id}"}
                 )
                 if not brands:
                     continue
                 brand = brands[0]
+                forwarding_mode = brand.get("email_ingestion_mode") == "forwarding"
+                if forwarding_mode and not brand.get("gmail_send_connected"):
+                    logger.info(f"[CSAT] Skipping forwarding-mode ticket {ticket['id']} until send-only Gmail is connected")
+                    continue
+                if not forwarding_mode and not brand.get("gmail_connected"):
+                    logger.info(f"[CSAT] Skipping ticket {ticket['id']} because full-access Gmail is disconnected")
+                    continue
+
+                # Forwarded mail has no Gmail-internal thread ID. Reconstruct
+                # RFC reply headers from the latest stored inbound message.
+                csat_in_reply_to = None
+                csat_references = None
+                if forwarding_mode:
+                    ticket_messages = ticket.get("messages") or []
+                    if isinstance(ticket_messages, str):
+                        try:
+                            ticket_messages = json.loads(ticket_messages)
+                        except (ValueError, TypeError):
+                            ticket_messages = []
+                    latest_inbound = next(
+                        (item for item in reversed(ticket_messages)
+                         if isinstance(item, dict) and item.get("direction") == "inbound"),
+                        {},
+                    )
+                    csat_in_reply_to = latest_inbound.get("email_message_id")
+                    csat_references = list(latest_inbound.get("email_references") or [])
+                    if csat_in_reply_to and csat_in_reply_to not in csat_references:
+                        csat_references.append(csat_in_reply_to)
+                    thread_id = None
 
                 # Claim before sending, not after - a send that fails after a
                 # successful claim just doesn't get retried this cycle (safe
@@ -655,15 +699,20 @@ class EmailPoller:
                 plain_body, html_body = self._build_csat_email(ticket["id"], brand_name)
 
                 try:
-                    await brand_gmail_service.send_html_reply_in_thread(
+                    send_result = await brand_gmail_service.send_html_reply_in_thread(
                         brand=brand,
                         to_email=customer_email,
                         subject=f"Re: {subject}",
                         html_body=html_body,
                         plain_text_body=plain_body,
                         thread_id=thread_id,
+                        in_reply_to=csat_in_reply_to,
+                        references=csat_references,
                     )
-                    logger.info(f"[CSAT] Sent survey for ticket {ticket['id']} to {customer_email}")
+                    if send_result.get("success"):
+                        logger.info(f"[CSAT] Sent survey for ticket {ticket['id']} to {customer_email}")
+                    else:
+                        logger.warning(f"[CSAT] Survey send failed for ticket {ticket['id']}: {send_result.get('error')}")
                 except Exception as e:
                     logger.warning(f"[CSAT] Could not send survey for ticket {ticket['id']}: {e}")
         except Exception as e:

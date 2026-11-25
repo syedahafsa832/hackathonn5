@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.utils import make_msgid
 
 import tenacity
 from src.services.email_layout import render_plain_text_email_html
@@ -62,7 +63,14 @@ from src.services.shopify_service import encrypt_token, decrypt_token
 
 logger = logging.getLogger(__name__)
 
+# Existing full-access Gmail mode remains unchanged for currently connected
+# brands. Forwarding-mode brands request only send access plus basic identity.
 SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
+SEND_ONLY_SCOPES = [
+    'https://www.googleapis.com/auth/gmail.send',
+    'openid',
+    'email',
+]
 _STATE_TTL = 600  # 10-minute OAuth window
 
 
@@ -83,10 +91,17 @@ def _state_key() -> bytes:
     return os.getenv("SECRET_KEY", os.getenv("JWT_SECRET", "change-me-in-production")).encode()
 
 
-def _sign_state(brand_id: str) -> str:
-    """Return HMAC-signed state token: base64(payload).signature
-    The payload encodes brand_id and an expiry, making tampering detectable."""
-    payload = json.dumps({"brand_id": brand_id, "exp": int(time.time()) + _STATE_TTL}).encode()
+def _sign_state(brand_id: str, scope_mode: str = "full") -> str:
+    """Return HMAC-signed state token: base64(payload).signature.
+
+    scope_mode is signed along with the brand id so the shared OAuth callback
+    can distinguish legacy full-mailbox OAuth from the new send-only flow.
+    """
+    payload = json.dumps({
+        "brand_id": brand_id,
+        "scope_mode": scope_mode,
+        "exp": int(time.time()) + _STATE_TTL,
+    }).encode()
     sig = hmac.new(_state_key(), payload, hashlib.sha256).hexdigest()[:24]
     b64 = base64.urlsafe_b64encode(payload).decode().rstrip("=")
     return f"{b64}.{sig}"
@@ -114,10 +129,34 @@ def _verify_state(state: str) -> Optional[str]:
         return None
 
 
-def _get_client_config() -> dict:
-    """Build OAuth client config from env vars."""
-    client_id = os.getenv("GMAIL_CLIENT_ID")
-    client_secret = os.getenv("GMAIL_CLIENT_SECRET")
+def _state_scope_mode(state: str) -> str:
+    """Read the signed scope mode after _verify_state has validated the token."""
+    try:
+        b64 = state.rsplit(".", 1)[0]
+        b64 += "=" * ((4 - len(b64) % 4) % 4)
+        data = json.loads(base64.urlsafe_b64decode(b64.encode()))
+        return "send_only" if data.get("scope_mode") == "send_only" else "full"
+    except Exception:
+        return "full"
+
+
+def _get_client_config(scope_mode: str = "full") -> dict:
+    """Build the OAuth client config for the selected Gmail permission tier.
+
+    Send-only uses a separate Google Cloud OAuth project. Keeping its consent
+    screen free of gmail.modify prevents the legacy restricted scope from
+    being pulled into the send-only app verification request.
+    """
+    if scope_mode == "send_only":
+        client_id = os.getenv("GMAIL_SEND_CLIENT_ID")
+        client_secret = os.getenv("GMAIL_SEND_CLIENT_SECRET")
+        raw = os.getenv("GMAIL_SEND_CREDENTIALS")
+        label = "GMAIL_SEND_CLIENT_ID + GMAIL_SEND_CLIENT_SECRET"
+    else:
+        client_id = os.getenv("GMAIL_CLIENT_ID")
+        client_secret = os.getenv("GMAIL_CLIENT_SECRET")
+        raw = os.getenv("GMAIL_CREDENTIALS")
+        label = "GMAIL_CLIENT_ID + GMAIL_CLIENT_SECRET"
 
     if client_id and client_secret:
         return {
@@ -130,16 +169,19 @@ def _get_client_config() -> dict:
             }
         }
 
-    # Fall back to full GMAIL_CREDENTIALS blob
-    raw = os.getenv("GMAIL_CREDENTIALS")
     if raw:
         return json.loads(raw)
 
-    raise ValueError("No Gmail OAuth credentials configured. Set GMAIL_CLIENT_ID + GMAIL_CLIENT_SECRET.")
+    raise ValueError(f"No {scope_mode} Gmail OAuth credentials configured. Set {label}.")
 
 
 def _callback_uri() -> str:
-    base = os.getenv("API_BASE_URL", "http://localhost:8001")
+    # Respect the exact callback URI already configured in Google OAuth
+    # and Render. API_BASE_URL remains the backward-compatible fallback.
+    configured_uri = os.getenv("GOOGLE_REDIRECT_URI", "").strip()
+    if configured_uri:
+        return configured_uri.rstrip("/")
+    base = os.getenv("API_BASE_URL", "http://localhost:8001").rstrip("/")
     return f"{base}/api/brands/gmail/callback"
 
 
@@ -148,34 +190,72 @@ class BrandGmailService:
     # ── OAuth ──────────────────────────────────────────────────────────────
 
     def get_auth_url(self, brand_id: str) -> str:
-        """Return the Google consent-screen URL for a brand.
-        The state parameter is HMAC-signed so the callback can verify authenticity."""
+        """Return the legacy Gmail read/write consent URL for an existing brand."""
         flow = Flow.from_client_config(_get_client_config(), scopes=SCOPES)
         flow.redirect_uri = _callback_uri()
         auth_url, _ = flow.authorization_url(
             access_type="offline",
             include_granted_scopes="true",
-            state=_sign_state(brand_id),  # signed — not plain brand_id
+            state=_sign_state(brand_id),
+            prompt="consent",
+        )
+        return auth_url
+
+    def get_send_auth_url(self, brand_id: str) -> str:
+        """Return a Gmail send-only OAuth URL for forwarding-mode brands.
+
+        include_granted_scopes is deliberately false: do not silently carry
+        the previous gmail.modify grant into this lower-permission connection.
+        """
+        flow = Flow.from_client_config(_get_client_config("send_only"), scopes=SEND_ONLY_SCOPES)
+        flow.redirect_uri = _callback_uri()
+        auth_url, _ = flow.authorization_url(
+            access_type="offline",
+            include_granted_scopes="false",
+            state=_sign_state(brand_id, scope_mode="send_only"),
             prompt="consent",
         )
         return auth_url
 
     async def handle_callback(self, state: str, code: str) -> Dict[str, Any]:
-        """Exchange auth code → tokens, save to brand, return gmail address.
-        Verifies the signed state before trusting the brand_id it encodes."""
+        """Exchange auth code → tokens and persist either full or send-only access."""
         brand_id = _verify_state(state)
         if not brand_id:
             return {"success": False, "error": "invalid_or_expired_state"}
+        scope_mode = _state_scope_mode(state)
+        requested_scopes = SEND_ONLY_SCOPES if scope_mode == "send_only" else SCOPES
         try:
-            flow = Flow.from_client_config(_get_client_config(), scopes=SCOPES, state=state)
+            flow = Flow.from_client_config(_get_client_config(scope_mode), scopes=requested_scopes, state=state)
             flow.redirect_uri = _callback_uri()
             flow.fetch_token(code=code)
             creds = flow.credentials
 
-            # Discover which Gmail address was granted
-            svc = build("gmail", "v1", credentials=creds)
-            profile = svc.users().getProfile(userId="me").execute()
-            email = profile.get("emailAddress", "")
+            if scope_mode == "send_only":
+                granted_scopes = set(getattr(creds, "granted_scopes", None) or creds.scopes or [])
+                gmail_send_scope = "https://www.googleapis.com/auth/gmail.send"
+                forbidden_scopes = {
+                    "https://www.googleapis.com/auth/gmail.modify",
+                    "https://mail.google.com/",
+                    "https://www.googleapis.com/auth/gmail.readonly",
+                }
+                if gmail_send_scope not in granted_scopes or granted_scopes.intersection(forbidden_scopes):
+                    raise ValueError("Send-only OAuth grant did not return the expected Gmail scope")
+
+                # gmail.send cannot call users.getProfile(). Use the verified
+                # OpenID ID token instead; this does not request mailbox access.
+                from google.oauth2 import id_token as google_id_token
+                client_id = creds.client_id or os.getenv("GMAIL_SEND_CLIENT_ID")
+                id_info = google_id_token.verify_oauth2_token(
+                    creds.id_token, Request(), audience=client_id
+                )
+                if not id_info.get("email") or not id_info.get("email_verified"):
+                    raise ValueError("Google did not return a verified account email")
+                email = id_info["email"]
+            else:
+                # Preserve the existing full-access integration exactly.
+                svc = build("gmail", "v1", credentials=creds)
+                profile = svc.users().getProfile(userId="me").execute()
+                email = profile.get("emailAddress", "")
 
             token_data = {
                 "token":         creds.token,
@@ -183,17 +263,29 @@ class BrandGmailService:
                 "token_uri":     creds.token_uri,
                 "client_id":     creds.client_id,
                 "client_secret": creds.client_secret,
-                "scopes":        list(creds.scopes or SCOPES),
+                "scopes":        list(creds.scopes or requested_scopes),
+                "scope_mode":     scope_mode,
                 "expiry":        creds.expiry.isoformat() if creds.expiry else None,
             }
 
-            supabase_update("brands", {"id": f"eq.{brand_id}"}, {
-                "gmail_email":     email,
-                "gmail_token":     encrypt_token(json.dumps(token_data)),
-                "gmail_connected": True,
-                "is_active":       True,  # Reactivate if deactivated during onboarding 409 flow
-                "updated_at":      datetime.now(timezone.utc).isoformat(),
-            })
+            now_iso = datetime.now(timezone.utc).isoformat()
+            if scope_mode == "send_only":
+                supabase_update("brands", {"id": f"eq.{brand_id}"}, {
+                    "gmail_send_email": email,
+                    "gmail_send_token": encrypt_token(json.dumps(token_data)),
+                    "gmail_send_connected": True,
+                    "is_active": True,
+                    "updated_at": now_iso,
+                })
+            else:
+                supabase_update("brands", {"id": f"eq.{brand_id}"}, {
+                    "gmail_email": email,
+                    "gmail_token": encrypt_token(json.dumps(token_data)),
+                    "gmail_connected": True,
+                    "gmail_scope_mode": "full",
+                    "is_active": True,
+                    "updated_at": now_iso,
+                })
 
             logger.info(f"[BrandGmail] Connected {email} to brand {brand_id}")
             return {"success": True, "email": email}
@@ -220,79 +312,81 @@ class BrandGmailService:
             return {"success": False, "error": code}
 
     def disconnect(self, brand_id: str):
+        """Explicitly disconnect both Gmail capabilities for this brand."""
         supabase_update("brands", {"id": f"eq.{brand_id}"}, {
-            "gmail_connected": False,
-            "gmail_token":     None,
-            "gmail_email":     None,
-            "updated_at":      datetime.now(timezone.utc).isoformat(),
+            "gmail_connected": False, "gmail_token": None, "gmail_email": None,
+            "gmail_send_connected": False, "gmail_send_token": None, "gmail_send_email": None,
+            "gmail_scope_mode": "full",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         })
 
     # ── Gmail service ──────────────────────────────────────────────────────
 
     def _build_service(self, brand: dict):
-        """Build an authenticated Gmail API client from stored brand token."""
-        raw = brand.get("gmail_token")
+        """Build Gmail API client from the credential tier matching ingestion mode."""
+        send_only = brand.get("email_ingestion_mode") == "forwarding"
+        token_field = "gmail_send_token" if send_only else "gmail_token"
+        connected_field = "gmail_send_connected" if send_only else "gmail_connected"
+        email_field = "gmail_send_email" if send_only else "gmail_email"
+        raw = brand.get(token_field)
         if not raw:
             return None
         try:
             data = json.loads(decrypt_token(raw))
             expiry = None
             if data.get("expiry"):
-                from datetime import datetime
                 try:
                     expiry = datetime.fromisoformat(data["expiry"])
-                except Exception:
-                    pass
-
+                except (TypeError, ValueError):
+                    expiry = None
+            client_id_env = "GMAIL_SEND_CLIENT_ID" if send_only else "GMAIL_CLIENT_ID"
+            client_secret_env = "GMAIL_SEND_CLIENT_SECRET" if send_only else "GMAIL_CLIENT_SECRET"
             creds = Credentials(
                 token=data.get("token"),
                 refresh_token=data.get("refresh_token"),
                 token_uri=data.get("token_uri", "https://oauth2.googleapis.com/token"),
-                client_id=data.get("client_id") or os.getenv("GMAIL_CLIENT_ID"),
-                client_secret=data.get("client_secret") or os.getenv("GMAIL_CLIENT_SECRET"),
-                scopes=data.get("scopes", SCOPES),
+                client_id=data.get("client_id") or os.getenv(client_id_env),
+                client_secret=data.get("client_secret") or os.getenv(client_secret_env),
+                scopes=data.get("scopes", SEND_ONLY_SCOPES if send_only else SCOPES),
                 expiry=expiry,
             )
-
-            # Always refresh if we have a refresh_token — token may have expired
-            if creds.refresh_token:
+            needs_refresh = not creds.token or creds.expiry is None or creds.expired
+            if creds.refresh_token and needs_refresh:
                 try:
                     creds.refresh(Request())
                     data["token"] = creds.token
                     data["expiry"] = creds.expiry.isoformat() if creds.expiry else None
                     supabase_update("brands", {"id": f"eq.{brand['id']}"}, {
-                        "gmail_token": encrypt_token(json.dumps(data))
+                        token_field: encrypt_token(json.dumps(data))
                     })
                 except Exception as e:
-                    err_str = str(e).lower()
-                    if "invalid_grant" in err_str or "token has been expired or revoked" in err_str:
-                        # Refresh token was revoked by the user — mark disconnected so we stop polling
+                    err = str(e).lower()
+                    # A deleted OAuth client is a permanent credential failure,
+                    # not a transient refresh outage. Google rejects every
+                    # existing access/refresh token tied to that client, so leave
+                    # the account visibly disconnected until an admin reconnects
+                    # it using an active OAuth client.
+                    oauth_credentials_invalid = (
+                        "invalid_grant" in err
+                        or "token has been expired or revoked" in err
+                        or "deleted_client" in err
+                    )
+                    if oauth_credentials_invalid:
                         supabase_update("brands", {"id": f"eq.{brand['id']}"}, {
-                            "gmail_connected": False,
+                            connected_field: False,
                             "updated_at": datetime.now(timezone.utc).isoformat(),
                         })
+                        reason = "OAuth client deleted" if "deleted_client" in err else "refresh token revoked or expired"
                         logger.error(
-                            f"[BrandGmail] Refresh token revoked for brand {brand.get('id')} "
-                            f"({brand.get('gmail_email')}) — marked gmail_connected=False, user must reconnect"
+                            f"[BrandGmail] {connected_field} requires reconnect for "
+                            f"{brand.get('id')} ({brand.get(email_field)}): {reason}"
                         )
                     else:
-                        # Network error, quota, or transient failure — do NOT disconnect,
-                        # but never build a service from creds we know are stale: that
-                        # just guarantees a second, later failure on the actual API call
-                        # instead of failing fast here. Caller (get_new_emails) already
-                        # treats a None service as "skip this poll cycle, retry next time".
-                        logger.warning(f"[BrandGmail] Token refresh warning for brand {brand.get('id')}: {e}")
-                        # Diagnostic only - exception type/message and brand id/name,
-                        # never the token/creds themselves.
-                        logger.error(
-                            f"[BrandGmail] Refresh failure detail for brand {brand.get('id')} "
-                            f"({brand.get('name')}): {type(e).__name__}: {e}"
-                        )
-                        return None
-
+                        logger.warning(f"[BrandGmail] Refresh failed for {brand.get('id')}: {type(e).__name__}: {e}")
+                    return None
             return build("gmail", "v1", credentials=creds)
-        except Exception as e:
-            logger.exception(f"[BrandGmail] Failed to build service for brand {brand.get('id')}" )
+        except Exception:
+            logger.exception(f"[BrandGmail] Failed to build Gmail service for {brand.get('id')}")
             return None
 
     @staticmethod
@@ -449,22 +543,64 @@ class BrandGmailService:
         return emails
 
     @staticmethod
-    def _build_message(body: str) -> MIMEMultipart:
-        """multipart/alternative: the plain-text part is the body untouched
-        (compatibility fallback), the html part is the same copy with a
-        spaced-out layout applied - see email_layout.py."""
+    def _build_message(
+        body: str,
+        in_reply_to: str = None,
+        references: List[str] = None,
+    ) -> MIMEMultipart:
+        """Build an email with optional RFC threading headers.
+
+        Forwarded messages do not contain Gmail's private threadId, so the
+        send-only path relies on Message-ID/In-Reply-To/References instead.
+        """
         msg = MIMEMultipart("alternative")
         msg.attach(MIMEText(body, "plain"))
         msg.attach(MIMEText(render_plain_text_email_html(body), "html"))
+        if in_reply_to or references:
+            msg["Message-ID"] = make_msgid(domain="tresolv.online")
+        if in_reply_to:
+            msg["In-Reply-To"] = in_reply_to
+        cleaned = [value.strip() for value in (references or []) if value and value.strip()]
+        if in_reply_to and in_reply_to not in cleaned:
+            cleaned.append(in_reply_to)
+        if cleaned:
+            # Always include the original inbound Message-ID on the first
+            # response too; later replies can then retain a stable RFC thread root.
+            msg["References"] = " ".join(cleaned[-100:])
         return msg
 
-    async def send_email(self, brand: dict, to_email: str, subject: str, body: str, thread_id: str = None) -> Dict[str, Any]:
-        """Async boundary for _send_email_sync — mirrors get_new_emails'
-        own _get_new_emails_sync + asyncio.to_thread pattern, since the
-        Google API client is fully synchronous (same rationale as there)."""
-        return await asyncio.to_thread(self._send_email_sync, brand, to_email, subject, body, thread_id)
+    async def send_email(
+        self,
+        brand: dict,
+        to_email: str,
+        subject: str,
+        body: str,
+        thread_id: str = None,
+        in_reply_to: str = None,
+        references: List[str] = None,
+    ) -> Dict[str, Any]:
+        """Async boundary for _send_email_sync — Gmail's API client is synchronous."""
+        return await asyncio.to_thread(
+            self._send_email_sync,
+            brand,
+            to_email,
+            subject,
+            body,
+            thread_id,
+            in_reply_to,
+            references,
+        )
 
-    def _send_email_sync(self, brand: dict, to_email: str, subject: str, body: str, thread_id: str = None) -> Dict[str, Any]:
+    def _send_email_sync(
+        self,
+        brand: dict,
+        to_email: str,
+        subject: str,
+        body: str,
+        thread_id: str = None,
+        in_reply_to: str = None,
+        references: List[str] = None,
+    ) -> Dict[str, Any]:
         """Send an email from a brand's connected Gmail account.
 
         thread_id, when given, keeps the reply in Gmail's existing
@@ -479,7 +615,7 @@ class BrandGmailService:
         if not svc:
             return {"success": False, "error": "Gmail not connected for this brand"}
         try:
-            msg = self._build_message(body)
+            msg = self._build_message(body, in_reply_to=in_reply_to, references=references)
             msg["to"]      = to_email
             msg["subject"] = subject
             raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
@@ -487,24 +623,32 @@ class BrandGmailService:
             if thread_id:
                 send_body["threadId"] = thread_id
             sent = svc.users().messages().send(userId="me", body=send_body).execute()
-            return {"success": True, "id": sent.get("id")}
+            return {
+                "success": True,
+                "id": sent.get("id"),
+                "message_id": msg.get("Message-ID"),
+            }
         except Exception as e:
             logger.error(f"[BrandGmail] Send error for brand {brand.get('name')}: {e}")
             return {"success": False, "error": str(e)}
 
-    async def send_html_reply_in_thread(self, brand: dict, to_email: str, subject: str, html_body: str, plain_text_body: str, thread_id: str) -> Dict[str, Any]:
-        """Async boundary for _send_html_reply_in_thread_sync — see send_email's
-        own docstring for why (fully synchronous Google API client)."""
-        return await asyncio.to_thread(self._send_html_reply_in_thread_sync, brand, to_email, subject, html_body, plain_text_body, thread_id)
+    async def send_html_reply_in_thread(
+        self, brand: dict, to_email: str, subject: str, html_body: str,
+        plain_text_body: str, thread_id: str = None,
+        in_reply_to: str = None, references: List[str] = None,
+    ) -> Dict[str, Any]:
+        """Async boundary for HTML replies; supports Gmail thread IDs or RFC headers."""
+        return await asyncio.to_thread(
+            self._send_html_reply_in_thread_sync, brand, to_email, subject,
+            html_body, plain_text_body, thread_id, in_reply_to, references,
+        )
 
-    def _send_html_reply_in_thread_sync(self, brand: dict, to_email: str, subject: str, html_body: str, plain_text_body: str, thread_id: str) -> Dict[str, Any]:
-        """Like send_reply_in_thread, but with a caller-supplied HTML part
-        instead of the shared auto-styled-from-plain-text layout
-        (email_layout.py escapes text into <p> blocks with no linkified
-        buttons — fine for ordinary reply copy, not enough for a real
-        tappable-star CTA). Used only by the CSAT star-rating email; every
-        other outbound email keeps using the shared plain-text pipeline
-        unchanged."""
+    def _send_html_reply_in_thread_sync(
+        self, brand: dict, to_email: str, subject: str, html_body: str,
+        plain_text_body: str, thread_id: str = None,
+        in_reply_to: str = None, references: List[str] = None,
+    ) -> Dict[str, Any]:
+        """Send the CSAT email using the real Gmail thread ID or RFC reply headers."""
         svc = self._build_service(brand)
         if not svc:
             return {"success": False, "error": "Gmail not connected for this brand"}
@@ -512,14 +656,23 @@ class BrandGmailService:
             msg = MIMEMultipart("alternative")
             msg.attach(MIMEText(plain_text_body, "plain"))
             msg.attach(MIMEText(html_body, "html"))
-            msg["to"]      = to_email
+            msg["to"] = to_email
             msg["subject"] = subject if subject.startswith("Re:") else f"Re: {subject}"
+            if in_reply_to or references:
+                msg["Message-ID"] = make_msgid(domain="tresolv.online")
+            if in_reply_to:
+                msg["In-Reply-To"] = in_reply_to
+            cleaned = [value.strip() for value in (references or []) if value and value.strip()]
+            if in_reply_to and in_reply_to not in cleaned:
+                cleaned.append(in_reply_to)
+            if cleaned:
+                msg["References"] = " ".join(cleaned[-100:])
             raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-            sent = svc.users().messages().send(
-                userId="me",
-                body={"raw": raw, "threadId": thread_id},
-            ).execute()
-            return {"success": True, "id": sent.get("id")}
+            send_body = {"raw": raw}
+            if thread_id:
+                send_body["threadId"] = thread_id
+            sent = svc.users().messages().send(userId="me", body=send_body).execute()
+            return {"success": True, "id": sent.get("id"), "message_id": msg.get("Message-ID")}
         except Exception as e:
             logger.error(f"[BrandGmail] HTML thread reply error for brand {brand.get('name')}: {e}")
             return {"success": False, "error": str(e)}
@@ -549,13 +702,22 @@ class BrandGmailService:
             return {"success": False, "error": str(e)}
 
     def get_connected_brands(self) -> List[dict]:
-        """Return all brands with Gmail connected (active or not — reactivation may lag)."""
+        """Return brands with either full inbox or send-only Gmail access."""
         try:
-            results = supabase_select("brands", {
-                "gmail_connected": "is.true",
-            }) or []
-            logger.info(f"[BrandGmail] Found {len(results)} brand(s) with Gmail connected")
-            return results
+            full = supabase_select("brands", {"gmail_connected": "is.true"}) or []
+            send = supabase_select("brands", {"gmail_send_connected": "is.true"}) or []
+            by_id = {b["id"]: b for b in full if b.get("id")}
+            for brand in send:
+                brand_id = brand.get("id")
+                if not brand_id:
+                    continue
+                if brand_id in by_id:
+                    for key in ("gmail_send_token", "gmail_send_connected", "gmail_send_email"):
+                        if key in brand:
+                            by_id[brand_id][key] = brand[key]
+                else:
+                    by_id[brand_id] = brand
+            return list(by_id.values())
         except Exception as e:
             logger.error(f"[BrandGmail] Error fetching connected brands: {e}")
             return []

@@ -3,6 +3,7 @@ import { useSearchParams, Link } from 'react-router-dom';
 import client, { extractErrorMessage } from '../api/client';
 import { gmailOAuthErrorMessage } from '../components/gmailOAuthErrors';
 import HelpContactLink from '../components/HelpContactLink';
+import EmailForwardingSetup from '../components/EmailForwardingSetup';
 
 function Dot({ connected }) {
   return (
@@ -369,6 +370,7 @@ function StoreCard({ brand, highlightGmail }) {
               </button>
             )}
           </div>
+          <EmailForwardingSetup brandId={brand.id} />
         </div>
       )}
     </div>

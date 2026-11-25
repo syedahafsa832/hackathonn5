@@ -1,0 +1,10 @@
+name = "tresolv-email-inbound"
+main = "src/index.ts"
+compatibility_date = "2026-11-24"
+
+# Wrangler 4.113.0+: configure one exact inbound route. Cloudflare
+# Email Routing subaddressing maps support+token@... to support@...
+addresses = ["support@inbound.tresolv.online"]
+
+[vars]
+BACKEND_EMAIL_INGEST_URL = "https://backend.tresolv.online/api/email/inbound"

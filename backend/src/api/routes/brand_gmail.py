@@ -8,6 +8,8 @@ the signed state token is the proof of which tenant initiated the OAuth.
 """
 import os
 import logging
+import secrets
+from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import RedirectResponse
 
@@ -30,6 +32,141 @@ def _get_owned_brand(brand_id: str, tenant: TenantContext) -> dict:
     if not brand_tenant or brand_tenant != tenant.tenant_id:
         raise HTTPException(status_code=404, detail="Brand not found")
     return brand
+
+
+@router.post("/{brand_id}/email-forwarding/setup")
+async def setup_email_forwarding(
+    brand_id: str,
+    tenant: TenantContext = Depends(require_tenant_admin),
+):
+    """Create or reuse a private inbound address for this brand."""
+    brand = _get_owned_brand(brand_id, tenant)
+    domain = os.getenv("INBOUND_EMAIL_DOMAIN", "").strip().lower().lstrip("@")
+    if not domain or "@" in domain or " " in domain:
+        raise HTTPException(
+            status_code=503,
+            detail="Inbound email domain is not configured on the backend",
+        )
+
+    token = brand.get("inbound_email_token")
+    is_new_token = not bool(token)
+    if is_new_token:
+        token = secrets.token_hex(20)
+
+    # Keep legacy polling active until verification, send OAuth, and activation.
+    updates = {
+        "inbound_email_token": token,
+        "inbound_email_enabled": True,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if is_new_token:
+        updates.update({
+            "inbound_email_verified_at": None,
+            "inbound_email_verification_code": None,
+            "inbound_email_verification_code_at": None,
+        })
+    supabase_update("brands", {"id": f"eq.{brand_id}"}, updates)
+
+    return {
+        "success": True,
+        "forwarding_address": f"{os.getenv('INBOUND_EMAIL_LOCAL_PART', 'support').strip().lower()}+{token}@{domain}",
+        "ingestion_mode": brand.get("email_ingestion_mode", "gmail_polling"),
+        "gmail_send_connected": bool(brand.get("gmail_send_connected")),
+        "gmail_email": brand.get("gmail_send_email"),
+        "note": "This is a routing address, not a mailbox. Forward support emails to it from the merchant's inbox.",
+    }
+
+
+
+@router.get("/{brand_id}/email-forwarding/status")
+async def email_forwarding_status(
+    brand_id: str,
+    tenant: TenantContext = Depends(require_tenant_admin),
+):
+    """Return the forwarding address and a short-lived Gmail verification code."""
+    brand = _get_owned_brand(brand_id, tenant)
+    domain = os.getenv("INBOUND_EMAIL_DOMAIN", "").strip().lower().lstrip("@")
+    code = brand.get("inbound_email_verification_code")
+    code_is_available = bool(code and brand.get("inbound_email_verification_code_at"))
+    return {
+        "forwarding_address": (
+            f"{os.getenv('INBOUND_EMAIL_LOCAL_PART', 'support').strip().lower()}+{brand.get('inbound_email_token')}@{domain}"
+            if brand.get("inbound_email_token") and domain else None
+        ),
+        "verified": bool(brand.get("inbound_email_verified_at")),
+        "verification_code": code if code_is_available else None,
+        "gmail_send_connected": bool(brand.get("gmail_send_connected")),
+        "gmail_email": brand.get("gmail_send_email"),
+        "ingestion_mode": brand.get("email_ingestion_mode", "gmail_polling"),
+    }
+
+
+@router.post("/{brand_id}/email-forwarding/confirm")
+async def confirm_email_forwarding(
+    brand_id: str,
+    tenant: TenantContext = Depends(require_tenant_admin),
+):
+    """Confirm that the merchant completed Gmail's forwarding-address check."""
+    brand = _get_owned_brand(brand_id, tenant)
+    if not brand.get("inbound_email_token") or not brand.get("inbound_email_enabled"):
+        raise HTTPException(status_code=409, detail="Set up forwarding first")
+    code_at = brand.get("inbound_email_verification_code_at")
+    code = brand.get("inbound_email_verification_code")
+    if not code or not code_at:
+        raise HTTPException(status_code=409, detail="Waiting for Gmail to send its forwarding confirmation code")
+    supabase_update("brands", {"id": f"eq.{brand_id}"}, {
+        "inbound_email_verified_at": datetime.now(timezone.utc).isoformat(),
+        "inbound_email_verification_code": None,
+        "inbound_email_verification_code_at": None,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"success": True, "verified": True}
+
+
+@router.post("/{brand_id}/email-forwarding/activate")
+async def activate_email_forwarding(brand_id: str, tenant: TenantContext = Depends(require_tenant_admin)):
+    """Activate only after the forwarding address and send-only Gmail are ready."""
+    brand = _get_owned_brand(brand_id, tenant)
+    if not brand.get("inbound_email_enabled") or not brand.get("inbound_email_token"):
+        raise HTTPException(status_code=409, detail="Create the forwarding address first")
+    if not brand.get("inbound_email_verified_at"):
+        raise HTTPException(status_code=409, detail="Verify the forwarding address in Gmail first")
+    if not brand.get("gmail_send_connected") or not brand.get("gmail_send_token"):
+        raise HTTPException(status_code=409, detail="Connect Gmail for sending only first")
+    supabase_update("brands", {"id": f"eq.{brand_id}"}, {
+        "email_ingestion_mode": "forwarding",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"success": True, "ingestion_mode": "forwarding"}
+
+
+@router.post("/{brand_id}/email-forwarding/pause")
+async def pause_email_forwarding(brand_id: str, tenant: TenantContext = Depends(require_tenant_admin)):
+    """Restore legacy Gmail polling without disconnecting OAuth."""
+    _get_owned_brand(brand_id, tenant)
+    supabase_update("brands", {"id": f"eq.{brand_id}"}, {
+        "email_ingestion_mode": "gmail_polling",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"success": True, "ingestion_mode": "gmail_polling"}
+
+
+@router.get("/{brand_id}/gmail/send-auth-url")
+async def get_gmail_send_auth_url(
+    brand_id: str,
+    tenant: TenantContext = Depends(require_tenant_admin),
+):
+    """Start send-only Gmail OAuth for forwarding-mode brands."""
+    brand = _get_owned_brand(brand_id, tenant)
+    if not brand.get("inbound_email_enabled") or not brand.get("inbound_email_token"):
+        raise HTTPException(
+            status_code=409,
+            detail="Create the forwarding address before connecting Gmail send access",
+        )
+    try:
+        return {"auth_url": brand_gmail_service.get_send_auth_url(brand_id)}
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/{brand_id}/gmail/auth-url")
@@ -103,6 +240,8 @@ async def gmail_status(
     brand = _get_owned_brand(brand_id, tenant)
     connected = bool(brand.get("gmail_connected"))
     email = brand.get("gmail_email")
+    send_connected = bool(brand.get("gmail_send_connected"))
+    send_email = brand.get("gmail_send_email")
     # A revoked/expired refresh token (see brand_gmail_service._build_service)
     # flips gmail_connected to False but deliberately leaves gmail_email in
     # place — the only signal that distinguishes "never connected" from "was
@@ -113,4 +252,6 @@ async def gmail_status(
         "connected": connected,
         "email": email,
         "needs_reconnect": (not connected) and bool(email),
+        "send_connected": send_connected,
+        "send_email": send_email,
     }

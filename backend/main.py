@@ -438,6 +438,14 @@ try:
     except Exception as e:
       logger.warning(f"Failed to register events router: {e}")
 
+    # Cloudflare forwarded-email ingestion (separate from the legacy Gmail poller)
+    try:
+      from src.api.routes.email import router as inbound_email_router
+      register_router(inbound_email_router, prefix="/api")
+      logger.info("✓ Inbound email router registered")
+    except Exception as e:
+      logger.warning(f"Failed to register inbound email router: {e}")
+
     # Email Filter Settings & Logs
     try:
       from src.api.routes.v2_email_filter import settings_router as email_filter_settings_router

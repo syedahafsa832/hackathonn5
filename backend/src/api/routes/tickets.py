@@ -398,22 +398,54 @@ async def send_reply(
         if store_id and store_id != default_store:
             try:
                 from src.services.brand_gmail_service import brand_gmail_service
-                brands = supabase_select("brands", {"id": f"eq.{store_id}", "gmail_connected": "is.true"})
+                brands = supabase_select("brands", {"id": f"eq.{store_id}"})
                 if brands:
-                    # Same fix as message_processor.py's auto-reply path: keep
-                    # this reply in the customer's existing Gmail thread, so a
-                    # later Reply from them lands where STAGE 1.5's
-                    # gmail_thread_id match can find and reopen this ticket
-                    # instead of spawning a disconnected duplicate.
+                    brand = brands[0]
+                    forwarding_mode = brand.get("email_ingestion_mode") == "forwarding"
+                    in_reply_to = None
+                    references = None
+                    thread_id = ticket.get("gmail_thread_id")
+                    if forwarding_mode:
+                        if not brand.get("gmail_send_connected"):
+                            raise HTTPException(
+                                status_code=409,
+                                detail="Connect Gmail for sending only before sending replies in forwarding mode.",
+                            )
+                        thread_id = None  # Forwarding has no Gmail-internal thread ID
+                        ticket_messages = ticket.get("messages") or []
+                        if isinstance(ticket_messages, str):
+                            try:
+                                import json
+                                ticket_messages = json.loads(ticket_messages)
+                            except (ValueError, TypeError):
+                                ticket_messages = []
+                        latest_inbound = next(
+                            (item for item in reversed(ticket_messages)
+                             if isinstance(item, dict) and item.get("direction") == "inbound"),
+                            {},
+                        )
+                        in_reply_to = latest_inbound.get("email_message_id")
+                        references = list(latest_inbound.get("email_references") or [])
+                        if in_reply_to and in_reply_to not in references:
+                            references.append(in_reply_to)
+                    elif not brand.get("gmail_connected"):
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Connect Gmail before sending replies for a Gmail-polling brand.",
+                        )
                     result = await brand_gmail_service.send_email(
-                        brands[0], customer_email, reply_subject, reply_body,
-                        thread_id=ticket.get("gmail_thread_id"),
+                        brand, customer_email, reply_subject, reply_body,
+                        thread_id=thread_id,
+                        in_reply_to=in_reply_to,
+                        references=references,
                     )
                     if result.get("success"):
                         sent = True
                         logger.info(f"[Tickets] Reply sent via brand Gmail for ticket {ticket_id}")
                     else:
                         logger.warning(f"[Tickets] Brand Gmail send failed: {result.get('error')}")
+            except HTTPException:
+                raise
             except Exception as e:
                 logger.error(f"[Tickets] Brand Gmail error: {e}")
 
