@@ -259,7 +259,7 @@ export default function Brands() {
 
       {gmailConnected === '1' && (
         <div style={{ padding: '12px 16px', background: 'var(--success-light)', border: '1px solid var(--success)', borderRadius: '6px', color: 'var(--success)', fontSize: '13px', marginBottom: '16px' }}>
-          ✓ Gmail connected{gmailEmail ? `: ${gmailEmail}` : ''}
+          ✓ Gmail send access connected{gmailEmail ? `: ${gmailEmail}` : ''}
         </div>
       )}
       {gmailError && (
