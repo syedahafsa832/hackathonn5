@@ -91,7 +91,7 @@ def _state_key() -> bytes:
     return os.getenv("SECRET_KEY", os.getenv("JWT_SECRET", "change-me-in-production")).encode()
 
 
-def _sign_state(brand_id: str, scope_mode: str = "full") -> str:
+def _sign_state(brand_id: str, scope_mode: str = "full", return_to: str = "brands") -> str:
     """Return HMAC-signed state token: base64(payload).signature.
 
     scope_mode is signed along with the brand id so the shared OAuth callback
@@ -100,6 +100,7 @@ def _sign_state(brand_id: str, scope_mode: str = "full") -> str:
     payload = json.dumps({
         "brand_id": brand_id,
         "scope_mode": scope_mode,
+        "return_to": return_to if return_to in {"brands", "settings", "onboarding"} else "brands",
         "exp": int(time.time()) + _STATE_TTL,
     }).encode()
     sig = hmac.new(_state_key(), payload, hashlib.sha256).hexdigest()[:24]
@@ -138,6 +139,18 @@ def _state_scope_mode(state: str) -> str:
         return "send_only" if data.get("scope_mode") == "send_only" else "full"
     except Exception:
         return "full"
+
+
+def _state_return_to(state: str) -> str:
+    """Read the allow-listed destination from a signed OAuth state payload."""
+    try:
+        b64 = state.rsplit(".", 1)[0]
+        b64 += "=" * ((4 - len(b64) % 4) % 4)
+        data = json.loads(base64.urlsafe_b64decode(b64.encode()))
+        destination = data.get("return_to")
+        return destination if destination in {"brands", "settings", "onboarding"} else "brands"
+    except Exception:
+        return "brands"
 
 
 def _get_client_config(scope_mode: str = "full") -> dict:
@@ -201,7 +214,7 @@ class BrandGmailService:
         )
         return auth_url
 
-    def get_send_auth_url(self, brand_id: str) -> str:
+    def get_send_auth_url(self, brand_id: str, return_to: str = "brands") -> str:
         """Return a Gmail send-only OAuth URL for forwarding-mode brands.
 
         include_granted_scopes is deliberately false: do not silently carry
@@ -212,10 +225,20 @@ class BrandGmailService:
         auth_url, _ = flow.authorization_url(
             access_type="offline",
             include_granted_scopes="false",
-            state=_sign_state(brand_id, scope_mode="send_only"),
+            state=_sign_state(brand_id, scope_mode="send_only", return_to=return_to),
             prompt="consent",
         )
         return auth_url
+
+    def get_return_path(self, state: str) -> str:
+        """Return a safe frontend path only when the OAuth state signature is valid."""
+        if not _verify_state(state):
+            return "/brands"
+        return {
+            "brands": "/brands",
+            "settings": "/settings",
+            "onboarding": "/onboarding",
+        }[_state_return_to(state)]
 
     async def handle_callback(self, state: str, code: str) -> Dict[str, Any]:
         """Exchange auth code → tokens and persist either full or send-only access."""

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import client, { extractErrorMessage } from '../api/client';
+import GmailUnverifiedNotice from './GmailUnverifiedNotice';
 
 const buttonStyle = {
   padding: '7px 12px',
@@ -12,7 +13,7 @@ const buttonStyle = {
   cursor: 'pointer',
 };
 
-export default function EmailForwardingSetup({ brandId }) {
+export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onComplete }) {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -56,7 +57,9 @@ export default function EmailForwardingSetup({ brandId }) {
     setMessage('');
     setError('');
     try {
-      const response = await client.get('/api/brands/' + brandId + '/gmail/send-auth-url');
+      const response = await client.get('/api/brands/' + brandId + '/gmail/send-auth-url', {
+        params: { return_to: returnTo },
+      });
       window.location.href = response.data.auth_url;
     } catch (err) {
       setError(extractErrorMessage(err, 'Could not start Gmail send-only authorization.'));
@@ -70,6 +73,7 @@ export default function EmailForwardingSetup({ brandId }) {
       await client.post('/api/brands/' + brandId + '/email-forwarding/activate');
       await refresh();
       setMessage('Email forwarding is now active.');
+      if (onComplete) onComplete();
     } catch (err) {
       setError(extractErrorMessage(err, 'Could not activate forwarding.'));
     } finally { setBusy(false); }
@@ -116,10 +120,10 @@ export default function EmailForwardingSetup({ brandId }) {
   return (
     <section style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border)' }}>
       <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-        Free email forwarding
+        Receive customer support emails
       </div>
       <p style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.55, margin: '0 0 12px' }}>
-        Receive customer support emails through your private tResolv address. Your normal Gmail inbox stays in place. Gmail is connected separately for sending replies only.
+        tResolv receives support emails through a private forwarding address. Your Gmail inbox stays in Gmail. The Google connection below is used only to send replies; it does not read your mailbox.
       </p>
 
       {loading ? (
@@ -152,8 +156,9 @@ export default function EmailForwardingSetup({ brandId }) {
               <ol style={{ paddingLeft: '18px', margin: 0, fontSize: '12px', lineHeight: 1.65, color: 'var(--text-secondary)' }}>
                 <li>Open <a href="https://mail.google.com/mail/u/0/#settings/fwdandpop" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>Gmail Forwarding settings</a> for your support inbox.</li>
                 <li>Add the tResolv address above as a forwarding address.</li>
-                <li>Return here and refresh after Google sends its confirmation email.</li>
-                <li>Copy the code below, enter it in Gmail, and confirm the address.</li>
+                <li>Refresh this page after Gmail sends its confirmation code. Enter that code in Gmail, then click the confirmation button below.</li>
+                <li>In Gmail, select <strong>Forward a copy of incoming mail</strong> to the tResolv address, choose <strong>Keep Gmail's copy in the Inbox</strong>, and save changes.</li>
+                <li>Return here and activate forwarding after the address is verified and Gmail sending is connected.</li>
               </ol>
               <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '10px' }}>
                 <button type="button" disabled={busy} onClick={refresh} style={buttonStyle}>Refresh verification code</button>
@@ -183,22 +188,42 @@ export default function EmailForwardingSetup({ brandId }) {
                 </span>
               </div>
               {!status.gmail_send_connected && (
-                <button type="button" disabled={busy} onClick={connectSendOnly} style={buttonStyle}>
-                  {busy ? 'Connecting…' : 'Connect Gmail for sending only'}
-                </button>
+                <>
+                  <GmailUnverifiedNotice />
+                  <button type="button" disabled={busy || !status.verified} onClick={connectSendOnly} style={{ ...buttonStyle, opacity: (busy || !status.verified) ? 0.55 : 1, marginTop: '8px' }}>
+                    {busy ? 'Connecting…' : 'Connect Gmail to send replies'}
+                  </button>
+                  {!status.verified && (
+                    <p style={{ fontSize: '11px', lineHeight: 1.5, color: 'var(--text-muted)', margin: '8px 0 0' }}>
+                      Verify the forwarding address first. The send-only Google connection unlocks after that.
+                    </p>
+                  )}
+                </>
               )}
               <p style={{ fontSize: '11px', lineHeight: 1.5, color: 'var(--text-muted)', margin: '8px 0 0' }}>
-                This uses a separate Gmail permission request for sending replies. It does not read your inbox.
+                tResolv requests permission to send messages only. Incoming support emails are delivered through the forwarding address, not Gmail inbox access.
               </p>
               {status.verified && status.gmail_send_connected && status.ingestion_mode !== 'forwarding' && (
                 <button type="button" disabled={busy} onClick={activateForwarding} style={{ ...buttonStyle, marginTop: '10px' }}>
-                  {busy ? 'Activating…' : 'Activate email forwarding'}
+                  {busy ? 'Activating…' : "I've enabled forwarding in Gmail — activate"}
                 </button>
               )}
               {status.ingestion_mode === 'forwarding' && (
-                <button type="button" disabled={busy} onClick={pauseForwarding} style={{ ...buttonStyle, marginTop: '10px' }}>
-                  {busy ? 'Switching…' : 'Pause forwarding and restore Gmail polling'}
-                </button>
+                <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div role="status" style={{ fontSize: '12px', color: 'var(--success)' }}>
+                    Email forwarding is active. New support emails are routed to tResolv, and Gmail API access is send-only.
+                  </div>
+                  {onComplete && (
+                    <button type="button" onClick={onComplete} style={buttonStyle}>
+                      Continue →
+                    </button>
+                  )}
+                  {status.legacy_gmail_connected && (
+                    <button type="button" disabled={busy} onClick={pauseForwarding} style={{ ...buttonStyle, marginTop: '2px' }}>
+                      {busy ? 'Switching…' : 'Pause forwarding and use the existing Gmail connection'}
+                    </button>
+                  )}
+                </div>
               )}
             </div>
           )}

@@ -568,7 +568,14 @@ async def connect_gmail(tenant: TenantContext = Depends(require_tenant_admin)):
                 status_code=400,
                 detail="No brand found. Create a brand first before connecting Gmail."
             )
-        auth_url = brand_gmail_service.get_auth_url(brand["id"])
+        # Keep this compatibility endpoint on the current least-privilege
+        # path too. Never send new users through the legacy gmail.modify flow.
+        if not brand.get("inbound_email_enabled") or not brand.get("inbound_email_token"):
+            raise HTTPException(
+                status_code=409,
+                detail="Create your tResolv forwarding address in Settings before connecting Gmail.",
+            )
+        auth_url = brand_gmail_service.get_send_auth_url(brand["id"], return_to="settings")
         return {"auth_url": auth_url, "brand_id": brand["id"]}
     except HTTPException:
         raise

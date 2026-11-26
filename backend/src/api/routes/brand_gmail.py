@@ -12,6 +12,7 @@ import secrets
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import RedirectResponse
+from urllib.parse import quote
 
 from src.services.brand_gmail_service import brand_gmail_service
 from src.lib.supabase_client import supabase_select, supabase_update
@@ -89,6 +90,8 @@ async def email_forwarding_status(
     code = brand.get("inbound_email_verification_code")
     code_is_available = bool(code and brand.get("inbound_email_verification_code_at"))
     return {
+        "legacy_gmail_connected": bool(brand.get("gmail_connected")),
+        "legacy_gmail_email": brand.get("gmail_email"),
         "forwarding_address": (
             f"{os.getenv('INBOUND_EMAIL_LOCAL_PART', 'support').strip().lower()}+{brand.get('inbound_email_token')}@{domain}"
             if brand.get("inbound_email_token") and domain else None
@@ -142,8 +145,13 @@ async def activate_email_forwarding(brand_id: str, tenant: TenantContext = Depen
 
 @router.post("/{brand_id}/email-forwarding/pause")
 async def pause_email_forwarding(brand_id: str, tenant: TenantContext = Depends(require_tenant_admin)):
-    """Restore legacy Gmail polling without disconnecting OAuth."""
-    _get_owned_brand(brand_id, tenant)
+    """Pause forwarding only when this brand still has a usable legacy Gmail connection."""
+    brand = _get_owned_brand(brand_id, tenant)
+    if not brand.get("gmail_connected"):
+        raise HTTPException(
+            status_code=409,
+            detail="The previous Gmail inbox connection is not active. Keep email forwarding enabled.",
+        )
     supabase_update("brands", {"id": f"eq.{brand_id}"}, {
         "email_ingestion_mode": "gmail_polling",
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -154,6 +162,7 @@ async def pause_email_forwarding(brand_id: str, tenant: TenantContext = Depends(
 @router.get("/{brand_id}/gmail/send-auth-url")
 async def get_gmail_send_auth_url(
     brand_id: str,
+    return_to: str = "brands",
     tenant: TenantContext = Depends(require_tenant_admin),
 ):
     """Start send-only Gmail OAuth for forwarding-mode brands."""
@@ -163,8 +172,13 @@ async def get_gmail_send_auth_url(
             status_code=409,
             detail="Create the forwarding address before connecting Gmail send access",
         )
+    if not brand.get("inbound_email_verified_at"):
+        raise HTTPException(
+            status_code=409,
+            detail="Verify the forwarding address in Gmail before connecting send access",
+        )
     try:
-        return {"auth_url": brand_gmail_service.get_send_auth_url(brand_id)}
+        return {"auth_url": brand_gmail_service.get_send_auth_url(brand_id, return_to=return_to)}
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -200,24 +214,27 @@ async def gmail_oauth_callback(code: str = None, state: str = None, error: str =
     Tampering with state → verification fails → error redirect, no tokens saved.
     """
     frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
+    return_path = brand_gmail_service.get_return_path(state) if state else "/brands"
 
     if error:
         logger.warning(f"[BrandGmail] OAuth denied by user: {error}")
-        return RedirectResponse(f"{frontend_url}/brands?gmail_error={error}")
+        return RedirectResponse(f"{frontend_url}{return_path}?gmail_error={quote(error, safe='')}")
 
     if not code or not state:
-        return RedirectResponse(f"{frontend_url}/brands?gmail_error=missing_params")
+        return RedirectResponse(f"{frontend_url}{return_path}?gmail_error=missing_params")
 
     result = await brand_gmail_service.handle_callback(state=state, code=code)
 
     if result["success"]:
         email = result.get("email", "")
-        return RedirectResponse(f"{frontend_url}/brands?gmail_connected=1&email={email}")
+        return RedirectResponse(
+            f"{frontend_url}{return_path}?gmail_connected=1&email={quote(email, safe='')}"
+        )
 
     error_code = result.get("error", "callback_failed")
     if error_code == "invalid_or_expired_state":
         logger.warning("[BrandGmail] OAuth callback rejected — state invalid or expired")
-    return RedirectResponse(f"{frontend_url}/brands?gmail_error={error_code}")
+    return RedirectResponse(f"{frontend_url}{return_path}?gmail_error={quote(error_code, safe='')}")
 
 
 @router.post("/{brand_id}/gmail/disconnect")
