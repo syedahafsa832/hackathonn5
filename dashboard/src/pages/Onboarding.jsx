@@ -305,7 +305,7 @@ function StepImport({ brandId, shopifyConnected, onNext }) {
 
 // ─────────────────────────────────────────────────── Step 3: Gmail ──
 
-function StepGmail({ brandId, onNext }) {
+function StepGmail({ brandId, onNext, onSkip }) {
   const [gmailError, setGmailError] = useState('');
   const [gmailMessage, setGmailMessage] = useState('');
 
@@ -338,7 +338,7 @@ function StepGmail({ brandId, onNext }) {
         onComplete={onNext}
       />
 
-      <button onClick={onNext} style={skipBtn}>
+      <button onClick={onSkip} style={skipBtn}>
         I'll finish email setup later →
       </button>
     </div>
@@ -721,7 +721,11 @@ export default function Onboarding() {
 
         {step === 1 && <StepShopify brandId={brandId} onNext={() => setStep(2)} onConnected={() => setShopifyConnected(true)} />}
         {step === 2 && <StepImport brandId={brandId} shopifyConnected={shopifyConnected} onNext={() => setStep(3)} />}
-        {step === 3 && <StepGmail brandId={brandId} onNext={() => { setGmailConnected(true); setStep(4); }} />}
+        {step === 3 && <StepGmail
+          brandId={brandId}
+          onNext={() => { setGmailConnected(true); setStep(4); }}
+          onSkip={() => setStep(4)}
+        />}
         {step === 4 && <StepStyle brandId={brandId} onNext={() => setStep(5)} />}
         {step === 5 && <StepTestLuna onNext={() => setStep(6)} />}
         {step === 6 && <StepGoLive brandId={brandId} shopifyConnected={shopifyConnected} gmailConnected={gmailConnected} onFinish={handleFinish} />}
