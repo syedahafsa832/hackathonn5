@@ -5,6 +5,7 @@ import ChatWidget from '../components/ChatWidget';
 import Alert from '../components/Alert';
 import EmailForwardingSetup from '../components/EmailForwardingSetup';
 import ShopifyConnectionNotice from '../components/ShopifyConnectionNotice';
+import { gmailOAuthErrorMessage } from '../components/gmailOAuthErrors';
 
 const inputStyle = {
   width: '100%',
@@ -29,13 +30,10 @@ const SHOPIFY_OAUTH_ERROR_MESSAGES = {
 // ──────────────────────────────────────────────────────── Email Tab ──
 
 function EmailTab() {
-  const [gmailStatus, setGmailStatus] = useState(null);
   const [loadingStatus, setLoadingStatus] = useState(true);
-  const [disconnecting, setDisconnecting] = useState(false);
   // True from the moment "Connect"/"Reconnect" is clicked until the browser
   // actually navigates to Google (or the request fails) — the one window
   // where the user has clicked something but sees no other feedback yet.
-  const [connecting, setConnecting] = useState(false);
   // Raw gmail_error code from the OAuth redirect, mapped to specific copy via
   // gmailOAuthErrorMessage() below — kept separate from `msg` (used for
   // unrelated success/failure toasts elsewhere on this tab) so the Gmail
@@ -60,13 +58,7 @@ function EmailTab() {
   const loadStatus = useCallback(async (currentBrandId) => {
     setLoadingStatus(true);
     try {
-      const [forwardingRes, accountRes] = await Promise.all([
-        currentBrandId
-          ? client.get('/api/brands/' + currentBrandId + '/email-forwarding/status').catch(() => ({ data: null }))
-          : Promise.resolve({ data: null }),
-        client.get('/api/v1/settings/account').catch(() => ({ data: {} })),
-      ]);
-      setGmailStatus(forwardingRes.data);
+      const accountRes = await client.get('/api/v1/settings/account').catch(() => ({ data: {} }));
       setThreshold(accountRes.data?.settings?.confidence_threshold ?? accountRes.data?.confidence_threshold ?? 80);
       setIsAdmin((accountRes.data?.team_role ?? 'admin') === 'admin');
 
