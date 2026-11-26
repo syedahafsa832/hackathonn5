@@ -27,11 +27,6 @@ function StoreCard({ brand, highlightGmail }) {
   const [connecting, setConnecting] = useState(false);
   const [connectMsg, setConnectMsg] = useState('');
   const [testResult, setTestResult] = useState(null);
-  const [gmailStatus, setGmailStatus] = useState({
-    connected: brand.gmail_connected || false,
-    email: brand.gmail_email || null,
-  });
-  const [gmailLoading, setGmailLoading] = useState(false);
   const [agentName, setAgentName] = useState(brand.agent_name || 'Luna');
   const [brandName, setBrandName] = useState(brand.name || '');
   const [emailSignature, setEmailSignature] = useState(brand.email_signature || '');
@@ -133,29 +128,6 @@ function StoreCard({ brand, highlightGmail }) {
     }
   };
 
-  const connectGmail = async () => {
-    setGmailLoading(true);
-    setConnectMsg('');
-    try {
-      const res = await client.get(`/api/brands/${brand.id}/gmail/auth-url`);
-      window.location.href = res.data.auth_url;
-    } catch (err) {
-      // A blocked limit (or any other failure) must tell the user why instead
-      // of the button just silently stopping — see extractErrorMessage.
-      setConnectMsg(extractErrorMessage(err, 'Could not start Gmail connection.'));
-      setGmailLoading(false);
-    }
-  };
-
-  const disconnectGmail = async () => {
-    setGmailLoading(true);
-    try {
-      await client.post(`/api/brands/${brand.id}/gmail/disconnect`);
-      setGmailStatus({ connected: false, email: null });
-    } catch {}
-    setGmailLoading(false);
-  };
-
   // "Connected" here must mean a real Shopify connection, not merely that
   // the brand row is active (every brand is is_active by default from
   // creation, Shopify or not) - same signal Onboarding.jsx already uses,
@@ -249,128 +221,7 @@ function StoreCard({ brand, highlightGmail }) {
             This is the name your customers see in chat and email replies. Default: Luna
           </p>
 
-          <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border)' }}>
-            <div style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '10px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Refund Policy</div>
-            <div style={{ display: 'flex', gap: '12px', marginBottom: '12px', flexWrap: 'wrap' }}>
-              <div>
-                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>Return window (days)</div>
-                <input
-                  type="number"
-                  min="0"
-                  value={returnPolicyDays}
-                  onChange={e => setReturnPolicyDays(e.target.value)}
-                  style={{ padding: '7px 10px', borderRadius: '4px', border: '1px solid var(--border)', fontSize: '13px', width: '100px' }}
-                />
-              </div>
-              <div style={{ display: 'flex', alignItems: 'flex-end', paddingBottom: '9px' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px', cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={excludeDigitalProducts}
-                    onChange={e => setExcludeDigitalProducts(e.target.checked)}
-                  />
-                  Exclude digital products
-                </label>
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: '12px', marginBottom: '12px', flexWrap: 'wrap' }}>
-              <div style={{ flex: '1', minWidth: '220px' }}>
-                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>Excluded product IDs</div>
-                <input
-                  value={excludedProductIds}
-                  onChange={e => setExcludedProductIds(e.target.value)}
-                  placeholder="e.g. 123456789, 987654321"
-                  style={{ padding: '7px 10px', borderRadius: '4px', border: '1px solid var(--border)', fontSize: '13px', width: '100%' }}
-                />
-              </div>
-              <div style={{ flex: '1', minWidth: '220px' }}>
-                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>Excluded collection IDs</div>
-                <input
-                  value={excludedCollectionIds}
-                  onChange={e => setExcludedCollectionIds(e.target.value)}
-                  placeholder="e.g. 111222333"
-                  style={{ padding: '7px 10px', borderRadius: '4px', border: '1px solid var(--border)', fontSize: '13px', width: '100%' }}
-                />
-              </div>
-            </div>
-            <div style={{ marginBottom: '12px' }}>
-              <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '4px' }}>Notes for the AI</div>
-              <textarea
-                value={refundNotes}
-                onChange={e => setRefundNotes(e.target.value)}
-                placeholder="e.g. Approve refunds for damaged items even outside the return window."
-                rows={2}
-                style={{ padding: '7px 10px', borderRadius: '4px', border: '1px solid var(--border)', fontSize: '13px', width: '100%', fontFamily: 'inherit', resize: 'vertical' }}
-              />
-            </div>
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-              <button
-                onClick={saveRefundPolicy}
-                disabled={savingRefundPolicy}
-                style={{ padding: '7px 14px', borderRadius: '4px', background: 'var(--accent)', color: 'white', fontWeight: '500', fontSize: '13px', cursor: savingRefundPolicy ? 'not-allowed' : 'pointer' }}
-              >
-                {savingRefundPolicy ? 'Saving...' : 'Save refund policy'}
-              </button>
-              {refundPolicyMsg && (
-                <span style={{ fontSize: '12px', color: refundPolicyMsg === 'Saved!' ? 'var(--success)' : 'var(--danger)' }}>
-                  {refundPolicyMsg}
-                </span>
-              )}
-            </div>
-            <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '8px' }}>
-              Refunds always require your one-tap approval before executing in Shopify. This policy only shapes what the AI recommends, not whether approval is needed.
-            </p>
-          </div>
-
-          {testResult?.shop && (
-            <div style={{ padding: '8px 12px', background: 'var(--success-light)', borderRadius: '4px', fontSize: '12px', color: 'var(--success)', marginBottom: '12px' }}>
-              ✓ {testResult.shop.name}: {testResult.shop.plan_name} plan · {testResult.shop.currency}
-            </div>
-          )}
-
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-            <button
-              onClick={testShopify}
-              disabled={connecting}
-              style={{ padding: '7px 14px', borderRadius: '4px', background: 'var(--accent)', color: 'white', fontWeight: '500', fontSize: '13px', cursor: connecting ? 'not-allowed' : 'pointer' }}
-            >
-              {connecting ? 'Testing...' : 'Test Shopify Connection'}
-            </button>
-          </div>
-          {connectMsg && (
-            <div style={{ marginTop: '8px', fontSize: '12px', color: connectMsg.includes('success') || connectMsg.includes('Connected') ? 'var(--success)' : 'var(--danger)' }}>
-              {connectMsg}
-            </div>
-          )}
-
-          <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border)' }}>
-            <div style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-secondary)', marginBottom: '10px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Gmail Inbox</div>
-            {gmailStatus.connected ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 10px', background: 'var(--success-light)', borderRadius: '4px', fontSize: '13px', color: 'var(--success)' }}>
-                  <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: 'var(--success)', display: 'inline-block' }} />
-                  {gmailStatus.email}
-                </div>
-                <button
-                  onClick={disconnectGmail}
-                  disabled={gmailLoading}
-                  style={{ padding: '6px 12px', borderRadius: '4px', border: '1px solid var(--border)', background: 'transparent', fontSize: '13px', color: 'var(--text-secondary)', cursor: gmailLoading ? 'not-allowed' : 'pointer' }}
-                >
-                  {gmailLoading ? 'Disconnecting...' : 'Disconnect'}
-                </button>
-              </div>
-            ) : (
-              <button
-                onClick={connectGmail}
-                disabled={gmailLoading}
-                style={{ padding: '7px 14px', borderRadius: '4px', border: '1px solid var(--border)', background: 'transparent', fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)', cursor: gmailLoading ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
-                {gmailLoading ? 'Redirecting...' : 'Connect Gmail'}
-              </button>
-            )}
-          </div>
-          <EmailForwardingSetup brandId={brand.id} />
+          <EmailForwardingSetup brandId={brand.id} returnTo="brands" />
         </div>
       )}
     </div>
