@@ -126,6 +126,7 @@ def test_only_google_forwarding_confirmation_email_exposes_code():
     assert _google_forwarding_confirmation_code(lookalike) is None
     assert _google_forwarding_confirmation_code(unrelated_google) is None
 
+
 def test_google_forwarding_code_is_extracted_from_subject_prefix():
     message = {
         "sender_email": "forwarding-noreply@google.com",
