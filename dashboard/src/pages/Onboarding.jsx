@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import client, { extractErrorMessage } from '../api/client';
 import Alert from '../components/Alert';
-import GmailUnverifiedNotice from '../components/GmailUnverifiedNotice';
+import EmailForwardingSetup from '../components/EmailForwardingSetup';
 import ShopifyConnectionNotice from '../components/ShopifyConnectionNotice';
 import { gmailOAuthErrorMessage } from '../components/gmailOAuthErrors';
 import HelpContactLink from '../components/HelpContactLink';
@@ -306,69 +306,41 @@ function StepImport({ brandId, shopifyConnected, onNext }) {
 // ─────────────────────────────────────────────────── Step 3: Gmail ──
 
 function StepGmail({ brandId, onNext }) {
-  const [polling, setPolling] = useState(false);
   const [gmailError, setGmailError] = useState('');
-
-  const connectGmail = async () => {
-    setPolling(true);
-    setGmailError('');
-    try {
-      const res = await client.get(`/api/brands/${brandId}/gmail/auth-url`);
-      const authUrl = res.data?.auth_url || res.data?.url;
-      if (authUrl) {
-        window.location.href = authUrl;
-      } else {
-        setGmailError("tResolv couldn't generate a Google sign-in link. Try again, or skip this step and connect from Settings later.");
-        setPolling(false);
-      }
-    } catch (err) {
-      const fallback = err.response
-        ? 'Could not start Gmail connection. Try again, or skip this step and connect from Settings later.'
-        : "Couldn't reach tResolv's server. Check your internet connection and try again.";
-      setGmailError(extractErrorMessage(err, fallback));
-      setPolling(false);
-    }
-  };
+  const [gmailMessage, setGmailMessage] = useState('');
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('gmail_connected') === '1') {
-      onNext();
+      setGmailMessage('Gmail send access connected. Finish the forwarding setup below.');
+      window.history.replaceState({}, '', window.location.pathname);
     } else if (params.get('gmail_error')) {
       setGmailError(gmailOAuthErrorMessage(params.get('gmail_error')));
       window.history.replaceState({}, '', window.location.pathname);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div>
-        <h2 style={{ fontSize: '22px', fontWeight: '700', marginBottom: '8px' }}>Connect your inbox</h2>
+        <h2 style={{ fontSize: '22px', fontWeight: '700', marginBottom: '8px' }}>Set up customer email</h2>
         <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: '1.5' }}>
-          Now connect the inbox where customers contact you. Resolv reads it for new support emails and replies on your behalf.
+          First forward customer support emails to your private tResolv address. Then connect Gmail with permission to send replies only. Your normal inbox stays in Gmail.
         </p>
       </div>
 
-      <div style={{ padding: '20px', background: 'var(--bg-secondary)', borderRadius: '6px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-        {['Automatically reads new support emails', 'Sends AI-drafted replies from your address', 'Never shares your emails with third parties'].map(text => (
-          <div key={text} style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '14px', color: 'var(--text-secondary)' }}>
-            <span style={{ color: 'var(--success)', fontWeight: '700', flexShrink: 0 }}>✓</span>
-            {text}
-          </div>
-        ))}
-      </div>
+      {gmailMessage && <Alert variant="success">{gmailMessage}</Alert>}
+      {gmailError && <Alert variant="error">{gmailError}</Alert>}
 
-      <GmailUnverifiedNotice />
+      <EmailForwardingSetup
+        brandId={brandId}
+        returnTo="onboarding"
+        onComplete={onNext}
+      />
 
-      <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-        <button onClick={connectGmail} disabled={polling} style={{ ...primaryBtn(polling), display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/></svg>
-          {polling ? 'Redirecting...' : 'Connect Gmail'}
-        </button>
-        <button onClick={onNext} style={skipBtn}>Skip for now</button>
-      </div>
-      <Alert variant="error">{gmailError}</Alert>
+      <button onClick={onNext} style={skipBtn}>
+        I'll finish email setup later →
+      </button>
     </div>
   );
 }
@@ -616,7 +588,9 @@ export default function Onboarding() {
         setBrandId(brand.id);
         const isShopifyConnected = !!brand.shopify_connected || !!brand.shopify_domain;
         setShopifyConnected(isShopifyConnected);
-        setGmailConnected(!!brand.gmail_connected);
+        const emailSetupComplete = !!brand.gmail_connected
+          || (!!brand.gmail_send_connected && brand.email_ingestion_mode === 'forwarding');
+        setGmailConnected(emailSetupComplete);
 
         // Root cause of the "redirect back to onboarding" bug: step always
         // started at 1 regardless of real progress, so any fresh visit to
@@ -646,9 +620,9 @@ export default function Onboarding() {
           return client.get(`/api/v2/brands/${brand.id}/shopify/import-status`)
             .then(r => {
               const imported = (r.data?.sources || []).some(s => s.status === 'completed');
-              setStep(imported ? resumeAt(!!brand.gmail_connected) : 2);
+              setStep(imported ? resumeAt(emailSetupComplete) : 2);
             })
-            .catch(() => setStep(resumeAt(!!brand.gmail_connected)));
+            .catch(() => setStep(resumeAt(emailSetupComplete)));
         }
         setStep(1);
       } else {
