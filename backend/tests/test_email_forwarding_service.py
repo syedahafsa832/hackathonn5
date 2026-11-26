@@ -125,3 +125,22 @@ def test_only_google_forwarding_confirmation_email_exposes_code():
     assert _google_forwarding_confirmation_code(lookalike) is None
     assert _google_forwarding_confirmation_code(unrelated_google) is None
 
+def test_google_forwarding_code_is_extracted_from_subject_prefix():
+    message = {
+        "sender_email": "forwarding-noreply@google.com",
+        "subject": "(#87654321) Gmail Forwarding Confirmation - Receive Mail from shop@gmail.com",
+        "body": "To allow automatic forwarding, click the link below.",
+    }
+
+    assert _google_forwarding_confirmation_code(message) == "87654321"
+
+
+def test_google_forwarding_code_prefers_labelled_body_code_over_unrelated_subject_digits():
+    message = {
+        "sender_email": "mail-noreply@google.com",
+        "subject": "Gmail Forwarding Confirmation - Receive Mail from shop@gmail.com",
+        "body": "Order 123456789. Confirmation code: 11223344.",
+    }
+
+    assert _google_forwarding_confirmation_code(message) == "11223344"
+
