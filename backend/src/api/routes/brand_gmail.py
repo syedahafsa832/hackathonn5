@@ -64,6 +64,7 @@ async def setup_email_forwarding(
         updates.update({
             "inbound_email_verified_at": None,
             "inbound_email_verification_code": None,
+            "inbound_email_verification_link": None,
             "inbound_email_verification_code_at": None,
         })
     supabase_update("brands", {"id": f"eq.{brand_id}"}, updates)
@@ -98,6 +99,7 @@ async def email_forwarding_status(
         ),
         "verified": bool(brand.get("inbound_email_verified_at")),
         "verification_code": code if code_is_available else None,
+        "verification_link": brand.get("inbound_email_verification_link") if code_is_available else None,
         "gmail_send_connected": bool(brand.get("gmail_send_connected")),
         "gmail_email": brand.get("gmail_send_email"),
         "ingestion_mode": brand.get("email_ingestion_mode", "gmail_polling"),
@@ -115,11 +117,16 @@ async def confirm_email_forwarding(
         raise HTTPException(status_code=409, detail="Set up forwarding first")
     code_at = brand.get("inbound_email_verification_code_at")
     code = brand.get("inbound_email_verification_code")
-    if not code or not code_at:
-        raise HTTPException(status_code=409, detail="Waiting for Gmail to send its forwarding confirmation code")
+    link = brand.get("inbound_email_verification_link")
+    if not (code or link) or not code_at:
+        raise HTTPException(
+            status_code=409,
+            detail="Waiting for Google's forwarding confirmation email. Refresh after it reaches tResolv.",
+        )
     supabase_update("brands", {"id": f"eq.{brand_id}"}, {
         "inbound_email_verified_at": datetime.now(timezone.utc).isoformat(),
         "inbound_email_verification_code": None,
+        "inbound_email_verification_link": None,
         "inbound_email_verification_code_at": None,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     })
