@@ -89,7 +89,10 @@ async def email_forwarding_status(
     brand = _get_owned_brand(brand_id, tenant)
     domain = os.getenv("INBOUND_EMAIL_DOMAIN", "").strip().lower().lstrip("@")
     code = brand.get("inbound_email_verification_code")
-    code_is_available = bool(code and brand.get("inbound_email_verification_code_at"))
+    verification_link = brand.get("inbound_email_verification_link")
+    verification_details_available = bool(
+        (code or verification_link) and brand.get("inbound_email_verification_code_at")
+    )
     return {
         "legacy_gmail_connected": bool(brand.get("gmail_connected")),
         "legacy_gmail_email": brand.get("gmail_email"),
@@ -98,8 +101,8 @@ async def email_forwarding_status(
             if brand.get("inbound_email_token") and domain else None
         ),
         "verified": bool(brand.get("inbound_email_verified_at")),
-        "verification_code": code if code_is_available else None,
-        "verification_link": brand.get("inbound_email_verification_link") if code_is_available else None,
+        "verification_code": code if verification_details_available and code else None,
+        "verification_link": verification_link if verification_details_available else None,
         "gmail_send_connected": bool(brand.get("gmail_send_connected")),
         "gmail_email": brand.get("gmail_send_email"),
         "ingestion_mode": brand.get("email_ingestion_mode", "gmail_polling"),
