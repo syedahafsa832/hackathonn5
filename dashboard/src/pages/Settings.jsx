@@ -137,7 +137,9 @@ function EmailTab() {
 
   return (
     <div style={{ maxWidth: '520px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
-      <Alert variant={msg.includes('Failed') || msg.includes("Couldn't") ? 'error' : 'success'}>{msg}</Alert>
+      <Alert variant={gmailErrorCode || msg.includes('Failed') || msg.includes("Couldn't") ? 'error' : 'success'}>
+        {gmailErrorCode ? gmailOAuthErrorMessage(gmailErrorCode) : msg}
+      </Alert>
 
       {/* Gmail forwarding + send-only connection */}
       <div style={{ background: 'white', border: '1px solid #E4E4E7', borderRadius: '8px', padding: '24px' }}>
