@@ -17,6 +17,7 @@ from email import policy
 from email.parser import BytesParser
 from email.utils import parsedate_to_datetime, parseaddr
 from html.parser import HTMLParser
+from urllib.parse import urlsplit
 from typing import Any, Dict, Optional
 
 from src.lib.supabase_client import supabase_select, supabase_update
@@ -30,6 +31,13 @@ class _HTMLTextExtractor(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
+        self.links: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag.lower() == "a":
+            href = dict(attrs).get("href")
+            if href:
+                self.links.append(href.strip())
 
     def handle_data(self, data: str) -> None:
         text = data.strip()
@@ -38,7 +46,6 @@ class _HTMLTextExtractor(HTMLParser):
 
     def text(self) -> str:
         return "\n".join(self.parts)
-
 
 def _header(message, name: str) -> str:
     values = message.get_all(name, [])
@@ -70,6 +77,26 @@ def _find_attached_original(message):
     except Exception:
         pass
     return message
+
+
+def _extract_html_links(message) -> list[str]:
+    """Collect anchor destinations from HTML parts without altering ticket text."""
+    links: list[str] = []
+    for part in message.walk():
+        if part.is_multipart() or part.get_content_type().lower() != "text/html":
+            continue
+        try:
+            value = part.get_content()
+            if isinstance(value, bytes):
+                value = value.decode(part.get_content_charset() or "utf-8", errors="replace")
+            if not isinstance(value, str):
+                continue
+            extractor = _HTMLTextExtractor()
+            extractor.feed(value)
+            links.extend(extractor.links)
+        except Exception:
+            continue
+    return links
 
 
 def _extract_body(message) -> str:
@@ -171,6 +198,7 @@ def parse_forwarded_email(raw: bytes) -> Dict[str, Any]:
         "references": reference_ids,
         "received_at": received_at or datetime.now(timezone.utc).isoformat(),
         "headers": headers,
+        "html_links": _extract_html_links(message),
     }
 
 
@@ -230,8 +258,68 @@ def _google_forwarding_confirmation_code(parsed: Dict[str, Any]) -> Optional[str
         return None
     if "forwarding confirmation" not in subject:
         return None
-    match = re.search(r"\b(\d{8,10})\b", parsed.get("body") or "")
+    body = parsed.get("body") or ""
+
+    # Gmail commonly puts the 8-digit confirmation code in the subject:
+    # "(#12345678) Gmail Forwarding Confirmation - Receive Mail from ..."
+    # Some Gmail templates also include "Confirmation code: 12345678" in
+    # the body. Check these explicit locations before the legacy body-only
+    # fallback so unrelated order numbers are not preferred.
+    subject_code = re.search(
+        r"^\s*\(#(\d{8,10})\)\s*gmail forwarding confirmation\b",
+        parsed.get("subject") or "",
+        re.IGNORECASE,
+    )
+    if subject_code:
+        return subject_code.group(1)
+
+    labelled_body_code = re.search(
+        r"\bconfirmation\s+code\s*[:#]?\s*(\d{8,10})\b",
+        body,
+        re.IGNORECASE,
+    )
+    if labelled_body_code:
+        return labelled_body_code.group(1)
+
+    # Backward-compatible fallback for Google's older plain-text templates.
+    match = re.search(r"\b(\d{8,10})\b", body)
     return match.group(1) if match else None
+
+def _google_forwarding_confirmation_link(parsed: Dict[str, Any]) -> Optional[str]:
+    """Extract only Google's forwarding-verification URL from a verified sender."""
+    sender = (parsed.get("sender_email") or "").lower()
+    subject = parsed.get("subject") or ""
+    if sender not in {"forwarding-noreply@google.com", "mail-noreply@google.com"}:
+        return None
+    if "forwarding confirmation" not in subject.lower():
+        return None
+
+    candidates = list(parsed.get("html_links") or [])
+    candidates.append(parsed.get("body") or "")
+    pattern = re.compile(
+        r"https://(?:mail-settings\.google\.com|mail\.google\.com|"
+        r"isolated\.mail\.google\.com)/mail/vf-[^\s<>'\"]+",
+        re.IGNORECASE,
+    )
+    for candidate in candidates:
+        decoded = html.unescape(str(candidate or ""))
+        match = pattern.search(decoded)
+        if not match:
+            continue
+        url = match.group(0).rstrip(".,;)>")
+        parts = urlsplit(url)
+        if (
+            parts.scheme == "https"
+            and parts.hostname in {
+                "mail-settings.google.com",
+                "mail.google.com",
+                "isolated.mail.google.com",
+            }
+            and parts.path.startswith("/mail/vf-")
+        ):
+            return url
+    return None
+
 
 async def process_forwarded_email(raw: bytes, envelope_to: str) -> Dict[str, Any]:
     """Resolve a Cloudflare catch-all address and run the standard email pipeline."""
@@ -263,15 +351,22 @@ async def process_forwarded_email(raw: bytes, envelope_to: str) -> Dict[str, Any
     # Capture Gmail's confirmation while polling remains active. Ignore all
     # normal mail until the merchant explicitly activates forwarding.
     verification_code = _google_forwarding_confirmation_code(parsed)
-    if verification_code:
+    verification_link = _google_forwarding_confirmation_link(parsed)
+    if verification_code or verification_link:
         await asyncio.to_thread(
             supabase_update, "brands", {"id": f"eq.{brand_id}"},
             {
                 "inbound_email_verification_code": verification_code,
+                "inbound_email_verification_link": verification_link,
                 "inbound_email_verification_code_at": datetime.now(timezone.utc).isoformat(),
             },
         )
-        return {"accepted": True, "status": "verification_code_captured"}
+        return {
+            "accepted": True,
+            "status": "verification_details_captured",
+            "has_code": bool(verification_code),
+            "has_link": bool(verification_link),
+        }
 
     if brand.get("email_ingestion_mode", "gmail_polling") != "forwarding":
         return {"accepted": True, "status": "forwarding_not_activated"}

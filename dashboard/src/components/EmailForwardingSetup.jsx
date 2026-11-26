@@ -115,6 +115,7 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
   };
 
   const codeReady = !!status?.verification_code;
+  const linkReady = !!status?.verification_link;
   const hasAddress = !!status?.forwarding_address;
 
   return (
@@ -140,7 +141,7 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
               <div style={{ display: 'flex', gap: '7px', alignItems: 'center', marginTop: '9px', fontSize: '12px' }}>
                 <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: status.verified ? 'var(--success)' : 'var(--warning, #d97706)' }} />
                 <span style={{ color: status.verified ? 'var(--success)' : 'var(--text-secondary)' }}>
-                  {status.verified ? 'Forwarding verified' : 'Waiting for Gmail verification'}
+                  {status.verified ? 'Forwarding verified' : 'Waiting for Google confirmation email'}
                 </span>
               </div>
             </div>
@@ -156,26 +157,49 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
               <ol style={{ paddingLeft: '18px', margin: 0, fontSize: '12px', lineHeight: 1.65, color: 'var(--text-secondary)' }}>
                 <li>Open <a href="https://mail.google.com/mail/u/0/#settings/fwdandpop" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>Gmail Forwarding settings</a> for your support inbox.</li>
                 <li>Add the tResolv address above as a forwarding address.</li>
-                <li>Refresh this page after Gmail sends its confirmation code. Enter that code in Gmail, then click the confirmation button below.</li>
-                <li>In Gmail, select <strong>Forward a copy of incoming mail</strong> to the tResolv address, choose <strong>Keep Gmail's copy in the Inbox</strong>, and save changes.</li>
-                <li>Return here and activate forwarding after the address is verified and Gmail sending is connected.</li>
+                <li>Click <strong>Add a forwarding address</strong>, enter the full tResolv address above, then choose Next, Proceed, and OK.</li>
+                <li>Come back here and click <strong>Check for Google confirmation</strong>. The confirmation code or link will appear in this card, not in your normal Gmail inbox.</li>
+                <li>If a code appears, enter it in Gmail's confirmation prompt. If a link appears, open it and complete Google's confirmation page. Then click the confirmation button here.</li>
+                <li>After Google confirms the address, choose <strong>Forward a copy of incoming mail</strong> to tResolv, select <strong>Keep Gmail's copy in the Inbox</strong>, and save changes.</li>
+                <li>Return here and activate forwarding after Gmail sending is connected.</li>
               </ol>
               <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '10px' }}>
-                <button type="button" disabled={busy} onClick={refresh} style={buttonStyle}>Refresh verification code</button>
+                <button type="button" disabled={busy} onClick={refresh} style={buttonStyle}>Check for Google confirmation</button>
                 {codeReady && (
-                  <div style={{ fontSize: '16px', fontWeight: 700, letterSpacing: '0.16em', fontFamily: 'monospace', padding: '6px 10px', border: '1px dashed var(--border)', borderRadius: '4px' }}>
-                    {status.verification_code}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Google confirmation code</span>
+                    <code style={{ fontSize: '16px', fontWeight: 700, letterSpacing: '0.16em', fontFamily: 'monospace', padding: '6px 10px', border: '1px dashed var(--border)', borderRadius: '4px' }}>
+                      {status.verification_code}
+                    </code>
                   </div>
                 )}
               </div>
-              {codeReady && (
-                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px' }}>
-                  The code stays here until you confirm it or request a new one.
+              {linkReady && (
+                <div style={{ marginTop: '8px', padding: '9px 10px', border: '1px solid var(--border)', borderRadius: '4px' }}>
+                  <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '5px' }}>Google confirmation link</div>
+                  <a
+                    href={status.verification_link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: 'var(--accent)', fontSize: '12px', fontWeight: 600, overflowWrap: 'anywhere' }}
+                  >
+                    Open Google confirmation page →
+                  </a>
+                  <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '5px 0 0' }}>
+                    Open this link, finish Google's confirmation page, then return here.
+                  </p>
                 </div>
               )}
-              <button type="button" disabled={busy || !codeReady} onClick={confirmForwarding} style={{ ...buttonStyle, marginTop: '10px', opacity: (busy || !codeReady) ? 0.55 : 1 }}>
-                I entered the code in Gmail
-              </button>
+              {(codeReady || linkReady) && (
+                <button type="button" disabled={busy} onClick={confirmForwarding} style={{ ...buttonStyle, marginTop: '10px' }}>
+                  I've completed Google's confirmation
+                </button>
+              )}
+              {!codeReady && !linkReady && (
+                <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '8px 0 0' }}>
+                  The message is delivered to tResolv's private routing address, not your personal Gmail inbox. If nothing appears after a few minutes, the inbound email route needs checking.
+                </p>
+              )}
             </div>
           )}
 

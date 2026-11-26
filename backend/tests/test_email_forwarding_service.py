@@ -12,6 +12,7 @@ from src.services.email_forwarding_service import (  # noqa: E402
     forwarding_message_ids,
     parse_forwarded_email,
     _google_forwarding_confirmation_code,
+    _google_forwarding_confirmation_link,
 )
 
 
@@ -124,4 +125,57 @@ def test_only_google_forwarding_confirmation_email_exposes_code():
     assert _google_forwarding_confirmation_code(allowed) == "12345678"
     assert _google_forwarding_confirmation_code(lookalike) is None
     assert _google_forwarding_confirmation_code(unrelated_google) is None
+
+
+def test_google_forwarding_code_is_extracted_from_subject_prefix():
+    message = {
+        "sender_email": "forwarding-noreply@google.com",
+        "subject": "(#87654321) Gmail Forwarding Confirmation - Receive Mail from shop@gmail.com",
+        "body": "To allow automatic forwarding, click the link below.",
+    }
+
+    assert _google_forwarding_confirmation_code(message) == "87654321"
+
+
+def test_google_forwarding_code_prefers_labelled_body_code_over_unrelated_subject_digits():
+    message = {
+        "sender_email": "mail-noreply@google.com",
+        "subject": "Gmail Forwarding Confirmation - Receive Mail from shop@gmail.com",
+        "body": "Order 123456789. Confirmation code: 11223344.",
+    }
+
+    assert _google_forwarding_confirmation_code(message) == "11223344"
+
+
+def test_google_forwarding_confirmation_link_is_extracted_from_plain_text():
+    link = "https://mail-settings.google.com/mail/vf-ABCD1234-token"
+    message = {
+        "sender_email": "forwarding-noreply@google.com",
+        "subject": "Gmail Forwarding Confirmation - Receive Mail from shop@gmail.com",
+        "body": f"To confirm, open this link: {link}",
+    }
+
+    assert _google_forwarding_confirmation_link(message) == link
+
+
+def test_google_forwarding_confirmation_link_is_extracted_from_html_href():
+    link = "https://mail-settings.google.com/mail/vf-ABCD1234-token"
+    msg = EmailMessage()
+    msg["From"] = "Gmail Team <mail-noreply@google.com>"
+    msg["Subject"] = "Gmail Forwarding Confirmation - Receive Mail from shop@gmail.com"
+    msg.set_content(f'<p><a href="{link}">Confirm forwarding</a></p>', subtype="html")
+
+    parsed = parse_forwarded_email(msg.as_bytes())
+
+    assert _google_forwarding_confirmation_link(parsed) == link
+
+
+def test_google_forwarding_confirmation_rejects_non_google_links():
+    message = {
+        "sender_email": "mail-noreply@google.com",
+        "subject": "Gmail Forwarding Confirmation - Receive Mail from shop@gmail.com",
+        "body": "https://evil.example/mail/vf-fake-token",
+    }
+
+    assert _google_forwarding_confirmation_link(message) is None
 
