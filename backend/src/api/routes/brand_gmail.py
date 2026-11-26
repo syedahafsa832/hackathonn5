@@ -172,6 +172,11 @@ async def get_gmail_send_auth_url(
             status_code=409,
             detail="Create the forwarding address before connecting Gmail send access",
         )
+    if not brand.get("inbound_email_verified_at"):
+        raise HTTPException(
+            status_code=409,
+            detail="Verify the forwarding address in Gmail before connecting send access",
+        )
     try:
         return {"auth_url": brand_gmail_service.get_send_auth_url(brand_id, return_to=return_to)}
     except ValueError as exc:
