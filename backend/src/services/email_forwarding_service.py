@@ -230,7 +230,31 @@ def _google_forwarding_confirmation_code(parsed: Dict[str, Any]) -> Optional[str
         return None
     if "forwarding confirmation" not in subject:
         return None
-    match = re.search(r"\b(\d{8,10})\b", parsed.get("body") or "")
+    body = parsed.get("body") or ""
+
+    # Gmail commonly puts the 8-digit confirmation code in the subject:
+    # "(#12345678) Gmail Forwarding Confirmation - Receive Mail from ..."
+    # Some Gmail templates also include "Confirmation code: 12345678" in
+    # the body. Check these explicit locations before the legacy body-only
+    # fallback so unrelated order numbers are not preferred.
+    subject_code = re.search(
+        r"^\s*\(#(\d{8,10})\)\s*gmail forwarding confirmation\b",
+        parsed.get("subject") or "",
+        re.IGNORECASE,
+    )
+    if subject_code:
+        return subject_code.group(1)
+
+    labelled_body_code = re.search(
+        r"\bconfirmation\s+code\s*[:#]?\s*(\d{8,10})\b",
+        body,
+        re.IGNORECASE,
+    )
+    if labelled_body_code:
+        return labelled_body_code.group(1)
+
+    # Backward-compatible fallback for Google's older plain-text templates.
+    match = re.search(r"\b(\d{8,10})\b", body)
     return match.group(1) if match else None
 
 async def process_forwarded_email(raw: bytes, envelope_to: str) -> Dict[str, Any]:
