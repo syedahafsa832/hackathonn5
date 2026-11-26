@@ -31,13 +31,8 @@ const SHOPIFY_OAUTH_ERROR_MESSAGES = {
 
 function EmailTab() {
   const [loadingStatus, setLoadingStatus] = useState(true);
-  // True from the moment "Connect"/"Reconnect" is clicked until the browser
-  // actually navigates to Google (or the request fails) — the one window
-  // where the user has clicked something but sees no other feedback yet.
-  // Raw gmail_error code from the OAuth redirect, mapped to specific copy via
-  // gmailOAuthErrorMessage() below — kept separate from `msg` (used for
-  // unrelated success/failure toasts elsewhere on this tab) so the Gmail
-  // card can render its own distinct "Connection Failed" state.
+  // OAuth callback errors are kept separate from general Settings messages
+  // so the forwarding setup can show the precise Google failure reason.
   const [gmailErrorCode, setGmailErrorCode] = useState(null);
   // Same brandId-resolution pattern as ShopifyTab/ReplyStyleTab below and
   // Onboarding.jsx's Go Live step: /api/ai-mode defaults to the global
@@ -92,7 +87,7 @@ function EmailTab() {
     // If we're returning from Gmail OAuth, refresh status and clean up URL
     const params = new URLSearchParams(window.location.search);
     if (params.get('gmail_connected')) {
-      setMsg('Gmail connected successfully!');
+      setMsg('Gmail send access connected. Finish enabling and activating forwarding below.');
       window.history.replaceState({}, '', window.location.pathname);
     } else if (params.get('gmail_error')) {
       setGmailErrorCode(params.get('gmail_error'));
