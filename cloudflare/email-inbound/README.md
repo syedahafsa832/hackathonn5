@@ -51,7 +51,7 @@ Official docs:
 
 ## Backend configuration
 
-Run backend/migrations/064_email_forwarding.sql once in the Supabase SQL Editor.
+Run backend/migrations/064_email_forwarding.sql and backend/migrations/065_email_forwarding_verification_link.sql once in the Supabase SQL Editor.
 
 Set these backend environment variables:
 
@@ -137,8 +137,10 @@ legacy full-access Gmail integration.
 2. Under Free email forwarding, create the private forwarding address.
 3. In the merchant's Gmail settings, add that address under Forwarding.
 4. Google sends a forwarding confirmation email to the Worker. Return to
-   tResolv, refresh the verification code, and copy it into Gmail.
-5. Click I entered the code in Gmail in tResolv.
+   tResolv and refresh the confirmation status. Depending on Google's email
+   template, tResolv shows either the numeric code (enter it into Gmail) or a
+   Google confirmation link (open it and complete Google's confirmation page).
+5. Click the confirmation button in tResolv after completing Google's step.
 6. Connect Gmail for sending only.
 7. In Gmail filters, forward only the merchant's support mail to the tResolv
    address. Keep the merchant's normal inbox as the mailbox of record.
