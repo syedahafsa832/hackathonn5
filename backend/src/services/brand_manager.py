@@ -185,6 +185,10 @@ class BrandManager:
             if soft_delete:
                 supabase_update("brands", {"id": f"eq.{brand_id}"}, {
                     "is_active": False,
+                    # Stop inbound mail from continuing to create tickets or
+                    # trigger replies after this brand has been deactivated.
+                    "inbound_email_enabled": False,
+                    "email_ingestion_mode": "gmail_polling",
                     "updated_at": datetime.now(timezone.utc).isoformat()
                 })
             else:
