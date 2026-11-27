@@ -49,25 +49,83 @@ async def setup_email_forwarding(
             detail="Inbound email domain is not configured on the backend",
         )
 
-    token = brand.get("inbound_email_token")
-    is_new_token = not bool(token)
-    if is_new_token:
-        token = secrets.token_hex(20)
+    if not brand.get("is_active", True):
+        raise HTTPException(status_code=409, detail="This store is inactive. Reactivate it before setting up email.")
 
-    # Keep legacy polling active until verification, send OAuth, and activation.
-    updates = {
-        "inbound_email_token": token,
-        "inbound_email_enabled": True,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+    # Keep legacy polling active until Google verification, send OAuth, and
+    # merchant activation. Allocate the token with compare-and-set so two tabs
+    # opening setup simultaneously cannot return different live addresses.
+    token = brand.get("inbound_email_token")
+    update_filter = {
+        "id": f"eq.{brand_id}",
+        "tenant_id": f"eq.{tenant.tenant_id}",
+        "is_active": "eq.true",
     }
-    if is_new_token:
-        updates.update({
-            "inbound_email_verified_at": None,
-            "inbound_email_verification_code": None,
-            "inbound_email_verification_link": None,
-            "inbound_email_verification_code_at": None,
+    now = datetime.now(timezone.utc).isoformat()
+
+    if token:
+        persisted = supabase_update("brands", update_filter, {
+            "inbound_email_enabled": True,
+            "updated_at": now,
         })
-    supabase_update("brands", {"id": f"eq.{brand_id}"}, updates)
+        if persisted:
+            brand = persisted
+            token = persisted.get("inbound_email_token") or token
+        else:
+            # The row may have changed between the ownership read and update.
+            brand = _get_owned_brand(brand_id, tenant)
+            if not brand.get("is_active", True):
+                raise HTTPException(status_code=409, detail="This store is inactive. Reactivate it before setting up email.")
+            token = brand.get("inbound_email_token")
+            if not token or not brand.get("inbound_email_enabled"):
+                raise HTTPException(status_code=409, detail="The forwarding setup changed. Refresh and try again.")
+    else:
+        for _ in range(3):
+            candidate = secrets.token_hex(20)
+            updates = {
+                "inbound_email_token": candidate,
+                "inbound_email_enabled": True,
+                "inbound_email_verified_at": None,
+                "inbound_email_verification_code": None,
+                "inbound_email_verification_link": None,
+                "inbound_email_verification_code_at": None,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            try:
+                # PostgREST's is.null filter makes this an atomic first-writer
+                # wins operation. A concurrent request will update zero rows.
+                persisted = supabase_update(
+                    "brands",
+                    {**update_filter, "inbound_email_token": "is.null"},
+                    updates,
+                )
+            except Exception as exc:
+                # A cryptographically improbable token collision is protected
+                # by the database's unique partial index; retry only that case.
+                error_text = str(exc).lower()
+                if "409" not in error_text and "duplicate key" not in error_text:
+                    raise
+                continue
+
+            if persisted and persisted.get("inbound_email_token"):
+                brand = persisted
+                token = persisted["inbound_email_token"]
+                break
+
+            # Another setup request won the race. Always return the persisted
+            # winner's token; never expose our losing candidate to the client.
+            brand = _get_owned_brand(brand_id, tenant)
+            if not brand.get("is_active", True):
+                raise HTTPException(status_code=409, detail="This store is inactive. Reactivate it before setting up email.")
+            token = brand.get("inbound_email_token")
+            if token:
+                break
+
+        if not token:
+            raise HTTPException(
+                status_code=503,
+                detail="Could not allocate a forwarding address. Please try again.",
+            )
 
     return {
         "success": True,
