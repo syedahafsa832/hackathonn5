@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import client, { extractErrorMessage } from '../api/client';
 import GmailUnverifiedNotice from './GmailUnverifiedNotice';
 
@@ -17,19 +17,38 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const hasLoadedRef = useRef(false);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError('');
+  // Refresh in place after the first load. The old implementation replaced
+  // the entire setup card with a loading message on every click, making the
+  // confirmation button look unresponsive and causing the layout to jump.
+  const refresh = useCallback(async ({ manual = false } = {}) => {
+    if (!hasLoadedRef.current) setLoading(true);
+    if (manual) {
+      setChecking(true);
+      setMessage('');
+      setError('');
+    }
+
     try {
       const response = await client.get('/api/brands/' + brandId + '/email-forwarding/status');
       setStatus(response.data);
+      return response.data;
     } catch (err) {
-      setError(extractErrorMessage(err, 'Could not load forwarding status.'));
+      // Automatic background checks should not flash errors. Show an error
+      // for the initial load and for an explicit user-requested check.
+      if (!hasLoadedRef.current || manual) {
+        setError(extractErrorMessage(err, 'Could not load forwarding status.'));
+      }
+      return null;
     } finally {
+      hasLoadedRef.current = true;
       setLoading(false);
+      if (manual) setChecking(false);
     }
   }, [brandId]);
 
@@ -37,14 +56,31 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
     refresh();
   }, [refresh]);
 
+  const codeReady = !!status?.verification_code;
+  const linkReady = !!status?.verification_link;
+  const hasAddress = !!status?.forwarding_address;
+
+  // Keep checking for Google's confirmation in the background while the
+  // setup card is open. Merchants no longer need to guess whether the
+  // "Check" button worked or repeatedly click it.
+  useEffect(() => {
+    if (!hasAddress || status?.verified || codeReady || linkReady) return undefined;
+
+    const intervalId = window.setInterval(() => {
+      refresh();
+    }, 12000);
+
+    return () => window.clearInterval(intervalId);
+  }, [hasAddress, status?.verified, codeReady, linkReady, refresh]);
+
   const setup = async () => {
     setBusy(true);
     setMessage('');
     setError('');
     try {
       await client.post('/api/brands/' + brandId + '/email-forwarding/setup');
-      await refresh();
-      setMessage('Your private forwarding address is ready.');
+      const updated = await refresh();
+      if (updated) setMessage('Your private forwarding address is ready.');
     } catch (err) {
       setError(extractErrorMessage(err, 'Could not create the forwarding address.'));
     } finally {
@@ -68,26 +104,34 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
   };
 
   const activateForwarding = async () => {
-    setBusy(true); setMessage(''); setError('');
+    setBusy(true);
+    setMessage('');
+    setError('');
     try {
       await client.post('/api/brands/' + brandId + '/email-forwarding/activate');
-      await refresh();
-      setMessage('Email forwarding is now active.');
+      const updated = await refresh();
+      setMessage(updated ? 'Email forwarding is now active.' : 'Forwarding was activated. Refresh the status to confirm.');
       if (onComplete) onComplete();
     } catch (err) {
       setError(extractErrorMessage(err, 'Could not activate forwarding.'));
-    } finally { setBusy(false); }
+    } finally {
+      setBusy(false);
+    }
   };
 
   const pauseForwarding = async () => {
-    setBusy(true); setMessage(''); setError('');
+    setBusy(true);
+    setMessage('');
+    setError('');
     try {
       await client.post('/api/brands/' + brandId + '/email-forwarding/pause');
-      await refresh();
-      setMessage('Gmail polling has been restored.');
+      const updated = await refresh();
+      if (updated) setMessage('Gmail polling has been restored.');
     } catch (err) {
       setError(extractErrorMessage(err, 'Could not pause forwarding.'));
-    } finally { setBusy(false); }
+    } finally {
+      setBusy(false);
+    }
   };
 
   const confirmForwarding = async () => {
@@ -96,8 +140,12 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
     setError('');
     try {
       await client.post('/api/brands/' + brandId + '/email-forwarding/confirm');
-      await refresh();
-      setMessage('Forwarding marked as verified.');
+      const updated = await refresh();
+      if (updated?.verified) {
+        setMessage('Google confirmed your forwarding address. One step left: connect Gmail to send replies.');
+      } else {
+        setMessage('Confirmation submitted. Refreshing your status…');
+      }
     } catch (err) {
       setError(extractErrorMessage(err, 'Could not confirm forwarding.'));
     } finally {
@@ -108,18 +156,16 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
   const copyAddress = async () => {
     try {
       await navigator.clipboard.writeText(status.forwarding_address);
+      setCopied(true);
       setMessage('Forwarding address copied.');
+      setError('');
     } catch {
       setError('Clipboard access failed. Select and copy the address manually.');
     }
   };
 
-  const codeReady = !!status?.verification_code;
-  const linkReady = !!status?.verification_link;
-  const hasAddress = !!status?.forwarding_address;
-
   return (
-    <section style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border)' }}>
+    <section style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border)' }} aria-busy={loading || busy || checking}>
       <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
         Receive customer support emails
       </div>
@@ -128,7 +174,7 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
       </p>
 
       {loading ? (
-        <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Checking forwarding setup…</div>
+        <div role="status" style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Checking forwarding setup…</div>
       ) : (
         <>
           {hasAddress ? (
@@ -136,12 +182,14 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
               <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '5px' }}>Your forwarding address</div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                 <code style={{ fontSize: '12px', overflowWrap: 'anywhere', color: 'var(--text-primary)' }}>{status.forwarding_address}</code>
-                <button type="button" onClick={copyAddress} style={buttonStyle}>Copy</button>
+                <button type="button" onClick={copyAddress} style={buttonStyle}>
+                  {copied ? 'Copied ✓' : 'Copy address'}
+                </button>
               </div>
               <div style={{ display: 'flex', gap: '7px', alignItems: 'center', marginTop: '9px', fontSize: '12px' }}>
                 <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: status.verified ? 'var(--success)' : 'var(--warning, #d97706)' }} />
                 <span style={{ color: status.verified ? 'var(--success)' : 'var(--text-secondary)' }}>
-                  {status.verified ? 'Forwarding verified' : 'Waiting for Google confirmation email'}
+                  {status.verified ? 'Forwarding verified' : 'Waiting for Google confirmation'}
                 </span>
               </div>
             </div>
@@ -153,27 +201,38 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
 
           {hasAddress && !status.verified && (
             <div style={{ padding: '10px 12px', background: 'var(--bg-secondary)', borderRadius: '5px', marginBottom: '12px' }}>
-              <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: '6px' }}>Verify the address in Gmail</div>
+              <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: '6px' }}>Connect your Gmail inbox</div>
               <ol style={{ paddingLeft: '18px', margin: 0, fontSize: '12px', lineHeight: 1.65, color: 'var(--text-secondary)' }}>
-                <li>Open <a href="https://mail.google.com/mail/u/0/#settings/fwdandpop" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>Gmail Forwarding settings</a> for your support inbox.</li>
-                <li>Add the tResolv address above as a forwarding address.</li>
-                <li>Click <strong>Add a forwarding address</strong>, enter the full tResolv address above, then choose Next, Proceed, and OK.</li>
-                <li>Come back here and click <strong>Check for Google confirmation</strong>. The confirmation code or link will appear in this card, not in your normal Gmail inbox.</li>
-                <li>If a code appears, enter it in Gmail's confirmation prompt. If a link appears, open it and complete Google's confirmation page. Then click the confirmation button here.</li>
-                <li>After Google confirms the address, choose <strong>Forward a copy of incoming mail</strong> to tResolv, select <strong>Keep Gmail's copy in the Inbox</strong>, and save changes.</li>
-                <li>Return here and activate forwarding after Gmail sending is connected.</li>
+                <li>Open <a href="https://mail.google.com/mail/u/0/#settings/fwdandpop" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>Gmail Forwarding settings</a> for the inbox that receives customer support messages.</li>
+                <li>Choose <strong>Add a forwarding address</strong>, paste the exact tResolv address above, then click <strong>Next → Proceed → OK</strong>.</li>
+                <li>Keep this tResolv page open. Google sends its confirmation to tResolv's private address, not to your normal inbox. We'll check for it automatically.</li>
+                <li>When a code or link appears below, use it to finish Google's confirmation. Then return to Gmail, select the tResolv address in the forwarding dropdown, choose <strong>Keep Gmail's copy in the Inbox</strong>, and save.</li>
+                <li>Come back here to connect Gmail for sending replies and activate forwarding.</li>
               </ol>
-              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '10px' }}>
-                <button type="button" disabled={busy} onClick={refresh} style={buttonStyle}>Check for Google confirmation</button>
-                {codeReady && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Google confirmation code</span>
-                    <code style={{ fontSize: '16px', fontWeight: 700, letterSpacing: '0.16em', fontFamily: 'monospace', padding: '6px 10px', border: '1px dashed var(--border)', borderRadius: '4px' }}>
-                      {status.verification_code}
-                    </code>
-                  </div>
-                )}
+
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', marginTop: '10px' }}>
+                <button
+                  type="button"
+                  disabled={busy || checking}
+                  onClick={() => refresh({ manual: true })}
+                  style={{ ...buttonStyle, opacity: checking ? 0.7 : 1 }}
+                >
+                  {checking ? 'Checking…' : 'Check now'}
+                </button>
+                <span role="status" style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                  {checking ? 'Looking for Google’s confirmation…' : 'We check automatically while this page is open.'}
+                </span>
               </div>
+
+              {codeReady && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '10px' }}>
+                  <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Google confirmation code</span>
+                  <code style={{ fontSize: '16px', fontWeight: 700, letterSpacing: '0.16em', fontFamily: 'monospace', padding: '6px 10px', border: '1px dashed var(--border)', borderRadius: '4px', width: 'fit-content' }}>
+                    {status.verification_code}
+                  </code>
+                </div>
+              )}
+
               {linkReady && (
                 <div style={{ marginTop: '8px', padding: '9px 10px', border: '1px solid var(--border)', borderRadius: '4px' }}>
                   <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginBottom: '5px' }}>Google confirmation link</div>
@@ -190,14 +249,16 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
                   </p>
                 </div>
               )}
+
               {(codeReady || linkReady) && (
                 <button type="button" disabled={busy} onClick={confirmForwarding} style={{ ...buttonStyle, marginTop: '10px' }}>
-                  I've completed Google's confirmation
+                  {busy ? 'Confirming…' : "I've completed Google's confirmation"}
                 </button>
               )}
+
               {!codeReady && !linkReady && (
                 <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '8px 0 0' }}>
-                  The message is delivered to tResolv's private routing address, not your personal Gmail inbox. If nothing appears after a few minutes, the inbound email route needs checking.
+                  No code or link yet? Leave this page open. We'll keep checking. You can keep working in another tab while tResolv waits for Google's message.
                 </p>
               )}
             </div>
