@@ -333,6 +333,7 @@ async def process_forwarded_email(raw: bytes, envelope_to: str) -> Dict[str, Any
         {
             "inbound_email_token": f"eq.{token}",
             "inbound_email_enabled": "eq.true",
+            "is_active": "eq.true",
             "limit": "1",
         },
     )
