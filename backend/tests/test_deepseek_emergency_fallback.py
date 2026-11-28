@@ -306,10 +306,11 @@ async def test_existing_behavior_unchanged_for_other_tenants_when_deepseek_confi
     mgr._clients["deepseek_emergency"].chat.completions.create.assert_not_called()
 
 
+@pytest.mark.asyncio
 async def test_email_channel_can_explicitly_disable_deepseek_even_for_eligible_tenant():
     mgr = _manager_with("primary", deepseek=True)
     _failing(mgr._clients["primary"])
-    patches = _patched(mgr, tenant_id=SLY_MODE_TENANT_ID)
+    patches, _ = _patched(mgr, tenant_id=SLY_MODE_TENANT_ID)
 
     with pytest.raises(AllProvidersFailedError):
         await _run_with_patches(
