@@ -324,7 +324,7 @@ def test_forwarded_customer_email_is_rejected_before_ai_without_current_consent(
     with patch.object(email_forwarding_service, "supabase_select", return_value=[brand]), \
          patch("src.services.email_filter_service.email_filter_service.evaluate") as evaluate:
         result = asyncio.run(email_forwarding_service.process_forwarded_email(
-            _raw_email().as_bytes(),
+            _raw_email(),
             "support+" + token + "@inbound.tresolv.online",
         ))
 
