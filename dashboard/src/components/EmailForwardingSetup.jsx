@@ -21,6 +21,7 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
   const [copied, setCopied] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [emailDataConsent, setEmailDataConsent] = useState(false);
   const hasLoadedRef = useRef(false);
 
   // Refresh in place after the first load. The old implementation replaced
@@ -60,6 +61,20 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
   const linkReady = !!status?.verification_link;
   const hasAddress = !!status?.forwarding_address;
 
+  const ensureEmailDataConsent = async () => {
+    if (status?.ai_processing_consent_recorded) return true;
+    if (!emailDataConsent) {
+      throw new Error('Please review and accept the email processing notice before continuing.');
+    }
+    await client.post('/api/brands/' + brandId + '/email-forwarding/consent');
+    const updated = await refresh();
+    if (!updated?.ai_processing_consent_recorded) {
+      throw new Error('Consent could not be confirmed. Refresh and try again.');
+    }
+    setEmailDataConsent(false);
+    return true;
+  };
+
   // Keep checking for Google's confirmation in the background while the
   // setup card is open. Merchants no longer need to guess whether the
   // "Check" button worked or repeatedly click it.
@@ -93,6 +108,7 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
     setMessage('');
     setError('');
     try {
+      await ensureEmailDataConsent();
       const response = await client.get('/api/brands/' + brandId + '/gmail/send-auth-url', {
         params: { return_to: returnTo },
       });
@@ -108,6 +124,7 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
     setMessage('');
     setError('');
     try {
+      await ensureEmailDataConsent();
       await client.post('/api/brands/' + brandId + '/email-forwarding/activate');
       const updated = await refresh();
       setMessage(updated ? 'Email forwarding is now active.' : 'Forwarding was activated. Refresh the status to confirm.');
@@ -260,6 +277,34 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
                 <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '8px 0 0' }}>
                   No code or link yet? Leave this page open. We'll keep checking. You can keep working in another tab while tResolv waits for Google's message.
                 </p>
+              )}
+            </div>
+          )}
+
+          {hasAddress && (
+            <div style={{ marginTop: '12px', padding: '11px 12px', border: '1px solid var(--border)', borderRadius: '5px' }}>
+              <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: '6px' }}>
+                How tResolv processes forwarded customer emails
+              </div>
+              {status.ai_processing_consent_recorded ? (
+                <p style={{ fontSize: '11px', lineHeight: 1.55, color: 'var(--success)', margin: 0 }}>
+                  Email processing consent recorded. You can review the current details in the <a href="https://www.tresolv.online/privacy" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>Privacy Policy</a>.
+                </p>
+              ) : (
+                <>
+                  <p style={{ fontSize: '11px', lineHeight: 1.55, color: 'var(--text-secondary)', margin: '0 0 9px' }}>
+                    When you activate email support, you instruct tResolv to receive the customer messages you forward, store them as support tickets, and process their contents to classify requests, retrieve relevant store information, and prepare replies. For forwarded email content, tResolv uses Cloudflare Workers AI, Mistral AI, and Groq. This email content is not routed to DeepSeek or OpenRouter and is not used by tResolv to train generalized AI models. These providers may retain limited request data under their own security and service policies. Read the <a href="https://www.tresolv.online/privacy" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>Privacy Policy</a>.
+                  </p>
+                  <label style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', fontSize: '11px', lineHeight: 1.55, color: 'var(--text-primary)', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={emailDataConsent}
+                      onChange={(event) => setEmailDataConsent(event.target.checked)}
+                      style={{ marginTop: '2px' }}
+                    />
+                    <span>I am authorised to connect this store and instruct tResolv to receive, store, and process the customer emails I forward for the email-support features described above.</span>
+                  </label>
+                </>
               )}
             </div>
           )}
