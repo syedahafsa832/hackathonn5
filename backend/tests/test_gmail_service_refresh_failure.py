@@ -39,6 +39,20 @@ def test_legacy_inbox_poller_returns_no_connected_brands():
     assert service.get_connected_brands() == []
 
 
+def test_legacy_inbox_fetch_never_calls_gmail_api():
+    service = BrandGmailService()
+    brand = {
+        "id": "brand-legacy",
+        "email_ingestion_mode": "gmail_polling",
+        "gmail_token": "old-token",
+    }
+    with patch("src.services.brand_gmail_service.build") as mock_build:
+        emails = service._get_new_emails_sync(brand)
+
+    assert emails == []
+    mock_build.assert_not_called()
+
+
 def test_send_only_refresh_writes_only_send_token_column():
     from datetime import datetime, timezone, timedelta
     brand = {"id": "brand-2", "email_ingestion_mode": "forwarding",
