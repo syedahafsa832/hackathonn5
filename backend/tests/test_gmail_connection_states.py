@@ -99,6 +99,7 @@ def test_brand_status_reports_send_only_connection():
     assert body == {
         "connected": True, "email": "merchant@example.com",
         "needs_reconnect": False, "send_connected": True, "send_email": "merchant@example.com",
+        "ai_processing_consent_recorded": False, "ai_processing_consent_at": None,
     }
 
 def test_brand_status_never_connected_reports_needs_reconnect_false():
@@ -114,6 +115,7 @@ def test_brand_status_never_connected_reports_needs_reconnect_false():
     assert body == {
         "connected": False, "email": None,
         "needs_reconnect": False, "send_connected": False, "send_email": None,
+        "ai_processing_consent_recorded": False, "ai_processing_consent_at": None,
     }
 
 def test_brand_status_revoked_send_only_token_reports_needs_reconnect_true():
@@ -129,6 +131,8 @@ def test_brand_status_revoked_send_only_token_reports_needs_reconnect_true():
     assert body["connected"] is False
     assert body["email"] == "merchant@example.com"
     assert body["needs_reconnect"] is True
+    assert body["ai_processing_consent_recorded"] is False
+    assert body["ai_processing_consent_at"] is None
 
 def test_settings_status_connected_via_primary_lookup():
     connected_brand = {
