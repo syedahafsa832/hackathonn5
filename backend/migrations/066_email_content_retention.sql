@@ -252,23 +252,24 @@ BEGIN
     GET DIAGNOSTICS v_filter_rows_deleted = ROW_COUNT;
 
     DELETE FROM public.email_quarantine AS q
-    WHERE q.created_at < now() - make_interval(
-        days => LEAST(
-            GREATEST(
-                COALESCE(
-                    (
-                        SELECT settings.data_retention_days
-                        FROM public.system_settings AS settings
-                        WHERE settings.store_id = q.brand_id
-                        LIMIT 1
+    WHERE q.expires_at < now()
+       OR q.created_at < now() - make_interval(
+            days => LEAST(
+                GREATEST(
+                    COALESCE(
+                        (
+                            SELECT settings.data_retention_days
+                            FROM public.system_settings AS settings
+                            WHERE settings.store_id = q.brand_id
+                            LIMIT 1
+                        ),
+                        90
                     ),
-                    90
+                    1
                 ),
-                1
-            ),
-            90
-        )
-    );
+                90
+            )
+       );
     GET DIAGNOSTICS v_quarantine_rows_deleted = ROW_COUNT;
 
     RETURN jsonb_build_object(
