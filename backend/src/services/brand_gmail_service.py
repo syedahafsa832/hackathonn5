@@ -314,7 +314,7 @@ class BrandGmailService:
         supabase_update("brands", {"id": f"eq.{brand_id}"}, {
             "gmail_connected": False, "gmail_token": None, "gmail_email": None,
             "gmail_send_connected": False, "gmail_send_token": None, "gmail_send_email": None,
-            "gmail_scope_mode": "full",
+            "gmail_scope_mode": "send_only",
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
 
