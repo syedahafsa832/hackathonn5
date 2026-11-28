@@ -2,7 +2,7 @@
 from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parents[1]
-MIGRATION = BACKEND / "migrations" / "066_email_content_retention.sql"
+MIGRATION = BACKEND / "migrations" / "067_email_content_retention.sql"
 
 
 def test_retention_is_limited_to_completed_email_tickets():
