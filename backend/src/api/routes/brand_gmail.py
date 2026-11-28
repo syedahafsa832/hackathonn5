@@ -214,6 +214,10 @@ async def record_email_ai_processing_consent(
     supabase_update("brands", {"id": f"eq.{brand_id}"}, {
         "email_ai_processing_consent_at": accepted_at,
         "email_ai_processing_consent_version": EMAIL_AI_PROCESSING_CONSENT_VERSION,
+        # Permit Google to deliver its forwarding-verification message. Normal
+        # customer mail is still ignored until activate sets ingestion_mode
+        # to forwarding.
+        "inbound_email_enabled": True,
         "updated_at": accepted_at,
     })
     return {
