@@ -38,6 +38,14 @@ class UnsafeLogVisitor(ast.NodeVisitor):
                     for part in arg.values:
                         if isinstance(part, ast.FormattedValue):
                             names = {n.id for n in ast.walk(part.value) if isinstance(n, ast.Name)}
+                            # Logging only whether a reply exists is safe; never
+                            # interpolate the reply body itself.
+                            if (
+                                isinstance(part.value, ast.Call)
+                                and isinstance(part.value.func, ast.Name)
+                                and part.value.func.id == "bool"
+                            ):
+                                names.discard("reply_body")
                             if names.intersection(UNSAFE_NAMES):
                                 self.violations.append(
                                     f"{self.relative}:{node.lineno} logs variables {sorted(names.intersection(UNSAFE_NAMES))}"
