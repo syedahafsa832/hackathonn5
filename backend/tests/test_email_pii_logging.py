@@ -1,14 +1,9 @@
-"""Regression guards for avoiding Google/customer email content in app logs.
-
-The support pipeline still stores message content in ticket records for the
-merchant-facing product. It must not additionally duplicate that content,
-addresses, subjects, or Gmail identifiers into operational logs.
-"""
+"""Regression guard: customer/Workspace email data must not be written to logs."""
+import ast
 from pathlib import Path
-import re
 
 BACKEND = Path(__file__).resolve().parents[1]
-LOGGED_FILES = (
+PROTECTED_MODULES = (
     "src/workers/message_processor.py",
     "src/workers/brand_message_processor.py",
     "src/channels/email_poller.py",
@@ -18,38 +13,46 @@ LOGGED_FILES = (
     "src/services/intent_detector.py",
 )
 
-# These expressions represent message/customer values, not safe booleans or
-# counts (e.g. bool(reply_body), len(messages), or type(exc).__name__).
-FORBIDDEN_LOG_INTERPOLATIONS = (
-    r"\{\s*customer_email\s*\}",
-    r"\{\s*sender\s*\}",
-    r"\{\s*subject\s*\}",
-    r"\{\s*content\s*(?:\[:|\})",
-    r"\{\s*reply_body\s*\[",
-    r"\{\s*email\s*\}",
-    r"\{\s*gmail_msg_id\s*\}",
-    r"\{\s*gmail_message_id\s*\}",
-    r"\{\s*brand\.get\(['\"]gmail_email['\"]\)\s*\}",
-    r"message_ids\s*=",
-    r"sender\s*=\s*\{",
-    r"to_email\s*=\s*\{",
-)
+UNSAFE_NAMES = {
+    "customer_email", "sender", "subject", "content", "reply_body",
+    "gmail_msg_id", "gmail_message_id", "message_ids",
+    "thread_id", "email", "structured", "data",
+}
 
-LOG_CALL = re.compile(r"logger\.(?:debug|info|warning|error|exception)\s*\(")
+
+class UnsafeLogVisitor(ast.NodeVisitor):
+    def __init__(self, relative):
+        self.relative = relative
+        self.violations = []
+
+    def visit_Call(self, node):
+        func = node.func
+        if (
+            isinstance(func, ast.Attribute)
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "logger"
+            and func.attr in {"debug", "info", "warning", "error", "exception"}
+        ):
+            for arg in node.args:
+                if isinstance(arg, ast.JoinedStr):
+                    for part in arg.values:
+                        if isinstance(part, ast.FormattedValue):
+                            names = {n.id for n in ast.walk(part.value) if isinstance(n, ast.Name)}
+                            if names.intersection(UNSAFE_NAMES):
+                                self.violations.append(
+                                    f"{self.relative}:{node.lineno} logs variables {sorted(names.intersection(UNSAFE_NAMES))}"
+                                )
+                            rendered = ast.unparse(part.value)
+                            if "gmail_email" in rendered or "gmail_message_id" in rendered:
+                                self.violations.append(f"{self.relative}:{node.lineno} logs Gmail identifiers")
+        self.generic_visit(node)
 
 
 def test_email_processing_logs_do_not_interpolate_customer_content_or_identifiers():
     violations = []
-    for relative_path in LOGGED_FILES:
-        source = (BACKEND / relative_path).read_text(encoding="utf-8")
-        lines = source.splitlines()
-        for index, line in enumerate(lines):
-            # Include nearby continuation lines for multi-line logger calls.
-            if LOG_CALL.search(line):
-                snippet = "\n".join(lines[index:index + 5])
-                for pattern in FORBIDDEN_LOG_INTERPOLATIONS:
-                    if re.search(pattern, snippet):
-                        violations.append(
-                            f"{relative_path}:{index + 1} contains unsafe log interpolation {pattern}"
-                        )
-    assert not violations, "\n".join(violations)
+    for relative in PROTECTED_MODULES:
+        source = (BACKEND / relative).read_text(encoding="utf-8")
+        visitor = UnsafeLogVisitor(relative)
+        visitor.visit(ast.parse(source))
+        violations.extend(visitor.violations)
+    assert not violations, "\\n".join(violations)
