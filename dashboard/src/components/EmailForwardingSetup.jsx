@@ -155,21 +155,6 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
     }
   };
 
-  const pauseForwarding = async () => {
-    setBusy(true);
-    setMessage('');
-    setError('');
-    try {
-      await client.post('/api/brands/' + brandId + '/email-forwarding/pause');
-      const updated = await refresh();
-      if (updated) setMessage('Gmail polling has been restored.');
-    } catch (err) {
-      setError(extractErrorMessage(err, 'Could not pause forwarding.'));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const confirmForwarding = async () => {
     setBusy(true);
     setMessage('');
@@ -237,7 +222,7 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
 
           {hasAddress && !status.verified && status.ai_processing_consent_recorded && (
             <div style={{ padding: '10px 12px', background: 'var(--bg-secondary)', borderRadius: '5px', marginBottom: '12px' }}>
-              <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: '6px' }}>Connect your Gmail inbox</div>
+              <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: '6px' }}>Set up Gmail forwarding</div>
               <ol style={{ paddingLeft: '18px', margin: 0, fontSize: '12px', lineHeight: 1.65, color: 'var(--text-secondary)' }}>
                 <li>Open <a href="https://mail.google.com/mail/u/0/#settings/fwdandpop" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>Gmail Forwarding settings</a> for the inbox that receives customer support messages.</li>
                 <li>Choose <strong>Add a forwarding address</strong>, paste the exact tResolv address above, then click <strong>Next → Proceed → OK</strong>.</li>
@@ -375,11 +360,7 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
                       Continue →
                     </button>
                   )}
-                  {status.legacy_gmail_connected && (
-                    <button type="button" disabled={busy} onClick={pauseForwarding} style={{ ...buttonStyle, marginTop: '2px' }}>
-                      {busy ? 'Switching…' : 'Pause forwarding and use the existing Gmail connection'}
-                    </button>
-                  )}
+                  
                 </div>
               )}
             </div>
