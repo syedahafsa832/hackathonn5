@@ -152,8 +152,8 @@ async def email_forwarding_status(
         (code or verification_link) and brand.get("inbound_email_verification_code_at")
     )
     return {
-        "legacy_gmail_connected": bool(brand.get("gmail_connected")),
-        "legacy_gmail_email": brand.get("gmail_email"),
+        "legacy_gmail_connected": False,
+        "legacy_gmail_email": None,
         "forwarding_address": (
             f"{os.getenv('INBOUND_EMAIL_LOCAL_PART', 'support').strip().lower()}+{brand.get('inbound_email_token')}@{domain}"
             if brand.get("inbound_email_token") and domain else None
@@ -213,18 +213,12 @@ async def activate_email_forwarding(brand_id: str, tenant: TenantContext = Depen
 
 @router.post("/{brand_id}/email-forwarding/pause")
 async def pause_email_forwarding(brand_id: str, tenant: TenantContext = Depends(require_tenant_admin)):
-    """Pause forwarding only when this brand still has a usable legacy Gmail connection."""
-    brand = _get_owned_brand(brand_id, tenant)
-    if not brand.get("gmail_connected"):
-        raise HTTPException(
-            status_code=409,
-            detail="The previous Gmail inbox connection is not active. Keep email forwarding enabled.",
-        )
-    supabase_update("brands", {"id": f"eq.{brand_id}"}, {
-        "email_ingestion_mode": "gmail_polling",
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    })
-    return {"success": True, "ingestion_mode": "gmail_polling"}
+    """Legacy Gmail polling is retired; forwarding is the only inbound email path."""
+    _get_owned_brand(brand_id, tenant)
+    raise HTTPException(
+        status_code=410,
+        detail="Legacy Gmail inbox sync is retired. Keep merchant-configured forwarding enabled for incoming email.",
+    )
 
 
 @router.get("/{brand_id}/gmail/send-auth-url")
@@ -256,22 +250,12 @@ async def get_gmail_auth_url(
     brand_id: str,
     tenant: TenantContext = Depends(require_tenant_admin),
 ):
-    """Return the Google OAuth consent URL for this brand (tenant-scoped)."""
-    brand = _get_owned_brand(brand_id, tenant)
-
-    # Only gate NEW connections — reconnecting/refreshing an already-connected
-    # brand's Gmail must not be blocked by the cap.
-    if not brand.get("gmail_connected"):
-        from src.services.plan_service import check_limit, build_limit_error
-        gmail_limit = check_limit(tenant.tenant_id, "gmail_accounts", email=tenant.email)
-        if not gmail_limit["allowed"]:
-            raise HTTPException(status_code=402, detail=build_limit_error("gmail_accounts", gmail_limit))
-
-    try:
-        auth_url = brand_gmail_service.get_auth_url(brand_id)
-        return {"auth_url": auth_url}
-    except ValueError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """Retired endpoint. Gmail inbox reading is no longer supported."""
+    _get_owned_brand(brand_id, tenant)
+    raise HTTPException(
+        status_code=410,
+        detail="Gmail inbox access is retired. Use merchant-configured forwarding and Gmail send-only connection.",
+    )
 
 
 @router.get("/gmail/callback")
