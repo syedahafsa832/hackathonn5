@@ -1383,8 +1383,8 @@ class UnifiedMessageProcessor:
                             else:
                                 _thread_id = _ticket.get("gmail_thread_id")
                         logger.info(
-                            f"[EMAIL] Sending via brand Gmail: {brand.get('gmail_email')} "
-                            f"(mode={brand.get('email_ingestion_mode', 'gmail_polling')}, thread_id={_thread_id})"
+                            f"[EMAIL] Sending via brand Gmail for store_id={store_id}; "
+                            "account address and thread identifiers omitted from logs."
                         )
                         forwarding_mode = brand.get("email_ingestion_mode") == "forwarding"
                         has_send_access = (
