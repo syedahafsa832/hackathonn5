@@ -159,9 +159,9 @@ class UnifiedMessageProcessor:
 
             logger.info(f"[PROCESSOR] ========== NEW MESSAGE ==========")
             logger.info(f"[PROCESSOR] Channel: {channel}")
-            logger.info(f"[PROCESSOR] Customer: {customer_email}")
-            logger.info(f"[PROCESSOR] Subject: {subject}")
-            logger.info(f"[PROCESSOR] Content: {content[:100]}...")
+            logger.info("[PROCESSOR] Support message received; sender omitted from logs.")
+            logger.info("[PROCESSOR] Support message subject omitted from logs.")
+            logger.info("[PROCESSOR] Support message content omitted from logs.")
 
             if not customer_email:
                 logger.warning("[PROCESSOR] Message missing customer email, cannot process.")
@@ -169,7 +169,7 @@ class UnifiedMessageProcessor:
 
             # Filter automated emails
             if self._is_automated(customer_email, content):
-                logger.info(f"[PROCESSOR] Skipping automated email from {customer_email}")
+                logger.info("[PROCESSOR] Skipping automated email; sender omitted from logs.")
                 return {"ticket_id": None, "status": "skipped", "reason": "automated"}
 
             # ========== STAGE 1.5: EMAIL THREAD DEDUP ==========
@@ -227,7 +227,7 @@ class UnifiedMessageProcessor:
                         early_ticket = {**existing_ticket, **updates}
                         logger.info(f"[PROCESSOR] Thread match found — appended message, continuing with ticket {early_ticket_id}")
                 except Exception as thread_err:
-                    logger.warning(f"[PROCESSOR] Thread check failed (treating as new ticket): {thread_err}")
+                    logger.warning(f"[PROCESSOR] Thread check failed (treating as new ticket); error_type={type(thread_err).__name__}")
 
             # ========== STAGE 1.6: ORDER DETECTION ==========
             detected_order_id = None
@@ -557,7 +557,7 @@ class UnifiedMessageProcessor:
                 )
 
             logger.info(f"[PROCESSOR] AI Result - Intent: {intent}, Confidence: {confidence:.0%}, Risk: {risk_level}")
-            logger.info(f"[PROCESSOR] AI Reply Preview: {reply_body[:100]}..." if reply_body else "[PROCESSOR] No reply generated")
+            logger.info(f"[PROCESSOR] Reply generated={bool(reply_body)}; reply content omitted from logs.")
             if reply_body:
                 await _log_ticket_event(early_ticket_id, store_id, "draft_ready", "Draft ready")
 
@@ -598,7 +598,7 @@ class UnifiedMessageProcessor:
                 is_overridden = await self._check_thread_override(customer_email, subject, store_id)
 
             if is_overridden:
-                logger.info(f"[PROCESSOR] Human override active for email thread: {subject}")
+                logger.info(f"[PROCESSOR] Human override active for ticket {early_ticket_id}; subject omitted from logs.")
 
             # ========== STAGE 8: DECISION LOGIC ==========
             routing = self._decide_ticket_routing(
@@ -647,7 +647,7 @@ class UnifiedMessageProcessor:
                 ticket_payload["ai_reply"] = routing["ai_reply"]
             if routing.get("ai_draft") is not None:
                 ticket_payload["ai_draft"] = routing["ai_draft"]
-            logger.info(f"[PROCESSOR] Routing decision: {routing['log_message']}")
+            logger.info(f"[PROCESSOR] Routing decision recorded for ticket {early_ticket_id}; details omitted from logs.")
 
             # ========== STAGE 9: UPDATE TICKET with AI results (was created at Stage 1.8) ==========
             logger.info(f"[PROCESSOR] Finalising ticket with status: {ticket_payload.get('status')}")
@@ -715,7 +715,7 @@ class UnifiedMessageProcessor:
             # ========== STAGE 10: SEND EMAIL RESPONSE ==========
             email_actually_sent = False
             if should_auto_reply and reply_body and auto_reply_enabled:
-                logger.info(f"[PROCESSOR] Sending email to {customer_email}...")
+                logger.info(f"[PROCESSOR] Sending email reply for ticket {ticket_id}; recipient omitted from logs.")
                 t_send_start = time.monotonic()
                 email_actually_sent = await self._send_email_with_logging(
                     customer_email, subject, ai_result, ticket_id, store_id=store_id
@@ -1334,7 +1334,7 @@ class UnifiedMessageProcessor:
         """Send email reply; True only when Gmail confirms the send."""
         try:
             logger.info(f"[EMAIL] ========== SENDING EMAIL ==========")
-            logger.info(f"[EMAIL] To: {email}, Ticket: {ticket_id}, store_id: {store_id}")
+            logger.info(f"[EMAIL] Sending reply for ticket {ticket_id}, store_id={store_id}; recipient omitted from logs.")
 
             reply_body = ai_result.get("reply_body", "")
             reply_subject = ai_result.get("reply_subject", f"Re: {subject}")
@@ -1410,10 +1410,10 @@ class UnifiedMessageProcessor:
                             if result.get("success"):
                                 result = {"status": "sent", "id": result.get("id")}
                             else:
-                                logger.warning(f"[EMAIL] Brand Gmail send failed: {result.get('error')}")
+                                logger.warning("[EMAIL] Brand Gmail send failed; provider error detail omitted from logs.")
                                 result = {"status": "failed"}
                 except Exception as brand_err:
-                    logger.warning(f"[EMAIL] Brand Gmail error: {brand_err} — no global fallback; keep reply as draft")
+                    logger.warning(f"[EMAIL] Brand Gmail send failed; error_type={type(brand_err).__name__}; no global fallback; keep reply as draft")
                     result = None
 
             # No brand Gmail connected — skip sending
@@ -1422,7 +1422,7 @@ class UnifiedMessageProcessor:
                 return False
 
             if result.get('status') == 'sent':
-                logger.info(f"[EMAIL] ✓ SUCCESS - Email sent to {email}, ID: {result.get('id')}")
+                logger.info(f"[EMAIL] ✓ SUCCESS - Email sent for ticket {ticket_id}; recipient and Gmail message ID omitted from logs.")
                 try:
                     await asyncio.to_thread(supabase_update, "tickets", {"id": f"eq.{ticket_id}"}, {
                         "email_sent": True,
@@ -1441,14 +1441,14 @@ class UnifiedMessageProcessor:
                     pass
                 return True
             else:
-                logger.error(f"[EMAIL] FAILED - {result.get('error', 'Unknown error')}")
+                logger.error("[EMAIL] FAILED - provider error detail omitted from logs.")
                 return False
 
         except ImportError as e:
             logger.error(f"[EMAIL] FAILED - Gmail handler import error: {e}")
             return False
         except Exception as e:
-            logger.error(f"[EMAIL] FAILED - Exception: {e}", exc_info=True)
+            logger.error(f"[EMAIL] FAILED - error_type={type(e).__name__}")
             return False
 
     async def send_email_response(self, email: str, subject: str, ai_result: Dict[str, Any]):
