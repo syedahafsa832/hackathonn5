@@ -324,6 +324,23 @@ async def test_email_channel_can_explicitly_disable_deepseek_even_for_eligible_t
     mgr._clients["deepseek_emergency"].chat.completions.create.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_email_channel_wrapper_disables_deepseek_fallback():
+    from src.agent.customer_success_agent import CustomerSuccessAgent
+
+    agent = CustomerSuccessAgent()
+    with patch.object(agent, "process_customer_query", new=AsyncMock(return_value={"ok": True})) as process:
+        result = await agent.generate_channel_appropriate_response(
+            query="Where is my order?",
+            customer_info={"channel": "email"},
+            channel="email",
+            tenant_id=SLY_MODE_TENANT_ID,
+        )
+
+    assert result == {"ok": True}
+    assert process.await_args.kwargs["allow_deepseek_fallback"] is False
+
+
 def test_deepseek_never_added_to_the_normal_provider_chain():
     """DeepSeek must never appear in self._providers regardless of env vars
     — it is structurally excluded from the chain every tenant shares."""
