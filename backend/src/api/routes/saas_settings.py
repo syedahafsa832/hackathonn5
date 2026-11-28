@@ -437,7 +437,7 @@ async def _get_tenant_brand_async(tenant_id: str) -> Optional[dict]:
     Find the brand that belongs to this specific tenant — never returns another tenant's brand.
     Lookup order:
       1. Active brand with tenant_id match (primary)
-      2. Inactive brand with tenant_id + gmail_connected (onboarding 409 edge case)
+      2. Inactive brand with tenant_id + gmail_send_connected (reconnect edge case)
       3. Brand matching tenant's shopify_domain (pre-migration rows)
     NO global fallback — returns None if no owned brand found.
     """
@@ -449,11 +449,10 @@ async def _get_tenant_brand_async(tenant_id: str) -> Optional[dict]:
         if owned:
             return owned[0]
 
-        # Fallback: inactive brand for this tenant that has Gmail connected
-        # (happens after onboarding 409 flow deactivated the brand before Gmail was connected)
+        # Fallback: inactive brand for this tenant that has send-only Gmail connected.
         inactive_gmail = supabase_select("brands", {
             "tenant_id": f"eq.{tenant_id}",
-            "gmail_connected": "is.true",
+            "gmail_send_connected": "is.true",
         })
         if inactive_gmail:
             return inactive_gmail[0]
