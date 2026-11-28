@@ -6,12 +6,10 @@ providers and keys. A single rate-limited/expired key was escalating tickets
 ("System error: Rate limited") that a second key or provider could have
 handled — this exists to try the next configured option before giving up.
 
-Default chain: OpenRouter (mistral-nemo, free tier) -> Mistral primary
-(mistral-small-latest) -> OpenRouter (llama-3.3-70b, free tier) -> any extra
-Mistral fallback keys -> Groq (llama-3.1-8b-instant) -> Cloudflare Workers AI
-(llama-3.3-70b, only if CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID are both
-set), each tier configured/overridden independently via env vars — see
-_load_providers() below.
+Default chain: Cloudflare Workers AI (when configured) -> Mistral primary
+and fallback keys -> Groq fallback keys. OpenRouter is intentionally
+excluded. DeepSeek remains a separate, one-tenant emergency fallback for
+eligible non-email traffic only.
 
 Do not construct a per-call OpenAI(api_key=...) client elsewhere for ticket
 reply generation — go through get_provider_manager() so every caller gets the
@@ -183,7 +181,7 @@ class AIProviderManager:
             logger.warning("[AI_PROVIDER] OPENROUTER_API_KEY is configured but OpenRouter is disabled; key will not receive requests")
 
         # Last-resort fallback on a different provider entirely (Groq), tried only
-        # after every Mistral/OpenRouter key above has failed — keeps ticket replies
+        # after every Mistral key above has failed — keeps ticket replies
         # flowing if every prior key hits its account-wide rate limit or quota.
         # Mirrors the Mistral primary+fallback_N scheme: GROQ_API_KEY is the first
         # Groq key, GROQ_API_KEY_FALLBACK_{i} are additional ones tried after it.
@@ -240,7 +238,7 @@ class AIProviderManager:
     @property
     def mistral_providers(self) -> List[_Provider]:
         """Subset of configured providers safe to use for embeddings — every
-        Mistral key (primary + fallback_N), excluding Groq, OpenRouter and
+        Mistral key (primary + fallback_N), excluding Groq and
         Cloudflare entries, none of which share an embeddings-compatible
         model with the vector(1024) schema."""
         return [
@@ -353,7 +351,7 @@ class AIProviderManager:
             # A validation failure (e.g. empty reply_body) is often transient
             # model flakiness, not a real provider outage - and in practice
             # this chain frequently has only ONE actually-reachable provider
-            # (confirmed live: Mistral/OpenRouter/Groq failing account-wide,
+            # (confirmed live: Mistral/Groq failing account-wide,
             # only Cloudflare answering), so "move to the next provider" does
             # nothing useful when that one provider itself returns empty.
             # Retry the SAME provider once more before giving up on it - a
