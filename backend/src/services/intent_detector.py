@@ -420,7 +420,7 @@ class IntentDetector:
 
             # Require at least address1 + city to consider it parsed
             if not data.get("address1") or not data.get("city"):
-                logger.warning(f"[Intent] Address parse incomplete: {data}")
+                logger.warning("[Intent] Address parse incomplete; supplied address content omitted from logs.")
                 return None
 
             structured = {
