@@ -362,8 +362,8 @@ class EmailPoller:
 
                 if filter_result.decision == "blocked":
                     logger.info(
-                        f"[email_filter] rejected gmail_message_id={gmail_msg_id} sender={sender} "
-                        f"reason={filter_result.reason} (brand: {brand['name']})"
+                        f"[email_filter] rejected incoming message for brand={brand_id}; "
+                        f"reason={filter_result.reason}; sender and message identifiers omitted."
                     )
                     return
 
@@ -381,14 +381,16 @@ class EmailPoller:
 
                 if guardian_result.decision in ("blocked", "quarantined"):
                     logger.info(
-                        f"[email_filter] {guardian_result.decision} gmail_message_id={gmail_msg_id} sender={sender} "
-                        f"reason={guardian_result.reason} classification={guardian_result.classification}"
+                        f"[email_filter] {guardian_result.decision} incoming message for brand={brand_id}; "
+                        f"reason={guardian_result.reason} classification={guardian_result.classification}; "
+                        "sender and message identifiers omitted."
                     )
                     return
 
                 logger.info(
-                    f"[email_filter] accepted gmail_message_id={gmail_msg_id} sender={sender} "
-                    f"classification={guardian_result.classification} confidence={guardian_result.confidence:.2f}"
+                    f"[email_filter] accepted incoming message for brand={brand_id}; "
+                    f"classification={guardian_result.classification} confidence={guardian_result.confidence:.2f}; "
+                    "sender and message identifiers omitted."
                 )
 
                 auto_reply_enabled = guardian_result.auto_reply_enabled
@@ -440,8 +442,8 @@ class EmailPoller:
                             processed_count += 1
                             ticket_id = result.get("ticket_id") if isinstance(result, dict) else None
                             logger.info(
-                                f"[email_filter] ticket_created ticket_id={ticket_id} gmail_message_id={gmail_msg_id} "
-                                f"sender={sender} brand='{brand['name']}'"
+                                f"[email_filter] ticket_created ticket_id={ticket_id} brand_id={brand_id}; "
+                                "sender and Gmail message identifiers omitted."
                             )
                     except Exception:
                         failure_count += 1
