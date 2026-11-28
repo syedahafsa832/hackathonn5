@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/brands", tags=["Brands v2"])
 
 SAFE_COLUMNS = {"id", "name", "shopify_shop_name", "shopify_domain", "shopify_connected",
-                "support_email", "is_active", "gmail_email", "gmail_connected",
+                "support_email", "is_active", "gmail_send_email", "gmail_send_connected",
                 "return_policy_days", "auto_approve_threshold", "created_at", "updated_at",
                 "tenant_id", "exclude_digital_products", "refund_notes", "final_sale_tags",
                 "agent_name", "email_signature",
