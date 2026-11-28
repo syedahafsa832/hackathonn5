@@ -10,6 +10,7 @@ import re
 BACKEND = Path(__file__).resolve().parents[1]
 LOGGED_FILES = (
     "src/workers/message_processor.py",
+    "src/workers/brand_message_processor.py",
     "src/channels/email_poller.py",
     "src/services/email_filter_service.py",
     "src/services/email_guardian_service.py",
