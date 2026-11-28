@@ -40,7 +40,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from src.api.routes import brand_gmail  # noqa: E402
 from src.api.routes import saas_settings  # noqa: E402
 from src.api.middleware.tenant_auth import get_current_tenant, TenantContext  # noqa: E402
-from src.services.brand_gmail_service import BrandGmailService  # noqa: E402
+from src.services.brand_gmail_service import BrandGmailService, _sign_state  # noqa: E402
 import asyncio  # noqa: E402
 
 
@@ -194,7 +194,7 @@ def test_handle_callback_generic_failure_returns_stable_code_not_raw_exception()
         mock_flow_cls.from_client_config.side_effect = RuntimeError(
             "invalid_client: Unauthorized (client secret rotated in prod db)"
         )
-        result = run(service.handle_callback(state="signed-state", code="auth-code"))
+        result = run(service.handle_callback(state=_sign_state(BRAND_ID, scope_mode="send_only"), code="auth-code"))
 
     assert result["success"] is False
     # The real exception text (which could contain internal detail) must
@@ -209,7 +209,7 @@ def test_handle_callback_scope_related_failure_returns_scope_mismatch_code():
     with patch("src.services.brand_gmail_service._verify_state", return_value=BRAND_ID), \
          patch("src.services.brand_gmail_service.Flow") as mock_flow_cls:
         mock_flow_cls.from_client_config.side_effect = RuntimeError("Scope has changed from requested scope")
-        result = run(service.handle_callback(state="signed-state", code="auth-code"))
+        result = run(service.handle_callback(state=_sign_state(BRAND_ID, scope_mode="send_only"), code="auth-code"))
 
     assert result == {"success": False, "error": "scope_mismatch"}
 
