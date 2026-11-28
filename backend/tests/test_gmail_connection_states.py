@@ -179,6 +179,69 @@ def test_settings_status_manual_disconnect_does_not_look_like_needs_reconnect():
     assert body["connected"] is False
     assert body["needs_reconnect"] is False
 
+def test_email_forwarding_consent_records_version_and_timestamp():
+    brand = {
+        "id": BRAND_ID, "tenant_id": TENANT_ID,
+        "inbound_email_token": "a" * 40,
+    }
+    client = TestClient(_brand_app())
+    with patch("src.api.routes.brand_gmail.supabase_select", return_value=[brand]), \
+         patch("src.api.routes.brand_gmail.supabase_update", return_value={}) as update:
+        response = client.post(f"/brands/{BRAND_ID}/email-forwarding/consent")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["consent_version"] == "2026-11-28-v1"
+    assert body["consent_recorded_at"]
+    changes = update.call_args.args[2]
+    assert changes["email_ai_processing_consent_version"] == "2026-11-28-v1"
+    assert changes["email_ai_processing_consent_at"] == body["consent_recorded_at"]
+    # Address must be enabled for Google verification email capture, but it
+    # remains in gmail_polling mode until explicit forwarding activation.
+    assert changes["inbound_email_enabled"] is True
+
+
+def test_email_forwarding_activation_requires_current_consent():
+    brand = {
+        "id": BRAND_ID, "tenant_id": TENANT_ID,
+        "inbound_email_token": "a" * 40,
+        "inbound_email_verified_at": "2026-11-28T10:00:00+00:00",
+        "gmail_send_connected": True,
+        "gmail_send_token": "encrypted-send-token",
+        "email_ai_processing_consent_at": None,
+        "email_ai_processing_consent_version": None,
+    }
+    client = TestClient(_brand_app())
+    with patch("src.api.routes.brand_gmail.supabase_select", return_value=[brand]):
+        response = client.post(f"/brands/{BRAND_ID}/email-forwarding/activate")
+
+    assert response.status_code == 409
+    assert "consent" in response.json()["detail"].lower()
+
+
+def test_email_forwarding_activation_enables_only_after_current_consent():
+    brand = {
+        "id": BRAND_ID, "tenant_id": TENANT_ID,
+        "inbound_email_token": "a" * 40,
+        "inbound_email_verified_at": "2026-11-28T10:00:00+00:00",
+        "gmail_send_connected": True,
+        "gmail_send_token": "encrypted-send-token",
+        "email_ai_processing_consent_at": "2026-11-28T11:00:00+00:00",
+        "email_ai_processing_consent_version": "2026-11-28-v1",
+        "inbound_email_enabled": False,
+    }
+    client = TestClient(_brand_app())
+    with patch("src.api.routes.brand_gmail.supabase_select", return_value=[brand]), \
+         patch("src.api.routes.brand_gmail.supabase_update", return_value={}) as update:
+        response = client.post(f"/brands/{BRAND_ID}/email-forwarding/activate")
+
+    assert response.status_code == 200
+    changes = update.call_args.args[2]
+    assert changes["inbound_email_enabled"] is True
+    assert changes["email_ingestion_mode"] == "forwarding"
+
+
 def test_legacy_gmail_auth_url_returns_gone():
     client = TestClient(_brand_app())
     brand = {"id": BRAND_ID, "tenant_id": TENANT_ID, "is_active": True}
