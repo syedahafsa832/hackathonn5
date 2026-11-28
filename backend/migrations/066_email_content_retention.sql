@@ -22,6 +22,22 @@ SET data_retention_days = 90
 WHERE data_retention_days IS NULL OR data_retention_days > 90;
 
 
+-- Support the bounded daily candidate selection and log cleanup scans.
+CREATE INDEX IF NOT EXISTS idx_email_tickets_retention_candidate
+    ON public.tickets (
+        (COALESCE(resolved_at, updated_at, last_customer_message_at, created_at)),
+        id
+    )
+    WHERE channel = 'email'
+      AND lower(COALESCE(status, '')) IN ('resolved', 'auto_resolved', 'closed');
+
+CREATE INDEX IF NOT EXISTS idx_email_filter_log_created_brand
+    ON public.email_filter_log (created_at, brand_id);
+
+CREATE INDEX IF NOT EXISTS idx_email_quarantine_created_brand
+    ON public.email_quarantine (created_at, brand_id);
+
+
 CREATE OR REPLACE FUNCTION public.purge_expired_email_support_content()
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -48,10 +64,11 @@ BEGIN
         LEFT JOIN public.system_settings AS settings
           ON settings.store_id = t.store_id
         WHERE t.channel = 'email'
+          -- auto_resolved_review is still awaiting a human review and is
+          -- intentionally excluded; only actually completed cases expire.
           AND lower(COALESCE(t.status, '')) IN (
               'resolved',
               'auto_resolved',
-              'auto_resolved_review',
               'closed'
           )
           AND COALESCE(
@@ -70,18 +87,25 @@ BEGIN
               SELECT 1
               FROM public.actions AS a
               WHERE a.ticket_id = t.id
-                AND lower(COALESCE(a.status, '')) = 'pending'
+                AND lower(COALESCE(a.status, '')) NOT IN (
+                    'executed',
+                    'failed',
+                    'rejected',
+                    'cancelled',
+                    'expired'
+                )
           )
           AND NOT EXISTS (
               SELECT 1
               FROM public.brand_actions AS ba
               WHERE ba.ticket_id = t.id
-                AND lower(COALESCE(ba.status, '')) IN (
-                    'pending',
-                    'awaiting_approval',
-                    'requires_approval',
-                    'processing',
-                    'executing'
+                AND lower(COALESCE(ba.status, '')) NOT IN (
+                    'executed',
+                    'failed',
+                    'rejected',
+                    'cancelled',
+                    'expired',
+                    'completed'
                 )
           )
           -- Do not remove the ticket while a scheduled send/automation is
@@ -90,24 +114,27 @@ BEGIN
               SELECT 1
               FROM public.email_automation_pending AS ep
               WHERE ep.ticket_id = t.id
-                AND lower(COALESCE(ep.status, '')) IN (
-                    'pending',
-                    'queued',
-                    'scheduled',
-                    'processing',
-                    'retrying'
+                AND lower(COALESCE(ep.status, '')) NOT IN (
+                    'sent',
+                    'failed',
+                    'cancelled',
+                    'rejected',
+                    'completed',
+                    'resolved',
+                    'expired'
                 )
           )
           AND NOT EXISTS (
               SELECT 1
               FROM public.send_tasks AS st
               WHERE st.ticket_id = t.id
-                AND lower(COALESCE(st.status, '')) IN (
-                    'pending',
-                    'queued',
-                    'processing',
-                    'retrying',
-                    'sending'
+                AND lower(COALESCE(st.status, '')) NOT IN (
+                    'sent',
+                    'failed',
+                    'cancelled',
+                    'rejected',
+                    'completed',
+                    'expired'
                 )
           )
         ORDER BY
@@ -130,26 +157,33 @@ BEGIN
         UPDATE public.actions
         SET customer_email = '',
             customer_name = NULL,
+            order_id = NULL,
+            order_number = NULL,
+            order_total = NULL,
             original_message = NULL,
             ai_reasoning = NULL,
             risk_factors = NULL,
             extracted_data = NULL,
+            approved_extracted_data = NULL,
             execution_result = NULL,
             error_message = NULL,
             rejection_reason = NULL,
-            shopify_response = NULL
+            shopify_response = NULL,
+            approved_by = NULL
         WHERE ticket_id = ANY(v_ticket_ids);
         GET DIAGNOSTICS v_actions_scrubbed = ROW_COUNT;
 
         UPDATE public.brand_actions
         SET customer_email = '',
             customer_name = NULL,
+            order_id = NULL,
             original_message = NULL,
             ai_reasoning = NULL,
             risk_factors = NULL,
             extracted_data = NULL,
             execution_result = NULL,
-            rejection_reason = NULL
+            rejection_reason = NULL,
+            approved_by = NULL
         WHERE ticket_id = ANY(v_ticket_ids);
         GET DIAGNOSTICS v_brand_actions_scrubbed = ROW_COUNT;
 
@@ -157,9 +191,22 @@ BEGIN
         -- payloads that could contain order or customer details.
         UPDATE public.financial_action_audit_log
         SET result = NULL,
-            error_detail = NULL
+            error_detail = NULL,
+            user_email = NULL,
+            ip_address = NULL
         WHERE ticket_id = ANY(v_ticket_ids);
         GET DIAGNOSTICS v_financial_audit_rows_scrubbed = ROW_COUNT;
+
+        -- action_logs are not deleted with actions (the action rows are
+        -- retained as minimal audit metadata), so scrub their free-form
+        -- details/errors explicitly.
+        UPDATE public.action_logs AS al
+        SET details = NULL,
+            error_message = NULL,
+            actor = 'retention_scrubbed'
+        FROM public.actions AS a
+        WHERE al.action_id = a.id
+          AND a.ticket_id = ANY(v_ticket_ids);
 
         -- Retain aggregate usage events but remove customer identifiers and
         -- the link back to an individual ticket.
