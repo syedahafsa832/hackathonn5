@@ -21,6 +21,7 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
   const [copied, setCopied] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [emailDataConsent, setEmailDataConsent] = useState(false);
   const hasLoadedRef = useRef(false);
 
   // Refresh in place after the first load. The old implementation replaced
@@ -60,6 +61,20 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
   const linkReady = !!status?.verification_link;
   const hasAddress = !!status?.forwarding_address;
 
+  const ensureEmailDataConsent = async () => {
+    if (status?.ai_processing_consent_recorded) return true;
+    if (!emailDataConsent) {
+      throw new Error('Please review and accept the email processing notice before continuing.');
+    }
+    await client.post('/api/brands/' + brandId + '/email-forwarding/consent');
+    const updated = await refresh();
+    if (!updated?.ai_processing_consent_recorded) {
+      throw new Error('Consent could not be confirmed. Refresh and try again.');
+    }
+    setEmailDataConsent(false);
+    return true;
+  };
+
   // Keep checking for Google's confirmation in the background while the
   // setup card is open. Merchants no longer need to guess whether the
   // "Check" button worked or repeatedly click it.
@@ -88,11 +103,31 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
     }
   };
 
+  const saveEmailDataConsent = async () => {
+    setBusy(true);
+    setMessage('');
+    setError('');
+    try {
+      await client.post('/api/brands/' + brandId + '/email-forwarding/consent');
+      const updated = await refresh();
+      if (!updated?.ai_processing_consent_recorded) {
+        throw new Error('Consent could not be confirmed. Refresh and try again.');
+      }
+      setEmailDataConsent(false);
+      setMessage('Consent recorded. You can now finish Gmail forwarding setup.');
+    } catch (err) {
+      setError(extractErrorMessage(err, 'Could not record email processing consent.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const connectSendOnly = async () => {
     setBusy(true);
     setMessage('');
     setError('');
     try {
+      await ensureEmailDataConsent();
       const response = await client.get('/api/brands/' + brandId + '/gmail/send-auth-url', {
         params: { return_to: returnTo },
       });
@@ -108,27 +143,13 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
     setMessage('');
     setError('');
     try {
+      await ensureEmailDataConsent();
       await client.post('/api/brands/' + brandId + '/email-forwarding/activate');
       const updated = await refresh();
       setMessage(updated ? 'Email forwarding is now active.' : 'Forwarding was activated. Refresh the status to confirm.');
       if (onComplete) onComplete();
     } catch (err) {
       setError(extractErrorMessage(err, 'Could not activate forwarding.'));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const pauseForwarding = async () => {
-    setBusy(true);
-    setMessage('');
-    setError('');
-    try {
-      await client.post('/api/brands/' + brandId + '/email-forwarding/pause');
-      const updated = await refresh();
-      if (updated) setMessage('Gmail polling has been restored.');
-    } catch (err) {
-      setError(extractErrorMessage(err, 'Could not pause forwarding.'));
     } finally {
       setBusy(false);
     }
@@ -199,9 +220,9 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
             </button>
           )}
 
-          {hasAddress && !status.verified && (
+          {hasAddress && !status.verified && status.ai_processing_consent_recorded && (
             <div style={{ padding: '10px 12px', background: 'var(--bg-secondary)', borderRadius: '5px', marginBottom: '12px' }}>
-              <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: '6px' }}>Connect your Gmail inbox</div>
+              <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: '6px' }}>Set up Gmail forwarding</div>
               <ol style={{ paddingLeft: '18px', margin: 0, fontSize: '12px', lineHeight: 1.65, color: 'var(--text-secondary)' }}>
                 <li>Open <a href="https://mail.google.com/mail/u/0/#settings/fwdandpop" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>Gmail Forwarding settings</a> for the inbox that receives customer support messages.</li>
                 <li>Choose <strong>Add a forwarding address</strong>, paste the exact tResolv address above, then click <strong>Next → Proceed → OK</strong>.</li>
@@ -265,6 +286,42 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
           )}
 
           {hasAddress && (
+            <div style={{ marginTop: '12px', padding: '11px 12px', border: '1px solid var(--border)', borderRadius: '5px' }}>
+              <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: '6px' }}>
+                How tResolv processes forwarded customer emails
+              </div>
+              {status.ai_processing_consent_recorded ? (
+                <p style={{ fontSize: '11px', lineHeight: 1.55, color: 'var(--success)', margin: 0 }}>
+                  Email processing consent recorded. You can review the current details in the <a href="https://www.tresolv.online/privacy" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>Privacy Policy</a>.
+                </p>
+              ) : (
+                <>
+                  <p style={{ fontSize: '11px', lineHeight: 1.55, color: 'var(--text-secondary)', margin: '0 0 9px' }}>
+                    When you activate email support, you instruct tResolv to receive the customer messages you forward, store them as support tickets, and process their contents to classify requests, retrieve relevant store information, and prepare replies. For forwarded email content, tResolv uses Cloudflare Workers AI, Mistral AI, and Groq. This email content is not routed to DeepSeek or OpenRouter and is not used by tResolv to train generalized AI models. These providers may retain limited request data under their own security and service policies. Read the <a href="https://www.tresolv.online/privacy" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>Privacy Policy</a>.
+                  </p>
+                  <label style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', fontSize: '11px', lineHeight: 1.55, color: 'var(--text-primary)', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={emailDataConsent}
+                      onChange={(event) => setEmailDataConsent(event.target.checked)}
+                      style={{ marginTop: '2px' }}
+                    />
+                    <span>I am authorised to connect this store and instruct tResolv to receive, store, and process the customer emails I forward for the email-support features described above.</span>
+                  </label>
+                  <button
+                    type="button"
+                    disabled={busy || !emailDataConsent}
+                    onClick={saveEmailDataConsent}
+                    style={{ ...buttonStyle, marginTop: '10px', opacity: (busy || !emailDataConsent) ? 0.55 : 1 }}
+                  >
+                    {busy ? 'Saving…' : 'Agree and continue'}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+
+          {hasAddress && (
             <div style={{ marginTop: '12px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '6px' }}>
                 <span style={{ fontSize: '12px', fontWeight: 600 }}>Gmail send access</span>
@@ -303,11 +360,7 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
                       Continue →
                     </button>
                   )}
-                  {status.legacy_gmail_connected && (
-                    <button type="button" disabled={busy} onClick={pauseForwarding} style={{ ...buttonStyle, marginTop: '2px' }}>
-                      {busy ? 'Switching…' : 'Pause forwarding and use the existing Gmail connection'}
-                    </button>
-                  )}
+                  
                 </div>
               )}
             </div>

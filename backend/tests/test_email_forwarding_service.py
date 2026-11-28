@@ -296,6 +296,43 @@ def test_forwarding_ingestion_rejects_deactivated_brands_even_if_old_token_is_en
 
     assert result == {"accepted": False, "status": "unknown_recipient"}
     assert captured["is_active"] == "eq.true"
+    # The resolver must still see the alias to capture Google's verification
+    # email, then reject customer mail before ticket/AI processing if consent
+    # is missing.
+    assert "email_ai_processing_consent_version" not in captured
+
+
+def test_forwarded_customer_email_is_rejected_before_ai_without_current_consent(monkeypatch):
+    import asyncio
+    from unittest.mock import patch
+    from src.services import email_forwarding_service
+
+    token = "f" * 40
+    brand = {
+        "id": "brand-no-consent",
+        "tenant_id": "tenant-1",
+        "is_active": True,
+        "inbound_email_enabled": True,
+        "inbound_email_token": token,
+        "email_ingestion_mode": "forwarding",
+        "email_ai_processing_consent_at": None,
+        "email_ai_processing_consent_version": None,
+    }
+    monkeypatch.setenv("INBOUND_EMAIL_DOMAIN", "inbound.tresolv.online")
+    monkeypatch.setenv("INBOUND_EMAIL_LOCAL_PART", "support")
+
+    with patch.object(email_forwarding_service, "supabase_select", return_value=[brand]), \
+         patch("src.services.email_filter_service.email_filter_service.evaluate") as evaluate:
+        result = asyncio.run(email_forwarding_service.process_forwarded_email(
+            _raw_email(),
+            "support+" + token + "@inbound.tresolv.online",
+        ))
+
+    assert result == {
+        "accepted": False,
+        "status": "email_ai_processing_consent_required",
+    }
+    evaluate.assert_not_called()
 
 
 def test_soft_deleting_brand_disables_its_inbound_forwarding():

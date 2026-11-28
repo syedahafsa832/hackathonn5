@@ -16,53 +16,41 @@ os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test")
 from src.services.brand_gmail_service import BrandGmailService  # noqa: E402
 
 
-def test_transient_refresh_failure_returns_none_not_a_stale_service():
-    from datetime import datetime, timezone, timedelta
+def test_legacy_inbox_token_is_never_loaded_for_polling():
+    brand = {
+        "id": "brand-legacy",
+        "gmail_token": "legacy-encrypted-token",
+        "gmail_connected": True,
+        "gmail_email": "merchant@example.com",
+        "name": "Legacy",
+        "email_ingestion_mode": "gmail_polling",
+    }
+    service = BrandGmailService()
+    with patch("src.services.brand_gmail_service.decrypt_token") as mock_decrypt, \
+         patch("src.services.brand_gmail_service.build") as mock_build:
+        assert service._build_service(brand) is None
 
-    brand = {"id": "brand-1", "gmail_token": "enc", "name": "Test", "gmail_email": "b@x.com"}
-    svc = BrandGmailService()
-    expired_at = datetime.now(timezone.utc) - timedelta(minutes=1)
-
-    with (
-        patch("src.services.brand_gmail_service.decrypt_token", return_value=json.dumps({
-            "token": "expired-access-token",
-            "refresh_token": "existing-refresh-token",
-            "client_id": "deleted-client-id",
-            "client_secret": "deleted-client-secret",
-            "expiry": expired_at.isoformat(),
-        })),
-        patch("src.services.brand_gmail_service.Credentials") as MockCreds,
-        patch("src.services.brand_gmail_service.Request"),
-        patch("src.services.brand_gmail_service.supabase_update") as mock_update,
-        patch("src.services.brand_gmail_service.build") as mock_build,
-    ):
-        mock_creds = MagicMock(refresh_token="rt")
-        mock_creds.refresh.side_effect = Exception("temporary network error")
-        MockCreds.return_value = mock_creds
-
-        result = svc._build_service(brand)
-
-    assert result is None
+    mock_decrypt.assert_not_called()
     mock_build.assert_not_called()
 
 
-def test_valid_access_token_is_reused_without_refresh():
-    from datetime import datetime, timezone, timedelta
-    brand = {"id": "brand-1", "gmail_token": "enc"}
-    svc = BrandGmailService()
-    expiry = datetime.now(timezone.utc) + timedelta(minutes=45)
-    fake_service = MagicMock()
-    with patch("src.services.brand_gmail_service.decrypt_token", return_value=json.dumps({
-        "token": "valid", "refresh_token": "rt", "client_id": "cid",
-        "client_secret": "cs", "expiry": expiry.isoformat(),
-    })), patch("src.services.brand_gmail_service.Credentials") as MockCreds, \
-         patch("src.services.brand_gmail_service.build", return_value=fake_service), \
-         patch("src.services.brand_gmail_service.supabase_update") as mock_update:
-        creds = MagicMock(token="valid", refresh_token="rt", expiry=expiry, expired=False)
-        MockCreds.return_value = creds
-        assert svc._build_service(brand) is fake_service
-    creds.refresh.assert_not_called()
-    mock_update.assert_not_called()
+def test_legacy_inbox_poller_returns_no_connected_brands():
+    service = BrandGmailService()
+    assert service.get_connected_brands() == []
+
+
+def test_legacy_inbox_fetch_never_calls_gmail_api():
+    service = BrandGmailService()
+    brand = {
+        "id": "brand-legacy",
+        "email_ingestion_mode": "gmail_polling",
+        "gmail_token": "old-token",
+    }
+    with patch("src.services.brand_gmail_service.build") as mock_build:
+        emails = service._get_new_emails_sync(brand)
+
+    assert emails == []
+    mock_build.assert_not_called()
 
 
 def test_send_only_refresh_writes_only_send_token_column():
@@ -132,15 +120,6 @@ def _assert_deleted_client_marks_credential_disconnected(brand, token_field, con
     assert update[connected_field] is False
     assert "updated_at" in update
     assert token_field not in update
-
-
-def test_deleted_legacy_gmail_oauth_client_marks_brand_for_reconnect():
-    _assert_deleted_client_marks_credential_disconnected(
-        {"id": "brand-legacy", "gmail_token": "enc", "gmail_connected": True,
-         "gmail_email": "merchant@example.com", "name": "Legacy"},
-        "gmail_token",
-        "gmail_connected",
-    )
 
 
 def test_deleted_send_only_oauth_client_marks_brand_for_reconnect():

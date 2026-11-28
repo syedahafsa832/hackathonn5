@@ -112,7 +112,7 @@ class EmailPoller:
             try:
                 brand_count = await self._poll_all_inboxes()
             except Exception as e:
-                logger.exception("Email polling error")
+                logger.error(f"Email polling error; error_type={type(e).__name__}")
                 await asyncio.sleep(5)
 
             self._csat_loop_counter += 1
@@ -171,15 +171,9 @@ class EmailPoller:
 
             await asyncio.gather(*[_poll_one(b) for b in brands])
             return len(brands)
-        elif not full_access_brands:
-            # Send-only OAuth alone does not provide inbox polling. Until a
-            # brand is activated for forwarding, preserve the legacy global
-            # inbox fallback exactly as before.
-            await self._poll_global_inbox()
-            return 0
         else:
-            # Full-access brands exist, but all are forwarding-mode. Their
-            # inbound messages arrive through Cloudflare, not Gmail polling.
+            # All supported inbound customer email uses merchant-configured
+            # forwarding. Never fall back to a global or legacy Gmail inbox.
             return 0
 
     # ── Per-brand polling ──────────────────────────────────────────────────
@@ -228,7 +222,7 @@ class EmailPoller:
             # Gmail search expects a date (YYYY/MM/DD) after which to search, not a Unix timestamp.
             since_str = since_dt.strftime('%Y/%m/%d')
             gmail_query = f"in:inbox after:{since_str}"
-            logger.info(f"[POLL] Brand {brand.get('id')} ({brand.get('gmail_email')}): last_polled_at = {last_polled_at}")
+            logger.info(f"[POLL] Brand {brand.get('id')}: last_polled_at = {last_polled_at}; mailbox address omitted from logs.")
             logger.info(f"[POLL] Gmail query: {gmail_query}")
 
             try:
@@ -263,7 +257,7 @@ class EmailPoller:
                     # process_message, which already has its own try/except
                     # below) must never affect any other concurrently
                     # running email or abort the rest of the batch.
-                    logger.exception(f"[Poller] Unexpected error handling message {email.get('id')} for brand {brand_id}")
+                    logger.error(f"[Poller] Unexpected error handling incoming message for brand {brand_id}; message identifiers omitted; error_type=processing_exception")
 
             async def _handle_one_inner(email):
                 nonlocal processed_count, failure_count
@@ -277,14 +271,14 @@ class EmailPoller:
                 # cross-brand infinite Re: loops (brand A replies → lands in brand B's
                 # inbox → brand B replies → lands in brand A's inbox → ...).
                 if sender in all_brand_emails:
-                    logger.info(f"[Poller] Skipping brand-owned address email from {sender} — cross-brand loop prevention")
+                    logger.info(f"[Poller] Skipping brand-owned address email for brand {brand_id} — cross-brand loop prevention; sender omitted from logs.")
                     return
 
                 # Skip deep reply chains (Re: Re: Re: ≥ 3) — second line of loop defence
                 subject = email.get("subject", "")
                 re_count = subject.lower().count("re:")
                 if re_count >= 3:
-                    logger.info(f"[Poller] Skipping deep reply chain (Re: count={re_count}): {subject[:60]}")
+                    logger.info(f"[Poller] Skipping deep reply chain (Re: count={re_count}); subject omitted from logs.")
                     return
 
                 # Skip genuinely outbound messages that land back in this inbox
@@ -331,7 +325,7 @@ class EmailPoller:
                                 supabase_select, "tickets", {"gmail_message_id": f"eq.{gmail_msg_id}"}
                             )
                         if already_seen:
-                            logger.debug(f"[Poller] Skipping already-processed message {gmail_msg_id}")
+                            logger.debug("[Poller] Skipping message already seen or discarded; message identifier omitted from logs.")
                             return
                     except Exception:
                         pass  # column may not exist yet — safe to continue
@@ -349,21 +343,21 @@ class EmailPoller:
                             {"gmail_message_id": f"eq.{gmail_msg_id}", "status": "eq.discarded"},
                         )
                         if discarded:
-                            logger.debug(f"[Poller] Skipping discarded message {gmail_msg_id}")
+                            logger.debug("[Poller] Skipping message already seen or discarded; message identifier omitted from logs.")
                             return
                     except Exception:
                         pass
 
                 # ── Filter evaluation (runs before any ticket or AI work) ──
-                logger.info(f"[email_filter] evaluating gmail_message_id={gmail_msg_id} sender={sender} brand={brand.get('name')}")
+                logger.info(f"[email_filter] evaluating incoming message for brand={brand_id}; sender and message identifiers omitted from logs.")
                 email["brand_support_email"] = support_email
                 filter_result = await asyncio.to_thread(email_filter_service.evaluate, email, brand_id)
                 await asyncio.to_thread(email_filter_service.log_decision, brand_id, sender, thread_id, filter_result, gmail_msg_id)
 
                 if filter_result.decision == "blocked":
                     logger.info(
-                        f"[email_filter] rejected gmail_message_id={gmail_msg_id} sender={sender} "
-                        f"reason={filter_result.reason} (brand: {brand['name']})"
+                        f"[email_filter] rejected incoming message for brand={brand_id}; "
+                        f"reason={filter_result.reason}; sender and message identifiers omitted."
                     )
                     return
 
@@ -381,14 +375,16 @@ class EmailPoller:
 
                 if guardian_result.decision in ("blocked", "quarantined"):
                     logger.info(
-                        f"[email_filter] {guardian_result.decision} gmail_message_id={gmail_msg_id} sender={sender} "
-                        f"reason={guardian_result.reason} classification={guardian_result.classification}"
+                        f"[email_filter] {guardian_result.decision} incoming message for brand={brand_id}; "
+                        f"reason={guardian_result.reason} classification={guardian_result.classification}; "
+                        "sender and message identifiers omitted."
                     )
                     return
 
                 logger.info(
-                    f"[email_filter] accepted gmail_message_id={gmail_msg_id} sender={sender} "
-                    f"classification={guardian_result.classification} confidence={guardian_result.confidence:.2f}"
+                    f"[email_filter] accepted incoming message for brand={brand_id}; "
+                    f"classification={guardian_result.classification} confidence={guardian_result.confidence:.2f}; "
+                    "sender and message identifiers omitted."
                 )
 
                 auto_reply_enabled = guardian_result.auto_reply_enabled
@@ -435,17 +431,17 @@ class EmailPoller:
                         result = await self.processor.process_message("email_incoming", payload)
                         if isinstance(result, dict) and result.get("status") == "error":
                             failure_count += 1
-                            logger.error(f"[Poller] Processor error for brand {brand_id} message {gmail_msg_id}: {result.get('error')}")
+                            logger.error(f"[Poller] Processor error for brand {brand_id}; message identifier and error detail omitted.")
                         else:
                             processed_count += 1
                             ticket_id = result.get("ticket_id") if isinstance(result, dict) else None
                             logger.info(
-                                f"[email_filter] ticket_created ticket_id={ticket_id} gmail_message_id={gmail_msg_id} "
-                                f"sender={sender} brand='{brand['name']}'"
+                                f"[email_filter] ticket_created ticket_id={ticket_id} brand_id={brand_id}; "
+                                "sender and Gmail message identifiers omitted."
                             )
                     except Exception:
                         failure_count += 1
-                        logger.exception(f"[Poller] Processor exception for brand {brand_id} message {gmail_msg_id}")
+                        logger.error(f"[Poller] Processor exception for brand {brand_id}; message identifier omitted; error_type=processing_exception")
 
             async def _handle_group(group_emails):
                 for email in group_emails:
@@ -710,7 +706,7 @@ class EmailPoller:
                         references=csat_references,
                     )
                     if send_result.get("success"):
-                        logger.info(f"[CSAT] Sent survey for ticket {ticket['id']} to {customer_email}")
+                        logger.info(f"[CSAT] Sent survey for ticket {ticket['id']}; recipient omitted from logs.")
                     else:
                         logger.warning(f"[CSAT] Survey send failed for ticket {ticket['id']}: {send_result.get('error')}")
                 except Exception as e:
@@ -721,37 +717,9 @@ class EmailPoller:
     # ── Legacy global inbox fallback ───────────────────────────────────────
 
     async def _poll_global_inbox(self):
-        try:
-            from production.channels.gmail_handler import gmail_handler
-            result = await gmail_handler.process_new_emails()
-
-            if result["count"] == 0:
-                return
-
-            support_email = os.getenv("SUPPORT_EMAIL_ADDRESS", "").lower()
-
-            for email in result["emails"]:
-                sender = email["sender_email"].lower()
-                if sender == support_email:
-                    continue
-                if _is_automated(sender, email["body"]):
-                    logger.info(f"[Poller] Skipping automated email from {sender}")
-                    continue
-
-                payload = {
-                    "channel":        "email",
-                    "content":        email["body"],
-                    "customer_email": email["sender_email"],
-                    "customer_name":  email["sender_name"],
-                    "subject":        email["subject"],
-                    "timestamp":      datetime.now(timezone.utc).isoformat(),
-                }
-
-                if self.processor:
-                    await self.processor.process_message("email_incoming", payload)
-
-        except Exception as e:
-            logger.error(f"[Poller] Global inbox error: {e}")
+        """Retired: tResolv no longer reads any Gmail inbox."""
+        logger.info("[Poller] Global Gmail inbox polling is retired; use merchant forwarding.")
+        return
 
 
 

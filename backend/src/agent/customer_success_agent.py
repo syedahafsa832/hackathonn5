@@ -1029,7 +1029,7 @@ class CustomerSuccessAgent:
             f"Initializing V3 Agent — AI providers configured: {ai_provider_manager.has_providers}"
         )
 
-    async def process_customer_query(self, query: str, customer_info: Dict[str, Any], tenant_id: Optional[str] = None, store_id: Optional[str] = None, ticket_id: Optional[str] = None, on_progress: Optional[Callable[[str, str], Awaitable[None]]] = None) -> Dict[str, Any]:
+    async def process_customer_query(self, query: str, customer_info: Dict[str, Any], tenant_id: Optional[str] = None, store_id: Optional[str] = None, ticket_id: Optional[str] = None, on_progress: Optional[Callable[[str, str], Awaitable[None]]] = None, allow_deepseek_fallback: bool = True) -> Dict[str, Any]:
         """
         V3 Orchestration:
         1. RAG Retrieval (Policies, Brand, Product Info) - tenant-specific if tenant_id provided
@@ -2054,6 +2054,11 @@ class CustomerSuccessAgent:
                     validate_response=_validate_ai_json_reply,
                     log_context=ticket_id or "",
                     tenant_id=tenant_id,
+                    # Workspace-derived email content must not flow to DeepSeek.
+                    allow_deepseek_fallback=(
+                        allow_deepseek_fallback
+                        and str(customer_info.get("channel") or "").lower() != "email"
+                    ),
                 )
             except AllProvidersFailedError as api_error:
                 logger.error(f"[Agent] All AI providers failed: {api_error}")
@@ -2513,6 +2518,15 @@ class CustomerSuccessAgent:
         # streaming path ever passed a callback through this method. The
         # email/webform pipeline (message_processor.py) is the other caller
         # of this method and now passes one too, to persist real events.
-        return await self.process_customer_query(query, customer_info, tenant_id=tenant_id, store_id=store_id, ticket_id=ticket_id, on_progress=on_progress)
+        return await self.process_customer_query(
+            query,
+            customer_info,
+            tenant_id=tenant_id,
+            store_id=store_id,
+            ticket_id=ticket_id,
+            on_progress=on_progress,
+            # Email/Workspace-derived content must not go to DeepSeek.
+            allow_deepseek_fallback=(channel or "").lower() != "email",
+        )
 
 customer_success_agent = CustomerSuccessAgent()

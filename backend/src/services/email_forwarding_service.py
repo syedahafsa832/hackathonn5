@@ -369,6 +369,12 @@ async def process_forwarded_email(raw: bytes, envelope_to: str) -> Dict[str, Any
             "has_link": bool(verification_link),
         }
 
+    # A Google forwarding-confirmation message can be captured before
+    # consent, but customer email content must never enter ticket/AI processing
+    # until the current consent version has been recorded.
+    if brand.get("email_ai_processing_consent_version") != "2026-11-28-v1":
+        return {"accepted": False, "status": "email_ai_processing_consent_required"}
+
     if brand.get("email_ingestion_mode", "gmail_polling") != "forwarding":
         return {"accepted": True, "status": "forwarding_not_activated"}
 

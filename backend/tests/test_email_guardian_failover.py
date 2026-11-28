@@ -54,6 +54,8 @@ async def test_classifier_survives_a_dead_primary_provider():
     svc = EmailGuardianService()
 
     async def fake_create_chat_completion(**kwargs):
+        # Email-derived content must never use the DeepSeek emergency fallback.
+        assert kwargs.get("allow_deepseek_fallback") is False
         # Simulates ai_provider_manager already having failed over past a
         # dead primary provider internally and succeeded on fallback_1.
         return (
@@ -107,6 +109,7 @@ async def test_evaluate_does_not_quarantine_a_normal_order_question():
     }
 
     async def fake_create_chat_completion(**kwargs):
+        assert kwargs.get("allow_deepseek_fallback") is False
         return (
             _fake_response("customer_support", 0.9, True),
             "primary", "mistral-large-latest",

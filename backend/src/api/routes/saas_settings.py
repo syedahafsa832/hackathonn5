@@ -437,7 +437,7 @@ async def _get_tenant_brand_async(tenant_id: str) -> Optional[dict]:
     Find the brand that belongs to this specific tenant — never returns another tenant's brand.
     Lookup order:
       1. Active brand with tenant_id match (primary)
-      2. Inactive brand with tenant_id + gmail_connected (onboarding 409 edge case)
+      2. Inactive brand with tenant_id + gmail_send_connected (reconnect edge case)
       3. Brand matching tenant's shopify_domain (pre-migration rows)
     NO global fallback — returns None if no owned brand found.
     """
@@ -449,11 +449,10 @@ async def _get_tenant_brand_async(tenant_id: str) -> Optional[dict]:
         if owned:
             return owned[0]
 
-        # Fallback: inactive brand for this tenant that has Gmail connected
-        # (happens after onboarding 409 flow deactivated the brand before Gmail was connected)
+        # Fallback: inactive brand for this tenant that has send-only Gmail connected.
         inactive_gmail = supabase_select("brands", {
             "tenant_id": f"eq.{tenant_id}",
-            "gmail_connected": "is.true",
+            "gmail_send_connected": "is.true",
         })
         if inactive_gmail:
             return inactive_gmail[0]
@@ -484,73 +483,22 @@ async def _get_tenant_brand_async(tenant_id: str) -> Optional[dict]:
 
 @router.get("/gmail/status")
 async def get_gmail_status(tenant: TenantContext = Depends(get_current_tenant)):
-    """Get Gmail connection status for this account (tenant-scoped)."""
+    """Return the supported send-only Gmail connection status."""
     try:
-        # Primary: active or inactive brand owned by tenant with gmail_connected=true
-        gmail_brands = supabase_select("brands", {
-            "tenant_id": f"eq.{tenant.tenant_id}",
-            "gmail_connected": "is.true",
-        })
-        if gmail_brands:
-            b = gmail_brands[0]
-            return {
-                "connected": True,
-                "email": b.get("gmail_email"),
-                "brand_id": b.get("id"),
-                "last_polled_at": b.get("updated_at"),
-                "needs_reconnect": False,
-            }
-
-        # Fallback: match via shopify_domain (rows created before tenant_id migration)
-        tenant_data = await auth_service.get_tenant(tenant.tenant_id)
-        if tenant_data:
-            shopify_domain = tenant_data.get("shopify_domain")
-            if shopify_domain:
-                domain_brands = supabase_select("brands", {
-                    "shopify_domain": f"eq.{shopify_domain}",
-                    "gmail_connected": "is.true",
-                })
-                if domain_brands:
-                    b = domain_brands[0]
-                    # Auto-link brand to this tenant
-                    if not b.get("tenant_id"):
-                        try:
-                            supabase_update("brands", {"id": f"eq.{b['id']}"}, {"tenant_id": tenant.tenant_id})
-                            logger.info(f"[Settings] Auto-linked brand {b['id']} to tenant {tenant.tenant_id}")
-                        except Exception:
-                            pass
-                    return {
-                        "connected": True,
-                        "email": b.get("gmail_email"),
-                        "brand_id": b.get("id"),
-                        "last_polled_at": b.get("updated_at"),
-                        "needs_reconnect": False,
-                    }
-
-        # Neither lookup found a brand with gmail_connected=true — but that's
-        # also what a REVOKED connection looks like (brand_gmail_service's
-        # token refresh flips gmail_connected to False on invalid_grant while
-        # deliberately leaving gmail_email in place). Check for that case
-        # before reporting a plain "never connected": a tenant whose Gmail
-        # access was revoked needs a distinct "reconnect" prompt, not the
-        # same first-time "Connect Gmail" copy.
-        stale_brands = supabase_select("brands", {
-            "tenant_id": f"eq.{tenant.tenant_id}",
-            "gmail_email": "not.is.null",
-        })
-        if stale_brands:
-            b = stale_brands[0]
-            return {
-                "connected": False,
-                "email": b.get("gmail_email"),
-                "brand_id": b.get("id"),
-                "last_polled_at": b.get("updated_at"),
-                "needs_reconnect": True,
-            }
-
-        return {"connected": False, "email": None, "needs_reconnect": False}
-    except Exception as e:
-        logger.error(f"Gmail status error: {e}")
+        brand = await _get_tenant_brand_async(tenant.tenant_id)
+        if not brand:
+            return {"connected": False, "email": None, "needs_reconnect": False}
+        connected = bool(brand.get("gmail_send_connected"))
+        email = brand.get("gmail_send_email")
+        return {
+            "connected": connected,
+            "email": email,
+            "brand_id": brand.get("id"),
+            "needs_reconnect": (not connected) and bool(email),
+            "ingestion_mode": brand.get("email_ingestion_mode"),
+        }
+    except Exception as exc:
+        logger.error(f"Send-only Gmail status error_type={type(exc).__name__}")
         return {"connected": False, "email": None, "needs_reconnect": False}
 
 
@@ -592,7 +540,7 @@ async def disconnect_gmail(tenant: TenantContext = Depends(require_tenant_admin)
     try:
         from src.services.brand_gmail_service import brand_gmail_service
         brand = await _get_tenant_brand_async(tenant.tenant_id)
-        if not brand or not brand.get("gmail_connected"):
+        if not brand:
             return {"success": True, "message": "Gmail was not connected"}
         brand_gmail_service.disconnect(brand["id"])
         return {"success": True, "message": "Gmail disconnected"}

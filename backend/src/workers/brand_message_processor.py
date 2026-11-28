@@ -69,8 +69,8 @@ class BrandMessageProcessor:
 
             logger.info(f"[BRAND-PROCESSOR] ========== NEW MESSAGE ==========")
             logger.info(f"[BRAND-PROCESSOR] Channel: {channel}")
-            logger.info(f"[BRAND-PROCESSOR] Customer: {customer_email}")
-            logger.info(f"[BRAND-PROCESSOR] Subject: {subject}")
+            logger.info("[BRAND-PROCESSOR] Incoming support message received; sender omitted from logs.")
+            logger.info("[BRAND-PROCESSOR] Message subject omitted from logs.")
 
             if not customer_email or not content:
                 logger.warning("[BRAND-PROCESSOR] Missing required fields")
@@ -191,7 +191,7 @@ class BrandMessageProcessor:
             email_sent = False
 
             if ai_auto_respond and ticket_status == "ai_responded" and reply_body:
-                logger.info(f"[BRAND-PROCESSOR] Auto-sending response to {customer_email}")
+                logger.info("[BRAND-PROCESSOR] Sending configured support reply; recipient omitted from logs.")
                 email_sent = await self._send_response(
                     brand=brand,
                     ticket_id=ticket_id,
@@ -477,11 +477,11 @@ class BrandMessageProcessor:
                 body=response
             )
 
-            logger.info(f"[BRAND-PROCESSOR] Email sent to {customer_email}")
+            logger.info("[BRAND-PROCESSOR] Support reply sent; recipient omitted from logs.")
             return True
 
         except Exception as e:
-            logger.error(f"[BRAND-PROCESSOR] Failed to send email: {e}")
+            logger.error(f"[BRAND-PROCESSOR] Failed to send email; error_type={type(e).__name__}")
             return False
 
     async def _log_conversation(

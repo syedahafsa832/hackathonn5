@@ -185,6 +185,8 @@ class EmailGuardianService:
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
                 response_format={"type": "json_object"},
+                # This prompt contains forwarded Gmail message content.
+                allow_deepseek_fallback=False,
             )
 
             raw = response.choices[0].message.content or ""
@@ -342,8 +344,8 @@ class EmailGuardianService:
             existing_record = await asyncio.to_thread(self._find_existing_decision, brand_id, gmail_message_id)
             if existing_record:
                 logger.info(
-                    f"[Guardian] Reusing prior decision for gmail_message_id={gmail_message_id} "
-                    f"sender={sender} — skipping re-classification"
+                    f"[Guardian] Reusing prior decision for brand={brand_id}; "
+                    "sender and message identifiers omitted — skipping re-classification"
                 )
                 return self._result_from_existing_record(existing_record)
 
@@ -374,7 +376,7 @@ class EmailGuardianService:
                     qid = await asyncio.to_thread(
                         self._create_quarantine_record, brand_id, email, classification, confidence, "auto_blocked"
                     )
-                    logger.info(f"[email_filter] rejected sender={sender} reason={reason} classification={classification} confidence={confidence:.2f}")
+                    logger.info(f"[email_filter] rejected message reason={reason} classification={classification} confidence={confidence:.2f}; sender omitted.")
                     return GuardianResult(
                         decision="blocked",
                         classification=classification,
@@ -384,7 +386,7 @@ class EmailGuardianService:
                         auto_reply_enabled=auto_reply_enabled,
                     )
                 qid = await asyncio.to_thread(self._create_quarantine_record, brand_id, email, classification, confidence)
-                logger.info(f"[email_filter] quarantined sender={sender} reason={reason}_low_confidence classification={classification} confidence={confidence:.2f}")
+                logger.info(f"[email_filter] quarantined message reason={reason}_low_confidence classification={classification} confidence={confidence:.2f}; sender omitted.")
                 return GuardianResult(
                     decision="quarantined",
                     classification=classification,
@@ -397,7 +399,7 @@ class EmailGuardianService:
             # Layer 5: confidence gate — quarantine low-confidence support emails
             if classification == "customer_support" and confidence < confidence_threshold:
                 qid = await asyncio.to_thread(self._create_quarantine_record, brand_id, email, classification, confidence)
-                logger.info(f"[email_filter] quarantined sender={sender} reason=low_confidence classification={classification}")
+                logger.info(f"[email_filter] quarantined message reason=low_confidence classification={classification}; sender omitted.")
                 return GuardianResult(
                     decision="quarantined",
                     classification=classification,
@@ -413,7 +415,7 @@ class EmailGuardianService:
             # Hardcoding False here blocked legitimate short emails (e.g. "hii") where
             # the guardian can't classify intent but the AI gets high reply confidence.
             if classification == "unknown":
-                logger.info(f"[email_filter] accepted sender={sender} reason=unknown_classification_fail_open")
+                logger.info("[email_filter] accepted message reason=unknown_classification_fail_open; sender omitted.")
                 return GuardianResult(
                     decision="allowed",
                     classification=classification,
@@ -423,7 +425,7 @@ class EmailGuardianService:
                     auto_reply_enabled=auto_reply_enabled,
                 )
 
-            logger.info(f"[email_filter] accepted sender={sender} reason=ai_classification classification={classification}")
+            logger.info(f"[email_filter] accepted message reason=ai_classification classification={classification}; sender omitted.")
             return GuardianResult(
                 decision="allowed",
                 classification=classification,

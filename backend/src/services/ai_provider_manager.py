@@ -6,12 +6,10 @@ providers and keys. A single rate-limited/expired key was escalating tickets
 ("System error: Rate limited") that a second key or provider could have
 handled — this exists to try the next configured option before giving up.
 
-Default chain: OpenRouter (mistral-nemo, free tier) -> Mistral primary
-(mistral-small-latest) -> OpenRouter (llama-3.3-70b, free tier) -> any extra
-Mistral fallback keys -> Groq (llama-3.1-8b-instant) -> Cloudflare Workers AI
-(llama-3.3-70b, only if CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID are both
-set), each tier configured/overridden independently via env vars — see
-_load_providers() below.
+Default chain: Cloudflare Workers AI (when configured) -> Mistral primary
+and fallback keys -> Groq fallback keys. OpenRouter is intentionally
+excluded. DeepSeek remains a separate, one-tenant emergency fallback for
+eligible non-email traffic only.
 
 Do not construct a per-call OpenAI(api_key=...) client elsewhere for ticket
 reply generation — go through get_provider_manager() so every caller gets the
@@ -85,24 +83,6 @@ def _record_deepseek_invocation() -> int:
         logger.error(f"[AI_PROVIDER][DeepSeek] Failed to persist invocation count: {e}")
     return count
 
-# OpenRouter free-tier models, used as a distinct exhaustion tier between
-# Mistral and Groq: unlike the Mistral/Groq schemes above, these two share
-# ONE key (OPENROUTER_API_KEY) across two different (both free) models,
-# since OpenRouter's rate limiting is per-key-per-model, not per-key —
-# no second key is needed to get a second independently-triable slot.
-# OpenRouter's free catalog churns (models get renamed/repriced/retired) —
-# confirmed live against https://openrouter.ai/api/v1/models on 2026-09-01
-# after mistralai/mistral-nemo:free and meta-llama/llama-3.3-70b-instruct:free
-# both silently stopped existing (renamed to paid, non-":free" IDs), which
-# made every OpenRouter attempt fail instantly with "model not found". If
-# this tier goes quiet again, check that URL for the current live :free list
-# before assuming a code/key problem.
-OPENROUTER_MODEL_FALLBACK_DEFAULTS = {
-    1: "z-ai/glm-5.2:free",
-    2: "google/gemma-4-31b-it:free",
-}
-OPENROUTER_DEFAULT_BASE_URL = os.getenv("OPENROUTER_API_BASE_URL", "https://openrouter.ai/api/v1")
-
 # Embeddings: same Mistral account family as chat, so every configured
 # Mistral key produces the same mistral-embed model / 1024-dim vector the
 # rag_chunks schema is built for (see backend/v3_rag_schema.sql,
@@ -164,17 +144,13 @@ class AIProviderManager:
     def _load_providers(self) -> List[_Provider]:
         providers = []
 
-        # Tried FIRST, ahead of Mistral/OpenRouter/Groq: those three are
-        # currently failing account-wide (403/404/429 seen live on every
-        # request), so every message was burning ~25-30s working through
-        # each of them before ever reaching a provider that actually works.
-        # Cloudflare Workers AI, a fourth independent provider/account,
-        # requires BOTH CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID (the
-        # token alone can't build the account-scoped base_url); silently
-        # omitted if either is missing, same as every other optional tier
-        # below. Reuses the exact same OpenAI() client / chat.completions.
-        # create() path as every other tier via its OpenAI-compatible
-        # /ai/v1 endpoint - no special-casing needed elsewhere.
+        # Cloudflare Workers AI is the first configured inference option.
+        # OpenRouter is intentionally excluded: downstream provider data
+        # handling is not controlled by tResolv. Any OPENROUTER_API_KEY left
+        # in the environment is ignored.
+        # Cloudflare requires BOTH CLOUDFLARE_API_TOKEN and
+        # CLOUDFLARE_ACCOUNT_ID; it is omitted if either is missing.
+
         cloudflare_token = os.getenv("CLOUDFLARE_API_TOKEN")
         cloudflare_account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID")
         if cloudflare_token and cloudflare_account_id:
@@ -193,32 +169,19 @@ class AIProviderManager:
             or os.getenv("MISTRAL_API_KEY")
             or os.getenv("OPENAI_API_KEY")
         )
-        openrouter_key = os.getenv("OPENROUTER_API_KEY")
-
-        def _openrouter_provider(i: int) -> _Provider:
-            model = os.getenv(f"OPENROUTER_MODEL_FALLBACK_{i}", OPENROUTER_MODEL_FALLBACK_DEFAULTS[i])
-            return _Provider(f"openrouter_fallback_{i}", openrouter_key, model, base_url=OPENROUTER_DEFAULT_BASE_URL)
-
-        # Interleaved order: OpenRouter's first free model, then Mistral
-        # primary, then OpenRouter's second free model, then any extra
-        # Mistral keys — spreads load across the two providers up front
-        # instead of exhausting every Mistral key before OpenRouter is ever
-        # tried (each OpenRouter tier shares OPENROUTER_API_KEY; see
-        # OPENROUTER_MODEL_FALLBACK_DEFAULTS above for why that's fine —
-        # OpenRouter rate-limits per key+model, not per key).
-        if openrouter_key:
-            providers.append(_openrouter_provider(1))
         if primary_key:
             providers.append(_Provider("primary", primary_key, os.getenv("MISTRAL_MODEL_PRIMARY", DEFAULT_MODEL)))
-        if openrouter_key:
-            providers.append(_openrouter_provider(2))
+
         for i in (1, 2, 3):
             key = os.getenv(f"MISTRAL_API_KEY_FALLBACK_{i}")
             if key:
                 providers.append(_Provider(f"fallback_{i}", key, os.getenv(f"MISTRAL_MODEL_FALLBACK_{i}", DEFAULT_MODEL)))
 
+        if os.getenv("OPENROUTER_API_KEY"):
+            logger.warning("[AI_PROVIDER] OPENROUTER_API_KEY is configured but OpenRouter is disabled; key will not receive requests")
+
         # Last-resort fallback on a different provider entirely (Groq), tried only
-        # after every Mistral/OpenRouter key above has failed — keeps ticket replies
+        # after every Mistral key above has failed — keeps ticket replies
         # flowing if every prior key hits its account-wide rate limit or quota.
         # Mirrors the Mistral primary+fallback_N scheme: GROQ_API_KEY is the first
         # Groq key, GROQ_API_KEY_FALLBACK_{i} are additional ones tried after it.
@@ -275,7 +238,7 @@ class AIProviderManager:
     @property
     def mistral_providers(self) -> List[_Provider]:
         """Subset of configured providers safe to use for embeddings — every
-        Mistral key (primary + fallback_N), excluding Groq, OpenRouter and
+        Mistral key (primary + fallback_N), excluding Groq and
         Cloudflare entries, none of which share an embeddings-compatible
         model with the vector(1024) schema."""
         return [
@@ -323,6 +286,7 @@ class AIProviderManager:
         validate_response: Optional[Callable[[Any], Optional[str]]] = None,
         log_context: str = "",
         tenant_id: Optional[str] = None,
+        allow_deepseek_fallback: bool = True,
     ):
         """
         Tries each configured provider in order (same messages/temperature/RAG
@@ -387,7 +351,7 @@ class AIProviderManager:
             # A validation failure (e.g. empty reply_body) is often transient
             # model flakiness, not a real provider outage - and in practice
             # this chain frequently has only ONE actually-reachable provider
-            # (confirmed live: Mistral/OpenRouter/Groq failing account-wide,
+            # (confirmed live: Mistral/Groq failing account-wide,
             # only Cloudflare answering), so "move to the next provider" does
             # nothing useful when that one provider itself returns empty.
             # Retry the SAME provider once more before giving up on it - a
@@ -490,7 +454,12 @@ class AIProviderManager:
         # has already failed this exact request. Never tried speculatively,
         # never for any other tenant_id, never a substitute for a provider
         # that would have succeeded on its own.
-        if DEEPSEEK_API_KEY and DEEPSEEK_FALLBACK_TENANT_ID and tenant_id == DEEPSEEK_FALLBACK_TENANT_ID:
+        if (
+            allow_deepseek_fallback
+            and DEEPSEEK_API_KEY
+            and DEEPSEEK_FALLBACK_TENANT_ID
+            and tenant_id == DEEPSEEK_FALLBACK_TENANT_ID
+        ):
             used = _deepseek_invocation_count()
             if used >= DEEPSEEK_MAX_INVOCATIONS:
                 logger.error(

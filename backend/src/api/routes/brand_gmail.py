@@ -21,6 +21,8 @@ from src.api.middleware.tenant_auth import get_current_tenant, require_tenant_ad
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/brands", tags=["Gmail"])
 
+EMAIL_AI_PROCESSING_CONSENT_VERSION = "2026-11-28-v1"
+
 
 def _get_owned_brand(brand_id: str, tenant: TenantContext) -> dict:
     """Return the brand if it exists and belongs to this tenant; raise 404 otherwise.
@@ -152,8 +154,8 @@ async def email_forwarding_status(
         (code or verification_link) and brand.get("inbound_email_verification_code_at")
     )
     return {
-        "legacy_gmail_connected": bool(brand.get("gmail_connected")),
-        "legacy_gmail_email": brand.get("gmail_email"),
+        "legacy_gmail_connected": False,
+        "legacy_gmail_email": None,
         "forwarding_address": (
             f"{os.getenv('INBOUND_EMAIL_LOCAL_PART', 'support').strip().lower()}+{brand.get('inbound_email_token')}@{domain}"
             if brand.get("inbound_email_token") and domain else None
@@ -163,6 +165,11 @@ async def email_forwarding_status(
         "verification_link": verification_link if verification_details_available else None,
         "gmail_send_connected": bool(brand.get("gmail_send_connected")),
         "gmail_email": brand.get("gmail_send_email"),
+        "ai_processing_consent_recorded": (
+            bool(brand.get("email_ai_processing_consent_at"))
+            and brand.get("email_ai_processing_consent_version") == EMAIL_AI_PROCESSING_CONSENT_VERSION
+        ),
+        "ai_processing_consent_at": brand.get("email_ai_processing_consent_at"),
         "ingestion_mode": brand.get("email_ingestion_mode", "gmail_polling"),
     }
 
@@ -194,17 +201,52 @@ async def confirm_email_forwarding(
     return {"success": True, "verified": True}
 
 
+@router.post("/{brand_id}/email-forwarding/consent")
+async def record_email_ai_processing_consent(
+    brand_id: str,
+    tenant: TenantContext = Depends(require_tenant_admin),
+):
+    """Record a tenant admin's explicit consent for forwarded email processing."""
+    brand = _get_owned_brand(brand_id, tenant)
+    if not brand.get("inbound_email_token"):
+        raise HTTPException(status_code=409, detail="Create the forwarding address before recording consent.")
+    accepted_at = datetime.now(timezone.utc).isoformat()
+    supabase_update("brands", {"id": f"eq.{brand_id}"}, {
+        "email_ai_processing_consent_at": accepted_at,
+        "email_ai_processing_consent_version": EMAIL_AI_PROCESSING_CONSENT_VERSION,
+        # Permit Google to deliver its forwarding-verification message. Normal
+        # customer mail is still ignored until activate sets ingestion_mode
+        # to forwarding.
+        "inbound_email_enabled": True,
+        "updated_at": accepted_at,
+    })
+    return {
+        "success": True,
+        "consent_version": EMAIL_AI_PROCESSING_CONSENT_VERSION,
+        "consent_recorded_at": accepted_at,
+    }
+
+
 @router.post("/{brand_id}/email-forwarding/activate")
 async def activate_email_forwarding(brand_id: str, tenant: TenantContext = Depends(require_tenant_admin)):
     """Activate only after the forwarding address and send-only Gmail are ready."""
     brand = _get_owned_brand(brand_id, tenant)
-    if not brand.get("inbound_email_enabled") or not brand.get("inbound_email_token"):
+    if not brand.get("inbound_email_token"):
         raise HTTPException(status_code=409, detail="Create the forwarding address first")
     if not brand.get("inbound_email_verified_at"):
         raise HTTPException(status_code=409, detail="Verify the forwarding address in Gmail first")
     if not brand.get("gmail_send_connected") or not brand.get("gmail_send_token"):
         raise HTTPException(status_code=409, detail="Connect Gmail for sending only first")
+    if (
+        not brand.get("email_ai_processing_consent_at")
+        or brand.get("email_ai_processing_consent_version") != EMAIL_AI_PROCESSING_CONSENT_VERSION
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Review and accept the email AI-processing consent before activating forwarding.",
+        )
     supabase_update("brands", {"id": f"eq.{brand_id}"}, {
+        "inbound_email_enabled": True,
         "email_ingestion_mode": "forwarding",
         "updated_at": datetime.now(timezone.utc).isoformat(),
     })
@@ -213,18 +255,12 @@ async def activate_email_forwarding(brand_id: str, tenant: TenantContext = Depen
 
 @router.post("/{brand_id}/email-forwarding/pause")
 async def pause_email_forwarding(brand_id: str, tenant: TenantContext = Depends(require_tenant_admin)):
-    """Pause forwarding only when this brand still has a usable legacy Gmail connection."""
-    brand = _get_owned_brand(brand_id, tenant)
-    if not brand.get("gmail_connected"):
-        raise HTTPException(
-            status_code=409,
-            detail="The previous Gmail inbox connection is not active. Keep email forwarding enabled.",
-        )
-    supabase_update("brands", {"id": f"eq.{brand_id}"}, {
-        "email_ingestion_mode": "gmail_polling",
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    })
-    return {"success": True, "ingestion_mode": "gmail_polling"}
+    """Legacy Gmail polling is retired; forwarding is the only inbound email path."""
+    _get_owned_brand(brand_id, tenant)
+    raise HTTPException(
+        status_code=410,
+        detail="Legacy Gmail inbox sync is retired. Keep merchant-configured forwarding enabled for incoming email.",
+    )
 
 
 @router.get("/{brand_id}/gmail/send-auth-url")
@@ -256,22 +292,12 @@ async def get_gmail_auth_url(
     brand_id: str,
     tenant: TenantContext = Depends(require_tenant_admin),
 ):
-    """Return the Google OAuth consent URL for this brand (tenant-scoped)."""
-    brand = _get_owned_brand(brand_id, tenant)
-
-    # Only gate NEW connections — reconnecting/refreshing an already-connected
-    # brand's Gmail must not be blocked by the cap.
-    if not brand.get("gmail_connected"):
-        from src.services.plan_service import check_limit, build_limit_error
-        gmail_limit = check_limit(tenant.tenant_id, "gmail_accounts", email=tenant.email)
-        if not gmail_limit["allowed"]:
-            raise HTTPException(status_code=402, detail=build_limit_error("gmail_accounts", gmail_limit))
-
-    try:
-        auth_url = brand_gmail_service.get_auth_url(brand_id)
-        return {"auth_url": auth_url}
-    except ValueError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """Retired endpoint. Gmail inbox reading is no longer supported."""
+    _get_owned_brand(brand_id, tenant)
+    raise HTTPException(
+        status_code=410,
+        detail="Gmail inbox access is retired. Use merchant-configured forwarding and Gmail send-only connection.",
+    )
 
 
 @router.get("/gmail/callback")
@@ -323,20 +349,18 @@ async def gmail_status(
 ):
     """Check Gmail connection status for a brand (tenant-scoped)."""
     brand = _get_owned_brand(brand_id, tenant)
-    connected = bool(brand.get("gmail_connected"))
-    email = brand.get("gmail_email")
+    # Only the send-only Gmail API connection remains supported.
     send_connected = bool(brand.get("gmail_send_connected"))
     send_email = brand.get("gmail_send_email")
-    # A revoked/expired refresh token (see brand_gmail_service._build_service)
-    # flips gmail_connected to False but deliberately leaves gmail_email in
-    # place — the only signal that distinguishes "never connected" from "was
-    # connected, needs reconnecting". A manual disconnect() clears both, so
-    # this is False there, correctly falling back to the plain not-connected
-    # state.
     return {
-        "connected": connected,
-        "email": email,
-        "needs_reconnect": (not connected) and bool(email),
+        "connected": send_connected,
+        "email": send_email,
+        "needs_reconnect": (not send_connected) and bool(send_email),
         "send_connected": send_connected,
         "send_email": send_email,
+        "ai_processing_consent_recorded": (
+            bool(brand.get("email_ai_processing_consent_at"))
+            and brand.get("email_ai_processing_consent_version") == EMAIL_AI_PROCESSING_CONSENT_VERSION
+        ),
+        "ai_processing_consent_at": brand.get("email_ai_processing_consent_at"),
     }

@@ -63,9 +63,8 @@ from src.services.shopify_service import encrypt_token, decrypt_token
 
 logger = logging.getLogger(__name__)
 
-# Existing full-access Gmail mode remains unchanged for currently connected
-# brands. Forwarding-mode brands request only send access plus basic identity.
-SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
+# The only supported Gmail API permission is send-only. Incoming mail is
+# delivered by merchant-configured forwarding to tResolv's inbound address.
 SEND_ONLY_SCOPES = [
     'https://www.googleapis.com/auth/gmail.send',
     'openid',
@@ -91,11 +90,11 @@ def _state_key() -> bytes:
     return os.getenv("SECRET_KEY", os.getenv("JWT_SECRET", "change-me-in-production")).encode()
 
 
-def _sign_state(brand_id: str, scope_mode: str = "full", return_to: str = "brands") -> str:
+def _sign_state(brand_id: str, scope_mode: str = "send_only", return_to: str = "brands") -> str:
     """Return HMAC-signed state token: base64(payload).signature.
 
-    scope_mode is signed along with the brand id so the shared OAuth callback
-    can distinguish legacy full-mailbox OAuth from the new send-only flow.
+    scope_mode is signed with the brand ID so the callback accepts only the
+    current send-only Gmail connection.
     """
     payload = json.dumps({
         "brand_id": brand_id,
@@ -131,14 +130,14 @@ def _verify_state(state: str) -> Optional[str]:
 
 
 def _state_scope_mode(state: str) -> str:
-    """Read the signed scope mode after _verify_state has validated the token."""
+    """Read the signed scope mode. Unknown/old states are never upgraded."""
     try:
         b64 = state.rsplit(".", 1)[0]
         b64 += "=" * ((4 - len(b64) % 4) % 4)
         data = json.loads(base64.urlsafe_b64decode(b64.encode()))
-        return "send_only" if data.get("scope_mode") == "send_only" else "full"
+        return "send_only" if data.get("scope_mode") == "send_only" else "legacy_disabled"
     except Exception:
-        return "full"
+        return "legacy_disabled"
 
 
 def _state_return_to(state: str) -> str:
@@ -153,23 +152,12 @@ def _state_return_to(state: str) -> str:
         return "brands"
 
 
-def _get_client_config(scope_mode: str = "full") -> dict:
-    """Build the OAuth client config for the selected Gmail permission tier.
-
-    Send-only uses a separate Google Cloud OAuth project. Keeping its consent
-    screen free of gmail.modify prevents the legacy restricted scope from
-    being pulled into the send-only app verification request.
-    """
-    if scope_mode == "send_only":
-        client_id = os.getenv("GMAIL_SEND_CLIENT_ID")
-        client_secret = os.getenv("GMAIL_SEND_CLIENT_SECRET")
-        raw = os.getenv("GMAIL_SEND_CREDENTIALS")
-        label = "GMAIL_SEND_CLIENT_ID + GMAIL_SEND_CLIENT_SECRET"
-    else:
-        client_id = os.getenv("GMAIL_CLIENT_ID")
-        client_secret = os.getenv("GMAIL_CLIENT_SECRET")
-        raw = os.getenv("GMAIL_CREDENTIALS")
-        label = "GMAIL_CLIENT_ID + GMAIL_CLIENT_SECRET"
+def _get_client_config() -> dict:
+    """Build the dedicated OAuth client config for Gmail send-only access."""
+    client_id = os.getenv("GMAIL_SEND_CLIENT_ID")
+    client_secret = os.getenv("GMAIL_SEND_CLIENT_SECRET")
+    raw = os.getenv("GMAIL_SEND_CREDENTIALS")
+    label = "GMAIL_SEND_CLIENT_ID + GMAIL_SEND_CLIENT_SECRET"
 
     if client_id and client_secret:
         return {
@@ -185,7 +173,7 @@ def _get_client_config(scope_mode: str = "full") -> dict:
     if raw:
         return json.loads(raw)
 
-    raise ValueError(f"No {scope_mode} Gmail OAuth credentials configured. Set {label}.")
+    raise ValueError(f"No Gmail send-only OAuth credentials configured. Set {label}.")
 
 
 def _callback_uri() -> str:
@@ -203,16 +191,10 @@ class BrandGmailService:
     # ── OAuth ──────────────────────────────────────────────────────────────
 
     def get_auth_url(self, brand_id: str) -> str:
-        """Return the legacy Gmail read/write consent URL for an existing brand."""
-        flow = Flow.from_client_config(_get_client_config(), scopes=SCOPES)
-        flow.redirect_uri = _callback_uri()
-        auth_url, _ = flow.authorization_url(
-            access_type="offline",
-            include_granted_scopes="true",
-            state=_sign_state(brand_id),
-            prompt="consent",
+        """Legacy inbox-reading OAuth is permanently disabled."""
+        raise ValueError(
+            "Gmail inbox access is retired. Configure email forwarding and connect Gmail send-only instead."
         )
-        return auth_url
 
     def get_send_auth_url(self, brand_id: str, return_to: str = "brands") -> str:
         """Return a Gmail send-only OAuth URL for forwarding-mode brands.
@@ -220,7 +202,7 @@ class BrandGmailService:
         include_granted_scopes is deliberately false: do not silently carry
         the previous gmail.modify grant into this lower-permission connection.
         """
-        flow = Flow.from_client_config(_get_client_config("send_only"), scopes=SEND_ONLY_SCOPES)
+        flow = Flow.from_client_config(_get_client_config(), scopes=SEND_ONLY_SCOPES)
         flow.redirect_uri = _callback_uri()
         auth_url, _ = flow.authorization_url(
             access_type="offline",
@@ -246,9 +228,11 @@ class BrandGmailService:
         if not brand_id:
             return {"success": False, "error": "invalid_or_expired_state"}
         scope_mode = _state_scope_mode(state)
-        requested_scopes = SEND_ONLY_SCOPES if scope_mode == "send_only" else SCOPES
+        if scope_mode != "send_only":
+            return {"success": False, "error": "legacy_inbox_sync_disabled"}
+        requested_scopes = SEND_ONLY_SCOPES
         try:
-            flow = Flow.from_client_config(_get_client_config(scope_mode), scopes=requested_scopes, state=state)
+            flow = Flow.from_client_config(_get_client_config(), scopes=requested_scopes, state=state)
             flow.redirect_uri = _callback_uri()
             flow.fetch_token(code=code)
             creds = flow.credentials
@@ -275,10 +259,8 @@ class BrandGmailService:
                     raise ValueError("Google did not return a verified account email")
                 email = id_info["email"]
             else:
-                # Preserve the existing full-access integration exactly.
-                svc = build("gmail", "v1", credentials=creds)
-                profile = svc.users().getProfile(userId="me").execute()
-                email = profile.get("emailAddress", "")
+                # Defensive: the legacy mode was rejected before token exchange.
+                raise ValueError("Legacy Gmail inbox access is disabled")
 
             token_data = {
                 "token":         creds.token,
@@ -301,16 +283,9 @@ class BrandGmailService:
                     "updated_at": now_iso,
                 })
             else:
-                supabase_update("brands", {"id": f"eq.{brand_id}"}, {
-                    "gmail_email": email,
-                    "gmail_token": encrypt_token(json.dumps(token_data)),
-                    "gmail_connected": True,
-                    "gmail_scope_mode": "full",
-                    "is_active": True,
-                    "updated_at": now_iso,
-                })
+                raise ValueError("Legacy Gmail inbox access is disabled")
 
-            logger.info(f"[BrandGmail] Connected {email} to brand {brand_id}")
+            logger.info(f"[BrandGmail] Gmail connection completed for brand {brand_id}; account address omitted from logs.")
             return {"success": True, "email": email}
 
         except Exception as e:
@@ -339,7 +314,7 @@ class BrandGmailService:
         supabase_update("brands", {"id": f"eq.{brand_id}"}, {
             "gmail_connected": False, "gmail_token": None, "gmail_email": None,
             "gmail_send_connected": False, "gmail_send_token": None, "gmail_send_email": None,
-            "gmail_scope_mode": "full",
+            "gmail_scope_mode": "send_only",
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
 
@@ -347,10 +322,14 @@ class BrandGmailService:
 
     def _build_service(self, brand: dict):
         """Build Gmail API client from the credential tier matching ingestion mode."""
-        send_only = brand.get("email_ingestion_mode") == "forwarding"
-        token_field = "gmail_send_token" if send_only else "gmail_token"
-        connected_field = "gmail_send_connected" if send_only else "gmail_connected"
-        email_field = "gmail_send_email" if send_only else "gmail_email"
+        # Gmail API access is used for sending only. Incoming messages are
+        # forwarded through the tResolv inbound address, never read from Gmail.
+        if brand.get("email_ingestion_mode") != "forwarding":
+            return None
+        send_only = True
+        token_field = "gmail_send_token"
+        connected_field = "gmail_send_connected"
+        email_field = "gmail_send_email"
         raw = brand.get(token_field)
         if not raw:
             return None
@@ -362,15 +341,15 @@ class BrandGmailService:
                     expiry = datetime.fromisoformat(data["expiry"])
                 except (TypeError, ValueError):
                     expiry = None
-            client_id_env = "GMAIL_SEND_CLIENT_ID" if send_only else "GMAIL_CLIENT_ID"
-            client_secret_env = "GMAIL_SEND_CLIENT_SECRET" if send_only else "GMAIL_CLIENT_SECRET"
+            client_id_env = "GMAIL_SEND_CLIENT_ID"
+            client_secret_env = "GMAIL_SEND_CLIENT_SECRET"
             creds = Credentials(
                 token=data.get("token"),
                 refresh_token=data.get("refresh_token"),
                 token_uri=data.get("token_uri", "https://oauth2.googleapis.com/token"),
                 client_id=data.get("client_id") or os.getenv(client_id_env),
                 client_secret=data.get("client_secret") or os.getenv(client_secret_env),
-                scopes=data.get("scopes", SEND_ONLY_SCOPES if send_only else SCOPES),
+                scopes=data.get("scopes", SEND_ONLY_SCOPES),
                 expiry=expiry,
             )
             needs_refresh = not creds.token or creds.expiry is None or creds.expired
@@ -453,117 +432,14 @@ class BrandGmailService:
         return await asyncio.to_thread(self._get_new_emails_sync, brand, max_results, since_dt)
 
     def _get_new_emails_sync(self, brand: dict, max_results: int = 10, since_dt=None) -> "FetchedEmails":
-        svc = self._build_service(brand)
-        if not svc:
-            logger.warning(f"[BrandGmail] Could not build Gmail service for brand {brand.get('name')}")
-            return FetchedEmails()
+        """Legacy Gmail inbox polling is permanently disabled.
 
-        if since_dt:
-            # Gmail 'after' expects a date in YYYY/MM/DD format
-            after_str = since_dt.strftime('%Y/%m/%d')
-            q = f"after:{after_str} -in:spam -in:trash"
-        else:
-            q = "is:unread -in:spam -in:trash"
-        res = svc.users().messages().list(
-            userId="me", q=q, maxResults=max_results
-        ).execute()
-        messages = res.get("messages", [])
-        logger.info(f"[BrandGmail] {len(messages)} message(s) in {brand.get('name')} inbox")
-        # Temporary diagnostic: only the count was logged before, which can't
-        # distinguish "Gmail's search never returned this message" from "it
-        # was returned and something downstream dropped it silently" - see
-        # the live investigation into a same-thread reply never reaching
-        # this brand's ticket despite being visible (and not spam) in Gmail
-        # itself. Query is logged too since Gmail's `after:` date boundary
-        # is evaluated in this account's OWN timezone setting, not UTC/ours.
-        logger.info(f"[BrandGmail] query={q!r} message_ids={[m.get('id') for m in messages]}")
-
-        emails = FetchedEmails()
-        for msg in messages[:max_results]:
-            try:
-                full = svc.users().messages().get(userId="me", id=msg["id"]).execute()
-                headers = full["payload"]["headers"]
-                subject = next((h["value"] for h in headers if h["name"] == "Subject"), "No Subject")
-                sender  = next((h["value"] for h in headers if h["name"] == "From"), "Unknown")
-
-                # Parse "Name <email>" format
-                sender_name  = sender
-                sender_email = sender
-                if "<" in sender and ">" in sender:
-                    import re
-                    sender_name = sender.split("<")[0].strip()
-                    m = re.search(r"<(.+?)>", sender)
-                    if m:
-                        sender_email = m.group(1)
-
-                body = self._decode_body(full["payload"])
-                if not body:
-                    body = full.get("snippet", "")
-
-                # Gmail's own internalDate (ms since epoch, UTC) is already
-                # present in this same messages().get() response - no extra
-                # API call. Preserved so the ticket's last_customer_message_at
-                # can reflect when Gmail actually received the email, not just
-                # when this backend happened to poll and process it.
-                gmail_received_at = None
-                internal_date_ms = full.get("internalDate")
-                if internal_date_ms:
-                    try:
-                        gmail_received_at = datetime.fromtimestamp(
-                            int(internal_date_ms) / 1000, tz=timezone.utc
-                        ).isoformat()
-                    except (ValueError, TypeError):
-                        gmail_received_at = None
-
-                emails.append({
-                    "id":           msg["id"],
-                    "thread_id":    full.get("threadId"),
-                    "subject":      subject,
-                    "sender_name":  sender_name,
-                    "sender_email": sender_email,
-                    "body":         body,
-                    "brand_id":     brand["id"],
-                    "brand_name":   brand.get("name", ""),
-                    # Fields used by email_filter_service
-                    "label_ids":    full.get("labelIds", []),
-                    "headers":      {h["name"].lower(): h["value"] for h in headers},
-                    "gmail_received_at": gmail_received_at,
-                })
-
-                # Mark as read - best-effort, AFTER the message is already
-                # queued for processing above. This is a cosmetic side effect
-                # only: in the normal `after:`-date polling mode (the steady-
-                # state path once last_polled_at is set), dedup against a
-                # repeat message is handled entirely by the DB's
-                # gmail_message_id check in email_poller.py, never by Gmail's
-                # own read/unread flag - so a message this backend has
-                # already correctly retrieved and will process must never be
-                # dropped just because this non-essential call fails.
-                # Confirmed live: a transient Aftership-unrelated Gmail 502 on
-                # batchModify (Bad Gateway from Google's own infra) used to
-                # raise from inside this same try block, which skipped the
-                # emails.append() above entirely - silently discarding a
-                # message that had already been fully and successfully
-                # fetched, moments earlier in this exact iteration. One
-                # bounded retry (_batch_modify_with_retry, transient 429/5xx
-                # only) resolves most of these outright; if it still fails,
-                # the message is still returned and processed - it just stays
-                # "unread" in the raw Gmail inbox UI until a later successful
-                # attempt (e.g. the identical call fired by the poller's own
-                # up-front "mark existing unread as read" pass on a later
-                # poll), which has zero effect on this app's own behavior.
-                try:
-                    _batch_modify_with_retry(svc, msg["id"], ["UNREAD"])
-                except Exception as mark_err:
-                    logger.warning(
-                        f"[BrandGmail] Could not mark {msg['id']} as read (non-blocking, "
-                        f"message is still processed normally): {mark_err}"
-                    )
-            except Exception as e:
-                logger.exception(f"[BrandGmail] Error reading message {msg['id']}")
-                emails.fetch_failures += 1
-
-        return emails
+        Incoming support messages are delivered through merchant-configured
+        forwarding to tResolv's inbound address. The Gmail API is send-only.
+        This method intentionally never calls users.messages.list/get/modify.
+        """
+        logger.info("[BrandGmail] Inbox polling is retired; incoming mail uses forwarding.")
+        return FetchedEmails()
 
     @staticmethod
     def _build_message(
@@ -697,7 +573,7 @@ class BrandGmailService:
             sent = svc.users().messages().send(userId="me", body=send_body).execute()
             return {"success": True, "id": sent.get("id"), "message_id": msg.get("Message-ID")}
         except Exception as e:
-            logger.error(f"[BrandGmail] HTML thread reply error for brand {brand.get('name')}: {e}")
+            logger.error(f"[BrandGmail] HTML thread reply error for brand {brand.get('id')}; error_type={type(e).__name__}")
             return {"success": False, "error": str(e)}
 
     async def send_reply_in_thread(self, brand: dict, to_email: str, subject: str, body: str, thread_id: str) -> Dict[str, Any]:
@@ -721,29 +597,12 @@ class BrandGmailService:
             ).execute()
             return {"success": True, "id": sent.get("id")}
         except Exception as e:
-            logger.error(f"[BrandGmail] Thread reply error for brand {brand.get('name')}: {e}")
+            logger.error(f"[BrandGmail] Thread reply error for brand {brand.get('id')}; error_type={type(e).__name__}")
             return {"success": False, "error": str(e)}
 
     def get_connected_brands(self) -> List[dict]:
-        """Return brands with either full inbox or send-only Gmail access."""
-        try:
-            full = supabase_select("brands", {"gmail_connected": "is.true"}) or []
-            send = supabase_select("brands", {"gmail_send_connected": "is.true"}) or []
-            by_id = {b["id"]: b for b in full if b.get("id")}
-            for brand in send:
-                brand_id = brand.get("id")
-                if not brand_id:
-                    continue
-                if brand_id in by_id:
-                    for key in ("gmail_send_token", "gmail_send_connected", "gmail_send_email"):
-                        if key in brand:
-                            by_id[brand_id][key] = brand[key]
-                else:
-                    by_id[brand_id] = brand
-            return list(by_id.values())
-        except Exception as e:
-            logger.error(f"[BrandGmail] Error fetching connected brands: {e}")
-            return []
+        """Legacy inbox polling is retired; no Gmail inbox accounts are polled."""
+        return []
 
 
 brand_gmail_service = BrandGmailService()

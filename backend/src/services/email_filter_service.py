@@ -350,7 +350,7 @@ class EmailFilterService:
             return ALLOWED_RESULT
 
         except Exception as e:
-            logger.warning(f"[Filter] evaluate() exception for brand {brand_id} sender={email.get('sender_email', '?')}: {e}")
+            logger.warning(f"[Filter] evaluate() exception for brand {brand_id}; sender and error detail omitted; error_type={type(e).__name__}")
             return ALLOWED_RESULT  # Never block a real customer on filter error
 
     def check_loop_risk(self, ticket: dict, settings: dict) -> bool:
