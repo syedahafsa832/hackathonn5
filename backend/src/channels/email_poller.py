@@ -331,7 +331,7 @@ class EmailPoller:
                                 supabase_select, "tickets", {"gmail_message_id": f"eq.{gmail_msg_id}"}
                             )
                         if already_seen:
-                            logger.debug(f"[Poller] Skipping already-processed message {gmail_msg_id}")
+                            logger.debug("[Poller] Skipping message already seen or discarded; message identifier omitted from logs.")
                             return
                     except Exception:
                         pass  # column may not exist yet — safe to continue
@@ -349,7 +349,7 @@ class EmailPoller:
                             {"gmail_message_id": f"eq.{gmail_msg_id}", "status": "eq.discarded"},
                         )
                         if discarded:
-                            logger.debug(f"[Poller] Skipping discarded message {gmail_msg_id}")
+                            logger.debug("[Poller] Skipping message already seen or discarded; message identifier omitted from logs.")
                             return
                     except Exception:
                         pass
