@@ -47,6 +47,7 @@ jobs:
           tests/test_ai_provider_fallback.py
           tests/test_deepseek_emergency_fallback.py
           tests/test_email_pii_logging.py
+          tests/test_email_guardian_failover.py
 
   dashboard-build:
     runs-on: ubuntu-latest
