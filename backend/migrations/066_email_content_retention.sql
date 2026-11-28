@@ -51,6 +51,7 @@ DECLARE
     v_ai_events_anonymized integer := 0;
     v_automation_rows_deleted integer := 0;
     v_financial_audit_rows_scrubbed integer := 0;
+    v_chat_feedback_rows_scrubbed integer := 0;
     v_filter_rows_deleted integer := 0;
     v_quarantine_rows_deleted integer := 0;
 BEGIN
@@ -192,6 +193,7 @@ BEGIN
         UPDATE public.financial_action_audit_log
         SET result = NULL,
             error_detail = NULL,
+            user_id = NULL,
             user_email = NULL,
             ip_address = NULL
         WHERE ticket_id = ANY(v_ticket_ids);
@@ -215,6 +217,15 @@ BEGIN
             customer_identifier = NULL
         WHERE ticket_id = ANY(v_ticket_ids);
         GET DIAGNOSTICS v_ai_events_anonymized = ROW_COUNT;
+
+        -- Feedback may contain free-form text. Preserve the rating for
+        -- aggregate product metrics, but remove the text and session/ticket link.
+        UPDATE public.chat_feedback
+        SET ticket_id = NULL,
+            session_id = NULL,
+            feedback_text = NULL
+        WHERE ticket_id = ANY(v_ticket_ids);
+        GET DIAGNOSTICS v_chat_feedback_rows_scrubbed = ROW_COUNT;
 
         -- Pending automation content must not remain orphaned after the
         -- source ticket is deleted.
@@ -277,6 +288,7 @@ BEGIN
         'actions_scrubbed', v_actions_scrubbed,
         'brand_actions_scrubbed', v_brand_actions_scrubbed,
         'ai_reply_events_anonymized', v_ai_events_anonymized,
+        'chat_feedback_rows_scrubbed', v_chat_feedback_rows_scrubbed,
         'pending_automation_rows_deleted', v_automation_rows_deleted,
         'financial_audit_rows_scrubbed', v_financial_audit_rows_scrubbed,
         'email_filter_logs_deleted', v_filter_rows_deleted,
