@@ -103,6 +103,25 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
     }
   };
 
+  const saveEmailDataConsent = async () => {
+    setBusy(true);
+    setMessage('');
+    setError('');
+    try {
+      await client.post('/api/brands/' + brandId + '/email-forwarding/consent');
+      const updated = await refresh();
+      if (!updated?.ai_processing_consent_recorded) {
+        throw new Error('Consent could not be confirmed. Refresh and try again.');
+      }
+      setEmailDataConsent(false);
+      setMessage('Consent recorded. You can now finish Gmail forwarding setup.');
+    } catch (err) {
+      setError(extractErrorMessage(err, 'Could not record email processing consent.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const connectSendOnly = async () => {
     setBusy(true);
     setMessage('');
@@ -216,7 +235,7 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
             </button>
           )}
 
-          {hasAddress && !status.verified && (
+          {hasAddress && !status.verified && status.ai_processing_consent_recorded && (
             <div style={{ padding: '10px 12px', background: 'var(--bg-secondary)', borderRadius: '5px', marginBottom: '12px' }}>
               <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: '6px' }}>Connect your Gmail inbox</div>
               <ol style={{ paddingLeft: '18px', margin: 0, fontSize: '12px', lineHeight: 1.65, color: 'var(--text-secondary)' }}>
@@ -304,6 +323,14 @@ export default function EmailForwardingSetup({ brandId, returnTo = 'brands', onC
                     />
                     <span>I am authorised to connect this store and instruct tResolv to receive, store, and process the customer emails I forward for the email-support features described above.</span>
                   </label>
+                  <button
+                    type="button"
+                    disabled={busy || !emailDataConsent}
+                    onClick={saveEmailDataConsent}
+                    style={{ ...buttonStyle, marginTop: '10px', opacity: (busy || !emailDataConsent) ? 0.55 : 1 }}
+                  >
+                    {busy ? 'Saving…' : 'Agree and continue'}
+                  </button>
                 </>
               )}
             </div>
