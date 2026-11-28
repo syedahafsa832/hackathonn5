@@ -14,6 +14,7 @@ LOGGED_FILES = (
     "src/services/email_filter_service.py",
     "src/services/email_guardian_service.py",
     "src/services/brand_gmail_service.py",
+    "src/services/intent_detector.py",
 )
 
 # These expressions represent message/customer values, not safe booleans or
