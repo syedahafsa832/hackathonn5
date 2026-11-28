@@ -44,11 +44,32 @@ def test_send_only_oauth_url_requests_gmail_send_not_mailbox_read():
     assert "https://www.googleapis.com/auth/gmail.modify" not in kwargs["scopes"]
 
 
-def test_legacy_oauth_state_defaults_to_full_scope_mode():
-    state = _sign_state("brand-legacy")
+def test_legacy_oauth_state_is_rejected_by_default():
+    state = _sign_state("brand-legacy", scope_mode="full")
 
     assert _verify_state(state) == "brand-legacy"
-    assert _state_scope_mode(state) == "full"
+    assert _state_scope_mode(state) == "legacy_disabled"
+
+
+def test_legacy_inbox_oauth_url_is_permanently_disabled():
+    service = BrandGmailService()
+    try:
+        service.get_auth_url("brand-legacy")
+    except ValueError as exc:
+        assert "retired" in str(exc).lower()
+    else:
+        raise AssertionError("Legacy Gmail inbox OAuth must not produce an auth URL")
+
+
+def test_legacy_oauth_callback_is_rejected_before_token_exchange():
+    service = BrandGmailService()
+    state = _sign_state("brand-legacy", scope_mode="full")
+
+    with patch("src.services.brand_gmail_service.Flow") as mock_flow:
+        result = asyncio.run(service.handle_callback(state=state, code="auth-code"))
+
+    assert result == {"success": False, "error": "legacy_inbox_sync_disabled"}
+    mock_flow.from_client_config.assert_not_called()
 
 
 def test_forwarded_reply_message_contains_rfc_threading_headers():
