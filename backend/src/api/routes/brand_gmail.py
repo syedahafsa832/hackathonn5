@@ -21,6 +21,8 @@ from src.api.middleware.tenant_auth import get_current_tenant, require_tenant_ad
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/brands", tags=["Gmail"])
 
+EMAIL_AI_PROCESSING_CONSENT_VERSION = "2026-11-28-v1"
+
 
 def _get_owned_brand(brand_id: str, tenant: TenantContext) -> dict:
     """Return the brand if it exists and belongs to this tenant; raise 404 otherwise.
@@ -163,6 +165,11 @@ async def email_forwarding_status(
         "verification_link": verification_link if verification_details_available else None,
         "gmail_send_connected": bool(brand.get("gmail_send_connected")),
         "gmail_email": brand.get("gmail_send_email"),
+        "ai_processing_consent_recorded": (
+            bool(brand.get("email_ai_processing_consent_at"))
+            and brand.get("email_ai_processing_consent_version") == EMAIL_AI_PROCESSING_CONSENT_VERSION
+        ),
+        "ai_processing_consent_at": brand.get("email_ai_processing_consent_at"),
         "ingestion_mode": brand.get("email_ingestion_mode", "gmail_polling"),
     }
 
@@ -194,17 +201,48 @@ async def confirm_email_forwarding(
     return {"success": True, "verified": True}
 
 
+@router.post("/{brand_id}/email-forwarding/consent")
+async def record_email_ai_processing_consent(
+    brand_id: str,
+    tenant: TenantContext = Depends(require_tenant_admin),
+):
+    """Record a tenant admin's explicit consent for forwarded email processing."""
+    brand = _get_owned_brand(brand_id, tenant)
+    if not brand.get("inbound_email_token"):
+        raise HTTPException(status_code=409, detail="Create the forwarding address before recording consent.")
+    accepted_at = datetime.now(timezone.utc).isoformat()
+    supabase_update("brands", {"id": f"eq.{brand_id}"}, {
+        "email_ai_processing_consent_at": accepted_at,
+        "email_ai_processing_consent_version": EMAIL_AI_PROCESSING_CONSENT_VERSION,
+        "updated_at": accepted_at,
+    })
+    return {
+        "success": True,
+        "consent_version": EMAIL_AI_PROCESSING_CONSENT_VERSION,
+        "consent_recorded_at": accepted_at,
+    }
+
+
 @router.post("/{brand_id}/email-forwarding/activate")
 async def activate_email_forwarding(brand_id: str, tenant: TenantContext = Depends(require_tenant_admin)):
     """Activate only after the forwarding address and send-only Gmail are ready."""
     brand = _get_owned_brand(brand_id, tenant)
-    if not brand.get("inbound_email_enabled") or not brand.get("inbound_email_token"):
+    if not brand.get("inbound_email_token"):
         raise HTTPException(status_code=409, detail="Create the forwarding address first")
     if not brand.get("inbound_email_verified_at"):
         raise HTTPException(status_code=409, detail="Verify the forwarding address in Gmail first")
     if not brand.get("gmail_send_connected") or not brand.get("gmail_send_token"):
         raise HTTPException(status_code=409, detail="Connect Gmail for sending only first")
+    if (
+        not brand.get("email_ai_processing_consent_at")
+        or brand.get("email_ai_processing_consent_version") != EMAIL_AI_PROCESSING_CONSENT_VERSION
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Review and accept the email AI-processing consent before activating forwarding.",
+        )
     supabase_update("brands", {"id": f"eq.{brand_id}"}, {
+        "inbound_email_enabled": True,
         "email_ingestion_mode": "forwarding",
         "updated_at": datetime.now(timezone.utc).isoformat(),
     })
