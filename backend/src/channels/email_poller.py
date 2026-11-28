@@ -228,7 +228,7 @@ class EmailPoller:
             # Gmail search expects a date (YYYY/MM/DD) after which to search, not a Unix timestamp.
             since_str = since_dt.strftime('%Y/%m/%d')
             gmail_query = f"in:inbox after:{since_str}"
-            logger.info(f"[POLL] Brand {brand.get('id')} ({brand.get('gmail_email')}): last_polled_at = {last_polled_at}")
+            logger.info(f"[POLL] Brand {brand.get('id')}: last_polled_at = {last_polled_at}; mailbox address omitted from logs.")
             logger.info(f"[POLL] Gmail query: {gmail_query}")
 
             try:
@@ -263,7 +263,7 @@ class EmailPoller:
                     # process_message, which already has its own try/except
                     # below) must never affect any other concurrently
                     # running email or abort the rest of the batch.
-                    logger.exception(f"[Poller] Unexpected error handling message {email.get('id')} for brand {brand_id}")
+                    logger.error(f"[Poller] Unexpected error handling incoming message for brand {brand_id}; message identifiers omitted; error_type=processing_exception")
 
             async def _handle_one_inner(email):
                 nonlocal processed_count, failure_count
@@ -277,14 +277,14 @@ class EmailPoller:
                 # cross-brand infinite Re: loops (brand A replies → lands in brand B's
                 # inbox → brand B replies → lands in brand A's inbox → ...).
                 if sender in all_brand_emails:
-                    logger.info(f"[Poller] Skipping brand-owned address email from {sender} — cross-brand loop prevention")
+                    logger.info(f"[Poller] Skipping brand-owned address email for brand {brand_id} — cross-brand loop prevention; sender omitted from logs.")
                     return
 
                 # Skip deep reply chains (Re: Re: Re: ≥ 3) — second line of loop defence
                 subject = email.get("subject", "")
                 re_count = subject.lower().count("re:")
                 if re_count >= 3:
-                    logger.info(f"[Poller] Skipping deep reply chain (Re: count={re_count}): {subject[:60]}")
+                    logger.info(f"[Poller] Skipping deep reply chain (Re: count={re_count}); subject omitted from logs.")
                     return
 
                 # Skip genuinely outbound messages that land back in this inbox
@@ -355,7 +355,7 @@ class EmailPoller:
                         pass
 
                 # ── Filter evaluation (runs before any ticket or AI work) ──
-                logger.info(f"[email_filter] evaluating gmail_message_id={gmail_msg_id} sender={sender} brand={brand.get('name')}")
+                logger.info(f"[email_filter] evaluating incoming message for brand={brand_id}; sender and message identifiers omitted from logs.")
                 email["brand_support_email"] = support_email
                 filter_result = await asyncio.to_thread(email_filter_service.evaluate, email, brand_id)
                 await asyncio.to_thread(email_filter_service.log_decision, brand_id, sender, thread_id, filter_result, gmail_msg_id)
@@ -435,7 +435,7 @@ class EmailPoller:
                         result = await self.processor.process_message("email_incoming", payload)
                         if isinstance(result, dict) and result.get("status") == "error":
                             failure_count += 1
-                            logger.error(f"[Poller] Processor error for brand {brand_id} message {gmail_msg_id}: {result.get('error')}")
+                            logger.error(f"[Poller] Processor error for brand {brand_id}; message identifier and error detail omitted.")
                         else:
                             processed_count += 1
                             ticket_id = result.get("ticket_id") if isinstance(result, dict) else None
@@ -445,7 +445,7 @@ class EmailPoller:
                             )
                     except Exception:
                         failure_count += 1
-                        logger.exception(f"[Poller] Processor exception for brand {brand_id} message {gmail_msg_id}")
+                        logger.error(f"[Poller] Processor exception for brand {brand_id}; message identifier omitted; error_type=processing_exception")
 
             async def _handle_group(group_emails):
                 for email in group_emails:
@@ -710,7 +710,7 @@ class EmailPoller:
                         references=csat_references,
                     )
                     if send_result.get("success"):
-                        logger.info(f"[CSAT] Sent survey for ticket {ticket['id']} to {customer_email}")
+                        logger.info(f"[CSAT] Sent survey for ticket {ticket['id']}; recipient omitted from logs.")
                     else:
                         logger.warning(f"[CSAT] Survey send failed for ticket {ticket['id']}: {send_result.get('error')}")
                 except Exception as e:
@@ -735,7 +735,7 @@ class EmailPoller:
                 if sender == support_email:
                     continue
                 if _is_automated(sender, email["body"]):
-                    logger.info(f"[Poller] Skipping automated email from {sender}")
+                    logger.info(f"[Poller] Skipping automated email for brand {brand_id}; sender omitted from logs.")
                     continue
 
                 payload = {
