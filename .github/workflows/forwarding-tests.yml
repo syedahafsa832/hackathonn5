@@ -45,6 +45,7 @@ jobs:
           tests/test_ai_provider_fallback.py
           tests/test_deepseek_emergency_fallback.py
           tests/test_email_pii_logging.py
+          tests/test_email_poller_no_gmail_reads.py
           tests/test_email_guardian_failover.py
           tests/test_email_ai_processing_consent_migration.py
 
