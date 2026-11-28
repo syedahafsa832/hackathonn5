@@ -41,6 +41,7 @@ jobs:
           pytest -q
           tests/test_email_forwarding_service.py
           tests/test_gmail_send_only_oauth.py
+          tests/test_gmail_connection_states.py
           tests/test_gmail_service_refresh_failure.py
           tests/test_gmail_token_encryption.py
           tests/test_ai_provider_fallback.py
