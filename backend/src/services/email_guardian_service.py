@@ -344,8 +344,8 @@ class EmailGuardianService:
             existing_record = await asyncio.to_thread(self._find_existing_decision, brand_id, gmail_message_id)
             if existing_record:
                 logger.info(
-                    f"[Guardian] Reusing prior decision for gmail_message_id={gmail_message_id} "
-                    f"sender={sender} — skipping re-classification"
+                    f"[Guardian] Reusing prior decision for brand={brand_id}; "
+                    "sender and message identifiers omitted — skipping re-classification"
                 )
                 return self._result_from_existing_record(existing_record)
 
