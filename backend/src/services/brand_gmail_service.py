@@ -310,7 +310,7 @@ class BrandGmailService:
                     "updated_at": now_iso,
                 })
 
-            logger.info(f"[BrandGmail] Connected {email} to brand {brand_id}")
+            logger.info(f"[BrandGmail] Gmail connection completed for brand {brand_id}; account address omitted from logs.")
             return {"success": True, "email": email}
 
         except Exception as e:
@@ -697,7 +697,7 @@ class BrandGmailService:
             sent = svc.users().messages().send(userId="me", body=send_body).execute()
             return {"success": True, "id": sent.get("id"), "message_id": msg.get("Message-ID")}
         except Exception as e:
-            logger.error(f"[BrandGmail] HTML thread reply error for brand {brand.get('name')}: {e}")
+            logger.error(f"[BrandGmail] HTML thread reply error for brand {brand.get('id')}; error_type={type(e).__name__}")
             return {"success": False, "error": str(e)}
 
     async def send_reply_in_thread(self, brand: dict, to_email: str, subject: str, body: str, thread_id: str) -> Dict[str, Any]:
@@ -721,7 +721,7 @@ class BrandGmailService:
             ).execute()
             return {"success": True, "id": sent.get("id")}
         except Exception as e:
-            logger.error(f"[BrandGmail] Thread reply error for brand {brand.get('name')}: {e}")
+            logger.error(f"[BrandGmail] Thread reply error for brand {brand.get('id')}; error_type={type(e).__name__}")
             return {"success": False, "error": str(e)}
 
     def get_connected_brands(self) -> List[dict]:
