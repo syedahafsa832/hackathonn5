@@ -31,11 +31,11 @@ CREATE INDEX IF NOT EXISTS idx_email_tickets_retention_candidate
     WHERE channel = 'email'
       AND lower(COALESCE(status, '')) IN ('resolved', 'auto_resolved', 'closed');
 
-CREATE INDEX IF NOT EXISTS idx_email_filter_log_created_brand
-    ON public.email_filter_log (created_at, brand_id);
-
-CREATE INDEX IF NOT EXISTS idx_email_quarantine_created_brand
-    ON public.email_quarantine (created_at, brand_id);
+-- The existing filter-log index leads with brand_id, so add a date-first
+-- index for the bounded retention DELETE across all brands. Quarantine is
+-- small and already has status/created_at indexes.
+CREATE INDEX IF NOT EXISTS idx_email_filter_log_created_at
+    ON public.email_filter_log (created_at);
 
 
 CREATE OR REPLACE FUNCTION public.purge_expired_email_support_content()
