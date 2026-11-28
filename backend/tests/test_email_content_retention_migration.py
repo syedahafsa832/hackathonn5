@@ -34,6 +34,7 @@ def test_retention_scrubs_related_email_content_and_keeps_minimal_audit():
         "public.action_logs",
         "public.financial_action_audit_log",
         "public.ai_reply_events",
+        "public.chat_feedback",
         "public.email_automation_pending",
         "public.email_filter_log",
         "public.email_quarantine",
