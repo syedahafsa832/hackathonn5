@@ -43,6 +43,8 @@ jobs:
           tests/test_gmail_send_only_oauth.py
           tests/test_gmail_service_refresh_failure.py
           tests/test_gmail_token_encryption.py
+          tests/test_ai_provider_fallback.py
+          tests/test_deepseek_emergency_fallback.py
 
   dashboard-build:
     runs-on: ubuntu-latest
