@@ -432,117 +432,14 @@ class BrandGmailService:
         return await asyncio.to_thread(self._get_new_emails_sync, brand, max_results, since_dt)
 
     def _get_new_emails_sync(self, brand: dict, max_results: int = 10, since_dt=None) -> "FetchedEmails":
-        svc = self._build_service(brand)
-        if not svc:
-            logger.warning(f"[BrandGmail] Could not build Gmail service for brand {brand.get('name')}")
-            return FetchedEmails()
+        """Legacy Gmail inbox polling is permanently disabled.
 
-        if since_dt:
-            # Gmail 'after' expects a date in YYYY/MM/DD format
-            after_str = since_dt.strftime('%Y/%m/%d')
-            q = f"after:{after_str} -in:spam -in:trash"
-        else:
-            q = "is:unread -in:spam -in:trash"
-        res = svc.users().messages().list(
-            userId="me", q=q, maxResults=max_results
-        ).execute()
-        messages = res.get("messages", [])
-        logger.info(f"[BrandGmail] {len(messages)} message(s) in {brand.get('name')} inbox")
-        # Temporary diagnostic: only the count was logged before, which can't
-        # distinguish "Gmail's search never returned this message" from "it
-        # was returned and something downstream dropped it silently" - see
-        # the live investigation into a same-thread reply never reaching
-        # this brand's ticket despite being visible (and not spam) in Gmail
-        # itself. Query is logged too since Gmail's `after:` date boundary
-        # is evaluated in this account's OWN timezone setting, not UTC/ours.
-        logger.info(f"[BrandGmail] query_mode={'after_date' if after_str else 'unread'} message_count={len(messages)}; query and message identifiers omitted from logs.")
-
-        emails = FetchedEmails()
-        for msg in messages[:max_results]:
-            try:
-                full = svc.users().messages().get(userId="me", id=msg["id"]).execute()
-                headers = full["payload"]["headers"]
-                subject = next((h["value"] for h in headers if h["name"] == "Subject"), "No Subject")
-                sender  = next((h["value"] for h in headers if h["name"] == "From"), "Unknown")
-
-                # Parse "Name <email>" format
-                sender_name  = sender
-                sender_email = sender
-                if "<" in sender and ">" in sender:
-                    import re
-                    sender_name = sender.split("<")[0].strip()
-                    m = re.search(r"<(.+?)>", sender)
-                    if m:
-                        sender_email = m.group(1)
-
-                body = self._decode_body(full["payload"])
-                if not body:
-                    body = full.get("snippet", "")
-
-                # Gmail's own internalDate (ms since epoch, UTC) is already
-                # present in this same messages().get() response - no extra
-                # API call. Preserved so the ticket's last_customer_message_at
-                # can reflect when Gmail actually received the email, not just
-                # when this backend happened to poll and process it.
-                gmail_received_at = None
-                internal_date_ms = full.get("internalDate")
-                if internal_date_ms:
-                    try:
-                        gmail_received_at = datetime.fromtimestamp(
-                            int(internal_date_ms) / 1000, tz=timezone.utc
-                        ).isoformat()
-                    except (ValueError, TypeError):
-                        gmail_received_at = None
-
-                emails.append({
-                    "id":           msg["id"],
-                    "thread_id":    full.get("threadId"),
-                    "subject":      subject,
-                    "sender_name":  sender_name,
-                    "sender_email": sender_email,
-                    "body":         body,
-                    "brand_id":     brand["id"],
-                    "brand_name":   brand.get("name", ""),
-                    # Fields used by email_filter_service
-                    "label_ids":    full.get("labelIds", []),
-                    "headers":      {h["name"].lower(): h["value"] for h in headers},
-                    "gmail_received_at": gmail_received_at,
-                })
-
-                # Mark as read - best-effort, AFTER the message is already
-                # queued for processing above. This is a cosmetic side effect
-                # only: in the normal `after:`-date polling mode (the steady-
-                # state path once last_polled_at is set), dedup against a
-                # repeat message is handled entirely by the DB's
-                # gmail_message_id check in email_poller.py, never by Gmail's
-                # own read/unread flag - so a message this backend has
-                # already correctly retrieved and will process must never be
-                # dropped just because this non-essential call fails.
-                # Confirmed live: a transient Aftership-unrelated Gmail 502 on
-                # batchModify (Bad Gateway from Google's own infra) used to
-                # raise from inside this same try block, which skipped the
-                # emails.append() above entirely - silently discarding a
-                # message that had already been fully and successfully
-                # fetched, moments earlier in this exact iteration. One
-                # bounded retry (_batch_modify_with_retry, transient 429/5xx
-                # only) resolves most of these outright; if it still fails,
-                # the message is still returned and processed - it just stays
-                # "unread" in the raw Gmail inbox UI until a later successful
-                # attempt (e.g. the identical call fired by the poller's own
-                # up-front "mark existing unread as read" pass on a later
-                # poll), which has zero effect on this app's own behavior.
-                try:
-                    _batch_modify_with_retry(svc, msg["id"], ["UNREAD"])
-                except Exception as mark_err:
-                    logger.warning(
-                        f"[BrandGmail] Could not mark {msg['id']} as read (non-blocking, "
-                        f"message is still processed normally): {mark_err}"
-                    )
-            except Exception as e:
-                logger.exception(f"[BrandGmail] Error reading message {msg['id']}")
-                emails.fetch_failures += 1
-
-        return emails
+        Incoming support messages are delivered through merchant-configured
+        forwarding to tResolv's inbound address. The Gmail API is send-only.
+        This method intentionally never calls users.messages.list/get/modify.
+        """
+        logger.info("[BrandGmail] Inbox polling is retired; incoming mail uses forwarding.")
+        return FetchedEmails()
 
     @staticmethod
     def _build_message(
