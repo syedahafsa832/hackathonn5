@@ -358,4 +358,9 @@ async def gmail_status(
         "needs_reconnect": (not send_connected) and bool(send_email),
         "send_connected": send_connected,
         "send_email": send_email,
+        "ai_processing_consent_recorded": (
+            bool(brand.get("email_ai_processing_consent_at"))
+            and brand.get("email_ai_processing_consent_version") == EMAIL_AI_PROCESSING_CONSENT_VERSION
+        ),
+        "ai_processing_consent_at": brand.get("email_ai_processing_consent_at"),
     }
