@@ -431,11 +431,11 @@ class IntentDetector:
                 "zip": str(data.get("zip", "")).strip(),
                 "country": str(data.get("country", "US")).strip() or "US",
             }
-            logger.info(f"[Intent] Address parsed: {structured}")
+            logger.info("[Intent] Address parsed successfully; address fields omitted from logs.")
             return structured
 
         except Exception as e:
-            logger.warning(f"[Intent] Address parse failed ({e})")
+            logger.warning(f"[Intent] Address parse failed; error_type={type(e).__name__}")
             return None
 
 
