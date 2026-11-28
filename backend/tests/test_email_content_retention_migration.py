@@ -51,5 +51,5 @@ def test_retention_runs_on_a_schedule_without_purging_during_migration():
     assert "'0 3 * * *'" in sql
     # The function is called by the cron command only, not by the migration
     # itself. A deployment must not immediately delete any existing tickets.
-    occurrences = sql.count("public.purge_expired_email_support_content()")
-    assert occurrences == 2  # CREATE FUNCTION + cron command registration
+    scheduled_calls = sql.count("SELECT public.purge_expired_email_support_content();")
+    assert scheduled_calls == 1  # scheduled command only
