@@ -476,7 +476,7 @@ class BrandGmailService:
         # this brand's ticket despite being visible (and not spam) in Gmail
         # itself. Query is logged too since Gmail's `after:` date boundary
         # is evaluated in this account's OWN timezone setting, not UTC/ours.
-        logger.info(f"[BrandGmail] query={q!r} message_ids={[m.get('id') for m in messages]}")
+        logger.info(f"[BrandGmail] query_mode={'after_date' if after_str else 'unread'} message_count={len(messages)}; query and message identifiers omitted from logs.")
 
         emails = FetchedEmails()
         for msg in messages[:max_results]:
