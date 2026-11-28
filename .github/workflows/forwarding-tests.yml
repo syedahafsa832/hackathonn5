@@ -43,6 +43,7 @@ jobs:
           tests/test_gmail_send_only_oauth.py
           tests/test_gmail_service_refresh_failure.py
           tests/test_gmail_token_encryption.py
+          tests/test_email_content_retention_migration.py
 
   dashboard-build:
     runs-on: ubuntu-latest
