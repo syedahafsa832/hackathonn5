@@ -85,47 +85,60 @@ def _settings_app():
 # 1a. brand_gmail.py's per-brand /gmail/status
 # ═══════════════════════════════════════════════════════════════════════════
 
-def test_brand_status_connected_reports_needs_reconnect_false():
-    brand = {"id": BRAND_ID, "tenant_id": TENANT_ID, "gmail_connected": True, "gmail_email": "merchant@example.com"}
+def test_brand_status_reports_send_only_connection():
+    brand = {
+        "id": BRAND_ID, "tenant_id": TENANT_ID,
+        "gmail_connected": False, "gmail_email": None,
+        "gmail_send_connected": True, "gmail_send_email": "merchant@example.com",
+    }
     client = TestClient(_brand_app())
     with patch("src.api.routes.brand_gmail.supabase_select", return_value=[brand]):
         resp = client.get(f"/brands/{BRAND_ID}/gmail/status")
     assert resp.status_code == 200
     body = resp.json()
-    assert body == {"connected": True, "email": "merchant@example.com", "needs_reconnect": False}
-
+    assert body == {
+        "connected": True, "email": "merchant@example.com",
+        "needs_reconnect": False, "send_connected": True, "send_email": "merchant@example.com",
+    }
 
 def test_brand_status_never_connected_reports_needs_reconnect_false():
-    brand = {"id": BRAND_ID, "tenant_id": TENANT_ID, "gmail_connected": False, "gmail_email": None}
+    brand = {
+        "id": BRAND_ID, "tenant_id": TENANT_ID,
+        "gmail_connected": True, "gmail_email": "legacy@example.com",
+        "gmail_send_connected": False, "gmail_send_email": None,
+    }
     client = TestClient(_brand_app())
     with patch("src.api.routes.brand_gmail.supabase_select", return_value=[brand]):
         resp = client.get(f"/brands/{BRAND_ID}/gmail/status")
     body = resp.json()
-    assert body == {"connected": False, "email": None, "needs_reconnect": False}
+    assert body == {
+        "connected": False, "email": None,
+        "needs_reconnect": False, "send_connected": False, "send_email": None,
+    }
 
-
-def test_brand_status_revoked_token_reports_needs_reconnect_true():
-    """The exact state left behind by brand_gmail_service._build_service()
-    after an invalid_grant refresh failure: gmail_connected=False,
-    gmail_email still populated."""
-    brand = {"id": BRAND_ID, "tenant_id": TENANT_ID, "gmail_connected": False, "gmail_email": "merchant@example.com"}
+def test_brand_status_revoked_send_only_token_reports_needs_reconnect_true():
+    brand = {
+        "id": BRAND_ID, "tenant_id": TENANT_ID,
+        "gmail_connected": False, "gmail_send_connected": False,
+        "gmail_send_email": "merchant@example.com",
+    }
     client = TestClient(_brand_app())
     with patch("src.api.routes.brand_gmail.supabase_select", return_value=[brand]):
         resp = client.get(f"/brands/{BRAND_ID}/gmail/status")
     body = resp.json()
-    assert body == {"connected": False, "email": "merchant@example.com", "needs_reconnect": True}
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# 1b. saas_settings.py's tenant-scoped /gmail/status
-# ═══════════════════════════════════════════════════════════════════════════
+    assert body["connected"] is False
+    assert body["email"] == "merchant@example.com"
+    assert body["needs_reconnect"] is True
 
 def test_settings_status_connected_via_primary_lookup():
-    connected_brand = {"id": BRAND_ID, "tenant_id": TENANT_ID, "gmail_connected": True,
-                        "gmail_email": "merchant@example.com", "updated_at": "2026-01-01T00:00:00Z"}
+    connected_brand = {
+        "id": BRAND_ID, "tenant_id": TENANT_ID, "is_active": True,
+        "gmail_send_connected": True, "gmail_send_email": "merchant@example.com",
+        "updated_at": "2026-01-01T00:00:00Z",
+    }
 
     def fake_select(table, params=None):
-        if table == "brands" and params.get("gmail_connected") == "is.true":
+        if table == "brands" and params.get("tenant_id") == f"eq.{TENANT_ID}":
             return [connected_brand]
         return []
 
@@ -137,7 +150,6 @@ def test_settings_status_connected_via_primary_lookup():
     assert body["email"] == "merchant@example.com"
     assert body["needs_reconnect"] is False
 
-
 def test_settings_status_never_connected_reports_needs_reconnect_false():
     client = TestClient(_settings_app())
     with patch("src.api.routes.saas_settings.supabase_select", return_value=[]), \
@@ -145,54 +157,35 @@ def test_settings_status_never_connected_reports_needs_reconnect_false():
         resp = client.get("/api/v1/settings/gmail/status")
     assert resp.json() == {"connected": False, "email": None, "needs_reconnect": False}
 
-
-def test_settings_status_revoked_token_falls_back_to_stale_email_and_needs_reconnect():
-    """Regression: before this fix, a revoked token made this endpoint lose
-    the email entirely and report plain "not connected" - indistinguishable
-    from a merchant who never connected Gmail at all."""
-    stale_brand = {"id": BRAND_ID, "tenant_id": TENANT_ID, "gmail_connected": False,
-                    "gmail_email": "merchant@example.com", "updated_at": "2026-01-01T00:00:00Z"}
-
-    def fake_select(table, params=None):
-        # Neither the primary (gmail_connected=true) lookup nor the
-        # shopify_domain fallback finds anything, since gmail_connected is
-        # now False - only the new stale-email fallback query
-        # (gmail_email: not.is.null) should surface this brand.
-        if table == "brands" and params.get("gmail_connected") == "is.true":
-            return []
-        if table == "brands" and "gmail_email" in params:
-            return [stale_brand]
-        return []
-
+def test_settings_status_reports_stale_send_only_email_for_reconnect():
+    stale_brand = {
+        "id": BRAND_ID, "tenant_id": TENANT_ID, "is_active": True,
+        "gmail_send_connected": False, "gmail_send_email": "merchant@example.com",
+    }
     client = TestClient(_settings_app())
-    with patch("src.api.routes.saas_settings.supabase_select", side_effect=fake_select), \
-         patch("src.api.routes.saas_settings.auth_service.get_tenant", new=AsyncMock(return_value=None)):
+    with patch("src.api.routes.saas_settings.supabase_select", return_value=[stale_brand]):
         resp = client.get("/api/v1/settings/gmail/status")
     body = resp.json()
     assert body["connected"] is False
     assert body["email"] == "merchant@example.com"
     assert body["needs_reconnect"] is True
 
-
 def test_settings_status_manual_disconnect_does_not_look_like_needs_reconnect():
-    """disconnect() clears gmail_email too - the stale-email fallback query
-    must find nothing, correctly landing on the plain not-connected state."""
     client = TestClient(_settings_app())
-
-    def fake_select(table, params=None):
-        return []  # nothing anywhere - both gmail_connected and gmail_email are cleared
-
-    with patch("src.api.routes.saas_settings.supabase_select", side_effect=fake_select), \
+    with patch("src.api.routes.saas_settings.supabase_select", return_value=[]), \
          patch("src.api.routes.saas_settings.auth_service.get_tenant", new=AsyncMock(return_value=None)):
         resp = client.get("/api/v1/settings/gmail/status")
     body = resp.json()
     assert body["connected"] is False
     assert body["needs_reconnect"] is False
 
+def test_legacy_gmail_auth_url_returns_gone():
+    client = TestClient(_brand_app())
+    brand = {"id": BRAND_ID, "tenant_id": TENANT_ID, "is_active": True}
+    with patch("src.api.routes.brand_gmail.supabase_select", return_value=[brand]):
+        response = client.get(f"/brands/{BRAND_ID}/gmail/auth-url")
+    assert response.status_code == 410
 
-# ═══════════════════════════════════════════════════════════════════════════
-# 2. handle_callback never leaks a raw exception string as the error code
-# ═══════════════════════════════════════════════════════════════════════════
 
 def test_handle_callback_generic_failure_returns_stable_code_not_raw_exception():
     service = BrandGmailService()
