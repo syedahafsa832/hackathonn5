@@ -68,7 +68,8 @@ def test_handle_callback_stores_encrypted_send_only_token():
         return [data]
 
     with patch("src.services.brand_gmail_service.Flow") as mock_flow_cls, \
-         patch("src.services.brand_gmail_service.google_id_token.verify_oauth2_token", return_value={
+         patch("src.services.brand_gmail_service._get_client_config", return_value={"web": {}}), \
+         patch("google.oauth2.id_token.verify_oauth2_token", return_value={
              "email": "merchant@example.com", "email_verified": True
          }), \
          patch("src.services.brand_gmail_service.supabase_update", side_effect=fake_update):
