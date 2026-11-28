@@ -171,15 +171,9 @@ class EmailPoller:
 
             await asyncio.gather(*[_poll_one(b) for b in brands])
             return len(brands)
-        elif not full_access_brands:
-            # Send-only OAuth alone does not provide inbox polling. Until a
-            # brand is activated for forwarding, preserve the legacy global
-            # inbox fallback exactly as before.
-            await self._poll_global_inbox()
-            return 0
         else:
-            # Full-access brands exist, but all are forwarding-mode. Their
-            # inbound messages arrive through Cloudflare, not Gmail polling.
+            # All supported inbound customer email uses merchant-configured
+            # forwarding. Never fall back to a global or legacy Gmail inbox.
             return 0
 
     # ── Per-brand polling ──────────────────────────────────────────────────
@@ -723,37 +717,9 @@ class EmailPoller:
     # ── Legacy global inbox fallback ───────────────────────────────────────
 
     async def _poll_global_inbox(self):
-        try:
-            from production.channels.gmail_handler import gmail_handler
-            result = await gmail_handler.process_new_emails()
-
-            if result["count"] == 0:
-                return
-
-            support_email = os.getenv("SUPPORT_EMAIL_ADDRESS", "").lower()
-
-            for email in result["emails"]:
-                sender = email["sender_email"].lower()
-                if sender == support_email:
-                    continue
-                if _is_automated(sender, email["body"]):
-                    logger.info(f"[Poller] Skipping automated email for brand {brand_id}; sender omitted from logs.")
-                    continue
-
-                payload = {
-                    "channel":        "email",
-                    "content":        email["body"],
-                    "customer_email": email["sender_email"],
-                    "customer_name":  email["sender_name"],
-                    "subject":        email["subject"],
-                    "timestamp":      datetime.now(timezone.utc).isoformat(),
-                }
-
-                if self.processor:
-                    await self.processor.process_message("email_incoming", payload)
-
-        except Exception as e:
-            logger.error(f"[Poller] Global inbox error: {e}")
+        """Retired: tResolv no longer reads any Gmail inbox."""
+        logger.info("[Poller] Global Gmail inbox polling is retired; use merchant forwarding.")
+        return
 
 
 
