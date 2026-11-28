@@ -112,7 +112,7 @@ class EmailPoller:
             try:
                 brand_count = await self._poll_all_inboxes()
             except Exception as e:
-                logger.exception("Email polling error")
+                logger.error(f"Email polling error; error_type={type(e).__name__}")
                 await asyncio.sleep(5)
 
             self._csat_loop_counter += 1
