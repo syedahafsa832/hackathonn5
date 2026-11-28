@@ -330,7 +330,7 @@ async def test_usage_reflects_the_successful_attempt_after_failover_not_the_fail
 
 
 def test_load_providers_tries_cloudflare_first():
-    """Cloudflare Workers AI is tried FIRST, ahead of Mistral/OpenRouter/
+    """Cloudflare Workers AI is tried FIRST, ahead of Mistral/
     Groq - those were failing account-wide (403/404/429 seen live on every
     request), so every message burned ~25-30s working through each of them
     before ever reaching a provider that actually works. Requires BOTH
