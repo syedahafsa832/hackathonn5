@@ -23,8 +23,6 @@ jobs:
       SUPABASE_SERVICE_ROLE_KEY: test-service-role-key
       SECRET_KEY: test-secret-key
       ENCRYPTION_SECRET: test-encryption-secret-for-ci-only
-      GMAIL_CLIENT_ID: legacy-client-id
-      GMAIL_CLIENT_SECRET: legacy-client-secret
       GMAIL_SEND_CLIENT_ID: send-only-client-id
       GMAIL_SEND_CLIENT_SECRET: send-only-client-secret
     steps:
@@ -48,6 +46,7 @@ jobs:
           tests/test_deepseek_emergency_fallback.py
           tests/test_email_pii_logging.py
           tests/test_email_guardian_failover.py
+          tests/test_email_ai_processing_consent_migration.py
 
   dashboard-build:
     runs-on: ubuntu-latest
